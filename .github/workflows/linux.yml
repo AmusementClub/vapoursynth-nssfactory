@@ -1,0 +1,21 @@
+name: linux-cpu
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: packages
+        run: sudo apt-get update && sudo apt-get install -y cmake g++ git
+      - name: configure
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+            -DNSS_ENABLE_CUDA=OFF -DNSS_ENABLE_VULKAN=OFF
+      - name: build
+        run: cmake --build build -j
+      - name: unit tests
+        run: ctest --test-dir build --output-on-failure

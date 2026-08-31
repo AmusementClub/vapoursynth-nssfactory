@@ -1,0 +1,418 @@
+#include "host/filters.hpp"
+#include "host/validate.hpp"
+#include "nss/avx2.hpp"
+#include "nss/cpu_api.hpp"
+#include "nss/cpu_common.hpp"
+#include "nss/cpu_mcwnnm.hpp"
+#include "nss/params.hpp"
+#include "nss/workspace.hpp"
+
+#include <VapourSynth4.h>
+#include <VSHelper4.h>
+
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+#include <memory>
+#include <vector>
+
+namespace {
+
+struct McwnnmData {
+    VSNode* node = nullptr;
+    VSNode* rclip = nullptr;
+    VSVideoInfo vi{};
+    VSVideoInfo vi_out{};
+    float sigma[3]{nss::kMcwnnmDefaultSigma, nss::kMcwnnmDefaultSigma, nss::kMcwnnmDefaultSigma};
+    int block_size = nss::kMcwnnmDefaultBlock;
+    int block_step = nss::kMcwnnmDefaultStep;
+    int group_size = nss::kMcwnnmDefaultGroup;
+    int bm_range = nss::kMcwnnmDefaultRange;
+    int radius = nss::kWnnmDefaultRadius;
+    int ps_num = nss::kWnnmDefaultPsNum;
+    int ps_range = nss::kWnnmDefaultPsRange;
+    int residual = nss::kMcwnnmDefaultResidual;
+    int adaptive = nss::kMcwnnmDefaultAdaptive;
+    int admm_iter = nss::kMcwnnmDefaultAdmmIter;
+    float rho = nss::kMcwnnmDefaultRho;
+    float mu = nss::kMcwnnmDefaultMu;
+    int iters = nss::kMcwnnmDefaultIters;
+    float delta = nss::kMcwnnmDefaultDelta;
+    nss::Workspace ws;
+};
+
+const VSFrame* VS_CC mcwnnmGetFrame(int n, int activationReason, void* instanceData, void** frameData,
+                                    VSFrameContext* frameCtx, VSCore* core, const VSAPI* vsapi) {
+    auto* d = static_cast<McwnnmData*>(instanceData);
+    (void)frameData;
+    if (activationReason == arInitial) {
+        const int start = std::max(0, n - d->radius);
+        const int end = std::min(n + d->radius, d->vi.numFrames - 1);
+        for (int i = start; i <= end; ++i) {
+            vsapi->requestFrameFilter(i, d->node, frameCtx);
+            if (d->rclip) {
+                vsapi->requestFrameFilter(i, d->rclip, frameCtx);
+            }
+        }
+        return nullptr;
+    }
+    if (activationReason != arAllFramesReady) {
+        return nullptr;
+    }
+
+    const bool fat = d->radius > 0;
+    const int ntemp = 2 * d->radius + 1;
+    const int t0 = d->radius;
+    std::vector<const VSFrame*> srcf(static_cast<std::size_t>(ntemp));
+    std::vector<const VSFrame*> reff(static_cast<std::size_t>(ntemp));
+    for (int t = 0; t < ntemp; ++t) {
+        const int fn = std::clamp(n - d->radius + t, 0, d->vi.numFrames - 1);
+        srcf[static_cast<std::size_t>(t)] = vsapi->getFrameFilter(fn, d->node, frameCtx);
+        reff[static_cast<std::size_t>(t)] = vsapi->getFrameFilter(fn, d->rclip ? d->rclip : d->node, frameCtx);
+    }
+    const VSFrame* src0 = srcf[static_cast<std::size_t>(t0)];
+    VSFrame* dst = vsapi->newVideoFrame(&d->vi_out.format, d->vi_out.width, d->vi_out.height, src0, core);
+
+    const int block = d->block_size;
+    const int nch = 3;
+    const int m = nch * block * block;
+    const int lda = (m + 15) & ~15;
+    const int group = d->group_size;
+    const int pw = nss::plane_width(d->vi, 0);
+    const int ph = nss::plane_height(d->vi, 0);
+    const int slices = ntemp;
+    const std::size_t plane_sz = static_cast<std::size_t>(pw * ph);
+
+    float sig[3]{d->sigma[0] / 255.f, d->sigma[1] / 255.f, d->sigma[2] / 255.f};
+    const bool all_zero = d->sigma[0] == 0.f && d->sigma[1] == 0.f && d->sigma[2] == 0.f;
+
+    if (all_zero) {
+        for (int plane = 0; plane < nch; ++plane) {
+            const int sstride = static_cast<int>(vsapi->getStride(src0, plane) / sizeof(float));
+            const int dstride = static_cast<int>(vsapi->getStride(dst, plane) / sizeof(float));
+            float* outp = reinterpret_cast<float*>(vsapi->getWritePtr(dst, plane));
+            const float* srcp = reinterpret_cast<const float*>(vsapi->getReadPtr(src0, plane));
+            if (!fat) {
+                for (int y = 0; y < ph; ++y) {
+                    std::memcpy(outp + y * dstride, srcp + y * sstride, static_cast<std::size_t>(pw) * sizeof(float));
+                }
+            } else {
+                for (int sl = 0; sl < ntemp; ++sl) {
+                    const float* sp = reinterpret_cast<const float*>(
+                        vsapi->getReadPtr(srcf[static_cast<std::size_t>(sl)], plane));
+                    float* on = outp + (sl * 2) * ph * dstride;
+                    float* od = outp + (sl * 2 + 1) * ph * dstride;
+                    for (int y = 0; y < ph; ++y) {
+                        std::memcpy(on + y * dstride, sp + y * sstride, static_cast<std::size_t>(pw) * sizeof(float));
+                        for (int x = 0; x < pw; ++x) {
+                            od[y * dstride + x] = 1.f;
+                        }
+                    }
+                }
+            }
+        }
+        for (int t = 0; t < ntemp; ++t) {
+            vsapi->freeFrame(srcf[static_cast<std::size_t>(t)]);
+            vsapi->freeFrame(reff[static_cast<std::size_t>(t)]);
+        }
+        return dst;
+    }
+
+    int sstride[3];
+    float* outp[3];
+    std::vector<const float*> src_planes(static_cast<std::size_t>(nch * ntemp));
+    std::vector<const float*> ref_planes(static_cast<std::size_t>(nch * ntemp));
+    for (int plane = 0; plane < nch; ++plane) {
+        sstride[plane] = static_cast<int>(vsapi->getStride(src0, plane) / sizeof(float));
+        outp[plane] = reinterpret_cast<float*>(vsapi->getWritePtr(dst, plane));
+        for (int t = 0; t < ntemp; ++t) {
+            src_planes[static_cast<std::size_t>(plane * ntemp + t)] = reinterpret_cast<const float*>(
+                vsapi->getReadPtr(srcf[static_cast<std::size_t>(t)], plane));
+            ref_planes[static_cast<std::size_t>(plane * ntemp + t)] = reinterpret_cast<const float*>(
+                vsapi->getReadPtr(reff[static_cast<std::size_t>(t)], plane));
+        }
+    }
+    int ch_strides[3]{sstride[0], sstride[1], sstride[2]};
+
+    const std::size_t need = plane_sz * static_cast<std::size_t>(nch) * static_cast<std::size_t>(slices) * 4 +
+                             static_cast<std::size_t>(lda * group) +
+                             static_cast<std::size_t>(nss::mcwnnm_filter_work_floats(m, group)) + 64;
+    float* scratch = d->ws.get(need);
+    float* num = scratch;
+    float* den = num + plane_sz * static_cast<std::size_t>(nch) * static_cast<std::size_t>(slices);
+    float* est = den + plane_sz * static_cast<std::size_t>(nch) * static_cast<std::size_t>(slices);
+    float* noisy = est + plane_sz * static_cast<std::size_t>(nch) * static_cast<std::size_t>(slices);
+    float* patches = noisy + plane_sz * static_cast<std::size_t>(nch) * static_cast<std::size_t>(slices);
+    float* admm_work = patches + static_cast<std::size_t>(lda * group);
+
+    nss::SearchConfig cfg;
+    cfg.block = block;
+    cfg.step = d->block_step;
+    cfg.group = group;
+    cfg.bm_range = d->bm_range;
+    cfg.radius = d->radius;
+    cfg.ps_num = d->ps_num;
+    cfg.ps_range = d->ps_range;
+
+    nss::Match matches[nss::kWnnmMaxGroup];
+    int agg_strides[3]{pw, pw, pw};
+    int est_strides[3]{pw, pw, pw};
+    std::vector<const float*> est_planes(static_cast<std::size_t>(nch * ntemp));
+    for (int plane = 0; plane < nch; ++plane) {
+        for (int t = 0; t < ntemp; ++t) {
+            float* e = est + (static_cast<std::size_t>(plane) * static_cast<std::size_t>(slices) +
+                              static_cast<std::size_t>(t)) *
+                                 plane_sz;
+            float* y = noisy + (static_cast<std::size_t>(plane) * static_cast<std::size_t>(slices) +
+                                static_cast<std::size_t>(t)) *
+                                   plane_sz;
+            const float* s = src_planes[static_cast<std::size_t>(plane * ntemp + t)];
+            for (int row = 0; row < ph; ++row) {
+                std::memcpy(e + static_cast<std::size_t>(row * pw), s + row * sstride[plane],
+                            static_cast<std::size_t>(pw) * sizeof(float));
+            }
+            std::memcpy(y, e, plane_sz * sizeof(float));
+            est_planes[static_cast<std::size_t>(plane * ntemp + t)] = e;
+        }
+    }
+
+    const int niter = d->iters < 1 ? 1 : d->iters;
+    for (int iter = 0; iter < niter; ++iter) {
+        if (iter > 0) {
+            for (int plane = 0; plane < nch; ++plane) {
+                for (int sl = 0; sl < slices; ++sl) {
+                    const std::size_t off =
+                        (static_cast<std::size_t>(plane) * static_cast<std::size_t>(slices) + static_cast<std::size_t>(sl)) *
+                        plane_sz;
+                    nss::iter_regularize(est + off, noisy + off, pw * ph, d->delta);
+                }
+            }
+        }
+        std::memset(num, 0, plane_sz * static_cast<std::size_t>(nch) * static_cast<std::size_t>(slices) * sizeof(float));
+        std::memset(den, 0, plane_sz * static_cast<std::size_t>(nch) * static_cast<std::size_t>(slices) * sizeof(float));
+        const bool use_rclip = (iter == 0 && d->rclip != nullptr);
+        const float* const* match_refs = use_rclip ? ref_planes.data() : est_planes.data();
+        const int* match_st = use_rclip ? ch_strides : est_strides;
+        const float* match_cur[3] = {match_refs[0 * ntemp + t0], match_refs[1 * ntemp + t0], match_refs[2 * ntemp + t0]};
+
+        for (int by0 = 0; by0 < ph - block + d->block_step; by0 += d->block_step) {
+            const int by = std::min(by0, std::max(0, ph - block));
+            for (int bx0 = 0; bx0 < pw - block + d->block_step; bx0 += d->block_step) {
+                const int bx = std::min(bx0, std::max(0, pw - block));
+                const int k = (d->radius > 0) ? nss::predictive_match_nch(match_refs, match_st, nch, ntemp, pw, ph, bx,
+                                                                          by, t0, cfg, matches)
+                                             : nss::spatial_match_nch(match_cur, match_st, nch, pw, ph, bx, by, block,
+                                                                      d->bm_range, group, matches);
+                if (k <= 0) {
+                    continue;
+                }
+                for (int i = 0; i < k; ++i) {
+                    const int t = (d->radius > 0) ? matches[i].t : t0;
+                    const float* pack_src[3] = {est_planes[static_cast<std::size_t>(0 * ntemp + t)],
+                                                est_planes[static_cast<std::size_t>(1 * ntemp + t)],
+                                                est_planes[static_cast<std::size_t>(2 * ntemp + t)]};
+                    nss::pack_patch_nch(patches + i * lda, lda, pack_src, est_strides, nch, matches[i].x, matches[i].y,
+                                        block, pw, ph);
+                }
+                float aw = 1.f;
+                if (nss::mcwnnm_filter_group(patches, m, k, lda, nch, sig, d->admm_iter, d->rho, d->mu, d->residual,
+                                             d->adaptive, &aw, admm_work,
+                                             nss::mcwnnm_filter_work_floats(m, group)) != 0) {
+                    continue;
+                }
+                for (int i = 0; i < k; ++i) {
+                    int sl = 0;
+                    if (d->radius > 0) {
+                        sl = matches[i].t - t0 + d->radius;
+                        sl = std::clamp(sl, 0, slices - 1);
+                    }
+                    float* nums[3];
+                    float* dens[3];
+                    for (int c = 0; c < nch; ++c) {
+                        const std::size_t off = (static_cast<std::size_t>(c) * static_cast<std::size_t>(slices) +
+                                                 static_cast<std::size_t>(sl)) *
+                                                plane_sz;
+                        nums[c] = num + off;
+                        dens[c] = den + off;
+                    }
+                    nss::unpack_patch_nch(nums, dens, agg_strides, nch, matches[i].x, matches[i].y, patches + i * lda,
+                                          block, pw, ph, aw);
+                }
+            }
+        }
+        const bool last = (iter == niter - 1);
+        if (last && fat) {
+            break;
+        }
+        for (int plane = 0; plane < nch; ++plane) {
+            for (int sl = 0; sl < slices; ++sl) {
+                const std::size_t off =
+                    (static_cast<std::size_t>(plane) * static_cast<std::size_t>(slices) + static_cast<std::size_t>(sl)) *
+                    plane_sz;
+                nss::aggregate_finish(est + off, num + off, den + off, est + off, pw, ph, pw, pw);
+            }
+        }
+    }
+
+    for (int plane = 0; plane < nch; ++plane) {
+        const int dstride = static_cast<int>(vsapi->getStride(dst, plane) / sizeof(float));
+        float* plane_num = num + static_cast<std::size_t>(plane) * static_cast<std::size_t>(slices) * plane_sz;
+        float* plane_den = den + static_cast<std::size_t>(plane) * static_cast<std::size_t>(slices) * plane_sz;
+        if (fat) {
+            for (int sl = 0; sl < slices; ++sl) {
+                const float* np = plane_num + static_cast<std::size_t>(sl) * plane_sz;
+                const float* dp = plane_den + static_cast<std::size_t>(sl) * plane_sz;
+                float* on = outp[plane] + (sl * 2) * ph * dstride;
+                float* od = outp[plane] + (sl * 2 + 1) * ph * dstride;
+                for (int y = 0; y < ph; ++y) {
+                    std::memcpy(on + y * dstride, np + y * pw, static_cast<std::size_t>(pw) * sizeof(float));
+                    std::memcpy(od + y * dstride, dp + y * pw, static_cast<std::size_t>(pw) * sizeof(float));
+                }
+            }
+        } else {
+            const float* e = est + static_cast<std::size_t>(plane) * static_cast<std::size_t>(slices) * plane_sz +
+                             static_cast<std::size_t>(t0) * plane_sz;
+            for (int y = 0; y < ph; ++y) {
+                std::memcpy(outp[plane] + y * dstride, e + static_cast<std::size_t>(y * pw),
+                            static_cast<std::size_t>(pw) * sizeof(float));
+            }
+        }
+    }
+
+    for (int t = 0; t < ntemp; ++t) {
+        vsapi->freeFrame(srcf[static_cast<std::size_t>(t)]);
+        vsapi->freeFrame(reff[static_cast<std::size_t>(t)]);
+    }
+    return dst;
+}
+
+void VS_CC mcwnnmFree(void* instanceData, VSCore* core, const VSAPI* vsapi) {
+    (void)core;
+    auto* d = static_cast<McwnnmData*>(instanceData);
+    vsapi->freeNode(d->node);
+    if (d->rclip) {
+        vsapi->freeNode(d->rclip);
+    }
+    delete d;
+}
+
+}  // namespace
+
+static VSNode* nss_create_mcwnnm(const VSMap* in, VSCore* core, const VSAPI* vsapi, VSMap* err) {
+    if (!nss::cpu_has_avx2()) {
+        vsapi->mapSetError(err, "nss.MCWNNM: AVX2 is required");
+        return nullptr;
+    }
+    auto d = std::make_unique<McwnnmData>();
+    d->node = vsapi->mapGetNode(in, "clip", 0, nullptr);
+    d->vi = *vsapi->getVideoInfo(d->node);
+    auto fail = [&](const char* msg) -> VSNode* {
+        vsapi->mapSetError(err, msg);
+        vsapi->freeNode(d->node);
+        if (d->rclip) {
+            vsapi->freeNode(d->rclip);
+        }
+        return nullptr;
+    };
+    if (!nss::is_const_32f(d->vi)) {
+        return fail("nss.MCWNNM: constant RGBS or YUV444PS required");
+    }
+    if (d->vi.format.numPlanes != 3 || d->vi.format.subSamplingW != 0 || d->vi.format.subSamplingH != 0 ||
+        (d->vi.format.colorFamily != cfRGB && d->vi.format.colorFamily != cfYUV)) {
+        return fail("nss.MCWNNM: constant RGBS or YUV444PS required");
+    }
+    nss::map_float_array(vsapi, in, "sigma", d->sigma, 3, nss::kMcwnnmDefaultSigma);
+    d->block_size = nss::map_int(vsapi, in, "block_size", nss::kMcwnnmDefaultBlock);
+    d->block_step = nss::map_int(vsapi, in, "block_step", nss::kMcwnnmDefaultStep);
+    d->group_size = nss::map_int(vsapi, in, "group_size", nss::kMcwnnmDefaultGroup);
+    d->bm_range = nss::map_int(vsapi, in, "bm_range", nss::kMcwnnmDefaultRange);
+    d->radius = nss::map_int(vsapi, in, "radius", nss::kWnnmDefaultRadius);
+    d->ps_num = nss::map_int(vsapi, in, "ps_num", nss::kWnnmDefaultPsNum);
+    d->ps_range = nss::map_int(vsapi, in, "ps_range", nss::kWnnmDefaultPsRange);
+    d->residual = nss::map_int(vsapi, in, "residual", nss::kMcwnnmDefaultResidual);
+    d->adaptive = nss::map_int(vsapi, in, "adaptive_aggregation", nss::kMcwnnmDefaultAdaptive);
+    d->admm_iter = nss::map_int(vsapi, in, "admm_iter", nss::kMcwnnmDefaultAdmmIter);
+    d->rho = nss::map_float(vsapi, in, "rho", nss::kMcwnnmDefaultRho);
+    d->mu = nss::map_float(vsapi, in, "mu", nss::kMcwnnmDefaultMu);
+    d->iters = nss::map_int(vsapi, in, "iters", nss::kMcwnnmDefaultIters);
+    d->delta = nss::map_float(vsapi, in, "delta", nss::kMcwnnmDefaultDelta);
+    if (d->block_size < 1 || d->block_size > nss::kWnnmMaxBlock || d->group_size < 1 ||
+        d->group_size > nss::kWnnmMaxGroup || d->block_step < 1 || d->block_step > d->block_size || d->radius < 0 ||
+        d->radius > nss::kBmMaxRadius) {
+        return fail("nss.MCWNNM: invalid block_size/group_size/block_step/radius");
+    }
+    if (3 * d->block_size * d->block_size > nss::kSvdMaxM) {
+        return fail("nss.MCWNNM: 3*block_size*block_size exceeds SVD limit");
+    }
+    if (d->bm_range < 1 || d->bm_range > nss::kBmMaxRange) {
+        return fail("nss.MCWNNM: bm_range must be in [1, 64]");
+    }
+    if (d->admm_iter < 1 || !(d->rho > 0.f) || d->mu < 1.f || !std::isfinite(d->rho) || !std::isfinite(d->mu)) {
+        return fail("nss.MCWNNM: invalid admm_iter/rho/mu (mu >= 1)");
+    }
+    if (d->iters < 1 || !std::isfinite(d->delta)) {
+        return fail("nss.MCWNNM: invalid iters/delta");
+    }
+    if (d->ps_num < 1 || d->ps_num > d->group_size || d->ps_range < 1 || d->ps_range > nss::kBmMaxRange) {
+        return fail("nss.MCWNNM: invalid ps_num/ps_range");
+    }
+    int e = 0;
+    d->rclip = vsapi->mapGetNode(in, "rclip", 0, &e);
+    if (e) {
+        d->rclip = nullptr;
+    } else if (!nss::same_video(d->vi, *vsapi->getVideoInfo(d->rclip))) {
+        return fail("nss.MCWNNM: rclip must match clip");
+    }
+    d->vi_out = d->vi;
+    if (d->radius > 0) {
+        d->vi_out.height = d->vi.height * (2 * d->radius + 1) * 2;
+    }
+    VSFilterDependency deps[2]{{d->node, d->radius == 0 ? rpStrictSpatial : rpGeneral},
+                               {d->rclip, d->radius == 0 ? rpStrictSpatial : rpGeneral}};
+    const int ndeps = d->rclip ? 2 : 1;
+    McwnnmData* raw = d.get();
+    VSNode* node = vsapi->createVideoFilter2("MCWNNM", &raw->vi_out, mcwnnmGetFrame, mcwnnmFree, fmParallel, deps, ndeps,
+                                            raw, core);
+    if (!node) {
+        return fail("nss.MCWNNM: failed to create filter");
+    }
+    d.release();
+    return node;
+}
+
+void VS_CC mcwnnmCreate(const VSMap* in, VSMap* out, void* userData, VSCore* core, const VSAPI* vsapi) {
+    (void)userData;
+    VSNode* node = nss_create_mcwnnm(in, core, vsapi, out);
+    if (node) {
+        vsapi->mapConsumeNode(out, "clip", node, maAppend);
+    }
+}
+
+void VS_CC mcwnnmv2Create(const VSMap* in, VSMap* out, void* userData, VSCore* core, const VSAPI* vsapi) {
+    (void)userData;
+    const int radius = nss::map_int(vsapi, in, "radius", 0);
+    VSNode* wn = nss_create_mcwnnm(in, core, vsapi, out);
+    if (!wn) {
+        return;
+    }
+    if (radius <= 0) {
+        vsapi->mapConsumeNode(out, "clip", wn, maAppend);
+        return;
+    }
+    VSNode* src = vsapi->mapGetNode(in, "clip", 0, nullptr);
+    VSNode* vagg = nss_create_vaggregate(wn, src, radius, nullptr, core, vsapi, out);
+    if (!vagg) {
+        return;
+    }
+    vsapi->mapConsumeNode(out, "clip", vagg, maAppend);
+}
+
+void register_mcwnnm(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
+    const char* args =
+        "clip:vnode;sigma:float[]:opt;block_size:int:opt;block_step:int:opt;group_size:int:opt;"
+        "bm_range:int:opt;radius:int:opt;ps_num:int:opt;ps_range:int:opt;residual:int:opt;"
+        "adaptive_aggregation:int:opt;rclip:vnode:opt;admm_iter:int:opt;rho:float:opt;mu:float:opt;"
+        "iters:int:opt;delta:float:opt;";
+    vspapi->registerFunction("MCWNNM", args, "clip:vnode;", mcwnnmCreate, nullptr, plugin);
+    vspapi->registerFunction("MCWNNMv2", args, "clip:vnode;", mcwnnmv2Create, nullptr, plugin);
+}

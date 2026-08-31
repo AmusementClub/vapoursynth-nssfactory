@@ -1,0 +1,8 @@
+/build/
+/build-*/
+/out/
+/.codegraph/
+*.log
+compile_commands.json
+__pycache__/
+*.py[cod]
