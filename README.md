@@ -1,8 +1,10 @@
 # vapoursynth-nssfactory
 
-VapourSynth NSS denoising factory. CPU plugin `libnss.so`, namespace `nss`.
+A work-in-progress VapourSynth factory for classical NSS (non-local self-similarity) denoisers — NLM, BM3D, WNNM, MCWNNM, TWSC, NLH, NCSR, LSSC — honoring the pre-AI era of these algorithms.
 
-Linux x86-64, AVX2 minimum. Constant Gray / YUV / RGB 32-bit float clips only.
+CPU plugin `libnss.so`, namespace `nss`. Linux x86-64, AVX2 minimum. Constant Gray / YUV / RGB 32-bit float clips only.
+
+This project is WIP. ARM NEON, CUDA, and Vulkan support may be added later.
 
 ## Usage
 
@@ -46,8 +48,6 @@ cmake --build build -j
 ```
 
 Install `libnss.so` into the VapourSynth plugin directory.
-
-CUDA / Vulkan backends (`NSS_ENABLE_CUDA`, `NSS_ENABLE_VULKAN`) are not implemented yet.
 
 ## License
 
