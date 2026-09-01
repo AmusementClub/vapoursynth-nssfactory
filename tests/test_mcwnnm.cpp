@@ -5,6 +5,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <vector>
 
 static int fail(const char* msg) {
@@ -180,6 +181,43 @@ int main() {
         if (nss::mcwnnm_filter_group(Yb.data(), m, n, lda, nch, sigma, 2, 1.f, 1.001f, 1, 0, nullptr, work.data(),
                                      4) != -1) {
             return fail("mcwnnm short work must fail");
+        }
+    }
+
+    for (int gm : {12, 48, 108, 147, 192, 243}) {
+        constexpr int gn = 8;
+        const int glda = (gm + 15) & ~15;
+        const int gwork_n = nss::mcwnnm_filter_work_floats(gm, gn);
+        std::vector<float> input(static_cast<std::size_t>(glda * gn), 0.f);
+        for (int col = 0; col < gn; ++col) {
+            for (int row = 0; row < gm; ++row) {
+                input[static_cast<std::size_t>(row + col * glda)] =
+                    0.35f + 0.07f * std::sin(static_cast<float>((row + 1) * (col + 2)) * 0.031f) +
+                    0.01f * static_cast<float>(col);
+            }
+        }
+        std::vector<float> first = input;
+        std::vector<float> repeat = input;
+        std::vector<float> first_work(static_cast<std::size_t>(gwork_n));
+        std::vector<float> repeat_work(static_cast<std::size_t>(gwork_n));
+        const float gram_sigma[3] = {0.25f / 255.f, 3.f / 255.f, 12.f / 255.f};
+        if (nss::mcwnnm_filter_group(first.data(), gm, gn, glda, 3, gram_sigma, 10,
+                                     nss::kMcwnnmDefaultRho, nss::kMcwnnmDefaultMu, 1, 0, nullptr,
+                                     first_work.data(), gwork_n) != 0 ||
+            nss::mcwnnm_filter_group(repeat.data(), gm, gn, glda, 3, gram_sigma, 10,
+                                     nss::kMcwnnmDefaultRho, nss::kMcwnnmDefaultMu, 1, 0, nullptr,
+                                     repeat_work.data(), gwork_n) != 0) {
+            return fail("mcwnnm n=8 Gram path failed");
+        }
+        for (int col = 0; col < gn; ++col) {
+            for (int row = 0; row < gm; ++row) {
+                if (!std::isfinite(first[static_cast<std::size_t>(row + col * glda)])) {
+                    return fail("mcwnnm n=8 Gram path produced non-finite output");
+                }
+            }
+        }
+        if (std::memcmp(first.data(), repeat.data(), first.size() * sizeof(float)) != 0) {
+            return fail("mcwnnm n=8 Gram path is not deterministic");
         }
     }
 

@@ -102,8 +102,12 @@ void JacobiSvd8(const float* A, int lda, float* U, int ldu, float* S, float* Vt,
                     nrm[p] = css * app[k] + sns * aqq[k] - two;
                     nrm[q] = sns * app[k] + css * aqq[k] + two;
                 }
-                if (max_off < 1e-8f) {
-                    break;
+                // The closed-form norm update is susceptible to cancellation
+                // for rank-deficient groups.  Recompute from the rotated
+                // columns before the next pairing round so its angle uses the
+                // actual current norms.
+                for (int j = 0; j < 8; ++j) {
+                    nrm[j] = hsum8(hn::Mul(u[j], u[j]));
                 }
             }
             if (max_off < 1e-8f) {
@@ -307,7 +311,7 @@ static void ApplyHouseholderCols(float* col0, int ld, int ncols, const float* v,
 }
 
 int HouseholderQR(int m, int n, const float* A, int lda, float* Q, int ldq, float* R, int ldr, float* W, float* Vh,
-                  float* beta) {
+                  float* beta, bool form_q) {
     if (m < n || n <= 0) {
         return -1;
     }
@@ -357,28 +361,34 @@ int HouseholderQR(int m, int n, const float* A, int lda, float* Q, int ldq, floa
         }
     }
 
-    if (ldq == m) {
-        std::memset(Q, 0, static_cast<size_t>(m * n) * sizeof(float));
-    } else {
-        for (int j = 0; j < n; ++j) {
-            for (int i = 0; i < m; ++i) {
-                Q[i + j * ldq] = 0.f;
+    if (form_q && Q) {
+        if (ldq == m) {
+            std::memset(Q, 0, static_cast<size_t>(m * n) * sizeof(float));
+        } else {
+            for (int j = 0; j < n; ++j) {
+                for (int i = 0; i < m; ++i) {
+                    Q[i + j * ldq] = 0.f;
+                }
             }
         }
-    }
-    for (int i = 0; i < n; ++i) {
-        Q[i + i * ldq] = 1.f;
-    }
-    for (int k = n - 1; k >= 0; --k) {
-        const float b = beta[k];
-        if (b == 0.f) {
-            continue;
+        for (int i = 0; i < n; ++i) {
+            Q[i + i * ldq] = 1.f;
         }
-        const int len = m - k;
-        float* vcol = Vh + k + k * m;
-        ApplyHouseholderCols(Q + k + k * ldq, ldq, n - k, vcol, len, b);
+        for (int k = n - 1; k >= 0; --k) {
+            const float b = beta[k];
+            if (b == 0.f) {
+                continue;
+            }
+            const int len = m - k;
+            float* vcol = Vh + k + k * m;
+            ApplyHouseholderCols(Q + k + k * ldq, ldq, n - k, vcol, len, b);
+        }
     }
     return 0;
+}
+
+void ApplyHouseholder(float* matrix, int ld, int ncols, const float* v, int len, float beta) {
+    ApplyHouseholderCols(matrix, ld, ncols, v, len, beta);
 }
 
 void GemmNN(int m, int n, int k, const float* A, int lda, const float* B, int ldb, float* C, int ldc) {
@@ -389,6 +399,94 @@ void GemmNN(int m, int n, int k, const float* A, int lda, const float* B, int ld
     const int N = static_cast<int>(hn::Lanes(d));
     const int mr = 4 * N;
     int j0 = 0;
+    if (N == 16) {
+        const int wide_mr = 2 * N;
+        for (; j0 + 8 <= n && wide_mr <= m; j0 += 8) {
+            for (int i0 = 0; i0 + wide_mr <= m; i0 += wide_mr) {
+                auto c00 = hn::Zero(d), c01 = hn::Zero(d);
+                auto c10 = hn::Zero(d), c11 = hn::Zero(d);
+                auto c20 = hn::Zero(d), c21 = hn::Zero(d);
+                auto c30 = hn::Zero(d), c31 = hn::Zero(d);
+                auto c40 = hn::Zero(d), c41 = hn::Zero(d);
+                auto c50 = hn::Zero(d), c51 = hn::Zero(d);
+                auto c60 = hn::Zero(d), c61 = hn::Zero(d);
+                auto c70 = hn::Zero(d), c71 = hn::Zero(d);
+                for (int t = 0; t < k; ++t) {
+                    const float* at = A + t * lda + i0;
+                    const auto a0 = hn::LoadU(d, at);
+                    const auto a1 = hn::LoadU(d, at + N);
+                    const auto b0 = hn::Set(d, B[t + j0 * ldb]);
+                    c00 = hn::MulAdd(a0, b0, c00);
+                    c01 = hn::MulAdd(a1, b0, c01);
+                    const auto b1 = hn::Set(d, B[t + (j0 + 1) * ldb]);
+                    c10 = hn::MulAdd(a0, b1, c10);
+                    c11 = hn::MulAdd(a1, b1, c11);
+                    const auto b2 = hn::Set(d, B[t + (j0 + 2) * ldb]);
+                    c20 = hn::MulAdd(a0, b2, c20);
+                    c21 = hn::MulAdd(a1, b2, c21);
+                    const auto b3 = hn::Set(d, B[t + (j0 + 3) * ldb]);
+                    c30 = hn::MulAdd(a0, b3, c30);
+                    c31 = hn::MulAdd(a1, b3, c31);
+                    const auto b4 = hn::Set(d, B[t + (j0 + 4) * ldb]);
+                    c40 = hn::MulAdd(a0, b4, c40);
+                    c41 = hn::MulAdd(a1, b4, c41);
+                    const auto b5 = hn::Set(d, B[t + (j0 + 5) * ldb]);
+                    c50 = hn::MulAdd(a0, b5, c50);
+                    c51 = hn::MulAdd(a1, b5, c51);
+                    const auto b6 = hn::Set(d, B[t + (j0 + 6) * ldb]);
+                    c60 = hn::MulAdd(a0, b6, c60);
+                    c61 = hn::MulAdd(a1, b6, c61);
+                    const auto b7 = hn::Set(d, B[t + (j0 + 7) * ldb]);
+                    c70 = hn::MulAdd(a0, b7, c70);
+                    c71 = hn::MulAdd(a1, b7, c71);
+                }
+                float* c0 = C + j0 * ldc + i0;
+                float* c1 = C + (j0 + 1) * ldc + i0;
+                float* c2 = C + (j0 + 2) * ldc + i0;
+                float* c3 = C + (j0 + 3) * ldc + i0;
+                float* c4 = C + (j0 + 4) * ldc + i0;
+                float* c5 = C + (j0 + 5) * ldc + i0;
+                float* c6 = C + (j0 + 6) * ldc + i0;
+                float* c7 = C + (j0 + 7) * ldc + i0;
+                hn::StoreU(c00, d, c0);
+                hn::StoreU(c01, d, c0 + N);
+                hn::StoreU(c10, d, c1);
+                hn::StoreU(c11, d, c1 + N);
+                hn::StoreU(c20, d, c2);
+                hn::StoreU(c21, d, c2 + N);
+                hn::StoreU(c30, d, c3);
+                hn::StoreU(c31, d, c3 + N);
+                hn::StoreU(c40, d, c4);
+                hn::StoreU(c41, d, c4 + N);
+                hn::StoreU(c50, d, c5);
+                hn::StoreU(c51, d, c5 + N);
+                hn::StoreU(c60, d, c6);
+                hn::StoreU(c61, d, c6 + N);
+                hn::StoreU(c70, d, c7);
+                hn::StoreU(c71, d, c7 + N);
+            }
+            const int tail = (m / wide_mr) * wide_mr;
+            for (int j = j0; j < j0 + 8; ++j) {
+                const float* bj = B + j * ldb;
+                float* cj = C + j * ldc;
+                int i = tail;
+                for (; i + N <= m; i += N) {
+                    auto acc = hn::Zero(d);
+                    for (int t = 0; t < k; ++t) {
+                        acc = hn::MulAdd(hn::Set(d, bj[t]), hn::LoadU(d, A + t * lda + i), acc);
+                    }
+                    hn::StoreU(acc, d, cj + i);
+                }
+                for (; i < m; ++i) {
+                    float sum = 0.f;
+                    for (int t = 0; t < k; ++t) {
+                        sum += A[i + t * lda] * bj[t];
+                    }
+                    cj[i] = sum;
+                }
+            }
+        }
+    }
     for (; j0 + 4 <= n && mr <= m; j0 += 4) {
         for (int i0 = 0; i0 + mr <= m; i0 += mr) {
             auto c00 = hn::Zero(d), c01 = hn::Zero(d), c02 = hn::Zero(d), c03 = hn::Zero(d);
@@ -442,6 +540,29 @@ void GemmNN(int m, int n, int k, const float* A, int lda, const float* B, int ld
             hn::StoreU(c31, d, c3 + N);
             hn::StoreU(c32, d, c3 + 2 * N);
             hn::StoreU(c33, d, c3 + 3 * N);
+        }
+        // The panel kernel only covers complete mr-row tiles.  Finish the
+        // final partial tile so every row is written when m is not a multiple
+        // of mr (for example MCWNNM's 3*4*4 = 48 rows on AVX2).
+        const int tail = (m / mr) * mr;
+        for (int j = j0; j < j0 + 4; ++j) {
+            const float* bj = B + j * ldb;
+            float* cj = C + j * ldc;
+            int i = tail;
+            for (; i + N <= m; i += N) {
+                auto acc = hn::Zero(d);
+                for (int t = 0; t < k; ++t) {
+                    acc = hn::MulAdd(hn::Set(d, bj[t]), hn::LoadU(d, A + t * lda + i), acc);
+                }
+                hn::StoreU(acc, d, cj + i);
+            }
+            for (; i < m; ++i) {
+                float s = 0.f;
+                for (int t = 0; t < k; ++t) {
+                    s += A[i + t * lda] * bj[t];
+                }
+                cj[i] = s;
+            }
         }
     }
     for (int j = j0; j < n; ++j) {
@@ -540,6 +661,7 @@ HWY_AFTER_NAMESPACE();
 namespace nss {
 HWY_EXPORT(JacobiSvd8);
 HWY_EXPORT(HouseholderQR);
+HWY_EXPORT(ApplyHouseholder);
 HWY_EXPORT(GemmNN);
 HWY_EXPORT(GemmTN);
 
@@ -548,8 +670,11 @@ void jacobi_svd_8(const float* A, int lda, float* U, int ldu, float* S, float* V
 }
 
 int householder_qr_hwy(int m, int n, const float* A, int lda, float* Q, int ldq, float* R, int ldr, float* W, float* Vh,
-                       float* beta) {
-    return HWY_DYNAMIC_DISPATCH(HouseholderQR)(m, n, A, lda, Q, ldq, R, ldr, W, Vh, beta);
+                       float* beta, bool form_q) {
+    return HWY_DYNAMIC_DISPATCH(HouseholderQR)(m, n, A, lda, Q, ldq, R, ldr, W, Vh, beta, form_q);
+}
+void apply_householder_hwy(float* matrix, int ld, int ncols, const float* v, int len, float beta) {
+    HWY_DYNAMIC_DISPATCH(ApplyHouseholder)(matrix, ld, ncols, v, len, beta);
 }
 
 void gemm_nn_hwy(int m, int n, int k, const float* A, int lda, const float* B, int ldb, float* C, int ldc) {

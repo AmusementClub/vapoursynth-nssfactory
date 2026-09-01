@@ -1,4 +1,5 @@
 #include "host/filters.hpp"
+#include "host/batch_runner.hpp"
 #include "host/validate.hpp"
 #include "nss/avx2.hpp"
 #include "nss/cpu_api.hpp"
@@ -9,6 +10,7 @@
 #include <VSHelper4.h>
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <memory>
 #include <vector>
@@ -32,6 +34,139 @@ struct WnnmData {
     int adaptive = nss::kWnnmDefaultAdaptive;
     nss::Workspace ws;
 };
+
+struct WnnmBatchResult {
+    bool valid = false;
+    int k = 0;
+    int slice[nss::kWnnmMaxGroup]{};
+    nss::Match matches[nss::kWnnmMaxGroup]{};
+    const float* patches = nullptr;
+    float weight = 1.f;
+};
+
+void process_plane_batched(const float* const* srcs, const float* const* refs, int ntemp, int t0, float* dst,
+                           int width, int height, int sstride, int dstride, float sigma, int block, int group, int step,
+                           int bm_range, int ps_num, int ps_range, int radius, int residual, int adaptive,
+                           bool emit_fat, float* scratch) {
+    const int slices = 2 * radius + 1;
+    const std::size_t plane_size = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+    float* num = scratch;
+    float* den = num + static_cast<std::size_t>(slices) * plane_size;
+    std::memset(num, 0, static_cast<std::size_t>(slices) * plane_size * sizeof(float));
+    std::memset(den, 0, static_cast<std::size_t>(slices) * plane_size * sizeof(float));
+
+    nss::SearchConfig cfg;
+    cfg.block = block;
+    cfg.step = step;
+    cfg.group = group;
+    cfg.bm_range = bm_range;
+    cfg.radius = radius;
+    cfg.ps_num = ps_num;
+    cfg.ps_range = ps_range;
+    int strides[nss::kBmMaxRadius * 2 + 1]{};
+    for (int t = 0; t < ntemp; ++t) {
+        strides[t] = sstride;
+    }
+
+    std::vector<nss::GroupJob> jobs;
+    nss::host_detail::append_raster_jobs(
+        jobs, width, height, block, step,
+        nss::GroupKey{block * block, group, 1, nss::GroupAlgorithm::WNNM, false, residual != 0}, t0);
+    if (jobs.empty()) {
+        return;
+    }
+
+    const int area = block * block;
+    const int work_floats = nss::wnnm_shrink_work_floats(area, group);
+    for (std::size_t begin = 0; begin < jobs.size(); begin += nss::host_detail::kGroupBatchWindow) {
+        const std::size_t end = std::min(jobs.size(), begin + nss::host_detail::kGroupBatchWindow);
+        const int count = static_cast<int>(end - begin);
+        std::array<nss::MatchBatchItem, nss::host_detail::kGroupBatchWindow> match_items{};
+        std::array<int, nss::host_detail::kGroupBatchWindow> counts{};
+        std::array<nss::Match, nss::host_detail::kGroupBatchWindow * nss::kWnnmMaxGroup> match_storage{};
+        for (int i = 0; i < count; ++i) {
+            const auto& job = jobs[begin + static_cast<std::size_t>(i)];
+            match_items[static_cast<std::size_t>(i)] = nss::MatchBatchItem{job.x, job.y, block, bm_range, group};
+        }
+        const int match_rc = radius > 0
+                                 ? nss::predictive_match_batch(refs, strides, ntemp, width, height, t0, cfg,
+                                                               match_items.data(), count, match_storage.data(),
+                                                               nss::kWnnmMaxGroup, counts.data())
+                                 : nss::spatial_match_batch(refs[t0], sstride, width, height, match_items.data(), count,
+                                                            match_storage.data(), nss::kWnnmMaxGroup, counts.data());
+        if (match_rc < 0) {
+            continue;
+        }
+
+        std::vector<float> patches(static_cast<std::size_t>(count) * static_cast<std::size_t>(group) * area, 0.f);
+        std::vector<float> shrink_work(static_cast<std::size_t>(count) * static_cast<std::size_t>(work_floats), 0.f);
+        std::array<float, nss::host_detail::kGroupBatchWindow> weights{};
+        std::array<int, nss::host_detail::kGroupBatchWindow> filter_status{};
+        std::array<nss::WnnmShrinkBatchItem, nss::host_detail::kGroupBatchWindow> shrink_items{};
+        for (int i = 0; i < count; ++i) {
+            const int k = counts[static_cast<std::size_t>(i)];
+            float* patch = patches.data() + static_cast<std::size_t>(i) * static_cast<std::size_t>(group) * area;
+            for (int j = 0; j < k; ++j) {
+                const auto& m = match_storage[static_cast<std::size_t>(i) * nss::kWnnmMaxGroup + j];
+                const int t = radius > 0 ? m.t : t0;
+                nss::pack_patch(patch + static_cast<std::size_t>(j) * area, area, srcs[t], sstride, m.x, m.y, block,
+                                width, height);
+            }
+            weights[static_cast<std::size_t>(i)] = 1.f;
+            shrink_items[static_cast<std::size_t>(i)] = nss::WnnmShrinkBatchItem{
+                patch, area, k, area, sigma, residual, adaptive, &weights[static_cast<std::size_t>(i)],
+                shrink_work.data() + static_cast<std::size_t>(i) * static_cast<std::size_t>(work_floats), work_floats,
+                &filter_status[static_cast<std::size_t>(i)]};
+        }
+        (void)nss::wnnm_shrink_batch(shrink_items.data(), count);
+
+        auto prepare = [&](const nss::GroupJob& job, WnnmBatchResult& result) {
+            const std::size_t i = static_cast<std::size_t>(job.ordinal - jobs[begin].ordinal);
+            if (i >= static_cast<std::size_t>(count) || counts[i] <= 0 || filter_status[i] == 0) {
+                return false;
+            }
+            result.valid = true;
+            result.k = counts[i];
+            result.patches = patches.data() + i * static_cast<std::size_t>(group) * area;
+            result.weight = weights[i];
+            for (int j = 0; j < result.k; ++j) {
+                result.matches[j] = match_storage[i * nss::kWnnmMaxGroup + j];
+                result.slice[j] = radius > 0 ? std::clamp(result.matches[j].t - t0 + radius, 0, slices - 1) : 0;
+            }
+            return true;
+        };
+        auto commit = [&](const WnnmBatchResult& result) {
+            if (!result.valid) {
+                return;
+            }
+            for (int j = 0; j < result.k; ++j) {
+                nss::aggregate_add(num + static_cast<std::size_t>(result.slice[j]) * plane_size,
+                                   den + static_cast<std::size_t>(result.slice[j]) * plane_size, width,
+                                   result.matches[j].x, result.matches[j].y,
+                                   result.patches + static_cast<std::size_t>(j) * area, block, width, height,
+                                   result.weight);
+            }
+        };
+        (void)nss::host_detail::execute_ordered_chunk<WnnmBatchResult>(jobs, begin, end, prepare, commit);
+    }
+
+    if (emit_fat) {
+        for (int sl = 0; sl < slices; ++sl) {
+            const float* np = num + static_cast<std::size_t>(sl) * plane_size;
+            const float* dp = den + static_cast<std::size_t>(sl) * plane_size;
+            float* on = dst + static_cast<std::size_t>(sl * 2) * static_cast<std::size_t>(height) * dstride;
+            float* od = dst + static_cast<std::size_t>(sl * 2 + 1) * static_cast<std::size_t>(height) * dstride;
+            for (int y = 0; y < height; ++y) {
+                std::memcpy(on + y * dstride, np + static_cast<std::size_t>(y) * width,
+                            static_cast<std::size_t>(width) * sizeof(float));
+                std::memcpy(od + y * dstride, dp + static_cast<std::size_t>(y) * width,
+                            static_cast<std::size_t>(width) * sizeof(float));
+            }
+        }
+    } else {
+        nss::aggregate_finish(dst, num, den, srcs[t0], width, height, dstride, width, sstride);
+    }
+}
 
 const VSFrame* VS_CC wnnmGetFrame(int n, int activationReason, void* instanceData, void** frameData,
                                   VSFrameContext* frameCtx, VSCore* core, const VSAPI* vsapi) {
@@ -66,8 +201,6 @@ const VSFrame* VS_CC wnnmGetFrame(int n, int activationReason, void* instanceDat
     VSFrame* dst = vsapi->newVideoFrame(&d->vi_out.format, d->vi_out.width, d->vi_out.height, src0, core);
 
     const int block = d->block_size;
-    const int m = block * block;
-    const int lda = (m + 15) & ~15;
     const int group = d->group_size;
 
     for (int plane = 0; plane < d->vi.format.numPlanes; ++plane) {
@@ -98,76 +231,11 @@ const VSFrame* VS_CC wnnmGetFrame(int n, int activationReason, void* instanceDat
 
         const int slices = ntemp;
         const std::size_t plane_sz = static_cast<std::size_t>(pw * ph);
-        const std::size_t need = plane_sz * static_cast<std::size_t>(slices) * 2 +
-                                 static_cast<std::size_t>(lda * group) +
-                                 static_cast<std::size_t>(nss::wnnm_shrink_work_floats(m, group)) + 64;
+        const std::size_t need = plane_sz * static_cast<std::size_t>(slices) * 2 + 64;
         float* scratch = d->ws.get(need);
-        float* num = scratch;
-        float* den = scratch + plane_sz * static_cast<std::size_t>(slices);
-        float* patches = den + plane_sz * static_cast<std::size_t>(slices);
-        float* shrink_work = patches + static_cast<std::size_t>(lda * group);
-        std::memset(num, 0, plane_sz * static_cast<std::size_t>(slices) * sizeof(float));
-        std::memset(den, 0, plane_sz * static_cast<std::size_t>(slices) * sizeof(float));
-
-        nss::SearchConfig cfg;
-        cfg.block = block;
-        cfg.step = d->block_step;
-        cfg.group = group;
-        cfg.bm_range = d->bm_range;
-        cfg.radius = d->radius;
-        cfg.ps_num = d->ps_num;
-        cfg.ps_range = d->ps_range;
-
-        nss::Match matches[nss::kWnnmMaxGroup];
-        const float sigma = d->sigma[plane] / 255.f;
-
-        for (int by0 = 0; by0 < ph - block + d->block_step; by0 += d->block_step) {
-            const int by = std::min(by0, std::max(0, ph - block));
-            for (int bx0 = 0; bx0 < pw - block + d->block_step; bx0 += d->block_step) {
-                const int bx = std::min(bx0, std::max(0, pw - block));
-                const int k = (d->radius > 0)
-                                  ? nss::predictive_match(refs.data(), strides, ntemp, pw, ph, bx, by, t0, cfg, matches)
-                                  : nss::spatial_match(refs[static_cast<std::size_t>(t0)], sstride, pw, ph, bx, by, block,
-                                                       d->bm_range, group, matches);
-                if (k <= 0) {
-                    continue;
-                }
-                for (int i = 0; i < k; ++i) {
-                    const int t = (d->radius > 0) ? matches[i].t : t0;
-                    nss::pack_patch(patches + i * lda, lda, srcs[static_cast<std::size_t>(t)], sstride, matches[i].x,
-                                    matches[i].y, block, pw, ph);
-                }
-                float aw = 1.f;
-                if (nss::wnnm_shrink(patches, m, k, lda, sigma, d->residual, d->adaptive, &aw, shrink_work,
-                                     nss::wnnm_shrink_work_floats(m, group)) != 0) {
-                    continue;
-                }
-                for (int i = 0; i < k; ++i) {
-                    int sl = 0;
-                    if (d->radius > 0) {
-                        sl = matches[i].t - t0 + d->radius;
-                        sl = std::clamp(sl, 0, slices - 1);
-                    }
-                    nss::aggregate_add(num + static_cast<std::size_t>(sl) * plane_sz,
-                                       den + static_cast<std::size_t>(sl) * plane_sz, pw, matches[i].x, matches[i].y,
-                                       patches + i * lda, block, pw, ph, aw);
-                }
-            }
-        }
-        if (fat) {
-            for (int sl = 0; sl < slices; ++sl) {
-                const float* np = num + static_cast<std::size_t>(sl) * plane_sz;
-                const float* dp = den + static_cast<std::size_t>(sl) * plane_sz;
-                float* on = outp + (sl * 2) * ph * dstride;
-                float* od = outp + (sl * 2 + 1) * ph * dstride;
-                for (int y = 0; y < ph; ++y) {
-                    std::memcpy(on + y * dstride, np + y * pw, static_cast<std::size_t>(pw) * sizeof(float));
-                    std::memcpy(od + y * dstride, dp + y * pw, static_cast<std::size_t>(pw) * sizeof(float));
-                }
-            }
-        } else {
-            nss::aggregate_finish(outp, num, den, srcp, pw, ph, dstride, pw);
-        }
+        process_plane_batched(srcs.data(), refs.data(), ntemp, t0, outp, pw, ph, sstride, dstride,
+                              d->sigma[plane] / 255.f, block, group, d->block_step, d->bm_range, d->ps_num,
+                              d->ps_range, d->radius, d->residual, d->adaptive, fat, scratch);
     }
 
     for (int t = 0; t < ntemp; ++t) {
@@ -220,7 +288,7 @@ VSNode* nss_create_wnnm(const VSMap* in, VSCore* core, const VSAPI* vsapi, VSMap
     d->residual = nss::map_int(vsapi, in, "residual", nss::kWnnmDefaultResidual);
     d->adaptive = nss::map_int(vsapi, in, "adaptive_aggregation", nss::kWnnmDefaultAdaptive);
     if (d->block_size < 1 || d->block_size > nss::kWnnmMaxBlock || d->group_size < 1 ||
-        d->group_size > nss::kWnnmMaxGroup || d->block_step < 1 || d->radius < 0 ||
+        d->group_size > nss::kWnnmMaxGroup || d->block_step < 1 || d->block_step > d->block_size || d->radius < 0 ||
         d->radius > nss::kBmMaxRadius) {
         return fail("nss.WNNM: invalid block_size/group_size/block_step/radius");
     }

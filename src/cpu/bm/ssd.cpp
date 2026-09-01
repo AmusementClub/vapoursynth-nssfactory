@@ -1,7 +1,9 @@
 #include "nss/cpu_api.hpp"
 #include "cpu/hwy_config.hpp"
+#include "cpu/bm/matcher.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -48,6 +50,12 @@ static float Ssd8(const float* a, int sa, const float* b, int sb) {
 }
 
 float SsdBlock(const float* a, int sa, const float* b, int sb, int block) {
+    if (!a || !b || block < 1 || sa < block || sb < block) {
+        // Invalid views are rejected by the public matcher; use a finite
+        // sentinel here so this fast-math TU does not rely on an infinity
+        // constant whose classification can be folded away.
+        return std::numeric_limits<float>::max();
+    }
     if (block == 8) {
         return Ssd8(a, sa, b, sb);
     }
@@ -94,37 +102,116 @@ static int SpatialMatch8(const float* ref, int stride, int width, int height, in
     for (int i = 0; i < 8; ++i) {
         refb[i] = hn::LoadU(df, self + i * stride);
     }
-    auto errors = hn::Set(df, std::numeric_limits<float>::infinity());
+    // Keep the self match in lane zero.  The explicit fill count below is
+    // needed because this TU uses fast-math, where isfinite(infinity) is not
+    // a reliable way to identify an unused lane.
+    HWY_ALIGN float initial_errors[8] = {0.f,
+                                         std::numeric_limits<float>::max(),
+                                         std::numeric_limits<float>::max(),
+                                         std::numeric_limits<float>::max(),
+                                         std::numeric_limits<float>::max(),
+                                         std::numeric_limits<float>::max(),
+                                         std::numeric_limits<float>::max(),
+                                         std::numeric_limits<float>::max()};
+    auto errors = hn::Load(df, initial_errors);
     auto vx = hn::Set(di, cx);
     auto vy = hn::Set(di, cy);
     const auto iota = hn::Iota(di, 0);
     const auto one = hn::Set(di, 1);
+    int filled = 1;
+    float worst = std::numeric_limits<float>::max();
+    auto consider = [&](int x, int y, float dist) {
+        if (x == cx && y == cy) {
+            return;
+        }
+        if (filled == 8 && !(dist < worst)) {
+            return;
+        }
+        const auto vdist = hn::Set(df, dist);
+        const int count = static_cast<int>(hn::CountTrue(df, hn::Lt(vdist, errors)));
+        if (count == 0) {
+            return;
+        }
+        if (filled < 8) {
+            ++filled;
+        }
+        const int pos = 8 - count;
+        const auto posi = hn::Set(di, pos);
+        const auto src = hn::IfThenElse(hn::Gt(iota, posi), hn::Sub(iota, one), iota);
+        const auto idxf = hn::IndicesFromVec(df, hn::BitCast(du, src));
+        const auto idxi = hn::IndicesFromVec(di, hn::BitCast(du, src));
+        const auto at = hn::RebindMask(df, hn::Eq(iota, posi));
+        errors = hn::IfThenElse(at, vdist, hn::TableLookupLanes(errors, idxf));
+        vx = hn::IfThenElse(hn::Eq(iota, posi), hn::Set(di, x), hn::TableLookupLanes(vx, idxi));
+        vy = hn::IfThenElse(hn::Eq(iota, posi), hn::Set(di, y), hn::TableLookupLanes(vy, idxi));
+        if (filled == 8) {
+            worst = hn::ExtractLane(errors, 7);
+        }
+    };
+    auto fallback = [&]() {
+        return detail::collect_spatial(ref, stride, width, height, cx, cy, 8, bm_range, 8, out,
+                                       [](const float* a, const float* b, int st, int bs) {
+                                           return SsdBlock(a, st, b, st, bs);
+                                       });
+    };
     for (int y = top; y <= bottom; ++y) {
         const float* row = ref + y * stride;
-        for (int x = left; x <= right; ++x) {
+        int x = left;
+        for (; x + 1 <= right; x += 2) {
+            auto a00 = hn::Zero(df);
+            auto a01 = hn::Zero(df);
+            auto a02 = hn::Zero(df);
+            auto a03 = hn::Zero(df);
+            auto a10 = hn::Zero(df);
+            auto a11 = hn::Zero(df);
+            auto a12 = hn::Zero(df);
+            auto a13 = hn::Zero(df);
+            for (int i = 0; i < 8; i += 4) {
+                const auto d00 = hn::Sub(refb[i], hn::LoadU(df, row + x + i * stride));
+                const auto d01 = hn::Sub(refb[i + 1], hn::LoadU(df, row + x + (i + 1) * stride));
+                const auto d02 = hn::Sub(refb[i + 2], hn::LoadU(df, row + x + (i + 2) * stride));
+                const auto d03 = hn::Sub(refb[i + 3], hn::LoadU(df, row + x + (i + 3) * stride));
+                const auto d10 = hn::Sub(refb[i], hn::LoadU(df, row + x + 1 + i * stride));
+                const auto d11 = hn::Sub(refb[i + 1], hn::LoadU(df, row + x + 1 + (i + 1) * stride));
+                const auto d12 = hn::Sub(refb[i + 2], hn::LoadU(df, row + x + 1 + (i + 2) * stride));
+                const auto d13 = hn::Sub(refb[i + 3], hn::LoadU(df, row + x + 1 + (i + 3) * stride));
+                a00 = hn::MulAdd(d00, d00, a00);
+                a01 = hn::MulAdd(d01, d01, a01);
+                a02 = hn::MulAdd(d02, d02, a02);
+                a03 = hn::MulAdd(d03, d03, a03);
+                a10 = hn::MulAdd(d10, d10, a10);
+                a11 = hn::MulAdd(d11, d11, a11);
+                a12 = hn::MulAdd(d12, d12, a12);
+                a13 = hn::MulAdd(d13, d13, a13);
+            }
+            const float dist0 = HSum8(hn::Add(hn::Add(a00, a02), hn::Add(a01, a03)));
+            const float dist1 = HSum8(hn::Add(hn::Add(a10, a12), hn::Add(a11, a13)));
+            if (!detail::finite_distance(dist0) || !detail::finite_distance(dist1)) {
+                return fallback();
+            }
+            consider(x, y, dist0);
+            consider(x + 1, y, dist1);
+        }
+        if (x <= right) {
             auto acc0 = hn::Zero(df);
             auto acc1 = hn::Zero(df);
-            for (int i = 0; i < 8; i += 2) {
+            auto acc2 = hn::Zero(df);
+            auto acc3 = hn::Zero(df);
+            for (int i = 0; i < 8; i += 4) {
                 const auto d0 = hn::Sub(refb[i], hn::LoadU(df, row + x + i * stride));
                 const auto d1 = hn::Sub(refb[i + 1], hn::LoadU(df, row + x + (i + 1) * stride));
+                const auto d2 = hn::Sub(refb[i + 2], hn::LoadU(df, row + x + (i + 2) * stride));
+                const auto d3 = hn::Sub(refb[i + 3], hn::LoadU(df, row + x + (i + 3) * stride));
                 acc0 = hn::MulAdd(d0, d0, acc0);
                 acc1 = hn::MulAdd(d1, d1, acc1);
+                acc2 = hn::MulAdd(d2, d2, acc2);
+                acc3 = hn::MulAdd(d3, d3, acc3);
             }
-            const float dist = HSum8(hn::Add(acc0, acc1));
-            const auto vdist = hn::Set(df, dist);
-            const int count = static_cast<int>(hn::CountTrue(df, hn::Lt(vdist, errors)));
-            if (count == 0) {
-                continue;
+            const float dist = HSum8(hn::Add(hn::Add(acc0, acc2), hn::Add(acc1, acc3)));
+            if (!detail::finite_distance(dist)) {
+                return fallback();
             }
-            const int pos = 8 - count;
-            const auto posi = hn::Set(di, pos);
-            const auto src = hn::IfThenElse(hn::Gt(iota, posi), hn::Sub(iota, one), iota);
-            const auto idxf = hn::IndicesFromVec(df, hn::BitCast(du, src));
-            const auto idxi = hn::IndicesFromVec(di, hn::BitCast(du, src));
-            const auto at = hn::RebindMask(df, hn::Eq(iota, posi));
-            errors = hn::IfThenElse(at, vdist, hn::TableLookupLanes(errors, idxf));
-            vx = hn::IfThenElse(hn::Eq(iota, posi), hn::Set(di, x), hn::TableLookupLanes(vx, idxi));
-            vy = hn::IfThenElse(hn::Eq(iota, posi), hn::Set(di, y), hn::TableLookupLanes(vy, idxi));
+            consider(x, y, dist);
         }
     }
     HWY_ALIGN float dists[8];
@@ -134,14 +221,15 @@ static int SpatialMatch8(const float* ref, int stride, int width, int height, in
     hn::Store(vx, di, xs);
     hn::Store(vy, di, ys);
     int n = 0;
-    for (int i = 0; i < 8; ++i) {
-        if (!std::isfinite(dists[i])) {
-            break;
-        }
+    for (int i = 0; i < filled; ++i) {
         out[n].x = xs[i];
         out[n].y = ys[i];
         out[n].t = 0;
         out[n].dist = dists[i];
+        const int span = right - left + 1;
+        out[n].ordinal = (xs[i] == cx && ys[i] == cy)
+                             ? 0u
+                             : static_cast<std::uint32_t>((ys[i] - top) * span + (xs[i] - left) + 1);
         ++n;
     }
     if (n == 0) {
@@ -154,111 +242,27 @@ static int SpatialMatch8(const float* ref, int stride, int width, int height, in
     return n;
 }
 
-static float Ssd8FromRef(const hn::Vec<hn::FixedTag<float, 8>> refb[8], const float* cand, int stride, float abort_at) {
-    const hn::FixedTag<float, 8> df;
-    auto acc0 = hn::Zero(df);
-    auto acc1 = hn::Zero(df);
-    for (int i = 0; i < 4; i += 2) {
-        const auto d0 = hn::Sub(refb[i], hn::LoadU(df, cand + i * stride));
-        const auto d1 = hn::Sub(refb[i + 1], hn::LoadU(df, cand + (i + 1) * stride));
-        acc0 = hn::MulAdd(d0, d0, acc0);
-        acc1 = hn::MulAdd(d1, d1, acc1);
-    }
-    if (abort_at >= 0.f) {
-        const float p = HSum8(hn::Add(acc0, acc1));
-        if (p >= abort_at) {
-            return p;
-        }
-    }
-    for (int i = 4; i < 8; i += 2) {
-        const auto d0 = hn::Sub(refb[i], hn::LoadU(df, cand + i * stride));
-        const auto d1 = hn::Sub(refb[i + 1], hn::LoadU(df, cand + (i + 1) * stride));
-        acc0 = hn::MulAdd(d0, d0, acc0);
-        acc1 = hn::MulAdd(d1, d1, acc1);
-    }
-    return HSum8(hn::Add(acc0, acc1));
-}
 #endif
 
 int SpatialMatch(const float* ref, int stride, int width, int height, int bx, int by, int block, int bm_range,
                  int group, Match* out) {
     const int max_x = width - block;
     const int max_y = height - block;
-    if (max_x < 0 || max_y < 0 || group < 1) {
+    if (!ref || !out || width < 1 || height < 1 || block < 1 || stride < width || max_x < 0 || max_y < 0 ||
+        group < 1) {
         return 0;
     }
     const int cx = clampi(bx, 0, max_x);
     const int cy = clampi(by, 0, max_y);
 #if HWY_MAX_BYTES >= 32
     if (block == 8 && group == 8) {
-        return SpatialMatch8(ref, stride, width, height, cx, cy, bm_range, out);
+        return SpatialMatch8(ref, stride, width, height, cx, cy, std::max(bm_range, 0), out);
     }
 #endif
-    const float* self = ref + cy * stride + cx;
-    out[0].x = cx;
-    out[0].y = cy;
-    out[0].t = 0;
-    out[0].dist = 0.f;
-    if (group <= 1) {
-        return 1;
-    }
-
-    const int top = std::max(cy - bm_range, 0);
-    const int bottom = std::min(cy + bm_range, max_y);
-    const int left = std::max(cx - bm_range, 0);
-    const int right = std::min(cx + bm_range, max_x);
-
-    int n = 1;
-    int worst = 1;
-    auto consider = [&](int x, int y, float dist) {
-        if (x == cx && y == cy) {
-            return;
-        }
-        if (n < group) {
-            out[n].x = x;
-            out[n].y = y;
-            out[n].t = 0;
-            out[n].dist = dist;
-            if (n == 1 || dist > out[worst].dist) {
-                worst = n;
-            }
-            ++n;
-        } else if (__builtin_expect(dist < out[worst].dist, 0)) {
-            out[worst].x = x;
-            out[worst].y = y;
-            out[worst].t = 0;
-            out[worst].dist = dist;
-            worst = 1;
-            for (int i = 2; i < n; ++i) {
-                if (out[i].dist > out[worst].dist) {
-                    worst = i;
-                }
-            }
-        }
-    };
-#if HWY_MAX_BYTES >= 32
-    if (block == 8) {
-        const hn::FixedTag<float, 8> df;
-        hn::Vec<hn::FixedTag<float, 8>> refb[8];
-        for (int i = 0; i < 8; ++i) {
-            refb[i] = hn::LoadU(df, self + i * stride);
-        }
-        for (int y = top; y <= bottom; ++y) {
-            const float* row = ref + y * stride;
-            for (int x = left; x <= right; ++x) {
-                const float abort_at = (n >= group) ? out[worst].dist : -1.f;
-                consider(x, y, Ssd8FromRef(refb, row + x, stride, abort_at));
-            }
-        }
-        return n;
-    }
-#endif
-    for (int y = top; y <= bottom; ++y) {
-        for (int x = left; x <= right; ++x) {
-            consider(x, y, SsdBlock(self, stride, ref + y * stride + x, stride, block));
-        }
-    }
-    return n;
+    return detail::collect_spatial(ref, stride, width, height, cx, cy, block, bm_range, group, out,
+                                   [](const float* a, const float* b, int st, int bs) {
+                                       return SsdBlock(a, st, b, st, bs);
+                                   });
 }
 
 }  // namespace HWY_NAMESPACE

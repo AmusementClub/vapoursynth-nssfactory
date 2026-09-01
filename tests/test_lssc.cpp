@@ -85,6 +85,62 @@ static int test_reconstruct_finite() {
             }
         }
     }
+
+    // The explicit dictionary and OMP contracts must be usable at their
+    // advertised exact sizes. This also exercises the K-SVD OMP scratch that
+    // is carved out of the caller-owned dictionary workspace.
+    std::vector<float> D_ws(static_cast<std::size_t>(m * atoms), 0.f);
+    const int dict_need = nss::lssc_dict_work_floats(m, atoms, n, 1);
+    std::vector<float> dict_work(static_cast<std::size_t>(dict_need), 0.f);
+    nss::lssc_dict_init_workspace(D_ws.data(), m, atoms, m, patches.data(), n, m, block, 1, 123u, dict_work.data(),
+                                  dict_need);
+    for (std::size_t i = 0; i < D.size(); ++i) {
+        if (!std::isfinite(D_ws[i]) || std::fabs(D_ws[i] - D[i]) > 4e-4f) {
+            return fail("workspace dictionary differs from wrapper");
+        }
+    }
+
+    std::vector<float> coeff_scalar(static_cast<std::size_t>(atoms), 0.f);
+    std::vector<float> coeff_workspace(static_cast<std::size_t>(atoms), 0.f);
+    std::vector<float> omp_work(static_cast<std::size_t>(nss::lssc_omp_work_floats(m, atoms, 8)), 0.f);
+    const int omp_scalar = nss::lssc_omp(patches.data(), m, D.data(), atoms, m, 8, coeff_scalar.data());
+    const int omp_workspace = nss::lssc_omp_workspace(patches.data(), m, D.data(), atoms, m, 8,
+                                                       coeff_workspace.data(), omp_work.data(),
+                                                       static_cast<int>(omp_work.size()));
+    if (omp_scalar != omp_workspace || !std::equal(coeff_scalar.begin(), coeff_scalar.end(), coeff_workspace.begin(),
+                                                    [](float a, float b) { return std::fabs(a - b) <= 2e-5f; })) {
+        return fail("workspace OMP differs from wrapper");
+    }
+
+    std::fill(coeff_workspace.begin(), coeff_workspace.end(), 1.f);
+    // A non-positive sparsity is a no-op in the legacy API. The workspace
+    // overload must keep that behavior and must not require a scratch buffer.
+    if (nss::lssc_omp_workspace(patches.data(), m, D.data(), atoms, m, 0, coeff_workspace.data(), nullptr, 0) != 0 ||
+        std::any_of(coeff_workspace.begin(), coeff_workspace.end(), [](float value) { return value != 0.f; })) {
+        return fail("workspace OMP changed non-positive sparsity behavior");
+    }
+
+    // The prepared frame path must be numerically equivalent to the legacy
+    // one-shot API while reusing transpose/Lipschitz state.
+    std::vector<float> legacy_input = patches;
+    std::vector<float> prepared_input = patches;
+    std::vector<float> legacy_work(static_cast<std::size_t>(nss::lssc_reconstruct_work_floats(m, n, atoms)));
+    std::vector<float> prep_work(static_cast<std::size_t>(nss::lssc_prepare_work_floats(m, atoms)));
+    std::vector<float> group_work(static_cast<std::size_t>(nss::lssc_reconstruct_prepared_work_floats(m, n, atoms)));
+    nss::LsscPreparedContext context;
+    if (nss::lssc_prepare_context(D.data(), m, atoms, m, prep_work.data(), static_cast<int>(prep_work.size()),
+                                  &context) != 0) {
+        return fail("lssc prepare context failed");
+    }
+    nss::lssc_reconstruct(legacy_input.data(), m, n, m, D.data(), atoms, m, 3.f / 255.f, legacy_work.data(),
+                          static_cast<int>(legacy_work.size()));
+    nss::lssc_reconstruct_prepared(prepared_input.data(), m, n, m, &context, 3.f / 255.f, group_work.data(),
+                                   static_cast<int>(group_work.size()));
+    for (std::size_t i = 0; i < legacy_input.size(); ++i) {
+        if (std::fabs(legacy_input[i] - prepared_input[i]) > 3e-4f) {
+            return fail("prepared reconstruction differs from legacy path");
+        }
+    }
     nss::lssc_reconstruct(patches.data(), m, n, m, D.data(), atoms, m, 3.f / 255.f);
     for (int i = 0; i < m * n; ++i) {
         if (!std::isfinite(patches[static_cast<std::size_t>(i)])) {
@@ -148,6 +204,22 @@ static int test_denoise_psnr() {
         }
     }
     nss::lssc_denoise_plane(noisy.data(), w, h, w, num.data(), den.data(), w, block, step, noise);
+    const int work_need = nss::lssc_denoise_work_floats(w, h, block, step);
+    std::vector<float> explicit_work(static_cast<std::size_t>(work_need) + 8, -12345.5f);
+    std::vector<float> num_ws(static_cast<std::size_t>(w * h), 0.f);
+    std::vector<float> den_ws(static_cast<std::size_t>(w * h), 0.f);
+    nss::lssc_denoise_plane(noisy.data(), w, h, w, num_ws.data(), den_ws.data(), w, block, step, noise,
+                            explicit_work.data() + 4, work_need);
+    for (int i = 0; i < 4; ++i) {
+        if (explicit_work[static_cast<std::size_t>(i)] != -12345.5f ||
+            explicit_work[static_cast<std::size_t>(work_need + 4 + i)] != -12345.5f) {
+            return fail("denoise workspace guard was overwritten");
+        }
+    }
+    if (!std::equal(num.begin(), num.end(), num_ws.begin(), [](float a, float b) { return std::fabs(a - b) <= 3e-5f; }) ||
+        !std::equal(den.begin(), den.end(), den_ws.begin(), [](float a, float b) { return std::fabs(a - b) <= 3e-5f; })) {
+        return fail("explicit denoise workspace differs from fallback");
+    }
     nss::aggregate_finish(out.data(), num.data(), den.data(), noisy.data(), w, h, w, w);
     for (int i = 0; i < w * h; ++i) {
         if (!std::isfinite(out[static_cast<std::size_t>(i)])) {

@@ -1,6 +1,8 @@
+#include "host/batch_runner.hpp"
 #include "host/validate.hpp"
 #include "nss/avx2.hpp"
 #include "nss/cpu_api.hpp"
+#include "nss/cpu_batch.hpp"
 #include "nss/cpu_common.hpp"
 #include "nss/cpu_mcwnnm.hpp"
 #include "nss/cpu_twsc.hpp"
@@ -11,6 +13,7 @@
 #include <VSHelper4.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <memory>
@@ -131,17 +134,12 @@ const VSFrame* VS_CC twscGetFrame(int n, int activationReason, void* instanceDat
             return dst;
         }
         int ch_strides[3]{sstride[0], sstride[1], sstride[2]};
-        const std::size_t need = plane_sz * static_cast<std::size_t>(nch) * static_cast<std::size_t>(slices) * 4 +
-                                 static_cast<std::size_t>(lda * group) * 2 +
-                                 static_cast<std::size_t>(nss::twsc_pca_soft_work_floats(m, group)) + 64;
+        const std::size_t need = plane_sz * static_cast<std::size_t>(nch) * static_cast<std::size_t>(slices) * 4 + 64;
         float* scratch = d->ws.get(need);
         float* num = scratch;
         float* den = num + plane_sz * static_cast<std::size_t>(nch) * static_cast<std::size_t>(slices);
         float* est = den + plane_sz * static_cast<std::size_t>(nch) * static_cast<std::size_t>(slices);
         float* noisyb = est + plane_sz * static_cast<std::size_t>(nch) * static_cast<std::size_t>(slices);
-        float* patches = noisyb + plane_sz * static_cast<std::size_t>(nch) * static_cast<std::size_t>(slices);
-        float* noisy_patches = patches + static_cast<std::size_t>(lda * group);
-        float* shrink_work = noisy_patches + static_cast<std::size_t>(lda * group);
         nss::SearchConfig cfg;
         cfg.block = block;
         cfg.step = d->block_step;
@@ -150,7 +148,6 @@ const VSFrame* VS_CC twscGetFrame(int n, int activationReason, void* instanceDat
         cfg.radius = d->radius;
         cfg.ps_num = d->ps_num;
         cfg.ps_range = d->ps_range;
-        nss::Match matches[nss::kWnnmMaxGroup];
         float sigma = sig[0];
         for (int c = 1; c < nch; ++c) {
             if (sig[c] > 0.f) {
@@ -195,6 +192,17 @@ const VSFrame* VS_CC twscGetFrame(int n, int activationReason, void* instanceDat
                 }
             }
         }
+        const bool use_lane_batch = group == 8 && m >= 8 && m <= nss::kSvdBatch8MaxM;
+        const std::size_t group_storage = static_cast<std::size_t>(group) * static_cast<std::size_t>(lda);
+        const int work_n = nss::twsc_pca_soft_work_floats(m, group);
+        std::vector<float> scalar_patches;
+        std::vector<float> scalar_noisy;
+        std::vector<float> scalar_work;
+        if (!use_lane_batch) {
+            scalar_patches.resize(group_storage);
+            scalar_noisy.resize(group_storage);
+            scalar_work.resize(static_cast<std::size_t>(work_n));
+        }
         for (int iter = 0; iter < niter; ++iter) {
             if (iter > 0) {
                 for (int plane = 0; plane < nch; ++plane) {
@@ -215,61 +223,165 @@ const VSFrame* VS_CC twscGetFrame(int n, int activationReason, void* instanceDat
             const int* match_st = use_rclip ? ch_strides : est_strides;
             const float* match_cur[3] = {match_refs[0 * ntemp + t0], match_refs[1 * ntemp + t0],
                                          match_refs[2 * ntemp + t0]};
-            for (int by0 = 0; by0 < ph - block + d->block_step; by0 += d->block_step) {
-                const int by = std::min(by0, std::max(0, ph - block));
-                for (int bx0 = 0; bx0 < pw - block + d->block_step; bx0 += d->block_step) {
-                    const int bx = std::min(bx0, std::max(0, pw - block));
-                    const int k = (d->radius > 0)
-                                      ? nss::predictive_match_nch(match_refs, match_st, nch, ntemp, pw, ph, bx, by, t0,
-                                                                  cfg, matches)
-                                      : nss::spatial_match_nch(match_cur, match_st, nch, pw, ph, bx, by, block,
-                                                               d->bm_range, group, matches);
-                    if (k <= 0) {
-                        continue;
+            std::vector<nss::GroupJob> jobs;
+            nss::host_detail::append_raster_jobs(
+                jobs, pw, ph, block, d->block_step,
+                nss::GroupKey{m, group, nch, nss::GroupAlgorithm::TWSC, false, false}, t0);
+            for (std::size_t begin = 0; begin < jobs.size(); begin += nss::host_detail::kGroupBatchWindow) {
+                const std::size_t end = std::min(jobs.size(), begin + nss::host_detail::kGroupBatchWindow);
+                const int count = static_cast<int>(end - begin);
+                std::array<nss::MatchBatchItem, nss::host_detail::kGroupBatchWindow> match_items{};
+                std::array<int, nss::host_detail::kGroupBatchWindow> counts{};
+                std::array<nss::Match, nss::host_detail::kGroupBatchWindow * nss::kWnnmMaxGroup> match_storage{};
+                for (int i = 0; i < count; ++i) {
+                    const auto& job = jobs[begin + static_cast<std::size_t>(i)];
+                    match_items[static_cast<std::size_t>(i)] = nss::MatchBatchItem{job.x, job.y, block, d->bm_range, group};
+                }
+                const int match_rc = d->radius > 0
+                                         ? nss::predictive_match_nch_batch(match_refs, match_st, nch, ntemp, pw, ph, t0,
+                                                                            cfg, match_items.data(), count,
+                                                                            match_storage.data(), nss::kWnnmMaxGroup,
+                                                                            counts.data())
+                                         : nss::spatial_match_nch_batch(match_cur, match_st, nch, pw, ph,
+                                                                         match_items.data(), count, match_storage.data(),
+                                                                         nss::kWnnmMaxGroup, counts.data());
+                if (match_rc < 0) {
+                    continue;
+                }
+                if (!use_lane_batch) {
+                    for (int i = 0; i < count; ++i) {
+                        const int k = counts[static_cast<std::size_t>(i)];
+                        if (k <= 0) {
+                            continue;
+                        }
+                        std::fill(col_sigma, col_sigma + k, sigma);
+                        std::fill(col_w, col_w + k, 1.f);
+                        for (int j = 0; j < k; ++j) {
+                            const auto& mm = match_storage[static_cast<std::size_t>(i) * nss::kWnnmMaxGroup + j];
+                            const int t = d->radius > 0 ? mm.t : t0;
+                            const float* pack_src[3] = {est_planes[static_cast<std::size_t>(t)],
+                                                        est_planes[static_cast<std::size_t>(ntemp + t)],
+                                                        est_planes[static_cast<std::size_t>(2 * ntemp + t)]};
+                            nss::pack_patch_nch(scalar_patches.data() + static_cast<std::size_t>(j) * lda, lda,
+                                                pack_src, est_strides, nch, mm.x, mm.y, block, pw, ph);
+                            if (iter > 0) {
+                                const float* noisy_src[3] = {noisy_planes[static_cast<std::size_t>(t)],
+                                                             noisy_planes[static_cast<std::size_t>(ntemp + t)],
+                                                             noisy_planes[static_cast<std::size_t>(2 * ntemp + t)]};
+                                nss::pack_patch_nch(scalar_noisy.data() + static_cast<std::size_t>(j) * lda, lda,
+                                                    noisy_src, est_strides, nch, mm.x, mm.y, block, pw, ph);
+                                const float ms = nss::ssd_vec(
+                                                     scalar_noisy.data() + static_cast<std::size_t>(j) * lda,
+                                                     scalar_patches.data() + static_cast<std::size_t>(j) * lda, m) /
+                                                 static_cast<float>(m);
+                                col_sigma[j] = d->lambda2 * std::sqrt(std::fabs(sigma * sigma - ms));
+                            }
+                        }
+                        if (nss::twsc_pca_soft(scalar_patches.data(), m, k, lda, sigma, scalar_work.data(), work_n,
+                                               col_sigma, col_w, row_w) != 0) {
+                            continue;
+                        }
+                        for (int j = 0; j < k; ++j) {
+                            const auto& mm = match_storage[static_cast<std::size_t>(i) * nss::kWnnmMaxGroup + j];
+                            const int sl = d->radius > 0 ? std::clamp(mm.t - t0 + d->radius, 0, slices - 1) : 0;
+                            float* nums[3];
+                            float* dens[3];
+                            for (int c = 0; c < nch; ++c) {
+                                const std::size_t off =
+                                    (static_cast<std::size_t>(c) * static_cast<std::size_t>(slices) + sl) * plane_sz;
+                                nums[c] = num + off;
+                                dens[c] = den + off;
+                            }
+                            nss::unpack_patch_nch(nums, dens, agg_strides, nch, mm.x, mm.y,
+                                                  scalar_patches.data() + static_cast<std::size_t>(j) * lda, block, pw,
+                                                  ph, col_w[j]);
+                        }
                     }
-                    for (int i = 0; i < k; ++i) {
-                        const int t = (d->radius > 0) ? matches[i].t : t0;
-                        const float* pack_src[3] = {est_planes[static_cast<std::size_t>(0 * ntemp + t)],
-                                                    est_planes[static_cast<std::size_t>(1 * ntemp + t)],
+                    continue;
+                }
+                std::vector<float> batch_patches(static_cast<std::size_t>(count) * group_storage, 0.f);
+                std::vector<float> batch_noisy(static_cast<std::size_t>(count) * group_storage, 0.f);
+                std::vector<float> batch_work(static_cast<std::size_t>(count) * static_cast<std::size_t>(work_n), 0.f);
+                std::vector<float> batch_col_sigma(static_cast<std::size_t>(count) * static_cast<std::size_t>(group), sigma);
+                std::vector<float> batch_col_w(static_cast<std::size_t>(count) * static_cast<std::size_t>(group), 1.f);
+                std::array<int, nss::host_detail::kGroupBatchWindow> filter_status{};
+                std::array<nss::TwscPcaBatchItem, nss::host_detail::kGroupBatchWindow> filter_items{};
+                for (int i = 0; i < count; ++i) {
+                    const int k = counts[static_cast<std::size_t>(i)];
+                    float* p = batch_patches.data() + static_cast<std::size_t>(i) * group_storage;
+                    float* np = batch_noisy.data() + static_cast<std::size_t>(i) * group_storage;
+                    float* cs = batch_col_sigma.data() + static_cast<std::size_t>(i) * static_cast<std::size_t>(group);
+                    float* cw = batch_col_w.data() + static_cast<std::size_t>(i) * static_cast<std::size_t>(group);
+                    for (int j = 0; j < k; ++j) {
+                        const auto& mm = match_storage[static_cast<std::size_t>(i) * nss::kWnnmMaxGroup + j];
+                        const int t = d->radius > 0 ? mm.t : t0;
+                        const float* pack_src[3] = {est_planes[static_cast<std::size_t>(t)],
+                                                    est_planes[static_cast<std::size_t>(ntemp + t)],
                                                     est_planes[static_cast<std::size_t>(2 * ntemp + t)]};
-                        nss::pack_patch_nch(patches + i * lda, lda, pack_src, est_strides, nch, matches[i].x,
-                                            matches[i].y, block, pw, ph);
+                        nss::pack_patch_nch(p + static_cast<std::size_t>(j) * lda, lda, pack_src, est_strides, nch,
+                                            mm.x, mm.y, block, pw, ph);
                         if (iter > 0) {
-                            const float* nsrc[3] = {noisy_planes[static_cast<std::size_t>(0 * ntemp + t)],
-                                                    noisy_planes[static_cast<std::size_t>(1 * ntemp + t)],
-                                                    noisy_planes[static_cast<std::size_t>(2 * ntemp + t)]};
-                            nss::pack_patch_nch(noisy_patches + i * lda, lda, nsrc, est_strides, nch, matches[i].x,
-                                                matches[i].y, block, pw, ph);
-                            const float ms = nss::ssd_vec(noisy_patches + i * lda, patches + i * lda, m) /
+                            const float* noisy_src[3] = {noisy_planes[static_cast<std::size_t>(t)],
+                                                         noisy_planes[static_cast<std::size_t>(ntemp + t)],
+                                                         noisy_planes[static_cast<std::size_t>(2 * ntemp + t)]};
+                            nss::pack_patch_nch(np + static_cast<std::size_t>(j) * lda, lda, noisy_src, est_strides, nch,
+                                                mm.x, mm.y, block, pw, ph);
+                            const float ms = nss::ssd_vec(np + static_cast<std::size_t>(j) * lda,
+                                                          p + static_cast<std::size_t>(j) * lda, m) /
                                              static_cast<float>(m);
-                            col_sigma[i] = d->lambda2 * std::sqrt(std::fabs(sigma * sigma - ms));
-                        } else {
-                            col_sigma[i] = sigma;
+                            cs[j] = d->lambda2 * std::sqrt(std::fabs(sigma * sigma - ms));
                         }
                     }
-                    if (nss::twsc_pca_soft(patches, m, k, lda, sigma, shrink_work,
-                                           nss::twsc_pca_soft_work_floats(m, group), col_sigma, col_w, row_w) != 0) {
-                        continue;
+                    filter_items[static_cast<std::size_t>(i)] = nss::TwscPcaBatchItem{
+                        p, m, k, lda, sigma,
+                        batch_work.data() + static_cast<std::size_t>(i) * static_cast<std::size_t>(work_n), work_n,
+                        cs, cw, row_w, &filter_status[static_cast<std::size_t>(i)]};
+                }
+                (void)nss::twsc_pca_soft_batch(filter_items.data(), count);
+
+                struct Result {
+                    bool valid = false;
+                    int k = 0;
+                    nss::Match matches[nss::kWnnmMaxGroup]{};
+                    const float* patches = nullptr;
+                    const float* weights = nullptr;
+                };
+                auto prepare = [&](const nss::GroupJob& job, Result& result) {
+                    const std::size_t i = static_cast<std::size_t>(job.ordinal - jobs[begin].ordinal);
+                    if (i >= static_cast<std::size_t>(count) || counts[i] <= 0 || filter_status[i] == 0) {
+                        return false;
                     }
-                    for (int i = 0; i < k; ++i) {
-                        int sl = 0;
-                        if (d->radius > 0) {
-                            sl = matches[i].t - t0 + d->radius;
-                            sl = std::clamp(sl, 0, slices - 1);
-                        }
+                    result.valid = true;
+                    result.k = counts[i];
+                    result.patches = batch_patches.data() + i * group_storage;
+                    result.weights = batch_col_w.data() + i * static_cast<std::size_t>(group);
+                    for (int j = 0; j < result.k; ++j) {
+                        result.matches[j] = match_storage[i * nss::kWnnmMaxGroup + j];
+                    }
+                    return true;
+                };
+                auto commit = [&](const Result& result) {
+                    if (!result.valid) {
+                        return;
+                    }
+                    for (int j = 0; j < result.k; ++j) {
+                        const int sl = d->radius > 0
+                                           ? std::clamp(result.matches[j].t - t0 + d->radius, 0, slices - 1)
+                                           : 0;
                         float* nums[3];
                         float* dens[3];
                         for (int c = 0; c < nch; ++c) {
-                            const std::size_t off = (static_cast<std::size_t>(c) * static_cast<std::size_t>(slices) +
-                                                     static_cast<std::size_t>(sl)) *
-                                                    plane_sz;
+                            const std::size_t off =
+                                (static_cast<std::size_t>(c) * static_cast<std::size_t>(slices) + sl) * plane_sz;
                             nums[c] = num + off;
                             dens[c] = den + off;
                         }
-                        nss::unpack_patch_nch(nums, dens, agg_strides, nch, matches[i].x, matches[i].y,
-                                              patches + i * lda, block, pw, ph, col_w[i]);
+                        nss::unpack_patch_nch(nums, dens, agg_strides, nch, result.matches[j].x, result.matches[j].y,
+                                              result.patches + static_cast<std::size_t>(j) * lda, block, pw, ph,
+                                              result.weights[j]);
                     }
-                }
+                };
+                (void)nss::host_detail::execute_ordered_chunk<Result>(jobs, begin, end, prepare, commit);
             }
             const bool last = (iter == niter - 1);
             if (last && fat) {
@@ -343,17 +455,12 @@ const VSFrame* VS_CC twscGetFrame(int n, int activationReason, void* instanceDat
 
         const int slices = ntemp;
         const std::size_t plane_sz = static_cast<std::size_t>(pw * ph);
-        const std::size_t need = plane_sz * static_cast<std::size_t>(slices) * 4 +
-                                 static_cast<std::size_t>(lda * group) * 2 +
-                                 static_cast<std::size_t>(nss::twsc_pca_soft_work_floats(m, group)) + 64;
+        const std::size_t need = plane_sz * static_cast<std::size_t>(slices) * 4 + 64;
         float* scratch = d->ws.get(need);
         float* num = scratch;
         float* den = scratch + plane_sz * static_cast<std::size_t>(slices);
         float* estp = den + plane_sz * static_cast<std::size_t>(slices);
         float* noisyp = estp + plane_sz * static_cast<std::size_t>(slices);
-        float* patches = noisyp + plane_sz * static_cast<std::size_t>(slices);
-        float* noisy_patches = patches + static_cast<std::size_t>(lda * group);
-        float* shrink_work = noisy_patches + static_cast<std::size_t>(lda * group);
 
         nss::SearchConfig cfg;
         cfg.block = block;
@@ -364,7 +471,6 @@ const VSFrame* VS_CC twscGetFrame(int n, int activationReason, void* instanceDat
         cfg.ps_num = d->ps_num;
         cfg.ps_range = d->ps_range;
 
-        nss::Match matches[nss::kWnnmMaxGroup];
         const float sigma = d->sigma[plane] / 255.f;
         std::vector<const float*> est_refs(static_cast<std::size_t>(ntemp));
         std::vector<const float*> noisy_refs(static_cast<std::size_t>(ntemp));
@@ -383,8 +489,25 @@ const VSFrame* VS_CC twscGetFrame(int n, int activationReason, void* instanceDat
             est_strides[t] = pw;
         }
         const int niter = d->iters < 1 ? 1 : d->iters;
-        float col_sigma[nss::kWnnmMaxGroup];
-        float col_w[nss::kWnnmMaxGroup];
+        std::vector<nss::GroupJob> jobs;
+        nss::host_detail::append_raster_jobs(
+            jobs, pw, ph, block, d->block_step,
+            nss::GroupKey{m, group, 1, nss::GroupAlgorithm::TWSC, false, false}, t0);
+        const bool use_lane_batch = group == 8 && m >= 8 && m <= nss::kSvdBatch8MaxM;
+        const std::size_t group_storage = static_cast<std::size_t>(group) * static_cast<std::size_t>(lda);
+        const int work_n = nss::twsc_pca_soft_work_floats(m, group);
+        std::vector<float> scalar_patches;
+        std::vector<float> scalar_noisy;
+        std::vector<float> scalar_work;
+        std::vector<float> scalar_col_sigma;
+        std::vector<float> scalar_col_w;
+        if (!use_lane_batch) {
+            scalar_patches.resize(group_storage);
+            scalar_noisy.resize(group_storage);
+            scalar_work.resize(static_cast<std::size_t>(work_n));
+            scalar_col_sigma.resize(static_cast<std::size_t>(group));
+            scalar_col_w.resize(static_cast<std::size_t>(group));
+        }
         for (int iter = 0; iter < niter; ++iter) {
             if (iter > 0) {
                 for (int sl = 0; sl < slices; ++sl) {
@@ -397,47 +520,140 @@ const VSFrame* VS_CC twscGetFrame(int n, int activationReason, void* instanceDat
             const bool use_rclip = (iter == 0 && d->rclip != nullptr);
             const float* const* match_refs = use_rclip ? refs.data() : est_refs.data();
             const int* match_st = use_rclip ? strides : est_strides;
-            for (int by0 = 0; by0 < ph - block + d->block_step; by0 += d->block_step) {
-                const int by = std::min(by0, std::max(0, ph - block));
-                for (int bx0 = 0; bx0 < pw - block + d->block_step; bx0 += d->block_step) {
-                    const int bx = std::min(bx0, std::max(0, pw - block));
-                    const int k =
-                        (d->radius > 0)
-                            ? nss::predictive_match(match_refs, match_st, ntemp, pw, ph, bx, by, t0, cfg, matches)
-                            : nss::spatial_match(match_refs[static_cast<std::size_t>(t0)], match_st[t0], pw, ph, bx, by,
-                                                 block, d->bm_range, group, matches);
-                    if (k <= 0) {
-                        continue;
-                    }
-                    for (int i = 0; i < k; ++i) {
-                        const int t = (d->radius > 0) ? matches[i].t : t0;
-                        nss::pack_patch(patches + i * lda, lda, est_refs[static_cast<std::size_t>(t)], pw, matches[i].x,
-                                        matches[i].y, block, pw, ph);
-                        if (iter > 0) {
-                            nss::pack_patch(noisy_patches + i * lda, lda, noisy_refs[static_cast<std::size_t>(t)], pw,
-                                            matches[i].x, matches[i].y, block, pw, ph);
-                            const float ms = nss::ssd_vec(noisy_patches + i * lda, patches + i * lda, m) /
-                                             static_cast<float>(m);
-                            col_sigma[i] = d->lambda2 * std::sqrt(std::fabs(sigma * sigma - ms));
-                        } else {
-                            col_sigma[i] = sigma;
-                        }
-                    }
-                    if (nss::twsc_pca_soft(patches, m, k, lda, sigma, shrink_work,
-                                           nss::twsc_pca_soft_work_floats(m, group), col_sigma, col_w) != 0) {
-                        continue;
-                    }
-                    for (int i = 0; i < k; ++i) {
-                        int sl = 0;
-                        if (d->radius > 0) {
-                            sl = matches[i].t - t0 + d->radius;
-                            sl = std::clamp(sl, 0, slices - 1);
-                        }
-                        nss::aggregate_add(num + static_cast<std::size_t>(sl) * plane_sz,
-                                           den + static_cast<std::size_t>(sl) * plane_sz, pw, matches[i].x, matches[i].y,
-                                           patches + i * lda, block, pw, ph, col_w[i]);
-                    }
+            for (std::size_t begin = 0; begin < jobs.size(); begin += nss::host_detail::kGroupBatchWindow) {
+                const std::size_t end = std::min(jobs.size(), begin + nss::host_detail::kGroupBatchWindow);
+                const int count = static_cast<int>(end - begin);
+                std::array<nss::MatchBatchItem, nss::host_detail::kGroupBatchWindow> match_items{};
+                std::array<int, nss::host_detail::kGroupBatchWindow> counts{};
+                std::array<nss::Match, nss::host_detail::kGroupBatchWindow * nss::kWnnmMaxGroup> match_storage{};
+                for (int i = 0; i < count; ++i) {
+                    const auto& job = jobs[begin + static_cast<std::size_t>(i)];
+                    match_items[static_cast<std::size_t>(i)] =
+                        nss::MatchBatchItem{job.x, job.y, block, d->bm_range, group};
                 }
+                const int match_rc = d->radius > 0
+                                         ? nss::predictive_match_batch(match_refs, match_st, ntemp, pw, ph, t0, cfg,
+                                                                       match_items.data(), count, match_storage.data(),
+                                                                       nss::kWnnmMaxGroup, counts.data())
+                                         : nss::spatial_match_batch(match_refs[t0], match_st[t0], pw, ph,
+                                                                    match_items.data(), count, match_storage.data(),
+                                                                    nss::kWnnmMaxGroup, counts.data());
+                if (match_rc < 0) {
+                    continue;
+                }
+                if (!use_lane_batch) {
+                    for (int i = 0; i < count; ++i) {
+                        const int k = counts[static_cast<std::size_t>(i)];
+                        if (k <= 0) {
+                            continue;
+                        }
+                        std::fill(scalar_col_sigma.begin(), scalar_col_sigma.begin() + k, sigma);
+                        std::fill(scalar_col_w.begin(), scalar_col_w.begin() + k, 1.f);
+                        for (int j = 0; j < k; ++j) {
+                            const auto& mm = match_storage[static_cast<std::size_t>(i) * nss::kWnnmMaxGroup + j];
+                            const int t = d->radius > 0 ? mm.t : t0;
+                            nss::pack_patch(scalar_patches.data() + static_cast<std::size_t>(j) * lda, lda,
+                                            est_refs[static_cast<std::size_t>(t)], pw, mm.x, mm.y, block, pw, ph);
+                            if (iter > 0) {
+                                nss::pack_patch(scalar_noisy.data() + static_cast<std::size_t>(j) * lda, lda,
+                                                noisy_refs[static_cast<std::size_t>(t)], pw, mm.x, mm.y, block, pw, ph);
+                                const float ms = nss::ssd_vec(
+                                                     scalar_noisy.data() + static_cast<std::size_t>(j) * lda,
+                                                     scalar_patches.data() + static_cast<std::size_t>(j) * lda, m) /
+                                                 static_cast<float>(m);
+                                scalar_col_sigma[static_cast<std::size_t>(j)] =
+                                    d->lambda2 * std::sqrt(std::fabs(sigma * sigma - ms));
+                            }
+                        }
+                        if (nss::twsc_pca_soft(scalar_patches.data(), m, k, lda, sigma, scalar_work.data(), work_n,
+                                               scalar_col_sigma.data(), scalar_col_w.data()) != 0) {
+                            continue;
+                        }
+                        for (int j = 0; j < k; ++j) {
+                            const auto& mm = match_storage[static_cast<std::size_t>(i) * nss::kWnnmMaxGroup + j];
+                            const int sl = d->radius > 0 ? std::clamp(mm.t - t0 + d->radius, 0, slices - 1) : 0;
+                            nss::aggregate_add(num + static_cast<std::size_t>(sl) * plane_sz,
+                                               den + static_cast<std::size_t>(sl) * plane_sz, pw, mm.x, mm.y,
+                                               scalar_patches.data() + static_cast<std::size_t>(j) * lda, block, pw, ph,
+                                               scalar_col_w[static_cast<std::size_t>(j)]);
+                        }
+                    }
+                    continue;
+                }
+                std::vector<float> batch_patches(static_cast<std::size_t>(count) * group_storage, 0.f);
+                std::vector<float> batch_noisy;
+                if (iter > 0) {
+                    batch_noisy.resize(batch_patches.size(), 0.f);
+                }
+                std::vector<float> batch_work(static_cast<std::size_t>(count) * static_cast<std::size_t>(work_n), 0.f);
+                std::vector<float> batch_col_sigma(static_cast<std::size_t>(count) * static_cast<std::size_t>(group), sigma);
+                std::vector<float> batch_col_w(static_cast<std::size_t>(count) * static_cast<std::size_t>(group), 1.f);
+                std::array<int, nss::host_detail::kGroupBatchWindow> filter_status{};
+                std::array<nss::TwscPcaBatchItem, nss::host_detail::kGroupBatchWindow> filter_items{};
+                for (int i = 0; i < count; ++i) {
+                    const int k = counts[static_cast<std::size_t>(i)];
+                    float* p = batch_patches.data() + static_cast<std::size_t>(i) * group_storage;
+                    float* np = iter > 0 ? batch_noisy.data() + static_cast<std::size_t>(i) * group_storage : nullptr;
+                    float* cs = batch_col_sigma.data() + static_cast<std::size_t>(i) * static_cast<std::size_t>(group);
+                    float* cw = batch_col_w.data() + static_cast<std::size_t>(i) * static_cast<std::size_t>(group);
+                    for (int j = 0; j < k; ++j) {
+                        const auto& mm = match_storage[static_cast<std::size_t>(i) * nss::kWnnmMaxGroup + j];
+                        const int t = d->radius > 0 ? mm.t : t0;
+                        nss::pack_patch(p + static_cast<std::size_t>(j) * lda, lda,
+                                        est_refs[static_cast<std::size_t>(t)], pw, mm.x, mm.y, block, pw, ph);
+                        if (np) {
+                            nss::pack_patch(np + static_cast<std::size_t>(j) * lda, lda,
+                                            noisy_refs[static_cast<std::size_t>(t)], pw, mm.x, mm.y, block, pw, ph);
+                            const float ms = nss::ssd_vec(np + static_cast<std::size_t>(j) * lda,
+                                                          p + static_cast<std::size_t>(j) * lda, m) /
+                                             static_cast<float>(m);
+                            cs[j] = d->lambda2 * std::sqrt(std::fabs(sigma * sigma - ms));
+                        }
+                    }
+                    filter_items[static_cast<std::size_t>(i)] = nss::TwscPcaBatchItem{
+                        p, m, k, lda, sigma,
+                        batch_work.data() + static_cast<std::size_t>(i) * static_cast<std::size_t>(work_n), work_n,
+                        cs, cw, nullptr, &filter_status[static_cast<std::size_t>(i)]};
+                }
+                (void)nss::twsc_pca_soft_batch(filter_items.data(), count);
+
+                struct Result {
+                    bool valid = false;
+                    int k = 0;
+                    nss::Match matches[nss::kWnnmMaxGroup]{};
+                    const float* patches = nullptr;
+                    const float* weights = nullptr;
+                };
+                auto prepare = [&](const nss::GroupJob& job, Result& result) {
+                    const std::size_t i = static_cast<std::size_t>(job.ordinal - jobs[begin].ordinal);
+                    if (i >= static_cast<std::size_t>(count) || counts[i] <= 0 || filter_status[i] == 0) {
+                        return false;
+                    }
+                    result.valid = true;
+                    result.k = counts[i];
+                    result.patches = batch_patches.data() + i * group_storage;
+                    result.weights = batch_col_w.data() + i * static_cast<std::size_t>(group);
+                    for (int j = 0; j < result.k; ++j) {
+                        result.matches[j] = match_storage[i * nss::kWnnmMaxGroup + j];
+                    }
+                    return true;
+                };
+                auto commit = [&](const Result& result) {
+                    if (!result.valid) {
+                        return;
+                    }
+                    for (int j = 0; j < result.k; ++j) {
+                        const int sl = d->radius > 0
+                                           ? std::clamp(result.matches[j].t - t0 + d->radius, 0, slices - 1)
+                                           : 0;
+                        nss::aggregate_add(num + static_cast<std::size_t>(sl) * plane_sz,
+                                           den + static_cast<std::size_t>(sl) * plane_sz, pw,
+                                           result.matches[j].x, result.matches[j].y,
+                                           result.patches + static_cast<std::size_t>(j) * lda, block, pw, ph,
+                                           result.weights[j]);
+                    }
+                };
+                (void)nss::host_detail::execute_ordered_chunk<Result>(jobs, begin, end, prepare, commit);
             }
             const bool last = (iter == niter - 1);
             if (last && fat) {

@@ -192,14 +192,19 @@ static int clampi8(int x, int lo, int hi) {
     return x < lo ? lo : (x > hi ? hi : x);
 }
 
-static void LoadPatch8(const float* src, int stride, int x, int y, int w, int h, V8* rows) {
+static void LoadPatch8Inside(const float* src, int stride, int x, int y, V8* rows) {
     const D8 d8;
+    for (int r = 0; r < 8; ++r) {
+        rows[r] = hn::LoadU(d8, src + (y + r) * stride + x);
+    }
+}
+
+static void LoadPatch8(const float* src, int stride, int x, int y, int w, int h, V8* rows) {
     if (x >= 0 && y >= 0 && x + 8 <= w && y + 8 <= h) {
-        for (int r = 0; r < 8; ++r) {
-            rows[r] = hn::LoadU(d8, src + (y + r) * stride + x);
-        }
+        LoadPatch8Inside(src, stride, x, y, rows);
         return;
     }
+    const D8 d8;
     HWY_ALIGN float tmp[8];
     for (int r = 0; r < 8; ++r) {
         const int yy = clampi8(y + r, 0, h - 1);
@@ -210,18 +215,26 @@ static void LoadPatch8(const float* src, int stride, int x, int y, int w, int h,
     }
 }
 
-static void AccPatch8(float* num, float* den, int stride, int x, int y, int w, int h, const V8* rows, float wgt) {
+static void AccPatch8Inside(float* num, float* den, int stride, int x, int y, const V8* rows, float value_weight,
+                            float den_weight) {
     const D8 d8;
-    const auto vw = hn::Set(d8, wgt);
+    const auto vvalue = hn::Set(d8, value_weight);
+    const auto vden = hn::Set(d8, den_weight);
+    for (int r = 0; r < 8; ++r) {
+        float* np = num + (y + r) * stride + x;
+        float* dp = den + (y + r) * stride + x;
+        hn::StoreU(hn::MulAdd(vvalue, rows[r], hn::LoadU(d8, np)), d8, np);
+        hn::StoreU(hn::Add(hn::LoadU(d8, dp), vden), d8, dp);
+    }
+}
+
+static void AccPatch8(float* num, float* den, int stride, int x, int y, int w, int h, const V8* rows,
+                      float value_weight, float den_weight) {
     if (x >= 0 && y >= 0 && x + 8 <= w && y + 8 <= h) {
-        for (int r = 0; r < 8; ++r) {
-            float* np = num + (y + r) * stride + x;
-            float* dp = den + (y + r) * stride + x;
-            hn::StoreU(hn::MulAdd(vw, rows[r], hn::LoadU(d8, np)), d8, np);
-            hn::StoreU(hn::Add(hn::LoadU(d8, dp), vw), d8, dp);
-        }
+        AccPatch8Inside(num, den, stride, x, y, rows, value_weight, den_weight);
         return;
     }
+    const D8 d8;
     HWY_ALIGN float tmp[8];
     for (int r = 0; r < 8; ++r) {
         const int yy = y + r;
@@ -234,8 +247,8 @@ static void AccPatch8(float* num, float* den, int stride, int x, int y, int w, i
             if (xx < 0 || xx >= w) {
                 continue;
             }
-            num[yy * stride + xx] += wgt * tmp[c];
-            den[yy * stride + xx] += wgt;
+            num[yy * stride + xx] += value_weight * tmp[c];
+            den[yy * stride + xx] += den_weight;
         }
     }
 }
@@ -732,18 +745,16 @@ HWY_INLINE void TransposePack8(V8* data) {
 }
 
 HWY_INLINE void Fftw3dFwd(V8* data) {
-    for (int ndim = 0; ndim < 2; ++ndim) {
-        TransformPack8<true, 1, 8, 8>(data);
-        TransposePack8(data);
-    }
+    TransformPack8<true, 1, 8, 8>(data);
+    TransposePack8(data);
+    TransformPack8<true, 1, 8, 8>(data);
     TransformPack8<true, 8, 8, 1>(data);
 }
 
 HWY_INLINE void Fftw3dInv(V8* data) {
-    for (int ndim = 0; ndim < 2; ++ndim) {
-        TransformPack8<false, 1, 8, 8>(data);
-        TransposePack8(data);
-    }
+    TransformPack8<false, 1, 8, 8>(data);
+    TransposePack8(data);
+    TransformPack8<false, 1, 8, 8>(data);
     TransformPack8<false, 8, 8, 1>(data);
 }
 
@@ -752,13 +763,12 @@ HWY_INLINE float HardThreshFftw(V8 G[64], float sigma) {
     HWY_ALIGN float mask_mem[8] = {0.f, 1.f, 1.f, 1.f, 1.f, 1.f, 1.f, 1.f};
     const auto thr_mask = hn::Load(d8, mask_mem);
     const auto vsig = hn::Set(d8, sigma);
-    const auto scaler = hn::Set(d8, 1.f / 4096.f);
     int kept = 0;
     for (int i = 0; i < 64; ++i) {
         const auto val = G[i];
         const auto thr = (i == 0) ? hn::Mul(vsig, thr_mask) : vsig;
         const auto kill = hn::Lt(hn::Abs(val), thr);
-        G[i] = hn::IfThenElse(kill, hn::Zero(d8), hn::Mul(val, scaler));
+        G[i] = hn::IfThenZeroElse(kill, val);
         kept += 8 - static_cast<int>(hn::CountTrue(d8, kill));
     }
     return 1.f / static_cast<float>(std::max(kept, 1));
@@ -767,7 +777,6 @@ HWY_INLINE float HardThreshFftw(V8 G[64], float sigma) {
 HWY_INLINE float WienerFftw(V8 G[64], const V8 R[64], float sigma) {
     const D8 d8;
     const auto vsig2 = hn::Set(d8, sigma * sigma);
-    const auto scaler = hn::Set(d8, 1.f / 4096.f);
     const auto vone = hn::Set(d8, 1.f);
     auto accw = hn::Zero(d8);
     for (int i = 0; i < 64; ++i) {
@@ -778,7 +787,7 @@ HWY_INLINE float WienerFftw(V8 G[64], const V8 R[64], float sigma) {
             w = hn::IfThenElse(hn::FirstN(d8, 1), vone, w);
         }
         accw = hn::MulAdd(w, w, accw);
-        G[i] = hn::Mul(hn::Mul(G[i], scaler), w);
+        G[i] = hn::Mul(G[i], w);
     }
     return 1.f / std::max(hn::ReduceSum(d8, accw), 1e-12f);
 }
@@ -789,23 +798,45 @@ void Bm3dFilter8(const float* src, int sstride, const Match* matches, int k, flo
 #if HWY_MAX_BYTES >= 32
     const D8 d8;
     const int kk = std::min(std::max(k, 1), 8);
-    V8 G[64];
-    for (int i = 0; i < 64; ++i) {
-        G[i] = hn::Zero(d8);
-    }
+    bool all_inside = true;
     for (int g = 0; g < kk; ++g) {
-        LoadPatch8(src, sstride, matches[g].x, matches[g].y, width, height, G + g * 8);
+        const int x = matches[g].x;
+        const int y = matches[g].y;
+        all_inside = all_inside && x >= 0 && y >= 0 && x + 8 <= width && y + 8 <= height;
+    }
+    V8 G[64];
+    if (all_inside) {
+        for (int g = 0; g < kk; ++g) {
+            LoadPatch8Inside(src, sstride, matches[g].x, matches[g].y, G + g * 8);
+        }
+    } else {
+        for (int g = 0; g < kk; ++g) {
+            LoadPatch8(src, sstride, matches[g].x, matches[g].y, width, height, G + g * 8);
+        }
+    }
+    for (int g = kk; g < 8; ++g) {
+        for (int r = 0; r < 8; ++r) {
+            G[g * 8 + r] = hn::Zero(d8);
+        }
     }
     // bm3dcpu: user sigma * (3/4)/255 * 64 * (hard ? 2.7 : 1). Host already /255.
     const float s = sigma * 0.75f * 64.f;
     float wgt = 1.f;
     if (wiener && ref) {
         V8 R[64];
-        for (int i = 0; i < 64; ++i) {
-            R[i] = hn::Zero(d8);
+        if (all_inside) {
+            for (int g = 0; g < kk; ++g) {
+                LoadPatch8Inside(ref, rstride, matches[g].x, matches[g].y, R + g * 8);
+            }
+        } else {
+            for (int g = 0; g < kk; ++g) {
+                LoadPatch8(ref, rstride, matches[g].x, matches[g].y, width, height, R + g * 8);
+            }
         }
-        for (int g = 0; g < kk; ++g) {
-            LoadPatch8(ref, rstride, matches[g].x, matches[g].y, width, height, R + g * 8);
+        for (int g = kk; g < 8; ++g) {
+            for (int r = 0; r < 8; ++r) {
+                R[g * 8 + r] = hn::Zero(d8);
+            }
         }
         Fftw3dFwd(G);
         Fftw3dFwd(R);
@@ -816,8 +847,14 @@ void Bm3dFilter8(const float* src, int sstride, const Match* matches, int k, flo
         wgt = HardThreshFftw(G, kBmHardLambda * s);
         Fftw3dInv(G);
     }
-    for (int g = 0; g < kk; ++g) {
-        AccPatch8(num, den, dstride, matches[g].x, matches[g].y, width, height, G + g * 8, wgt);
+    if (all_inside) {
+        for (int g = 0; g < kk; ++g) {
+            AccPatch8Inside(num, den, dstride, matches[g].x, matches[g].y, G + g * 8, wgt / 4096.f, wgt);
+        }
+    } else {
+        for (int g = 0; g < kk; ++g) {
+            AccPatch8(num, den, dstride, matches[g].x, matches[g].y, width, height, G + g * 8, wgt / 4096.f, wgt);
+        }
     }
 #else
     (void)src;

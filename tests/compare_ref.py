@@ -18,12 +18,40 @@ NLM_ISPC = os.environ.get("NLM_ISPC_SO", "/home/owen/vs-nlm-ispc/build/libvsnlm_
 WNNM_SO = os.environ.get("WNNM_SO", "")
 
 core.std.LoadPlugin(NSS)
-core.std.LoadPlugin(BM3DCPU)
-core.std.LoadPlugin(NLM_ISPC)
+
+
+def load_optional(path: str, label: str) -> bool:
+    if not path or not os.path.isfile(path):
+        print(f"reference plugin missing: {label} ({path or 'not configured'})")
+        return False
+    namespace = {"bm3dcpu": "bm3dcpu", "nlm_ispc": "nlm_ispc"}.get(label)
+    if namespace and hasattr(core, namespace):
+        return True
+    try:
+        core.std.LoadPlugin(path)
+    except Exception as exc:  # pragma: no cover - depends on the local VS host
+        # VapourSynth environments may auto-load plugins from their package
+        # directory before this script runs.
+        if namespace and hasattr(core, namespace):
+            return True
+        print(f"reference plugin unavailable: {label}: {exc}")
+        return False
+    return True
+
+
+has_bm3dcpu = load_optional(BM3DCPU, "bm3dcpu")
+has_nlm_ispc = load_optional(NLM_ISPC, "nlm_ispc")
 has_wnnm = False
-if WNNM_SO and os.path.isfile(WNNM_SO):
-    core.std.LoadPlugin(WNNM_SO)
-    has_wnnm = hasattr(core, "wnnm")
+if hasattr(core, "wnnm"):
+    has_wnnm = True
+elif WNNM_SO and os.path.isfile(WNNM_SO):
+    try:
+        core.std.LoadPlugin(WNNM_SO)
+        has_wnnm = hasattr(core, "wnnm")
+    except Exception as exc:  # pragma: no cover - depends on the local VS host
+        print(f"reference plugin unavailable: wnnm: {exc}")
+else:
+    print(f"reference plugin missing: wnnm ({WNNM_SO or 'not configured'})")
 
 
 def plane_clip(arr: np.ndarray, nframes: int) -> vs.VideoNode:
@@ -97,20 +125,22 @@ def run_case(tag: str, w: int, h: int, frames: int, threads: int) -> None:
     print(f"{'noisy vs clean':22s}  PSNR vs clean {psnr_db(noisy, clean):7.3f} dB")
 
     nlm_nss = core.nss.NLM(src, d=1, a=2, s=4, h=1.2, channels="Y")
-    nlm_ref = core.nlm_ispc.NLMeans(src, d=1, a=2, s=4, h=1.2, channels="Y")
     a = report("nss.NLM", clean, noisy, nlm_nss, frames)
-    b = report("nlm_ispc.NLMeans", clean, noisy, nlm_ref, frames)
-    print(f"{'NLM nss vs ref':22s}  PSNR {psnr_db(a['arr'], b['arr']):7.3f} dB  "
-          f"delta_clean {a['psnr_clean'] - b['psnr_clean']:+7.3f} dB  "
-          f"time {b['ms'] / a['ms'] if a['ms'] else 0:.2f}x (ref/nss)")
+    if has_nlm_ispc:
+        nlm_ref = core.nlm_ispc.NLMeans(src, d=1, a=2, s=4, h=1.2, channels="Y")
+        b = report("nlm_ispc.NLMeans", clean, noisy, nlm_ref, frames)
+        print(f"{'NLM nss vs ref':22s}  PSNR {psnr_db(a['arr'], b['arr']):7.3f} dB  "
+              f"delta_clean {a['psnr_clean'] - b['psnr_clean']:+7.3f} dB  "
+              f"time {b['ms'] / a['ms'] if a['ms'] else 0:.2f}x (ref/nss)")
 
     bm_nss = core.nss.BM3D(src, sigma=sigma, radius=0)
-    bm_ref = core.bm3dcpu.BM3D(src, sigma=sigma, radius=0)
     a = report("nss.BM3D", clean, noisy, bm_nss, frames)
-    b = report("bm3dcpu.BM3D", clean, noisy, bm_ref, frames)
-    print(f"{'BM3D nss vs ref':22s}  PSNR {psnr_db(a['arr'], b['arr']):7.3f} dB  "
-          f"delta_clean {a['psnr_clean'] - b['psnr_clean']:+7.3f} dB  "
-          f"time {b['ms'] / a['ms'] if a['ms'] else 0:.2f}x (ref/nss)")
+    if has_bm3dcpu:
+        bm_ref = core.bm3dcpu.BM3D(src, sigma=sigma, radius=0)
+        b = report("bm3dcpu.BM3D", clean, noisy, bm_ref, frames)
+        print(f"{'BM3D nss vs ref':22s}  PSNR {psnr_db(a['arr'], b['arr']):7.3f} dB  "
+              f"delta_clean {a['psnr_clean'] - b['psnr_clean']:+7.3f} dB  "
+              f"time {b['ms'] / a['ms'] if a['ms'] else 0:.2f}x (ref/nss)")
 
     if has_wnnm:
         w_nss = core.nss.WNNM(src, sigma=sigma, residual=0, radius=0)
@@ -126,7 +156,8 @@ def run_case(tag: str, w: int, h: int, frames: int, threads: int) -> None:
 
 
 def main() -> None:
-    print("plugins: nss, bm3dcpu, nlm_ispc", "+ wnnm" if has_wnnm else "(wnnm ref missing)")
+    print("plugins: nss" + (", bm3dcpu" if has_bm3dcpu else "") + (", nlm_ispc" if has_nlm_ispc else "") +
+          (", wnnm" if has_wnnm else ""))
     run_case("psnr", 256, 256, frames=1, threads=1)
     run_case("speed", 1280, 720, frames=2, threads=1)
     run_case("speed-2t", 1280, 720, frames=2, threads=2)

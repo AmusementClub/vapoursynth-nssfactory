@@ -13,8 +13,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <string>
 #include <vector>
+
+#ifndef NSS_VERSION_STRING
+#define NSS_VERSION_STRING "unknown"
+#endif
 
 namespace {
 
@@ -28,6 +33,115 @@ struct Plane {
     float* ptr() { return buf.data(); }
     const float* ptr() const { return buf.data(); }
 };
+
+struct BenchResult {
+    std::string name;
+    std::string group;
+    double ms = 0.0;
+    int iterations = 0;
+    int width = 0;
+    int height = 0;
+};
+
+std::string json_escape(const std::string& value) {
+    std::string out;
+    out.reserve(value.size() + 8);
+    for (const unsigned char ch : value) {
+        switch (ch) {
+        case '"':
+            out += "\\\"";
+            break;
+        case '\\':
+            out += "\\\\";
+            break;
+        case '\n':
+            out += "\\n";
+            break;
+        case '\r':
+            out += "\\r";
+            break;
+        case '\t':
+            out += "\\t";
+            break;
+        default:
+            if (ch < 0x20) {
+                out += '?';
+            } else {
+                out += static_cast<char>(ch);
+            }
+            break;
+        }
+    }
+    return out;
+}
+
+std::string cpu_description() {
+    if (const char* override_name = std::getenv("NSS_BENCH_CPU"); override_name && *override_name) {
+        return override_name;
+    }
+#if defined(__linux__)
+    std::ifstream cpuinfo("/proc/cpuinfo");
+    std::string line;
+    while (std::getline(cpuinfo, line)) {
+        constexpr const char* kPrefix = "model name\t: ";
+        if (line.rfind(kPrefix, 0) == 0) {
+            return line.substr(std::char_traits<char>::length(kPrefix));
+        }
+    }
+#endif
+#if defined(__aarch64__) || defined(__arm64__)
+    return "arm64";
+#elif defined(__x86_64__) || defined(_M_X64)
+    return "x86_64";
+#else
+    return "unknown";
+#endif
+}
+
+std::string compiler_description() {
+#if defined(__clang__)
+    return std::string("clang ") + __clang_version__;
+#elif defined(__GNUC__)
+    return std::string("gcc ") + __VERSION__;
+#elif defined(_MSC_VER)
+    return std::string("msvc ") + std::to_string(_MSC_VER);
+#else
+    return "unknown";
+#endif
+}
+
+int benchmark_thread_count() {
+    if (const char* value = std::getenv("NSS_BENCH_THREADS"); value && *value) {
+        char* end = nullptr;
+        const long parsed = std::strtol(value, &end, 10);
+        if (end != value && *end == '\0' && parsed > 0 && parsed < 100000) {
+            return static_cast<int>(parsed);
+        }
+    }
+    return 1;
+}
+
+unsigned benchmark_seed() {
+    if (const char* value = std::getenv("NSS_BENCH_SEED"); value && *value) {
+        char* end = nullptr;
+        const unsigned long parsed = std::strtoul(value, &end, 10);
+        if (end != value && *end == '\0' && parsed <= 0xffffffffUL) {
+            return static_cast<unsigned>(parsed);
+        }
+    }
+    return 42u;
+}
+
+unsigned benchmark_frame() {
+    if (const char* value = std::getenv("NSS_BENCH_FRAME"); value && *value) {
+        char* end = nullptr;
+        const unsigned long parsed = std::strtoul(value, &end, 10);
+        if (end != value && *end == '\0' && parsed <= 0xffffffffUL) {
+            return static_cast<unsigned>(parsed);
+        }
+    }
+    return 0u;
+}
 
 Plane make_plane(int w, int h, unsigned seed) {
     Plane p;
@@ -588,19 +702,41 @@ static void print_ms(const char* name, double ms, int iters, int w = 0, int h = 
 }
 
 int main(int argc, char** argv) {
-    std::string which = (argc > 1) ? argv[1] : "wave2";
+    bool json = std::getenv("NSS_BENCH_JSON") != nullptr;
+    std::vector<const char*> positional;
+    positional.reserve(static_cast<std::size_t>(argc));
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--json") == 0) {
+            json = true;
+        } else {
+            positional.push_back(argv[i]);
+        }
+    }
+    std::string which = positional.empty() ? "wave2" : positional[0];
     const bool wave2_default = (which == "wave2" || which == "kernels" || which == "nlh" || which == "mcwnnm" ||
                                 which == "twsc" || which == "ncsr" || which == "lssc" || which == "nlh_pixel" ||
                                 which == "nlh_group" || which == "mcwnnm_group" || which == "twsc_group" ||
                                 which == "ncsr_group" || which == "lssc_ista" || which == "svd64" || which == "svd192");
-    const int w = (argc > 2) ? std::atoi(argv[2]) : (wave2_default ? 256 : 1280);
-    const int h = (argc > 3) ? std::atoi(argv[3]) : (wave2_default ? 256 : 720);
-    const int frame_iters = (argc > 4) ? std::max(1, std::atoi(argv[4])) : 1;
+    const int w = (positional.size() > 1) ? std::atoi(positional[1]) : (wave2_default ? 256 : 1280);
+    const int h = (positional.size() > 2) ? std::atoi(positional[2]) : (wave2_default ? 256 : 720);
+    const int frame_iters = (positional.size() > 3) ? std::max(1, std::atoi(positional[3])) : 1;
     const bool warmup = std::getenv("NSS_NO_WARMUP") == nullptr;
-    Plane src = make_plane(w, h, 42);
-    Plane p1 = make_plane(w, h, 43);
-    Plane p2 = make_plane(w, h, 44);
-    std::printf("plane %dx%d stride=%d which=%s warmup=%d\n", w, h, src.stride, which.c_str(), warmup ? 1 : 0);
+    const int thread_count = benchmark_thread_count();
+    const std::string cpu = cpu_description();
+    const std::string compiler = compiler_description();
+    const std::string revision = NSS_VERSION_STRING;
+    const unsigned seed = benchmark_seed();
+    const unsigned frame = benchmark_frame();
+    // Keep frame number in the generated content so paired runs exercise
+    // distinct frame states while remaining deterministic for each pair.
+    const unsigned content_seed = seed + frame * 2654435761u;
+    Plane src = make_plane(w, h, content_seed);
+    Plane p1 = make_plane(w, h, content_seed + 1u);
+    Plane p2 = make_plane(w, h, content_seed + 2u);
+    if (!json) {
+        std::printf("plane %dx%d stride=%d which=%s warmup=%d\n", w, h, src.stride, which.c_str(), warmup ? 1 : 0);
+    }
+    std::vector<BenchResult> results;
 
     auto want = [&](const char* name, const char* group) {
         return which == "all" || which == name || (group && which == group);
@@ -612,8 +748,13 @@ int main(int argc, char** argv) {
         if (warmup) {
             fn(1);
         }
-        print_ms(name, fn(iters), iters, pw, ph);
-        std::fflush(stdout);
+        const double ms = fn(iters);
+        if (json) {
+            results.push_back(BenchResult{std::string(name), std::string(group ? group : ""), ms, iters, pw, ph});
+        } else {
+            print_ms(name, ms, iters, pw, ph);
+            std::fflush(stdout);
+        }
     };
 
     run("ssd", "wave1", [&](int n) { return bench_ssd(src, n); }, 200000);
@@ -621,9 +762,9 @@ int main(int argc, char** argv) {
     run("pack", "wave1", [&](int n) { return bench_pack_unpack(src, n); }, 20000);
     run("dct8", "wave1", [&](int n) { return bench_dct(n); }, 50000);
     run("bm3d_group", "wave1", [&](int n) { return bench_bm3d_group(n); }, 2000);
-    run("bm3d", "wave1", [&](int n) { return bench_bm3d_frame(src, n); }, 2, w, h);
-    run("nlm", "wave1", [&](int n) { return bench_nlm(src, n); }, 2, w, h);
-    run("wnnm", "wave1", [&](int n) { return bench_wnnm_frame(src, n); }, 1, w, h);
+    run("bm3d", "wave1", [&](int n) { return bench_bm3d_frame(src, n); }, frame_iters, w, h);
+    run("nlm", "wave1", [&](int n) { return bench_nlm(src, n); }, frame_iters, w, h);
+    run("wnnm", "wave1", [&](int n) { return bench_wnnm_frame(src, n); }, frame_iters, w, h);
 
     run("nlh", "wave2", [&](int n) { return bench_nlh_frame(src, n); }, frame_iters, w, h);
     run("mcwnnm", "wave2", [&](int n) { return bench_mcwnnm_frame(src, p1, p2, n); }, frame_iters, w, h);
@@ -639,5 +780,30 @@ int main(int argc, char** argv) {
     run("lssc_ista", "kernels", [&](int n) { return bench_lssc_ista(n); }, 80);
     run("svd64", "kernels", [&](int n) { return bench_svd(64, 8, n); }, 2000);
     run("svd192", "kernels", [&](int n) { return bench_svd(192, 8, n); }, 800);
+    if (json) {
+        std::printf("{\"schema\":\"nssfactory.bench.v2\",\"which\":\"%s\","
+                    "\"git_revision\":\"%s\",\"compiler\":\"%s\",\"cpu\":\"%s\","
+                    "\"width\":%d,\"height\":%d,\"input_shape\":\"%dx%d\","
+                    "\"seed\":%u,\"frame_number\":%u,\"thread_count\":%d,\"warmup\":%s,"
+                    "\"timing\":{\"clock\":\"steady_clock\",\"provenance\":\"process_wall_time\","
+                    "\"worker_time_ms\":null},"
+                    "\"filter_parameters\":{\"block\":8,\"step\":8,\"group\":8,"
+                    "\"bm_range\":7,\"sigma\":3,\"nlm_d\":1,\"nlm_a\":2,\"nlm_s\":4,"
+                    "\"nlm_h\":1.2,\"radius\":0,\"iterations\":%d},\"results\":[",
+                    json_escape(which).c_str(), json_escape(revision).c_str(), json_escape(compiler).c_str(),
+                    json_escape(cpu).c_str(), w, h, w, h, seed, frame, thread_count, warmup ? "true" : "false",
+                    frame_iters);
+        for (std::size_t i = 0; i < results.size(); ++i) {
+            const auto& r = results[i];
+            if (i != 0) {
+                std::printf(",");
+            }
+            std::printf("{\"name\":\"%s\",\"group\":\"%s\",\"wall_time_ms\":%.9g,"
+                        "\"milliseconds\":%.9g,\"iterations\":%d,\"width\":%d,\"height\":%d}",
+                        json_escape(r.name).c_str(), json_escape(r.group).c_str(), r.ms, r.ms, r.iterations, r.width,
+                        r.height);
+        }
+        std::printf("]}\n");
+    }
     return 0;
 }

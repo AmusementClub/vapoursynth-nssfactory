@@ -187,6 +187,35 @@ static void wiener_ac(float* y, const float* r, int q, int n, float sig2, float*
     }
 }
 
+static void bi_wiener_4x16(float* y, float* r, float sig2, float* w2sum) {
+    Haar2d_4x16(y, false);
+    Haar2d_4x16(r, false);
+
+    const hn::ScalableTag<float> d;
+    const auto vsig2 = hn::Set(d, sig2);
+    const float dc = y[0];
+    for (int i = 0; i < 64; i += 16) {
+        const auto vr = hn::LoadU(d, r + i);
+        const auto r2 = hn::Mul(vr, vr);
+        const auto w = hn::Div(r2, hn::Add(r2, vsig2));
+        hn::StoreU(w, d, r + i);
+        hn::StoreU(hn::Mul(hn::LoadU(d, y + i), w), d, y + i);
+    }
+
+    y[0] = dc;
+    r[0] = 1.f;
+    for (int c = 1; c < 16; ++c) {
+        y[c * 4 + 2] = 0.f;
+        y[c * 4 + 3] = 0.f;
+        r[c * 4 + 2] = 0.f;
+        r[c * 4 + 3] = 0.f;
+    }
+    for (int i = 0; i < 64; ++i) {
+        *w2sum += r[i] * r[i];
+    }
+    Haar2d_4x16(y, true);
+}
+
 static void bi_hard_2d(float* y, int q, int n, float thr, int* kept) {
     haar2d(y, q, n, false);
     coeff_hard(y, q, n, thr);
@@ -250,16 +279,21 @@ void NlhFilterGroup(float* patches, int m, int n, int lda, int q, float sigma, b
     int kept = 0;
     float w2sum = 0.f;
 
-    const bool fast416 = (q == 4 && n_use == 16 && !(wiener && ref_patches));
+    const bool fast416 =
+        q == 4 && n_use == 16 && static_cast<int>(hn::Lanes(hn::ScalableTag<float>())) == 16;
     for (int row = 0; row < m; ++row) {
         const int* rows = idx + row * q;
         gather_rows_fix(y, src, lda, rows, q, n_use);
         if (wiener && ref_patches) {
             gather_rows_fix(rbuf, ref_patches, lda, rows, q, n_use);
-            haar2d(y, q, n_use, false);
-            haar2d(rbuf, q, n_use, false);
-            wiener_ac(y, rbuf, q, n_use, sig2, &w2sum);
-            haar2d(y, q, n_use, true);
+            if (fast416) {
+                bi_wiener_4x16(y, rbuf, sig2, &w2sum);
+            } else {
+                haar2d(y, q, n_use, false);
+                haar2d(rbuf, q, n_use, false);
+                wiener_ac(y, rbuf, q, n_use, sig2, &w2sum);
+                haar2d(y, q, n_use, true);
+            }
         } else if (fast416) {
             bi_hard_4x16(y, thr, &kept);
         } else {

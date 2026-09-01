@@ -41,14 +41,12 @@ void copy_mat(const float* src, int lds, float* dst, int ldd, int rows, int cols
     }
 }
 
-int householder_qr(int m, int n, const float* A, int lda, float* Q, int ldq, float* R, int ldr, Bump& bump) {
+int householder_qr(int m, int n, const float* A, int lda, float* R, int ldr, float* Vh, float* beta, Bump& bump) {
     float* W = bump.take(m * n);
-    float* V = bump.take(m * n);
-    float* beta = bump.take(n);
-    if (!W || !V || !beta) {
+    if (!W) {
         return -1;
     }
-    return householder_qr_hwy(m, n, A, lda, Q, ldq, R, ldr, W, V, beta);
+    return householder_qr_hwy(m, n, A, lda, nullptr, 0, R, ldr, W, Vh, beta, false);
 }
 
 void jacobi_svd_n(int n, const float* A, int lda, float* U, int ldu, float* S, float* Vt, int ldvt, float* V) {
@@ -138,14 +136,15 @@ void jacobi_svd_n(int n, const float* A, int lda, float* U, int ldu, float* S, f
 }
 
 int svd_mn(int m, int n, const float* A, int lda, float* U, int ldu, float* S, float* Vt, int ldvt, Bump& bump) {
-    float* Q = bump.take(m * n);
     float* R = bump.take(n * n);
     float* Ur = bump.take(n * n);
     float* Vj = bump.take(n * n);
-    if (!Q || !R || !Ur || !Vj) {
+    float* Vh = bump.take(m * n);
+    float* beta = bump.take(n);
+    if (!R || !Ur || !Vj || !Vh || !beta) {
         return -1;
     }
-    if (householder_qr(m, n, A, lda, Q, m, R, n, bump) != 0) {
+    if (householder_qr(m, n, A, lda, R, n, Vh, beta, bump) != 0) {
         return -1;
     }
     if (n == 8) {
@@ -153,7 +152,19 @@ int svd_mn(int m, int n, const float* A, int lda, float* U, int ldu, float* S, f
     } else {
         jacobi_svd_n(n, R, n, Ur, n, S, Vt, ldvt, Vj);
     }
-    gemm_nn_hwy(m, n, n, Q, m, Ur, n, U, ldu);
+    // U starts as [U_R; 0]. Applying the stored reflectors directly avoids
+    // materializing Q and a second matrix multiplication.
+    for (int j = 0; j < n; ++j) {
+        for (int i = 0; i < m; ++i) {
+            U[i + j * ldu] = (i < n) ? Ur[i + j * n] : 0.f;
+        }
+    }
+    for (int k = n - 1; k >= 0; --k) {
+        if (beta[k] == 0.f) {
+            continue;
+        }
+        apply_householder_hwy(U + k, ldu, n, Vh + k + k * m, m - k, beta[k]);
+    }
     return 0;
 }
 

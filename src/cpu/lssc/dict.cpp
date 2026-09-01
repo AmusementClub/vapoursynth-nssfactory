@@ -3,6 +3,7 @@
 #include "cpu/wnnm/jacobi8.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <vector>
@@ -36,14 +37,16 @@ void fill_dct_atoms(float* D, int m, int atoms, int ldd, int block) {
         return;
     }
     const int n_dct = std::min(atoms, m);
-    std::vector<std::pair<int, int>> order;
-    order.reserve(static_cast<std::size_t>(m));
+    std::array<std::pair<int, int>, kSvdMaxM> order{};
+    int order_count = 0;
     for (int v = 0; v < block; ++v) {
         for (int u = 0; u < block; ++u) {
-            order.push_back({u + v, u + v * block});
+            if (order_count < static_cast<int>(order.size())) {
+                order[static_cast<std::size_t>(order_count++)] = {u + v, u + v * block};
+            }
         }
     }
-    std::sort(order.begin(), order.end());
+    std::sort(order.begin(), order.begin() + order_count);
     for (int a = 0; a < n_dct; ++a) {
         float* col = D + static_cast<std::size_t>(a) * static_cast<std::size_t>(ldd);
         std::memset(col, 0, static_cast<std::size_t>(m) * sizeof(float));
@@ -75,13 +78,34 @@ void fill_patch_atoms(float* D, int m, int atoms, int ldd, const float* patches,
     }
 }
 
-void ksvd_lite(float* D, int m, int atoms, int ldd, const float* patches, int n, int lda, int iters) {
+bool ksvd_lite_workspace(float* D, int m, int atoms, int ldd, const float* patches, int n, int lda, int iters,
+                         float* work, int work_floats) {
     if (iters < 1 || n < 2 || atoms < 1) {
-        return;
+        return true;
+    }
+    if (!work || work_floats < lssc_dict_work_floats(m, atoms, n, iters)) {
+        return false;
     }
     const int ns = std::min(n, 256);
     const int sparsity = 8;
-    std::vector<float> Y(static_cast<std::size_t>(m) * static_cast<std::size_t>(ns), 0.f);
+    const int nsvd = std::min(ns, kSvdMaxN);
+    float* Y = work;
+    float* A = Y + static_cast<std::size_t>(m) * static_cast<std::size_t>(ns);
+    float* aj = A + static_cast<std::size_t>(atoms) * static_cast<std::size_t>(ns);
+    float* E = aj + atoms;
+    float* U = E + static_cast<std::size_t>(m) * static_cast<std::size_t>(nsvd);
+    float* S = U + static_cast<std::size_t>(m) * static_cast<std::size_t>(nsvd);
+    float* Vt = S + nsvd;
+    int* supp = reinterpret_cast<int*>(Vt + static_cast<std::size_t>(nsvd) * static_cast<std::size_t>(nsvd));
+    float* R = reinterpret_cast<float*>(supp + nsvd);
+    float* dold = R + static_cast<std::size_t>(m) * static_cast<std::size_t>(ns);
+    float* aold = dold + m;
+    const int omp_work_n = lssc_omp_work_floats(m, atoms, sparsity);
+    float* omp_work = aold + nsvd;
+
+    std::fill(Y, Y + static_cast<std::size_t>(m) * static_cast<std::size_t>(ns), 0.f);
+    std::fill(A, A + static_cast<std::size_t>(atoms) * static_cast<std::size_t>(ns), 0.f);
+    std::fill(R, R + static_cast<std::size_t>(m) * static_cast<std::size_t>(ns), 0.f);
     for (int j = 0; j < ns; ++j) {
         const int src = (j * n) / ns;
         const float* p = patches + static_cast<std::size_t>(src) * static_cast<std::size_t>(lda);
@@ -90,33 +114,30 @@ void ksvd_lite(float* D, int m, int atoms, int ldd, const float* patches, int n,
             mean += p[i];
         }
         mean /= static_cast<float>(m);
-        float* yj = Y.data() + static_cast<std::size_t>(j) * static_cast<std::size_t>(m);
+        float* yj = Y + static_cast<std::size_t>(j) * static_cast<std::size_t>(m);
         for (int i = 0; i < m; ++i) {
             yj[i] = p[i] - mean;
         }
     }
 
-    std::vector<float> A(static_cast<std::size_t>(atoms) * static_cast<std::size_t>(ns), 0.f);
-    std::vector<float> aj(static_cast<std::size_t>(atoms), 0.f);
-    const int nsvd = std::min(ns, kSvdMaxN);
-    std::vector<float> E(static_cast<std::size_t>(m) * static_cast<std::size_t>(nsvd), 0.f);
-    std::vector<float> U(static_cast<std::size_t>(m) * static_cast<std::size_t>(nsvd), 0.f);
-    std::vector<float> S(static_cast<std::size_t>(nsvd), 0.f);
-    std::vector<float> Vt(static_cast<std::size_t>(nsvd) * static_cast<std::size_t>(nsvd), 0.f);
-    std::vector<int> supp(static_cast<std::size_t>(nsvd), 0);
-    std::vector<float> R(static_cast<std::size_t>(m) * static_cast<std::size_t>(ns), 0.f);
-    std::vector<float> dold(static_cast<std::size_t>(m), 0.f);
-    std::vector<float> aold(static_cast<std::size_t>(nsvd), 0.f);
+    std::fill(aj, aj + atoms, 0.f);
+    std::fill(E, E + static_cast<std::size_t>(m) * static_cast<std::size_t>(nsvd), 0.f);
+    std::fill(U, U + static_cast<std::size_t>(m) * static_cast<std::size_t>(nsvd), 0.f);
+    std::fill(S, S + nsvd, 0.f);
+    std::fill(Vt, Vt + static_cast<std::size_t>(nsvd) * static_cast<std::size_t>(nsvd), 0.f);
+    std::fill(supp, supp + nsvd, 0);
+    std::fill(dold, dold + m, 0.f);
+    std::fill(aold, aold + nsvd, 0.f);
 
     for (int it = 0; it < iters; ++it) {
         for (int j = 0; j < ns; ++j) {
-            lssc_omp(Y.data() + static_cast<std::size_t>(j) * static_cast<std::size_t>(m), m, D, atoms, ldd, sparsity,
-                     aj.data());
+            lssc_omp_workspace(Y + static_cast<std::size_t>(j) * static_cast<std::size_t>(m), m, D, atoms, ldd,
+                               sparsity, aj, omp_work, omp_work_n);
             for (int k = 0; k < atoms; ++k) {
-                A[k + j * atoms] = aj[static_cast<std::size_t>(k)];
+                A[k + j * atoms] = aj[k];
             }
         }
-        gemm_nn_hwy(m, ns, atoms, D, ldd, A.data(), atoms, R.data(), m);
+        gemm_nn_hwy(m, ns, atoms, D, ldd, A, atoms, R, m);
         for (int k = 0; k < atoms; ++k) {
             int nsup = 0;
             for (int j = 0; j < ns && nsup < nsvd; ++j) {
@@ -128,13 +149,13 @@ void ksvd_lite(float* D, int m, int atoms, int ldd, const float* patches, int n,
                 continue;
             }
             float* dk = D + static_cast<std::size_t>(k) * static_cast<std::size_t>(ldd);
-            std::memcpy(dold.data(), dk, static_cast<std::size_t>(m) * sizeof(float));
+            std::memcpy(dold, dk, static_cast<std::size_t>(m) * sizeof(float));
             for (int t = 0; t < nsup; ++t) {
                 const int j = supp[static_cast<std::size_t>(t)];
-                aold[static_cast<std::size_t>(t)] = A[k + j * atoms];
-                const float* yj = Y.data() + static_cast<std::size_t>(j) * static_cast<std::size_t>(m);
-                const float* rj = R.data() + static_cast<std::size_t>(j) * static_cast<std::size_t>(m);
-                float* et = E.data() + static_cast<std::size_t>(t) * static_cast<std::size_t>(m);
+                    aold[static_cast<std::size_t>(t)] = A[k + j * atoms];
+                const float* yj = Y + static_cast<std::size_t>(j) * static_cast<std::size_t>(m);
+                const float* rj = R + static_cast<std::size_t>(j) * static_cast<std::size_t>(m);
+                float* et = E + static_cast<std::size_t>(t) * static_cast<std::size_t>(m);
                 const float akj = aold[static_cast<std::size_t>(t)];
                 for (int i = 0; i < m; ++i) {
                     et[i] = yj[i] - rj[i] + dold[static_cast<std::size_t>(i)] * akj;
@@ -143,7 +164,7 @@ void ksvd_lite(float* D, int m, int atoms, int ldd, const float* patches, int n,
             if (m > kSvdMaxM || nsup > kSvdMaxN) {
                 continue;
             }
-            if (svd_economy(m, nsup, E.data(), m, U.data(), m, S.data(), Vt.data(), nsup) != 0) {
+            if (svd_economy(m, nsup, E, m, U, m, S, Vt, nsup) != 0) {
                 continue;
             }
             float sign = 1.f;
@@ -164,19 +185,20 @@ void ksvd_lite(float* D, int m, int atoms, int ldd, const float* patches, int n,
                 const float an = sign * s0 * Vt[static_cast<std::size_t>(t) * static_cast<std::size_t>(nsup)];
                 const float ao = aold[static_cast<std::size_t>(t)];
                 A[k + j * atoms] = an;
-                float* rj = R.data() + static_cast<std::size_t>(j) * static_cast<std::size_t>(m);
+                float* rj = R + static_cast<std::size_t>(j) * static_cast<std::size_t>(m);
                 for (int i = 0; i < m; ++i) {
                     rj[i] += dk[i] * an - dold[static_cast<std::size_t>(i)] * ao;
                 }
             }
         }
     }
+    return true;
 }
 
 }  // namespace
 
-void lssc_dict_init(float* D, int m, int atoms, int ldd, const float* patches, int n, int lda, int block,
-                    int ksvd_iters, unsigned seed) {
+void lssc_dict_init_workspace(float* D, int m, int atoms, int ldd, const float* patches, int n, int lda, int block,
+                              int ksvd_iters, unsigned seed, float* work, int work_floats) {
     if (!D || m < 1 || atoms < 1 || ldd < m) {
         return;
     }
@@ -203,9 +225,16 @@ void lssc_dict_init(float* D, int m, int atoms, int ldd, const float* patches, i
     if (iters > 8) {
         iters = 8;
     }
-    if (patches && n > 0 && lda >= m) {
-        ksvd_lite(D, m, atoms, ldd, patches, n, lda, iters);
+    if (patches && n > 0 && lda >= m && iters > 0) {
+        (void)ksvd_lite_workspace(D, m, atoms, ldd, patches, n, lda, iters, work, work_floats);
     }
+}
+
+void lssc_dict_init(float* D, int m, int atoms, int ldd, const float* patches, int n, int lda, int block,
+                    int ksvd_iters, unsigned seed) {
+    const int need = lssc_dict_work_floats(m, atoms, n, ksvd_iters);
+    std::vector<float> work(static_cast<std::size_t>(std::max(1, need)), 0.f);
+    lssc_dict_init_workspace(D, m, atoms, ldd, patches, n, lda, block, ksvd_iters, seed, work.data(), need);
 }
 
 }  // namespace nss

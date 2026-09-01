@@ -4,6 +4,7 @@
 #include "nss/plane.hpp"
 
 #include <cstddef>
+#include <cstdint>
 
 namespace nss {
 
@@ -20,9 +21,18 @@ void nlm_distance_yuv_f32(float* dst, const float* c0, const float* c1, const fl
 void nlm_distance_rgb_f32(float* dst, const float* c0, const float* c1, const float* c2,
                           const float* n0, const float* n1, const float* n2,
                           int ox, int oy, int w, int h, int stride);
+// Plane-stride aware distance path used when a multi-plane frame does not
+// expose one common row stride. The destination is a packed map with
+// `dst_stride`; source pointers are row-zero bases for the local stripe.
+void nlm_distance_strided_f32(float* dst, const float* const* center, const int* center_strides,
+                              const float* const* neighbor, const int* neighbor_strides,
+                              ChannelMode mode, int ox, int oy, int w, int h, int dst_stride);
 void nlm_horizontal(float* dst, const float* src, int s, int w, int h, int stride);
 void nlm_vertical_welsch(float* dst, const float* src, int radius, float h2_inv_norm,
                          int w, int h, int stride, float* buffer);
+// Writes only source rows [y0, y1) to a compact destination whose row zero is y0.
+void nlm_vertical_welsch_range(float* dst, const float* src, int radius, float h2_inv_norm,
+                               int w, int h, int stride, int y0, int y1, float* buffer);
 void nlm_accum_ch1(float* weight, float* wdst, float* maxw,
                    const float* src_bwd, const float* src_fwd,
                    const float* temp1, const float* temp2,
@@ -37,6 +47,44 @@ void nlm_accum_ch3(float* weight, float* wdst0, float* wdst1, float* wdst2, floa
                    const float* s0_fwd, const float* s1_fwd, const float* s2_fwd,
                    const float* temp1, const float* temp2,
                    int ox, int oy, int w, int h, int stride);
+// Range variants keep the distance/box buffers in an extended stripe while
+// writing accumulation state only for [y0, y1).  `h` remains the full stripe
+// height so replicated border and mirrored temporal coordinates are unchanged.
+void nlm_accum_ch1_range(float* weight, float* wdst, float* maxw,
+                         const float* src_bwd, const float* src_fwd,
+                         const float* temp1, const float* temp2,
+                         int ox, int oy, int w, int h, int stride, int y0, int y1);
+void nlm_accum_ch2_range(float* weight, float* wdst0, float* wdst1, float* maxw,
+                         const float* s0_bwd, const float* s1_bwd,
+                         const float* s0_fwd, const float* s1_fwd,
+                         const float* temp1, const float* temp2,
+                         int ox, int oy, int w, int h, int stride, int y0, int y1);
+void nlm_accum_ch3_range(float* weight, float* wdst0, float* wdst1, float* wdst2, float* maxw,
+                         const float* s0_bwd, const float* s1_bwd, const float* s2_bwd,
+                         const float* s0_fwd, const float* s1_fwd, const float* s2_fwd,
+                         const float* temp1, const float* temp2,
+                         int ox, int oy, int w, int h, int stride, int y0, int y1);
+void nlm_accum_ch1_core_range(float* weight, float* wdst, float* maxw,
+                              const float* src_bwd, const float* src_fwd,
+                              const float* temp1_core, const float* temp2,
+                              int ox, int oy, int w, int h, int stride, int y0, int y1, int temp2_base_y = 0);
+void nlm_accum_ch2_core_range(float* weight, float* wdst0, float* wdst1, float* maxw,
+                              const float* s0_bwd, const float* s1_bwd,
+                              const float* s0_fwd, const float* s1_fwd,
+                              const float* temp1_core, const float* temp2,
+                              int ox, int oy, int w, int h, int stride, int y0, int y1, int temp2_base_y = 0);
+void nlm_accum_ch3_core_range(float* weight, float* wdst0, float* wdst1, float* wdst2, float* maxw,
+                              const float* s0_bwd, const float* s1_bwd, const float* s2_bwd,
+                              const float* s0_fwd, const float* s1_fwd, const float* s2_fwd,
+                              const float* temp1_core, const float* temp2,
+                              int ox, int oy, int w, int h, int stride, int y0, int y1, int temp2_base_y = 0);
+// Generic scalar fallback for mixed source-plane strides. `temp1_base_y` is
+// zero for a full/range map and y0 for a core-only temp1 map.
+void nlm_accum_strided(float* weight, float* wdst0, float* wdst1, float* wdst2, float* maxw,
+                       const float* const* src_bwd, const int* src_bwd_strides,
+                       const float* const* src_fwd, const int* src_fwd_strides,
+                       const float* temp1, const float* temp2, int nch,
+                       int ox, int oy, int w, int h, int stride, int y0, int y1, int temp1_base_y);
 void nlm_finish_ch1(float* dst, const float* src, const float* weight, const float* wdst,
                     const float* maxw, float wref, int w, int h, int stride);
 void nlm_finish_ch2(float* d0, float* d1, const float* s0, const float* s1,
@@ -46,6 +94,11 @@ void nlm_finish_ch3(float* d0, float* d1, float* d2,
                     const float* s0, const float* s1, const float* s2,
                     const float* weight, const float* wdst0, const float* wdst1, const float* wdst2,
                     const float* maxw, float wref, int w, int h, int stride);
+// Plane-stride aware finish path. Source and destination pointers are
+// row-zero bases for the output core, while accumulation maps use `map_stride`.
+void nlm_finish_strided(float* const* dst, const int* dst_strides, const float* const* src,
+                        const int* src_strides, const float* weight, const float* const* wdst,
+                        const float* maxw, float wref, int nch, int w, int h, int map_stride);
 
 void dct_1d(const float* in, float* out, int n);
 void idct_1d(const float* in, float* out, int n);
@@ -64,6 +117,8 @@ struct Match {
     int y = 0;
     int t = 0;
     float dist = 0.f;
+    // Candidate traversal order makes equal-distance selection deterministic.
+    std::uint32_t ordinal = 0;
 };
 
 int spatial_match(const float* ref, int stride, int width, int height,

@@ -142,6 +142,43 @@ static inline hn::Vec<hn::Half<hn::ScalableTag<float>>> Haar8Zip4(
     return hn::TableLookupLanes(hn::Combine(d8, hi, lo), hn::SetTableIndices(d8, kZip));
 }
 
+static inline hn::Vec<hn::Half<hn::Half<hn::ScalableTag<float>>>> Haar4VecFwd(
+    hn::Vec<hn::Half<hn::Half<hn::ScalableTag<float>>>> v) {
+    const hn::Half<hn::Half<hn::ScalableTag<float>>> d4;
+    const auto s4 = hn::Set(d4, kHaarInvSqrt2);
+    alignas(16) static constexpr int32_t kEven[4] = {0, 2, 0, 2};
+    alignas(16) static constexpr int32_t kOdd[4] = {1, 3, 1, 3};
+    alignas(16) static constexpr int32_t kRoot0[4] = {0, 0, 2, 3};
+    alignas(16) static constexpr int32_t kRoot1[4] = {1, 1, 2, 3};
+    const auto even = hn::TableLookupLanes(v, hn::SetTableIndices(d4, kEven));
+    const auto odd = hn::TableLookupLanes(v, hn::SetTableIndices(d4, kOdd));
+    const auto sums = hn::Mul(hn::Add(even, odd), s4);
+    const auto diffs = hn::Mul(hn::Sub(even, odd), s4);
+    const auto pairs = hn::IfThenElse(hn::FirstN(d4, 2), sums, diffs);
+    const auto root0 = hn::TableLookupLanes(pairs, hn::SetTableIndices(d4, kRoot0));
+    const auto root1 = hn::TableLookupLanes(pairs, hn::SetTableIndices(d4, kRoot1));
+    const auto root_sum = hn::Mul(hn::Add(root0, root1), s4);
+    const auto root_diff = hn::Mul(hn::Sub(root0, root1), s4);
+    return hn::IfThenElse(hn::FirstN(d4, 2), hn::OddEven(root_diff, root_sum), pairs);
+}
+
+static inline hn::Vec<hn::Half<hn::Half<hn::ScalableTag<float>>>> Haar4VecInv(
+    hn::Vec<hn::Half<hn::Half<hn::ScalableTag<float>>>> v) {
+    const hn::Half<hn::Half<hn::ScalableTag<float>>> d4;
+    const auto s4 = hn::Set(d4, kHaarInvSqrt2);
+    alignas(16) static constexpr int32_t kRoot0[4] = {0, 0, 0, 0};
+    alignas(16) static constexpr int32_t kRoot1[4] = {1, 1, 1, 1};
+    alignas(16) static constexpr int32_t kBase[4] = {0, 0, 1, 1};
+    alignas(16) static constexpr int32_t kDetail[4] = {2, 2, 3, 3};
+    const auto root0 = hn::TableLookupLanes(v, hn::SetTableIndices(d4, kRoot0));
+    const auto root1 = hn::TableLookupLanes(v, hn::SetTableIndices(d4, kRoot1));
+    const auto roots = hn::OddEven(hn::Mul(hn::Sub(root0, root1), s4),
+                                   hn::Mul(hn::Add(root0, root1), s4));
+    const auto base = hn::TableLookupLanes(roots, hn::SetTableIndices(d4, kBase));
+    const auto detail = hn::TableLookupLanes(v, hn::SetTableIndices(d4, kDetail));
+    return hn::OddEven(hn::Mul(hn::Sub(base, detail), s4), hn::Mul(hn::Add(base, detail), s4));
+}
+
 static inline hn::Vec<hn::ScalableTag<float>> Haar16VecFwd(hn::Vec<hn::ScalableTag<float>> v) {
     const hn::ScalableTag<float> d16;
     const hn::Half<hn::ScalableTag<float>> d8;
@@ -158,10 +195,7 @@ static inline hn::Vec<hn::ScalableTag<float>> Haar16VecFwd(hn::Vec<hn::ScalableT
     const auto odd8 = hn::ConcatOdd(d8, lo8, lo8);
     lo8 = hn::Combine(d8, hn::LowerHalf(hn::Mul(hn::Sub(even8, odd8), s8)),
                       hn::LowerHalf(hn::Mul(hn::Add(even8, odd8), s8)));
-    float p[4];
-    hn::StoreU(hn::LowerHalf(lo8), d4, p);
-    Haar1dN(p, p, 4);
-    lo8 = hn::Combine(d8, hn::UpperHalf(d4, lo8), hn::LoadU(d4, p));
+    lo8 = hn::Combine(d8, hn::UpperHalf(d4, lo8), Haar4VecFwd(hn::LowerHalf(lo8)));
     return hn::Combine(d16, hi8, lo8);
 }
 
@@ -173,10 +207,7 @@ static inline hn::Vec<hn::ScalableTag<float>> Haar16VecInv(hn::Vec<hn::ScalableT
     const auto s4 = hn::Set(d4, kHaarInvSqrt2);
     auto lo8 = hn::LowerHalf(d8, v);
     const auto hi8 = hn::UpperHalf(d8, v);
-    float p[4];
-    hn::StoreU(hn::LowerHalf(lo8), d4, p);
-    IHaar1dN(p, p, 4);
-    const auto lo4 = hn::LoadU(d4, p);
+    const auto lo4 = Haar4VecInv(hn::LowerHalf(lo8));
     const auto hi4 = hn::UpperHalf(d4, lo8);
     lo8 = Haar8Zip4(hn::Mul(hn::Add(lo4, hi4), s4), hn::Mul(hn::Sub(lo4, hi4), s4));
     const auto s8 = hn::Set(d8, kHaarInvSqrt2);

@@ -183,6 +183,97 @@ int lssc_omp(const float* y, int m, const float* D, int atoms, int ldd, int spar
     return ksel;
 }
 
+int lssc_omp_workspace(const float* y, int m, const float* D, int atoms, int ldd, int sparsity, float* a,
+                       float* work, int work_floats) {
+    if (!y || !D || !a || m < 1 || atoms < 1 || ldd < m) {
+        return 0;
+    }
+    // Preserve lssc_omp's contract: non-positive sparsity clears the output
+    // and performs no selection, even when the caller does not provide work.
+    std::memset(a, 0, static_cast<std::size_t>(atoms) * sizeof(float));
+    if (sparsity < 1) {
+        return 0;
+    }
+    if (!work || work_floats < lssc_omp_work_floats(m, atoms, sparsity)) {
+        return 0;
+    }
+    const int kmax = std::min(8, std::min(atoms, sparsity));
+    const int support_f = (kmax * static_cast<int>(sizeof(int)) + static_cast<int>(sizeof(float)) - 1) /
+                          static_cast<int>(sizeof(float));
+    float* r = work;
+    int* supp = reinterpret_cast<int*>(r + m);
+    char* used = reinterpret_cast<char*>(r + m + support_f);
+    float* Ds = r + m + support_f + atoms;
+    float* G = Ds + static_cast<std::size_t>(m) * static_cast<std::size_t>(kmax);
+    float* b = G + static_cast<std::size_t>(kmax) * static_cast<std::size_t>(kmax);
+    float* corr = b + kmax;
+    std::memset(used, 0, static_cast<std::size_t>(atoms));
+    std::memset(Ds, 0, static_cast<std::size_t>(m) * static_cast<std::size_t>(kmax) * sizeof(float));
+    std::memset(G, 0, static_cast<std::size_t>(kmax) * static_cast<std::size_t>(kmax) * sizeof(float));
+    std::memset(b, 0, static_cast<std::size_t>(kmax) * sizeof(float));
+    std::memcpy(r, y, static_cast<std::size_t>(m) * sizeof(float));
+    int ksel = 0;
+    for (int t = 0; t < kmax; ++t) {
+        gemm_tn_hwy(m, 1, atoms, D, ldd, r, m, corr, atoms);
+        int best = -1;
+        float best_abs = 0.f;
+        for (int j = 0; j < atoms; ++j) {
+            if (used[j]) {
+                continue;
+            }
+            const float ac = std::fabs(corr[j]);
+            if (ac > best_abs) {
+                best_abs = ac;
+                best = j;
+            }
+        }
+        if (best < 0 || best_abs < 1e-12f) {
+            break;
+        }
+        used[best] = 1;
+        supp[ksel] = best;
+        const float* db = D + static_cast<std::size_t>(best) * static_cast<std::size_t>(ldd);
+        std::memcpy(Ds + static_cast<std::size_t>(ksel) * static_cast<std::size_t>(m), db,
+                    static_cast<std::size_t>(m) * sizeof(float));
+        ++ksel;
+        for (int p = 0; p < ksel; ++p) {
+            const float* dp = Ds + static_cast<std::size_t>(p) * static_cast<std::size_t>(m);
+            for (int q = p; q < ksel; ++q) {
+                const float* dq = Ds + static_cast<std::size_t>(q) * static_cast<std::size_t>(m);
+                const float g = dot(dp, dq, m);
+                G[p * ksel + q] = g;
+                G[q * ksel + p] = g;
+            }
+            b[p] = dot(dp, y, m);
+        }
+        if (chol_solve(ksel, G, b) != 0) {
+            --ksel;
+            used[best] = 0;
+            break;
+        }
+        std::memset(a, 0, static_cast<std::size_t>(atoms) * sizeof(float));
+        for (int p = 0; p < ksel; ++p) {
+            a[supp[p]] = b[p];
+        }
+        for (int i = 0; i < m; ++i) {
+            float sum = 0.f;
+            for (int p = 0; p < ksel; ++p) {
+                sum += Ds[static_cast<std::size_t>(i) + static_cast<std::size_t>(p) * static_cast<std::size_t>(m)] *
+                       b[p];
+            }
+            r[i] = y[i] - sum;
+        }
+        float rn = 0.f;
+        for (int i = 0; i < m; ++i) {
+            rn += r[i] * r[i];
+        }
+        if (rn < 1e-12f) {
+            break;
+        }
+    }
+    return ksel;
+}
+
 
 void lssc_denoise_plane(const float* src, int width, int height, int sstride, float* num, float* den, int buf_stride,
                         int block, int step, float sigma, float* work, int work_floats) {
@@ -213,7 +304,11 @@ void lssc_denoise_plane(const float* src, int width, int height, int sstride, fl
         (np * static_cast<int>(sizeof(int)) + static_cast<int>(sizeof(float)) - 1) / static_cast<int>(sizeof(float));
     const int counts_f = (nclusters * static_cast<int>(sizeof(int)) + static_cast<int>(sizeof(float)) - 1) /
                          static_cast<int>(sizeof(float));
-    const int ista_n = lssc_reconstruct_work_floats(m, np, atoms);
+    const int offsets_f = ((nclusters + 1) * static_cast<int>(sizeof(int)) + static_cast<int>(sizeof(float)) - 1) /
+                          static_cast<int>(sizeof(float));
+    const int ista_n = lssc_reconstruct_prepared_work_floats(m, np, atoms);
+    const int cluster_n = lssc_cluster_work_floats(m, np, nclusters);
+    const int dict_n = lssc_dict_work_floats(m, atoms, np, 1);
     const int work_need = lssc_denoise_work_floats(width, height, block, step);
 
     std::vector<float> store;
@@ -229,14 +324,19 @@ void lssc_denoise_plane(const float* src, int width, int height, int sstride, fl
     float* after_assign = after_d + assign_f;
     int* counts = reinterpret_cast<int*>(after_assign);
     float* after_counts = after_assign + counts_f;
-    int* members = reinterpret_cast<int*>(after_counts);
-    float* group = after_counts + assign_f;
-    float* ista = group + static_cast<std::size_t>(np) * static_cast<std::size_t>(m);
+    int* offsets = reinterpret_cast<int*>(after_counts);
+    float* after_offsets = after_counts + offsets_f;
+    int* cursor = reinterpret_cast<int*>(after_offsets);
+    float* after_cursor = after_offsets + counts_f;
+    int* members = reinterpret_cast<int*>(after_cursor);
+    float* cluster_work = after_cursor + assign_f;
+    float* group = cluster_work + cluster_n;
+    float* dict_work = group + static_cast<std::size_t>(np) * static_cast<std::size_t>(m);
+    float* ista = dict_work + dict_n;
+    float* prepare_work = ista + ista_n;
     std::memset(patches, 0, static_cast<std::size_t>(np) * static_cast<std::size_t>(lda) * sizeof(float));
     std::memset(D, 0, static_cast<std::size_t>(m) * static_cast<std::size_t>(atoms) * sizeof(float));
 
-    std::vector<int> xs(static_cast<std::size_t>(np), 0);
-    std::vector<int> ys(static_cast<std::size_t>(np), 0);
     int idx = 0;
     for (int by0 = 0; by0 < height - block + step; by0 += step) {
         const int by = std::min(by0, std::max(0, height - block));
@@ -244,8 +344,6 @@ void lssc_denoise_plane(const float* src, int width, int height, int sstride, fl
             const int bx = std::min(bx0, std::max(0, width - block));
             pack_patch(patches + static_cast<std::size_t>(idx) * static_cast<std::size_t>(lda), lda, src, sstride, bx,
                        by, block, width, height);
-            xs[static_cast<std::size_t>(idx)] = bx;
-            ys[static_cast<std::size_t>(idx)] = by;
             ++idx;
         }
     }
@@ -254,28 +352,39 @@ void lssc_denoise_plane(const float* src, int width, int height, int sstride, fl
         return;
     }
 
-    lssc_cluster(patches, m, n, lda, nclusters, assign, counts);
-    lssc_dict_init(D, m, atoms, m, patches, n, lda, block, 1, 0x4C535343u);
+    lssc_cluster_workspace(patches, m, n, lda, nclusters, assign, counts, cluster_work, cluster_n);
+    lssc_dict_init_workspace(D, m, atoms, m, patches, n, lda, block, 1, 0x4C535343u, dict_work, dict_n);
+
+    LsscPreparedContext prepared;
+    if (lssc_prepare_context(D, m, atoms, m, prepare_work, lssc_prepare_work_floats(m, atoms), &prepared) != 0) {
+        return;
+    }
+    offsets[0] = 0;
+    for (int c = 0; c < nclusters; ++c) {
+        offsets[c + 1] = offsets[c] + std::max(0, counts[c]);
+        cursor[c] = offsets[c];
+    }
+    for (int j = 0; j < n; ++j) {
+        const int c = (assign[j] >= 0 && assign[j] < nclusters) ? assign[j] : 0;
+        members[cursor[c]++] = j;
+    }
 
     for (int c = 0; c < nclusters; ++c) {
-        const int nc = counts[c];
+        const int cluster_begin = offsets[c];
+        const int cluster_end = offsets[c + 1];
+        const int nc = cluster_end - cluster_begin;
         if (nc < 1) {
             continue;
         }
-        int g = 0;
-        for (int j = 0; j < n; ++j) {
-            if (assign[j] != c) {
-                continue;
-            }
+        for (int g = 0; g < nc; ++g) {
+            const int j = members[cluster_begin + g];
             std::memcpy(group + static_cast<std::size_t>(g) * static_cast<std::size_t>(m),
                         patches + static_cast<std::size_t>(j) * static_cast<std::size_t>(lda),
                         static_cast<std::size_t>(m) * sizeof(float));
-            members[g] = j;
-            ++g;
         }
-        lssc_reconstruct(group, m, g, m, D, atoms, m, sigma, ista, ista_n);
-        for (int t = 0; t < g; ++t) {
-            const int j = members[t];
+        lssc_reconstruct_prepared(group, m, nc, m, &prepared, sigma, ista, ista_n);
+        for (int t = 0; t < nc; ++t) {
+            const int j = members[cluster_begin + t];
             std::memcpy(patches + static_cast<std::size_t>(j) * static_cast<std::size_t>(lda),
                         group + static_cast<std::size_t>(t) * static_cast<std::size_t>(m),
                         static_cast<std::size_t>(m) * sizeof(float));
@@ -283,17 +392,20 @@ void lssc_denoise_plane(const float* src, int width, int height, int sstride, fl
     }
 
     for (int j = 0; j < n; ++j) {
+        const int bx0 = (j % nx) * step;
+        const int by0 = (j / nx) * step;
+        const int bx = std::min(bx0, std::max(0, width - block));
+        const int by = std::min(by0, std::max(0, height - block));
         const float* col = patches + static_cast<std::size_t>(j) * static_cast<std::size_t>(lda);
         for (int i = 0; i < m; ++i) {
             const float v = col[i];
             if (!std::isfinite(v) || std::fabs(v) > 8.f) {
-                pack_patch(patches + static_cast<std::size_t>(j) * static_cast<std::size_t>(lda), lda, src, sstride,
-                           xs[static_cast<std::size_t>(j)], ys[static_cast<std::size_t>(j)], block, width, height);
+                pack_patch(patches + static_cast<std::size_t>(j) * static_cast<std::size_t>(lda), lda, src, sstride, bx,
+                           by, block, width, height);
                 break;
             }
         }
-        aggregate_add(num, den, buf_stride, xs[static_cast<std::size_t>(j)], ys[static_cast<std::size_t>(j)], col, block,
-                      width, height, 1.f);
+        aggregate_add(num, den, buf_stride, bx, by, col, block, width, height, 1.f);
     }
 }
 

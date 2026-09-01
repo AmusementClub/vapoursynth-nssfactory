@@ -1,6 +1,7 @@
 #include "nss/cpu_ncsr.hpp"
 
 #include "nss/cpu_api.hpp"
+#include "nss/cpu_batch.hpp"
 #include "nss/cpu_common.hpp"
 #include "nss/cpu_twsc.hpp"
 #include "cpu/hwy_config.hpp"
@@ -8,6 +9,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <array>
+#include <vector>
 
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE "cpu/ncsr/centralize.cpp"
@@ -209,40 +212,100 @@ void ncsr_run_groups(const float* const* refs, const int* rstrides, const float*
     const int t_ref = std::clamp(t0, 0, slices - 1);
     const std::size_t plane_sz = static_cast<std::size_t>(width * height);
     const int shrink_n = ncsr_filter_work_floats(m, g);
-    Match matches[kWnnmMaxGroup];
-    float col_dist[kWnnmMaxGroup];
-
+    std::vector<GroupJob> jobs;
     for (int by0 = 0; by0 < height - block + step; by0 += step) {
         const int by = std::min(by0, std::max(0, height - block));
         for (int bx0 = 0; bx0 < width - block + step; bx0 += step) {
             const int bx = std::min(bx0, std::max(0, width - block));
-            const int k = (cfg.radius > 0)
-                              ? predictive_match(refs, rstrides, ntemp, width, height, bx, by, t_ref, cfg, matches)
-                              : spatial_match(refs[t_ref], rstrides[t_ref], width, height, bx, by, block, cfg.bm_range,
-                                              g, matches);
-            if (k <= 0) {
-                continue;
-            }
-            for (int i = 0; i < k; ++i) {
-                const int t = (cfg.radius > 0) ? matches[i].t : t_ref;
-                pack_patch(patches + i * lda, lda, srcs[static_cast<std::size_t>(t)], sstrides[t], matches[i].x,
-                           matches[i].y, block, width, height);
-                col_dist[i] = matches[i].dist;
-            }
-            if (ncsr_filter_group(patches, m, k, lda, sigma, col_dist, work, shrink_n) != 0) {
-                continue;
-            }
-            for (int i = 0; i < k; ++i) {
-                int sl = 0;
-                if (cfg.radius > 0) {
-                    sl = matches[i].t - t_ref + cfg.radius;
-                    sl = std::clamp(sl, 0, slices - 1);
-                }
-                aggregate_add(num + static_cast<std::size_t>(sl) * plane_sz,
-                              den + static_cast<std::size_t>(sl) * plane_sz, width, matches[i].x, matches[i].y,
-                              patches + i * lda, block, width, height, 1.f);
-            }
+            jobs.push_back(GroupJob{static_cast<std::uint64_t>(jobs.size()), bx, by, t_ref,
+                                    GroupKey{m, g, 1, GroupAlgorithm::NCSR, false, false}});
         }
+    }
+    for (std::size_t begin = 0; begin < jobs.size(); begin += 32) {
+        const std::size_t end = std::min(jobs.size(), begin + std::size_t{32});
+        const int count = static_cast<int>(end - begin);
+        std::array<MatchBatchItem, 32> match_items{};
+        std::array<int, 32> counts{};
+        std::array<Match, 32 * kWnnmMaxGroup> match_storage{};
+        for (int i = 0; i < count; ++i) {
+            const auto& job = jobs[begin + static_cast<std::size_t>(i)];
+            match_items[static_cast<std::size_t>(i)] = MatchBatchItem{job.x, job.y, block, cfg.bm_range, g};
+        }
+        const int match_rc = cfg.radius > 0
+                                 ? predictive_match_batch(refs, rstrides, ntemp, width, height, t_ref, cfg,
+                                                         match_items.data(), count, match_storage.data(),
+                                                         kWnnmMaxGroup, counts.data())
+                                 : spatial_match_batch(refs[t_ref], rstrides[t_ref], width, height, match_items.data(),
+                                                       count, match_storage.data(), kWnnmMaxGroup, counts.data());
+        if (match_rc < 0) {
+            continue;
+        }
+        std::vector<float> batch_patches(static_cast<std::size_t>(count) * static_cast<std::size_t>(g) * lda, 0.f);
+        std::vector<float> batch_dist(static_cast<std::size_t>(count) * static_cast<std::size_t>(g), 0.f);
+        std::vector<float> batch_work(static_cast<std::size_t>(count) * static_cast<std::size_t>(shrink_n), 0.f);
+        std::array<int, 32> filter_status{};
+        std::array<NcsrFilterBatchItem, 32> filter_items{};
+        for (int i = 0; i < count; ++i) {
+            const int k = counts[static_cast<std::size_t>(i)];
+            float* p = batch_patches.data() + static_cast<std::size_t>(i) * static_cast<std::size_t>(g) * lda;
+            float* dist = batch_dist.data() + static_cast<std::size_t>(i) * static_cast<std::size_t>(g);
+            for (int j = 0; j < k; ++j) {
+                const auto& mm = match_storage[static_cast<std::size_t>(i) * kWnnmMaxGroup + j];
+                const int t = cfg.radius > 0 ? mm.t : t_ref;
+                pack_patch(p + static_cast<std::size_t>(j) * lda, lda, srcs[t], sstrides[t], mm.x, mm.y, block, width,
+                           height);
+                dist[j] = mm.dist;
+            }
+            filter_items[static_cast<std::size_t>(i)] = NcsrFilterBatchItem{
+                p, m, k, lda, sigma, dist,
+                batch_work.data() + static_cast<std::size_t>(i) * static_cast<std::size_t>(shrink_n), shrink_n,
+                &filter_status[static_cast<std::size_t>(i)]};
+        }
+        (void)ncsr_filter_group_batch(filter_items.data(), count);
+        struct Result {
+            bool valid = false;
+            int k = 0;
+            Match matches[kWnnmMaxGroup]{};
+            const float* patches = nullptr;
+        };
+        OrderedCommitQueue<Result> queue(jobs[begin].ordinal, 32);
+        for (int i = 0; i < count; ++i) {
+            Result result;
+            result.valid = counts[static_cast<std::size_t>(i)] > 0 && filter_status[static_cast<std::size_t>(i)] != 0;
+            result.k = counts[static_cast<std::size_t>(i)];
+            result.patches = batch_patches.data() + static_cast<std::size_t>(i) * static_cast<std::size_t>(g) * lda;
+            for (int j = 0; j < result.k; ++j) {
+                result.matches[j] = match_storage[static_cast<std::size_t>(i) * kWnnmMaxGroup + j];
+            }
+            queue.push(jobs[begin + static_cast<std::size_t>(i)].ordinal, result);
+            queue.drain([&](const Result& ready) {
+                if (!ready.valid) {
+                    return;
+                }
+                for (int j = 0; j < ready.k; ++j) {
+                    int sl = 0;
+                    if (cfg.radius > 0) {
+                        sl = std::clamp(ready.matches[j].t - t_ref + cfg.radius, 0, slices - 1);
+                    }
+                    aggregate_add(num + static_cast<std::size_t>(sl) * plane_sz,
+                                  den + static_cast<std::size_t>(sl) * plane_sz, width, ready.matches[j].x,
+                                  ready.matches[j].y, ready.patches + static_cast<std::size_t>(j) * lda, block, width,
+                                  height, 1.f);
+                }
+            });
+        }
+        queue.finish([&](const Result& ready) {
+            if (!ready.valid) {
+                return;
+            }
+            for (int j = 0; j < ready.k; ++j) {
+                int sl = cfg.radius > 0 ? std::clamp(ready.matches[j].t - t_ref + cfg.radius, 0, slices - 1) : 0;
+                aggregate_add(num + static_cast<std::size_t>(sl) * plane_sz,
+                              den + static_cast<std::size_t>(sl) * plane_sz, width, ready.matches[j].x,
+                              ready.matches[j].y, ready.patches + static_cast<std::size_t>(j) * lda, block, width,
+                              height, 1.f);
+            }
+        });
     }
 }
 

@@ -1,4 +1,5 @@
 #include "host/filters.hpp"
+#include "host/batch_runner.hpp"
 #include "host/validate.hpp"
 #include "nss/avx2.hpp"
 #include "nss/cpu_api.hpp"
@@ -10,6 +11,7 @@
 #include <VSHelper4.h>
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <memory>
 #include <vector>
@@ -53,41 +55,101 @@ void run_groups(const float* const* match_refs, const int* match_strides, const 
     cfg.ps_num = ps_num;
     cfg.ps_range = ps_range;
 
-    nss::Match matches[nss::kBmMaxGroup];
-    for (int by0 = 0; by0 < ph - block + step; by0 += step) {
-        const int by = std::min(by0, std::max(0, ph - block));
-        for (int bx0 = 0; bx0 < pw - block + step; bx0 += step) {
-            const int bx = std::min(bx0, std::max(0, pw - block));
-            const int k = (radius > 0) ? nss::predictive_match(match_refs, match_strides, ntemp, pw, ph, bx, by, t0, cfg,
-                                                              matches)
-                                      : nss::spatial_match(match_refs[t0], match_strides[t0], pw, ph, bx, by, block,
-                                                           bm_range, group, matches);
-            if (k <= 0) {
-                continue;
-            }
-            for (int i = 0; i < k; ++i) {
-                const int t = (radius > 0) ? matches[i].t : t0;
-                nss::pack_patch(patches + i * lda, lda, noisy[static_cast<std::size_t>(t)], noisy_strides[t],
-                                matches[i].x, matches[i].y, block, pw, ph);
-                if (wiener) {
-                    nss::pack_patch(ref_patches + i * lda, lda, match_refs[static_cast<std::size_t>(t)], match_strides[t],
-                                    matches[i].x, matches[i].y, block, pw, ph);
-                }
-            }
-            float aw = 1.f;
-            nss::nlh_filter_group(patches, m, k, lda, q, sigma, wiener, wiener ? ref_patches : nullptr, &aw, work,
-                                 nss::nlh_filter_work_floats(m, group, q, lda));
-            for (int i = 0; i < k; ++i) {
-                int sl = 0;
-                if (radius > 0) {
-                    sl = matches[i].t - t0 + radius;
-                    sl = std::clamp(sl, 0, slices - 1);
-                }
-                nss::aggregate_add(num + static_cast<std::size_t>(sl) * plane_sz,
-                                   den + static_cast<std::size_t>(sl) * plane_sz, pw, matches[i].x, matches[i].y,
-                                   patches + i * lda, block, pw, ph, aw);
-            }
+    std::vector<nss::GroupJob> jobs;
+    nss::host_detail::append_raster_jobs(
+        jobs, pw, ph, block, step,
+        nss::GroupKey{m, group, 1, nss::GroupAlgorithm::NLH, !wiener, false}, t0);
+    if (jobs.empty()) {
+        return;
+    }
+    const int group_work = nss::nlh_filter_work_floats(m, group, q, lda);
+    for (std::size_t begin = 0; begin < jobs.size(); begin += nss::host_detail::kGroupBatchWindow) {
+        const std::size_t end = std::min(jobs.size(), begin + nss::host_detail::kGroupBatchWindow);
+        const int count = static_cast<int>(end - begin);
+        std::array<nss::MatchBatchItem, nss::host_detail::kGroupBatchWindow> match_items{};
+        std::array<int, nss::host_detail::kGroupBatchWindow> counts{};
+        std::array<nss::Match, nss::host_detail::kGroupBatchWindow * nss::kBmMaxGroup> match_storage{};
+        for (int i = 0; i < count; ++i) {
+            const auto& job = jobs[begin + static_cast<std::size_t>(i)];
+            match_items[static_cast<std::size_t>(i)] = nss::MatchBatchItem{job.x, job.y, block, bm_range, group};
         }
+        const int match_rc = radius > 0
+                                 ? nss::predictive_match_batch(match_refs, match_strides, ntemp, pw, ph, t0, cfg,
+                                                               match_items.data(), count, match_storage.data(),
+                                                               nss::kBmMaxGroup, counts.data())
+                                 : nss::spatial_match_batch(match_refs[t0], match_strides[t0], pw, ph,
+                                                            match_items.data(), count, match_storage.data(),
+                                                            nss::kBmMaxGroup, counts.data());
+        if (match_rc < 0) {
+            continue;
+        }
+        const std::size_t group_storage = static_cast<std::size_t>(group) * static_cast<std::size_t>(lda);
+        std::vector<float> batch_patches(static_cast<std::size_t>(count) * group_storage, 0.f);
+        std::vector<float> batch_refs;
+        if (wiener) {
+            batch_refs.resize(batch_patches.size(), 0.f);
+        }
+        std::vector<float> batch_work(static_cast<std::size_t>(count) * static_cast<std::size_t>(group_work), 0.f);
+        std::array<float, nss::host_detail::kGroupBatchWindow> weights{};
+        std::array<int, nss::host_detail::kGroupBatchWindow> filter_status{};
+        std::array<nss::NlhFilterBatchItem, nss::host_detail::kGroupBatchWindow> filter_items{};
+        for (int i = 0; i < count; ++i) {
+            const int k = counts[static_cast<std::size_t>(i)];
+            float* p = batch_patches.data() + static_cast<std::size_t>(i) * group_storage;
+            float* rp = wiener ? batch_refs.data() + static_cast<std::size_t>(i) * group_storage : nullptr;
+            for (int j = 0; j < k; ++j) {
+                const auto& mm = match_storage[static_cast<std::size_t>(i) * nss::kBmMaxGroup + j];
+                const int t = radius > 0 ? mm.t : t0;
+                nss::pack_patch(p + static_cast<std::size_t>(j) * lda, lda, noisy[t], noisy_strides[t], mm.x, mm.y,
+                                block, pw, ph);
+                if (rp) {
+                    nss::pack_patch(rp + static_cast<std::size_t>(j) * lda, lda, match_refs[t], match_strides[t], mm.x,
+                                    mm.y, block, pw, ph);
+                }
+            }
+            weights[static_cast<std::size_t>(i)] = 1.f;
+            filter_items[static_cast<std::size_t>(i)] = nss::NlhFilterBatchItem{
+                p, m, k, lda, q, sigma, wiener, rp, &weights[static_cast<std::size_t>(i)],
+                batch_work.data() + static_cast<std::size_t>(i) * static_cast<std::size_t>(group_work), group_work,
+                &filter_status[static_cast<std::size_t>(i)]};
+        }
+        (void)nss::nlh_filter_group_batch(filter_items.data(), count);
+
+        struct Result {
+            bool valid = false;
+            int k = 0;
+            nss::Match matches[nss::kBmMaxGroup]{};
+            int slices[nss::kBmMaxGroup]{};
+            const float* patches = nullptr;
+            float weight = 1.f;
+        };
+        auto prepare = [&](const nss::GroupJob& job, Result& result) {
+            const std::size_t i = static_cast<std::size_t>(job.ordinal - jobs[begin].ordinal);
+            if (i >= static_cast<std::size_t>(count) || counts[i] <= 0 || filter_status[i] == 0) {
+                return false;
+            }
+            result.valid = true;
+            result.k = counts[i];
+            result.patches = batch_patches.data() + i * group_storage;
+            result.weight = weights[i];
+            for (int j = 0; j < result.k; ++j) {
+                result.matches[j] = match_storage[i * nss::kBmMaxGroup + j];
+                result.slices[j] = radius > 0 ? std::clamp(result.matches[j].t - t0 + radius, 0, slices - 1) : 0;
+            }
+            return true;
+        };
+        auto commit = [&](const Result& result) {
+            if (!result.valid) {
+                return;
+            }
+            for (int j = 0; j < result.k; ++j) {
+                nss::aggregate_add(num + static_cast<std::size_t>(result.slices[j]) * plane_sz,
+                                   den + static_cast<std::size_t>(result.slices[j]) * plane_sz, pw,
+                                   result.matches[j].x, result.matches[j].y,
+                                   result.patches + static_cast<std::size_t>(j) * lda, block, pw, ph, result.weight);
+            }
+        };
+        (void)nss::host_detail::execute_ordered_chunk<Result>(jobs, begin, end, prepare, commit);
     }
 }
 
