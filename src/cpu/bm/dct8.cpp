@@ -16,6 +16,38 @@ namespace nss {
 namespace HWY_NAMESPACE {
 namespace hn = hwy::HWY_NAMESPACE;
 
+#include "cpu/bm/dct_codelet_adapter.hpp"
+#if HWY_MAX_BYTES >= 32
+#include "cpu/bm/dct_codelet_fwd_n16_is8.hpp"
+#include "cpu/bm/dct_codelet_inv_n16_is8.hpp"
+#include "cpu/bm/dct_codelet_fwd_n32_is8.hpp"
+#include "cpu/bm/dct_codelet_inv_n32_is8.hpp"
+#include "cpu/bm/dct_codelet_fwd_n64_is8.hpp"
+#include "cpu/bm/dct_codelet_inv_n64_is8.hpp"
+#endif
+#if HWY_MAX_BYTES >= 64
+#include "cpu/bm/dct_codelet_fwd_n16_is16.hpp"
+#include "cpu/bm/dct_codelet_inv_n16_is16.hpp"
+#include "cpu/bm/dct_codelet_fwd_n32_is16.hpp"
+#include "cpu/bm/dct_codelet_inv_n32_is16.hpp"
+#include "cpu/bm/dct_codelet_fwd_n64_is16.hpp"
+#include "cpu/bm/dct_codelet_inv_n64_is16.hpp"
+#endif
+#undef VLEAVE
+#undef VNEG
+#undef VFNMS
+#undef VFMS
+#undef VFMA
+#undef VMUL
+#undef VSUB
+#undef VADD
+#undef ST
+#undef LD
+#undef LDK
+#undef DVK
+#undef V
+#undef R
+
 // Orthonormal DCT-II matrix, row k = frequency, column i = sample.
 template <int N>
 const float* DctTable() {
@@ -407,6 +439,33 @@ static void DctLines(float* base, int n, int line_stride, int sample_stride, int
 #if HWY_MAX_BYTES >= 32
         if (n == 8) {
             Dct8Packed(d, x, y, inverse);
+        } else if (n == 16) {
+#if HWY_MAX_BYTES >= 64
+            if (L == 16) {
+                inverse ? nss_dct16_inv_is16(d, x, y) : nss_dct16_fwd_is16(d, x, y);
+            } else
+#endif
+            {
+                inverse ? nss_dct16_inv_is8(d, x, y) : nss_dct16_fwd_is8(d, x, y);
+            }
+        } else if (n == 32) {
+#if HWY_MAX_BYTES >= 64
+            if (L == 16) {
+                inverse ? nss_dct32_inv_is16(d, x, y) : nss_dct32_fwd_is16(d, x, y);
+            } else
+#endif
+            {
+                inverse ? nss_dct32_inv_is8(d, x, y) : nss_dct32_fwd_is8(d, x, y);
+            }
+        } else if (n == 64) {
+#if HWY_MAX_BYTES >= 64
+            if (L == 16) {
+                inverse ? nss_dct64_inv_is16(d, x, y) : nss_dct64_fwd_is16(d, x, y);
+            } else
+#endif
+            {
+                inverse ? nss_dct64_inv_is8(d, x, y) : nss_dct64_fwd_is8(d, x, y);
+            }
         } else
 #endif
         {
@@ -744,17 +803,32 @@ HWY_INLINE void TransposePack8(V8* data) {
     }
 }
 
+// Per-patch 2D DCT: row transform, in-register 8x8 transpose, column transform.
+// Avoids TransposePack8's store/reload of the whole 8-patch cube between the
+// two spatial passes. Group-axis DCT stays a separate packed pass.
+template <bool kForward>
+HWY_INLINE void Fftw2dInReg(V8* patch) {
+    const D8 d8;
+    Dct8Fftw<kForward>(patch);
+    V8 t[8];
+    Transpose8x8Vec(d8, patch, t);
+    Dct8Fftw<kForward>(t);
+    for (int r = 0; r < 8; ++r) {
+        patch[r] = t[r];
+    }
+}
+
 HWY_INLINE void Fftw3dFwd(V8* data) {
-    TransformPack8<true, 1, 8, 8>(data);
-    TransposePack8(data);
-    TransformPack8<true, 1, 8, 8>(data);
+    for (int g = 0; g < 8; ++g) {
+        Fftw2dInReg<true>(data + g * 8);
+    }
     TransformPack8<true, 8, 8, 1>(data);
 }
 
 HWY_INLINE void Fftw3dInv(V8* data) {
-    TransformPack8<false, 1, 8, 8>(data);
-    TransposePack8(data);
-    TransformPack8<false, 1, 8, 8>(data);
+    for (int g = 0; g < 8; ++g) {
+        Fftw2dInReg<false>(data + g * 8);
+    }
     TransformPack8<false, 8, 8, 1>(data);
 }
 

@@ -83,31 +83,64 @@ static int dc_energy() {
     return 0;
 }
 
-static int lines_vs_1d(int count) {
-    std::mt19937 rng(99 + count);
-    std::uniform_real_distribution<float> dist(-2.0f, 2.0f);
-    std::vector<float> rows(static_cast<std::size_t>(count) * 8);
-    std::vector<float> ref(rows.size());
-    for (int v = 0; v < count; ++v) {
-        for (int i = 0; i < 8; ++i) {
-            rows[static_cast<std::size_t>(v * 8 + i)] = dist(rng);
+static void reference_dct(const float* in, float* out, int n) {
+    constexpr double pi = 3.14159265358979323846264338327950288;
+    for (int k = 0; k < n; ++k) {
+        double sum = 0.0;
+        for (int i = 0; i < n; ++i) {
+            sum += static_cast<double>(in[i]) *
+                   std::cos(pi * (static_cast<double>(i) + 0.5) * static_cast<double>(k) /
+                            static_cast<double>(n));
         }
-        nss::dct8_1d(rows.data() + v * 8, ref.data() + v * 8);
+        const double scale = std::sqrt((k == 0 ? 1.0 : 2.0) / static_cast<double>(n));
+        out[k] = static_cast<float>(sum * scale);
+    }
+}
+
+static int lines_vs_reference(int n, int count, int line_stride, int sample_stride) {
+    std::mt19937 rng(99 + n * 101 + count * 7 + line_stride + sample_stride);
+    std::uniform_real_distribution<float> dist(-2.0f, 2.0f);
+    const std::size_t span = static_cast<std::size_t>((count - 1) * line_stride + (n - 1) * sample_stride + 1);
+    std::vector<float> rows(span);
+    std::vector<float> ref(span);
+    std::vector<float> line(static_cast<std::size_t>(n));
+    std::vector<float> transformed(static_cast<std::size_t>(n));
+    for (float& value : rows) {
+        value = dist(rng);
+    }
+    ref = rows;
+    for (int v = 0; v < count; ++v) {
+        for (int i = 0; i < n; ++i) {
+            line[static_cast<std::size_t>(i)] = rows[static_cast<std::size_t>(v * line_stride + i * sample_stride)];
+        }
+        reference_dct(line.data(), transformed.data(), n);
+        for (int i = 0; i < n; ++i) {
+            ref[static_cast<std::size_t>(v * line_stride + i * sample_stride)] =
+                transformed[static_cast<std::size_t>(i)];
+        }
     }
     std::vector<float> got = rows;
-    nss::dct_lines(got.data(), 8, 8, 1, count, false);
+    nss::dct_lines(got.data(), n, line_stride, sample_stride, count, false);
     double max_err = 0.0;
-    for (std::size_t i = 0; i < got.size(); ++i) {
-        max_err = std::max(max_err, std::fabs(static_cast<double>(got[i] - ref[i])));
+    for (int v = 0; v < count; ++v) {
+        for (int i = 0; i < n; ++i) {
+            const std::size_t index = static_cast<std::size_t>(v * line_stride + i * sample_stride);
+            max_err = std::max(max_err, std::fabs(static_cast<double>(got[index] - ref[index])));
+        }
     }
-    nss::dct_lines(got.data(), 8, 8, 1, count, true);
+    nss::dct_lines(got.data(), n, line_stride, sample_stride, count, true);
     double rt = 0.0;
-    for (std::size_t i = 0; i < got.size(); ++i) {
-        rt = std::max(rt, std::fabs(static_cast<double>(got[i] - rows[i])));
+    for (int v = 0; v < count; ++v) {
+        for (int i = 0; i < n; ++i) {
+            const std::size_t index = static_cast<std::size_t>(v * line_stride + i * sample_stride);
+            rt = std::max(rt, std::fabs(static_cast<double>(got[index] - rows[index])));
+        }
     }
-    std::printf("dct_lines count=%d vs_1d=%.6g roundtrip=%.6g\n", count, max_err, rt);
+    std::printf("dct_lines n=%d count=%d strides=%d/%d vs_ref=%.6g roundtrip=%.6g\n", n, count,
+                line_stride, sample_stride, max_err, rt);
     if (max_err > 2e-5 || rt > 2e-4) {
-        std::fprintf(stderr, "dct_lines count=%d failed\n", count);
+        std::fprintf(stderr, "dct_lines n=%d count=%d strides=%d/%d failed\n", n, count, line_stride,
+                     sample_stride);
         return 1;
     }
     return 0;
@@ -142,11 +175,19 @@ static int bm3d_sigma0_roundtrip() {
 int main() {
     const int sizes1d[] = {1, 2, 4, 8, 16, 32, 64};
     const int sizes2d[] = {1, 2, 4, 8, 16, 32};
+    const int line_sizes[] = {8, 16, 32, 64};
+    const int counts[] = {1, 7, 8, 9, 15, 16, 17};
     int failed = 0;
     failed |= dc_energy();
-    failed |= lines_vs_1d(8);
-    failed |= lines_vs_1d(16);
-    failed |= lines_vs_1d(64);
+    for (int n : line_sizes) {
+        for (int count : counts) {
+            failed |= lines_vs_reference(n, count, n, 1);
+            failed |= lines_vs_reference(n, count, 2 * n, 2);
+            if (count <= n) {
+                failed |= lines_vs_reference(n, count, 1, n);
+            }
+        }
+    }
     failed |= bm3d_sigma0_roundtrip();
     for (int n : sizes1d) {
         failed |= roundtrip_1d(n, n >= 32 ? 2e-4 : 1e-4);

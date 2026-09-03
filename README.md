@@ -51,4 +51,10 @@ Install `libnss.so` into the VapourSynth plugin directory.
 
 ## License
 
-GPLv2. See [LICENSE](LICENSE).
+GPLv2. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+The length-16/32/64 DCT kernels in `src/cpu/bm/dct_codelet_*.hpp` are generated
+by [FFTW](https://www.fftw.org/) genfft (`gen_r2r`) and are distributed under
+GPLv2 or later. Copyright (c) 1997-1999, 2003, 2007-14 Massachusetts Institute
+of Technology and Matteo Frigo. They are mapped onto Highway and are not linked
+against `libfftw3`. Regenerate with `tools/gen_dct_codelets.sh`.
