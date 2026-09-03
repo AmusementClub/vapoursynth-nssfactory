@@ -95,26 +95,93 @@ int NlhSpatialMatch16(const float* ref, int stride, int width, int height, int b
     constexpr int capacity = 15;
     int size = 0;
     std::uint32_t ordinal = 1;
+    const auto consider = [&](int x, int y, float dist, std::uint32_t ord) {
+        if (x == cx && y == cy) {
+            return;
+        }
+        const Match candidate{x, y, 0, dist, ord};
+        if (size == capacity && !detail::match_less(candidate, sorted[size - 1])) {
+            return;
+        }
+        int pos = std::min(size, capacity - 1);
+        while (pos > 0 && detail::match_less(candidate, sorted[pos - 1])) {
+            if (pos < capacity) {
+                sorted[pos] = sorted[pos - 1];
+            }
+            --pos;
+        }
+        sorted[pos] = candidate;
+        if (size < capacity) {
+            ++size;
+        }
+    };
+
+#if HWY_MAX_BYTES >= 32
+    if (block == 8) {
+        const hn::FixedTag<float, 8> df;
+        hn::Vec<decltype(df)> refb[8];
+        for (int i = 0; i < 8; ++i) {
+            refb[i] = hn::LoadU(df, self + i * stride);
+        }
+        for (int y = top; y <= bottom; ++y) {
+            const float* row = ref + y * stride;
+            int x = left;
+            for (; x + 1 <= right; x += 2, ordinal += 2) {
+                auto a00 = hn::Zero(df);
+                auto a01 = hn::Zero(df);
+                auto a02 = hn::Zero(df);
+                auto a03 = hn::Zero(df);
+                auto a10 = hn::Zero(df);
+                auto a11 = hn::Zero(df);
+                auto a12 = hn::Zero(df);
+                auto a13 = hn::Zero(df);
+                for (int i = 0; i < 8; i += 4) {
+                    const auto d00 = hn::Sub(refb[i], hn::LoadU(df, row + x + i * stride));
+                    const auto d01 = hn::Sub(refb[i + 1], hn::LoadU(df, row + x + (i + 1) * stride));
+                    const auto d02 = hn::Sub(refb[i + 2], hn::LoadU(df, row + x + (i + 2) * stride));
+                    const auto d03 = hn::Sub(refb[i + 3], hn::LoadU(df, row + x + (i + 3) * stride));
+                    const auto d10 = hn::Sub(refb[i], hn::LoadU(df, row + x + 1 + i * stride));
+                    const auto d11 = hn::Sub(refb[i + 1], hn::LoadU(df, row + x + 1 + (i + 1) * stride));
+                    const auto d12 = hn::Sub(refb[i + 2], hn::LoadU(df, row + x + 1 + (i + 2) * stride));
+                    const auto d13 = hn::Sub(refb[i + 3], hn::LoadU(df, row + x + 1 + (i + 3) * stride));
+                    a00 = hn::MulAdd(d00, d00, a00);
+                    a01 = hn::MulAdd(d01, d01, a01);
+                    a02 = hn::MulAdd(d02, d02, a02);
+                    a03 = hn::MulAdd(d03, d03, a03);
+                    a10 = hn::MulAdd(d10, d10, a10);
+                    a11 = hn::MulAdd(d11, d11, a11);
+                    a12 = hn::MulAdd(d12, d12, a12);
+                    a13 = hn::MulAdd(d13, d13, a13);
+                }
+                consider(x, y, HSum8(hn::Add(hn::Add(a00, a02), hn::Add(a01, a03))), ordinal);
+                consider(x + 1, y, HSum8(hn::Add(hn::Add(a10, a12), hn::Add(a11, a13))), ordinal + 1);
+            }
+            if (x <= right) {
+                auto acc0 = hn::Zero(df);
+                auto acc1 = hn::Zero(df);
+                auto acc2 = hn::Zero(df);
+                auto acc3 = hn::Zero(df);
+                for (int i = 0; i < 8; i += 4) {
+                    const auto d0 = hn::Sub(refb[i], hn::LoadU(df, row + x + i * stride));
+                    const auto d1 = hn::Sub(refb[i + 1], hn::LoadU(df, row + x + (i + 1) * stride));
+                    const auto d2 = hn::Sub(refb[i + 2], hn::LoadU(df, row + x + (i + 2) * stride));
+                    const auto d3 = hn::Sub(refb[i + 3], hn::LoadU(df, row + x + (i + 3) * stride));
+                    acc0 = hn::MulAdd(d0, d0, acc0);
+                    acc1 = hn::MulAdd(d1, d1, acc1);
+                    acc2 = hn::MulAdd(d2, d2, acc2);
+                    acc3 = hn::MulAdd(d3, d3, acc3);
+                }
+                consider(x, y, HSum8(hn::Add(hn::Add(acc0, acc2), hn::Add(acc1, acc3))), ordinal);
+                ++ordinal;
+            }
+        }
+        return size + 1;
+    }
+#endif
+
     for (int y = top; y <= bottom; ++y) {
         for (int x = left; x <= right; ++x, ++ordinal) {
-            if (x == cx && y == cy) {
-                continue;
-            }
-            const Match candidate{x, y, 0, SsdBlock(self, stride, ref + y * stride + x, block), ordinal};
-            if (size == capacity && !detail::match_less(candidate, sorted[size - 1])) {
-                continue;
-            }
-            int pos = std::min(size, capacity - 1);
-            while (pos > 0 && detail::match_less(candidate, sorted[pos - 1])) {
-                if (pos < capacity) {
-                    sorted[pos] = sorted[pos - 1];
-                }
-                --pos;
-            }
-            sorted[pos] = candidate;
-            if (size < capacity) {
-                ++size;
-            }
+            consider(x, y, SsdBlock(self, stride, ref + y * stride + x, block), ordinal);
         }
     }
     return size + 1;
