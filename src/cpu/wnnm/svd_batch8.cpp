@@ -5,6 +5,10 @@
 #include <cmath>
 #include <cstring>
 
+#ifndef NSS_SVD_QREPLAY_ROW_MAJOR
+#define NSS_SVD_QREPLAY_ROW_MAJOR 0
+#endif
+
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE "cpu/wnnm/svd_batch8.cpp"
 #include "hwy/foreach_target.h"
@@ -40,8 +44,14 @@ void SvdChunk(D d, int m, const float* const* A, const int* lda, float* const* U
     alignas(64) float vsoa[kN * kN * kBatchLanes];
     alignas(64) float ssoa[kN * kBatchLanes];
     alignas(64) float beta[kN * kBatchLanes];
-    std::memset(tall, 0, sizeof(tall));
-    std::memset(reflectors, 0, sizeof(reflectors));
+    // Default 64x8 / 16-lane chunks overwrite every tall and reflector element
+    // during pack + QR. Partial chunks still need the sentinels so unused
+    // lanes and rows below m stay finite under the valid-lane mask.
+    const bool packed_hot = (count == kBatchLanes && m == kSvdBatch8MaxM);
+    if (!packed_hot) {
+        std::memset(tall, 0, sizeof(tall));
+        std::memset(reflectors, 0, sizeof(reflectors));
+    }
     std::memset(rsoa, 0, sizeof(rsoa));
     std::memset(ssoa, 0, sizeof(ssoa));
     std::memset(beta, 0, sizeof(beta));
@@ -176,6 +186,9 @@ void SvdChunk(D d, int m, const float* const* A, const int* lda, float* const* U
             }
         }
         active = hn::And(active, hn::Ge(max_off, hn::Set(d, 1e-8f)));
+        if (hn::AllFalse(d, active)) {
+            break;
+        }
     }
 
     for (int col = 0; col < kN; ++col) {
@@ -224,6 +237,28 @@ void SvdChunk(D d, int m, const float* const* A, const int* lda, float* const* U
     }
     for (int k = kN - 1; k >= 0; --k) {
         const V b = hn::Load(d, beta + static_cast<std::size_t>(k) * kBatchLanes);
+#if NSS_SVD_QREPLAY_ROW_MAJOR
+        V factors[kN];
+        for (int col = 0; col < kN; ++col) {
+            factors[col] = zero;
+        }
+        for (int row = k; row < m; ++row) {
+            const V reflector = hn::Load(d, reflectors + TallIndex(row, k, 0));
+            for (int col = 0; col < kN; ++col) {
+                factors[col] = hn::MulAdd(reflector, hn::Load(d, tall + TallIndex(row, col, 0)), factors[col]);
+            }
+        }
+        for (int col = 0; col < kN; ++col) {
+            factors[col] = hn::Mul(b, factors[col]);
+        }
+        for (int row = k; row < m; ++row) {
+            const V reflector = hn::Load(d, reflectors + TallIndex(row, k, 0));
+            for (int col = 0; col < kN; ++col) {
+                const V value = hn::Load(d, tall + TallIndex(row, col, 0));
+                hn::Store(hn::NegMulAdd(factors[col], reflector, value), d, tall + TallIndex(row, col, 0));
+            }
+        }
+#else
         for (int col = 0; col < kN; ++col) {
             V dot = zero;
             for (int row = k; row < m; ++row) {
@@ -237,6 +272,7 @@ void SvdChunk(D d, int m, const float* const* A, const int* lda, float* const* U
                           tall + TallIndex(row, col, 0));
             }
         }
+#endif
     }
 
     for (int lane = 0; lane < count; ++lane) {
@@ -293,6 +329,77 @@ HWY_AFTER_NAMESPACE();
 
 #if HWY_ONCE
 namespace nss {
+#if NSS_SVD_QREPLAY_ROW_MAJOR
+namespace {
+using SvdBatchFunction = int (*)(int, const float* const*, const int*, float* const*, const int*,
+                                 float* const*, float* const*, const int*, int);
+using SvdBatchUFunction =
+    int (*)(int, const float* const*, const int*, float* const*, const int*, float* const*, int);
+
+std::atomic<SvdBatchFunction> qreplay_dispatch[HWY_MAX_DYNAMIC_TARGETS + 2]{};
+std::atomic<SvdBatchUFunction> qreplay_u_dispatch[HWY_MAX_DYNAMIC_TARGETS + 2]{};
+
+#define NSS_SVD_QREPLAY_SELECT(TARGET, NAMESPACE)                                                          \
+    if (target == (TARGET)) {                                                                              \
+        return &NAMESPACE::SvdEconomy8Batch;                                                               \
+    }
+#define NSS_SVD_QREPLAY_SELECT_U(TARGET, NAMESPACE)                                                        \
+    if (target == (TARGET)) {                                                                              \
+        return &NAMESPACE::SvdEconomy8BatchU;                                                              \
+    }
+
+SvdBatchFunction SelectQReplay(std::size_t& index) {
+    const auto supported = HWY_SUPPORTED_TARGETS;
+    hwy::GetChosenTarget().Update(supported);
+    index = hwy::GetChosenTarget().GetIndex();
+    const auto generated = supported & HWY_TARGETS;
+    const auto target = generated & -generated;
+    HWY_VISIT_TARGETS(NSS_SVD_QREPLAY_SELECT)
+    return nullptr;
+}
+
+SvdBatchUFunction SelectQReplayU(std::size_t& index) {
+    const auto supported = HWY_SUPPORTED_TARGETS;
+    hwy::GetChosenTarget().Update(supported);
+    index = hwy::GetChosenTarget().GetIndex();
+    const auto generated = supported & HWY_TARGETS;
+    const auto target = generated & -generated;
+    HWY_VISIT_TARGETS(NSS_SVD_QREPLAY_SELECT_U)
+    return nullptr;
+}
+
+#undef NSS_SVD_QREPLAY_SELECT_U
+#undef NSS_SVD_QREPLAY_SELECT
+}  // namespace
+
+int svd_economy_8_batch_hwy(int m, const float* const* A, const int* lda, float* const* U, const int* ldu,
+                            float* const* S, float* const* Vt, const int* ldvt, int count) {
+    std::size_t index = hwy::GetChosenTarget().GetIndex();
+    auto dispatch = qreplay_dispatch[index].load(std::memory_order_relaxed);
+    if (!dispatch) {
+        dispatch = SelectQReplay(index);
+        if (!dispatch) {
+            return -1;
+        }
+        qreplay_dispatch[index].store(dispatch, std::memory_order_relaxed);
+    }
+    return dispatch(m, A, lda, U, ldu, S, Vt, ldvt, count);
+}
+
+int svd_economy_8_batch_u_hwy(int m, const float* const* A, const int* lda, float* const* U, const int* ldu,
+                              float* const* S, int count) {
+    std::size_t index = hwy::GetChosenTarget().GetIndex();
+    auto dispatch = qreplay_u_dispatch[index].load(std::memory_order_relaxed);
+    if (!dispatch) {
+        dispatch = SelectQReplayU(index);
+        if (!dispatch) {
+            return -1;
+        }
+        qreplay_u_dispatch[index].store(dispatch, std::memory_order_relaxed);
+    }
+    return dispatch(m, A, lda, U, ldu, S, count);
+}
+#else
 HWY_EXPORT(SvdEconomy8Batch);
 HWY_EXPORT(SvdEconomy8BatchU);
 
@@ -305,6 +412,7 @@ int svd_economy_8_batch_u_hwy(int m, const float* const* A, const int* lda, floa
                               float* const* S, int count) {
     return HWY_DYNAMIC_DISPATCH(SvdEconomy8BatchU)(m, A, lda, U, ldu, S, count);
 }
+#endif
 
 }  // namespace nss
 #endif
