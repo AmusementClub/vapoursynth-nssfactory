@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <vector>
 
 #undef HWY_TARGET_INCLUDE
@@ -104,9 +105,8 @@ void PixelMatch(const float* group, int m, int n, int lda, int q, int* idx) {
     const hn::ScalableTag<float> d;
     const int N = static_cast<int>(hn::Lanes(d));
     using V = hn::Vec<hn::ScalableTag<float>>;
-    // Compute only the upper triangle. Every distance is inserted into both
-    // rows, so symmetric pairs cannot diverge through rounding or ties.
-    for (int r = 0; r < m; ++r) {
+    constexpr int kSelM = 64;
+    auto ssd_upper = [&](int r) {
         int s0 = r + 1;
         for (; s0 + 4 * N <= m; s0 += 4 * N) {
             V acc0 = hn::Zero(d);
@@ -148,10 +148,79 @@ void PixelMatch(const float* group, int m, int n, int lda, int q, int* idx) {
             }
             hn::StoreN(acc, d, pair_dist + s0, remaining);
         }
+    };
+
+    if (m <= kSelM && qq > 1) {
+        // Keep the column-major upper-triangle SSD; defer top-q so each row
+        // selects from a dense distance row instead of updating two heaps
+        // per pair. Ties keep the lowest index, matching better().
+        std::array<float, kSelM * kSelM> dist{};
+        for (int r = 0; r < m; ++r) {
+            ssd_upper(r);
+            dist[static_cast<std::size_t>(r) * static_cast<std::size_t>(m) + static_cast<std::size_t>(r)] = 0.f;
+            for (int s = r + 1; s < m; ++s) {
+                const float value = pair_dist[s];
+                dist[static_cast<std::size_t>(r) * static_cast<std::size_t>(m) + static_cast<std::size_t>(s)] = value;
+                dist[static_cast<std::size_t>(s) * static_cast<std::size_t>(m) + static_cast<std::size_t>(r)] = value;
+            }
+        }
+        std::array<float, kSelM> tmp{};
+        const auto inf = hn::Set(d, kInf);
+        for (int r = 0; r < m; ++r) {
+            float* row = dist.data() + static_cast<std::size_t>(r) * static_cast<std::size_t>(m);
+            int i = 0;
+            for (; i + N <= m; i += N) {
+                hn::StoreU(hn::LoadU(d, row + i), d, tmp.data() + i);
+            }
+            for (; i < m; ++i) {
+                tmp[static_cast<std::size_t>(i)] = row[i];
+            }
+            tmp[static_cast<std::size_t>(r)] = kInf;
+            for (int slot = 1; slot < qq; ++slot) {
+                auto vmin = inf;
+                int j = 0;
+                for (; j + N <= m; j += N) {
+                    vmin = hn::Min(vmin, hn::LoadU(d, tmp.data() + j));
+                }
+                float best_d = hn::ReduceMin(d, vmin);
+                for (; j < m; ++j) {
+                    best_d = std::min(best_d, tmp[static_cast<std::size_t>(j)]);
+                }
+                const auto vbest = hn::Set(d, best_d);
+                int best_s = m;
+                j = 0;
+                for (; j + N <= m; j += N) {
+                    const auto eq = hn::Eq(hn::LoadU(d, tmp.data() + j), vbest);
+                    if (hn::AllFalse(d, eq)) {
+                        continue;
+                    }
+                    const int lane = static_cast<int>(hn::FindFirstTrue(d, eq));
+                    best_s = j + lane;
+                    break;
+                }
+                for (; j < m && best_s == m; ++j) {
+                    if (tmp[static_cast<std::size_t>(j)] == best_d) {
+                        best_s = j;
+                    }
+                }
+                if (!(best_d < kInf) || best_s < 0 || best_s >= m) {
+                    break;
+                }
+                best_idx[r * qq + slot] = best_s;
+                best_dist[r * qq + slot] = best_d;
+                tmp[static_cast<std::size_t>(best_s)] = kInf;
+            }
+        }
+    } else {
+    // Compute only the upper triangle. Every distance is inserted into both
+    // rows, so symmetric pairs cannot diverge through rounding or ties.
+    for (int r = 0; r < m; ++r) {
+        ssd_upper(r);
         for (int s = r + 1; s < m; ++s) {
             insert(r, s, pair_dist[s]);
             insert(s, r, pair_dist[s]);
         }
+    }
     }
 
     for (int r = 0; r < m; ++r) {
