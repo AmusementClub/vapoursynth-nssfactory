@@ -1,33 +1,21 @@
 #pragma once
 
 #include "nss/cpu_api.hpp"
+#include "nss/cpu_common.hpp"
 
 #include <algorithm>
-#include <bit>
 #include <cmath>
 #include <cstdint>
 
 namespace nss::detail {
 
 inline bool finite_distance(float value) noexcept {
-    // Keep classification valid in the -ffast-math TUs as well.  Calling
-    // std::isfinite there is permitted to fold to true and would violate the
-    // matcher contract for NaN/Inf distances.
-    const std::uint32_t bits = std::bit_cast<std::uint32_t>(value);
-    return (bits & 0x7f800000u) != 0x7f800000u;
+    return is_finite_bits(value);
 }
 
 // Match ordering is part of the denoiser contract: equal distances must not
 // depend on the implementation's container or SIMD lane order.
-inline bool match_less(const Match& a, const Match& b) noexcept {
-    const bool a_finite = finite_distance(a.dist);
-    const bool b_finite = finite_distance(b.dist);
-    if (a_finite != b_finite) {
-        return a_finite;
-    }
-    if (a_finite && a.dist != b.dist) {
-        return a.dist < b.dist;
-    }
+inline bool match_tie_less(const Match& a, const Match& b) noexcept {
     // The reference patch is part of every group and remains first even when
     // another patch has the same distance (the historical BM contract).
     const bool a_self = a.ordinal == 0;
@@ -45,6 +33,18 @@ inline bool match_less(const Match& a, const Match& b) noexcept {
         return a.x < b.x;
     }
     return a.ordinal < b.ordinal;
+}
+
+inline bool match_less(const Match& a, const Match& b) noexcept {
+    const bool a_finite = finite_distance(a.dist);
+    const bool b_finite = finite_distance(b.dist);
+    if (a_finite != b_finite) {
+        return a_finite;
+    }
+    if (a_finite && a.dist != b.dist) {
+        return a.dist < b.dist;
+    }
+    return match_tie_less(a, b);
 }
 
 class StableTopK {
@@ -78,6 +78,20 @@ public:
     }
 
     int size() const noexcept { return size_; }
+
+    // Treat storage[0, already) as already inserted. used by temporal merge so
+    // the reference-frame matches seed the same top-k that later candidates enter.
+    void adopt(int already) noexcept {
+        if (!storage_ || capacity_ <= 0) {
+            size_ = 0;
+            return;
+        }
+        if (already < 0) {
+            size_ = 0;
+            return;
+        }
+        size_ = already > capacity_ ? capacity_ : already;
+    }
 
 private:
     Match* storage_ = nullptr;

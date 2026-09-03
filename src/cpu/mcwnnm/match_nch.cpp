@@ -69,15 +69,8 @@ int predictive_match_nch(const float* const* refs, const int* strides, int nch, 
     if (ntemp <= 1 || cfg.radius <= 0 || n <= 0) {
         return n;
     }
-    constexpr int kCap = kBmMaxGroup * (1 + 2 * kBmMaxRadius);
-    Match all[kCap];
-    int nall = n;
-    if (nall > kCap) {
-        nall = kCap;
-    }
-    for (int i = 0; i < nall; ++i) {
-        all[i] = out[i];
-    }
+    detail::StableTopK topk(out, cfg.group);
+    topk.adopt(n);
     int px = out[0].x;
     int py = out[0].y;
     for (int dt = 1; dt <= cfg.radius; ++dt) {
@@ -98,9 +91,7 @@ int predictive_match_nch(const float* const* refs, const int* strides, int nch, 
             for (int i = 0; i < got; ++i) {
                 local[i].t = t;
                 detail::assign_temporal_order(local + i, 1, t, t0, next_ordinal);
-                if (nall < kCap) {
-                    all[nall++] = local[i];
-                }
+                topk.add(local[i]);
             }
             if (got > 0) {
                 px = local[0].x;
@@ -108,12 +99,7 @@ int predictive_match_nch(const float* const* refs, const int* strides, int nch, 
             }
         }
     }
-    const int k = std::min(cfg.group, nall);
-    std::partial_sort(all, all + k, all + nall, detail::match_less);
-    for (int i = 0; i < k; ++i) {
-        out[i] = all[i];
-    }
-    return k;
+    return topk.finish();
 }
 
 }  // namespace nss
