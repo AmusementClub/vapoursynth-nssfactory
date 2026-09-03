@@ -54,7 +54,7 @@ static void ScatterStrided(float* dst, int stride, int n, const float* src) {
 }
 
 float NcsrGroupWeights(const float* col_dist, const float* group, int m, int n, int lda, float h, float* weights) {
-    if (!weights || n < 1 || n > kSvdMaxN || !(h > 0.f) || !std::isfinite(h) ||
+    if (!weights || n < 1 || n > kSvdMaxN || !(h > 0.f) || !is_finite_bits(h) ||
         (!col_dist && (!group || m < 1 || lda < m))) {
         return 0.f;
     }
@@ -64,19 +64,20 @@ float NcsrGroupWeights(const float* col_dist, const float* group, int m, int n, 
                                  : (col > 0 ? ssd_vec(group + col * lda, group, m) : 0.f);
     }
 
+    // One vector exp for complete and partial vectors. Weights are stored
+    // first, then reduced in column order to keep the accumulation contract.
     const hn::ScalableTag<float> d;
     const int lanes = static_cast<int>(hn::Lanes(d));
     const auto scale = hn::Set(d, -1.f / h);
-    float sum = 0.f;
-    int col = 0;
-    for (; col + lanes <= n; col += lanes) {
-        const auto value =
-            hn::FastExp</*kHandleSubnormals=*/false>(d, hn::Mul(hn::LoadU(d, distance + col), scale));
-        hn::StoreU(value, d, weights + col);
-        sum += hn::ReduceSum(d, value);
+    for (int col = 0; col < n; col += lanes) {
+        const int count = n - col < lanes ? n - col : lanes;
+        const auto exponent =
+            hn::Mul(hn::LoadN(d, distance + col, static_cast<std::size_t>(count)), scale);
+        hn::StoreN(hn::FastExp</*kHandleSubnormals=*/false>(d, exponent), d, weights + col,
+                   static_cast<std::size_t>(count));
     }
-    for (; col < n; ++col) {
-        weights[col] = std::exp(-distance[col] / h);
+    float sum = 0.f;
+    for (int col = 0; col < n; ++col) {
         sum += weights[col];
     }
     return sum;
@@ -154,7 +155,7 @@ int NcsrFilterGroup(float* group, int m, int n, int lda, float sigma, const floa
     if (r < 0) {
         return -1;
     }
-    if (!(sigma > 0.f) || !std::isfinite(sigma)) {
+    if (!(sigma > 0.f) || !is_finite_bits(sigma)) {
         pca_reconstruct(group, m, n, lda, U, B, mean);
         return 0;
     }
