@@ -16,6 +16,7 @@
 #define HWY_TARGET_INCLUDE "cpu/ncsr/centralize.cpp"
 #include "hwy/foreach_target.h"
 #include "hwy/highway.h"
+#include "hwy/contrib/math/fast_math-inl.h"
 
 HWY_BEFORE_NAMESPACE();
 namespace nss {
@@ -50,6 +51,35 @@ static void ScatterStrided(float* dst, int stride, int n, const float* src) {
     for (; j < n; ++j) {
         dst[j * stride] = src[j];
     }
+}
+
+float NcsrGroupWeights(const float* col_dist, const float* group, int m, int n, int lda, float h, float* weights) {
+    if (!weights || n < 1 || n > kSvdMaxN || !(h > 0.f) || !std::isfinite(h) ||
+        (!col_dist && (!group || m < 1 || lda < m))) {
+        return 0.f;
+    }
+    float distance[kSvdMaxN];
+    for (int col = 0; col < n; ++col) {
+        distance[col] = col_dist ? col_dist[col]
+                                 : (col > 0 ? ssd_vec(group + col * lda, group, m) : 0.f);
+    }
+
+    const hn::ScalableTag<float> d;
+    const int lanes = static_cast<int>(hn::Lanes(d));
+    const auto scale = hn::Set(d, -1.f / h);
+    float sum = 0.f;
+    int col = 0;
+    for (; col + lanes <= n; col += lanes) {
+        const auto value =
+            hn::FastExp</*kHandleSubnormals=*/false>(d, hn::Mul(hn::LoadU(d, distance + col), scale));
+        hn::StoreU(value, d, weights + col);
+        sum += hn::ReduceSum(d, value);
+    }
+    for (; col < n; ++col) {
+        weights[col] = std::exp(-distance[col] / h);
+        sum += weights[col];
+    }
+    return sum;
 }
 
 void NcsrCentralizeCodes(float* B, int r, int n, int ldb, float tau, const float* col_w, const float* row_tau) {
@@ -132,17 +162,7 @@ int NcsrFilterGroup(float* group, int m, int n, int lda, float sigma, const floa
     constexpr float kEps = 1e-12f;
     // Match.dist is total SSD; h = 2 m σ² so a noise-only pair has w ~ exp(-1/2).
     const float h = std::max(2.f * static_cast<float>(m) * sigma * sigma, kEps);
-    float wsum = 0.f;
-    for (int j = 0; j < n; ++j) {
-        float dist = 0.f;
-        if (col_dist) {
-            dist = col_dist[j];
-        } else if (j > 0) {
-            dist = ssd_vec(group + j * lda, group, m);
-        }
-        w[j] = std::exp(-dist / h);
-        wsum += w[j];
-    }
+    float wsum = NcsrGroupWeights(col_dist, group, m, n, lda, h, w);
     if (!(wsum > 0.f)) {
         for (int j = 0; j < n; ++j) {
             w[j] = 1.f;
@@ -182,10 +202,15 @@ HWY_AFTER_NAMESPACE();
 #if HWY_ONCE
 namespace nss {
 HWY_EXPORT(NcsrCentralizeCodes);
+HWY_EXPORT(NcsrGroupWeights);
 HWY_EXPORT(NcsrFilterGroup);
 
 void ncsr_centralize_codes(float* B, int r, int n, int ldb, float tau, const float* col_w, const float* row_tau) {
     HWY_DYNAMIC_DISPATCH(NcsrCentralizeCodes)(B, r, n, ldb, tau, col_w, row_tau);
+}
+
+float ncsr_group_weights(const float* col_dist, const float* group, int m, int n, int lda, float h, float* weights) {
+    return HWY_DYNAMIC_DISPATCH(NcsrGroupWeights)(col_dist, group, m, n, lda, h, weights);
 }
 
 int ncsr_filter_group(float* group, int m, int n, int lda, float sigma, const float* col_dist, float* work,

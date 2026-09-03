@@ -140,13 +140,7 @@ void finish_ncsr_batch_item(NcsrFilterBatchItem& item) {
     float weights[kSvdMaxN];
     constexpr float kEps = 1e-12f;
     const float h = std::max(2.f * static_cast<float>(m) * item.sigma * item.sigma, kEps);
-    float weight_sum = 0.f;
-    for (int col = 0; col < n; ++col) {
-        float distance = item.col_dist ? item.col_dist[col]
-                                       : (col > 0 ? ssd_vec(item.group + col * item.lda, item.group, m) : 0.f);
-        weights[col] = std::exp(-distance / h);
-        weight_sum += weights[col];
-    }
+    float weight_sum = ncsr_group_weights(item.col_dist, item.group, m, n, item.lda, h, weights);
     if (!(weight_sum > 0.f)) {
         std::fill(weights, weights + n, 1.f);
         weight_sum = static_cast<float>(n);

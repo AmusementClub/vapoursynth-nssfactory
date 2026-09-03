@@ -24,6 +24,11 @@ inline int ncsr_denoise_work_floats(int width, int height, int block, int group)
 void ncsr_centralize_codes(float* B, int r, int n, int ldb, float tau, const float* col_w = nullptr,
                            const float* row_tau = nullptr);
 
+// Computes exp(-distance / h) weights for one NCSR group. col_dist may be null,
+// in which case distances are measured against column zero of group.
+float ncsr_group_weights(const float* col_dist, const float* group, int m, int n, int lda, float h,
+                         float* weights);
+
 // SVD + code-domain shrink. In-place. col_dist[j] is match distance of column j (nullptr → SSD vs col 0).
 int ncsr_filter_group(float* group, int m, int n, int lda, float sigma, const float* col_dist, float* work,
                       int work_floats);

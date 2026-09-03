@@ -178,6 +178,62 @@ static int check_energy_shrink() {
     return 0;
 }
 
+static int check_group_weights() {
+    constexpr int m = 9;
+    constexpr int lda = 12;
+    constexpr float h = 1.75f;
+    std::vector<float> group(static_cast<std::size_t>(lda * nss::kSvdMaxN), 0.f);
+    for (int col = 0; col < nss::kSvdMaxN; ++col) {
+        for (int row = 0; row < m; ++row) {
+            group[static_cast<std::size_t>(row + col * lda)] =
+                0.03125f * static_cast<float>((row * 5 + col * 3) % 19);
+        }
+    }
+    const int sizes[] = {1, 3, 7, 8, 15, 16, 31, 32};
+    for (int n : sizes) {
+        std::vector<float> distance(static_cast<std::size_t>(n));
+        std::vector<float> weights(static_cast<std::size_t>(n));
+        for (int col = 0; col < n; ++col) {
+            distance[static_cast<std::size_t>(col)] = 0.125f * static_cast<float>(col * col + 1);
+        }
+        const float sum = nss::ncsr_group_weights(distance.data(), nullptr, m, n, lda, h, weights.data());
+        double expected_sum = 0.0;
+        for (int col = 0; col < n; ++col) {
+            const float expected = std::exp(-distance[static_cast<std::size_t>(col)] / h);
+            expected_sum += expected;
+            if (std::fabs(weights[static_cast<std::size_t>(col)] - expected) > 3e-5f) {
+                return fail("ncsr explicit group weight differs from exp oracle");
+            }
+        }
+        if (std::fabs(static_cast<double>(sum) - expected_sum) > 2e-4 * expected_sum + 1e-6) {
+            return fail("ncsr explicit group weight sum differs from oracle");
+        }
+
+        const float measured_sum =
+            nss::ncsr_group_weights(nullptr, group.data(), m, n, lda, h, weights.data());
+        expected_sum = 0.0;
+        for (int col = 0; col < n; ++col) {
+            double ssd = 0.0;
+            for (int row = 0; row < m; ++row) {
+                const double delta = group[static_cast<std::size_t>(row + col * lda)] -
+                                     group[static_cast<std::size_t>(row)];
+                ssd += delta * delta;
+            }
+            const float expected = std::exp(-static_cast<float>(ssd) / h);
+            expected_sum += expected;
+            if (std::fabs(weights[static_cast<std::size_t>(col)] - expected) > 3e-5f) {
+                return fail("ncsr measured group weight differs from exp oracle");
+            }
+        }
+        if (std::fabs(weights[0] - 1.f) > 3e-5f ||
+            std::fabs(static_cast<double>(measured_sum) - expected_sum) > 2e-4 * expected_sum + 1e-6) {
+            return fail("ncsr measured group weight contract");
+        }
+    }
+    std::printf("ncsr group weights explicit/measured ok\n");
+    return 0;
+}
+
 int main() {
     if (check_sigma0_identity() != 0) {
         return 1;
@@ -192,6 +248,9 @@ int main() {
         return 1;
     }
     if (check_scn_tau() != 0) {
+        return 1;
+    }
+    if (check_group_weights() != 0) {
         return 1;
     }
     std::printf("test_ncsr ok\n");
