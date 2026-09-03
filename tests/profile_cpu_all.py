@@ -110,13 +110,15 @@ def make_filter(core: vs.Core, algorithm: str, source: vs.VideoNode) -> vs.Video
         )
     if algorithm == "nlh":
         block_size = int(os.environ.get("NSS_PROFILE_NLH_BLOCK", "8"))
+        block_step = int(os.environ.get("NSS_PROFILE_NLH_STEP", str(min(block_size, 8))))
         return core.nss.NLH(
             source,
             sigma=3,
-            radius=0,
+            radius=int(os.environ.get("NSS_PROFILE_NLH_RADIUS", "0")),
             block_size=block_size,
-            block_step=min(block_size, 8),
+            block_step=block_step,
             group_size=int(os.environ.get("NSS_PROFILE_NLH_GROUP", "16")),
+            bm_range=int(os.environ.get("NSS_PROFILE_NLH_RANGE", "20")),
             q=int(os.environ.get("NSS_PROFILE_NLH_Q", "4")),
         )
     if algorithm == "mcwnnm":
