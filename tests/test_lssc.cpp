@@ -1,9 +1,11 @@
 #include "nss/cpu_api.hpp"
+#include "nss/cpu_common.hpp"
 #include "nss/cpu_lssc.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <random>
 #include <vector>
 
@@ -145,6 +147,20 @@ static int test_reconstruct_finite() {
     for (int i = 0; i < m * n; ++i) {
         if (!std::isfinite(patches[static_cast<std::size_t>(i)])) {
             return fail("reconstruct produced non-finite values");
+        }
+    }
+
+    for (const float bad_sigma : {std::numeric_limits<float>::quiet_NaN(),
+                                  -std::numeric_limits<float>::quiet_NaN(),
+                                  std::numeric_limits<float>::infinity(),
+                                  -std::numeric_limits<float>::infinity()}) {
+        std::vector<float> bad_input = legacy_input;
+        nss::lssc_reconstruct(bad_input.data(), m, n, m, D.data(), atoms, m, bad_sigma, legacy_work.data(),
+                              static_cast<int>(legacy_work.size()));
+        for (float value : bad_input) {
+            if (!nss::is_finite_bits(value)) {
+                return fail("lssc non-finite sigma produced non-finite output");
+            }
         }
     }
 

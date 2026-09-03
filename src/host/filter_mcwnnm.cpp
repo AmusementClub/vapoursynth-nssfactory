@@ -292,7 +292,7 @@ const VSFrame* VS_CC mcwnnmGetFrame(int n, int activationReason, void* instanceD
                                           result.weight);
                 }
             };
-            (void)nss::host_detail::execute_ordered_chunk<Result>(jobs, begin, end, prepare, commit);
+            (void)nss::host_detail::commit_prepared_chunk<Result>(jobs, begin, end, prepare, commit);
         }
         const bool last = (iter == niter - 1);
         if (last && fat) {
@@ -376,6 +376,11 @@ static VSNode* nss_create_mcwnnm(const VSMap* in, VSCore* core, const VSAPI* vsa
         return fail("nss.MCWNNM: constant RGBS or YUV444PS required");
     }
     nss::map_float_array(vsapi, in, "sigma", d->sigma, 3, nss::kMcwnnmDefaultSigma);
+    for (int c = 0; c < 3; ++c) {
+        if (!nss::is_finite_bits(d->sigma[c])) {
+            return fail("nss.MCWNNM: sigma must be finite");
+        }
+    }
     d->block_size = nss::map_int(vsapi, in, "block_size", nss::kMcwnnmDefaultBlock);
     d->block_step = nss::map_int(vsapi, in, "block_step", nss::kMcwnnmDefaultStep);
     d->group_size = nss::map_int(vsapi, in, "group_size", nss::kMcwnnmDefaultGroup);
@@ -401,10 +406,11 @@ static VSNode* nss_create_mcwnnm(const VSMap* in, VSCore* core, const VSAPI* vsa
     if (d->bm_range < 1 || d->bm_range > nss::kBmMaxRange) {
         return fail("nss.MCWNNM: bm_range must be in [1, 64]");
     }
-    if (d->admm_iter < 1 || !(d->rho > 0.f) || d->mu < 1.f || !std::isfinite(d->rho) || !std::isfinite(d->mu)) {
+    if (d->admm_iter < 1 || !(d->rho > 0.f) || d->mu < 1.f || !nss::is_finite_bits(d->rho) ||
+        !nss::is_finite_bits(d->mu)) {
         return fail("nss.MCWNNM: invalid admm_iter/rho/mu (mu >= 1)");
     }
-    if (d->iters < 1 || !std::isfinite(d->delta)) {
+    if (d->iters < 1 || !nss::is_finite_bits(d->delta)) {
         return fail("nss.MCWNNM: invalid iters/delta");
     }
     if (d->ps_num < 1 || d->ps_num > d->group_size || d->ps_range < 1 || d->ps_range > nss::kBmMaxRange) {

@@ -77,9 +77,9 @@ void run_groups(const float* const* match_refs, const int* match_strides, const 
                                  ? nss::predictive_match_batch(match_refs, match_strides, ntemp, pw, ph, t0, cfg,
                                                                match_items.data(), count, match_storage.data(),
                                                                nss::kBmMaxGroup, counts.data())
-                                 : nss::spatial_match_batch(match_refs[t0], match_strides[t0], pw, ph,
-                                                            match_items.data(), count, match_storage.data(),
-                                                            nss::kBmMaxGroup, counts.data());
+                                 : nss::nlh_spatial_match_batch(match_refs[t0], match_strides[t0], pw, ph,
+                                                               match_items.data(), count, match_storage.data(),
+                                                               nss::kBmMaxGroup, counts.data());
         if (match_rc < 0) {
             continue;
         }

@@ -78,6 +78,10 @@ void process_plane_batched(const float* const* srcs, const float* const* refs, i
 
     const int area = block * block;
     const int work_floats = nss::wnnm_shrink_work_floats(area, group);
+    const std::size_t batch_capacity = std::min(jobs.size(), nss::host_detail::kGroupBatchWindow);
+    const std::size_t patch_stride = static_cast<std::size_t>(group) * static_cast<std::size_t>(area);
+    std::vector<float> patches(batch_capacity * patch_stride, 0.f);
+    std::vector<float> shrink_work(batch_capacity * static_cast<std::size_t>(work_floats), 0.f);
     for (std::size_t begin = 0; begin < jobs.size(); begin += nss::host_detail::kGroupBatchWindow) {
         const std::size_t end = std::min(jobs.size(), begin + nss::host_detail::kGroupBatchWindow);
         const int count = static_cast<int>(end - begin);
@@ -98,14 +102,14 @@ void process_plane_batched(const float* const* srcs, const float* const* refs, i
             continue;
         }
 
-        std::vector<float> patches(static_cast<std::size_t>(count) * static_cast<std::size_t>(group) * area, 0.f);
-        std::vector<float> shrink_work(static_cast<std::size_t>(count) * static_cast<std::size_t>(work_floats), 0.f);
+        std::fill_n(patches.data(), static_cast<std::size_t>(count) * patch_stride, 0.f);
+        std::fill_n(shrink_work.data(), static_cast<std::size_t>(count) * static_cast<std::size_t>(work_floats), 0.f);
         std::array<float, nss::host_detail::kGroupBatchWindow> weights{};
         std::array<int, nss::host_detail::kGroupBatchWindow> filter_status{};
         std::array<nss::WnnmShrinkBatchItem, nss::host_detail::kGroupBatchWindow> shrink_items{};
         for (int i = 0; i < count; ++i) {
             const int k = counts[static_cast<std::size_t>(i)];
-            float* patch = patches.data() + static_cast<std::size_t>(i) * static_cast<std::size_t>(group) * area;
+            float* patch = patches.data() + static_cast<std::size_t>(i) * patch_stride;
             for (int j = 0; j < k; ++j) {
                 const auto& m = match_storage[static_cast<std::size_t>(i) * nss::kWnnmMaxGroup + j];
                 const int t = radius > 0 ? m.t : t0;
@@ -127,7 +131,7 @@ void process_plane_batched(const float* const* srcs, const float* const* refs, i
             }
             result.valid = true;
             result.k = counts[i];
-            result.patches = patches.data() + i * static_cast<std::size_t>(group) * area;
+            result.patches = patches.data() + i * patch_stride;
             result.weight = weights[i];
             for (int j = 0; j < result.k; ++j) {
                 result.matches[j] = match_storage[i * nss::kWnnmMaxGroup + j];
@@ -147,7 +151,7 @@ void process_plane_batched(const float* const* srcs, const float* const* refs, i
                                    result.weight);
             }
         };
-        (void)nss::host_detail::execute_ordered_chunk<WnnmBatchResult>(jobs, begin, end, prepare, commit);
+        (void)nss::host_detail::commit_prepared_chunk<WnnmBatchResult>(jobs, begin, end, prepare, commit);
     }
 
     if (emit_fat) {

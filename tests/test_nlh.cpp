@@ -1,8 +1,13 @@
 #include "nss/cpu_nlh.hpp"
+#include "nss/cpu_api.hpp"
+#include "nss/cpu_batch.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <random>
 #include <vector>
 
@@ -122,6 +127,125 @@ static int filter_group_snapshot_and_finite() {
     return 0;
 }
 
+static int match16_differential() {
+    constexpr int width = 41;
+    constexpr int height = 35;
+    constexpr int stride = 48;
+    std::vector<float> frame(static_cast<std::size_t>(stride * height));
+    std::mt19937 rng(103);
+    std::uniform_real_distribution<float> dist(-1.f, 1.f);
+    for (float& value : frame) {
+        value = dist(rng);
+    }
+
+    auto compare = [&](int block, int range, int bx, int by) {
+        nss::Match shared[16]{};
+        nss::Match dedicated[16]{};
+        const int shared_count =
+            nss::spatial_match(frame.data(), stride, width, height, bx, by, block, range, 16, shared);
+        const int dedicated_count =
+            nss::nlh_spatial_match16(frame.data(), stride, width, height, bx, by, block, range, dedicated);
+        if (shared_count != dedicated_count) {
+            std::fprintf(stderr, "match16 count mismatch block=%d range=%d shared=%d dedicated=%d\n", block, range,
+                         shared_count, dedicated_count);
+            return 1;
+        }
+        for (int i = 0; i < shared_count; ++i) {
+            const auto shared_bits = std::bit_cast<std::uint32_t>(shared[i].dist);
+            const auto dedicated_bits = std::bit_cast<std::uint32_t>(dedicated[i].dist);
+            const float distance_scale = std::max({1.f, std::fabs(shared[i].dist), std::fabs(dedicated[i].dist)});
+            const bool same_distance =
+                shared_bits == dedicated_bits ||
+                (std::isfinite(shared[i].dist) && std::isfinite(dedicated[i].dist) &&
+                 std::fabs(shared[i].dist - dedicated[i].dist) <= 8e-6f * distance_scale) ||
+                (!std::isfinite(shared[i].dist) && !std::isfinite(dedicated[i].dist));
+            if (shared[i].x != dedicated[i].x || shared[i].y != dedicated[i].y ||
+                shared[i].t != dedicated[i].t || shared[i].ordinal != dedicated[i].ordinal ||
+                !same_distance) {
+                std::fprintf(stderr,
+                             "match16 mismatch block=%d range=%d index=%d shared=(%d,%d,%u,%08x) "
+                             "dedicated=(%d,%d,%u,%08x)\n",
+                             block, range, i, shared[i].x, shared[i].y, shared[i].ordinal,
+                             shared_bits, dedicated[i].x, dedicated[i].y, dedicated[i].ordinal, dedicated_bits);
+                return 1;
+            }
+        }
+        return 0;
+    };
+
+    int failed = 0;
+    for (int block : {1, 2, 4, 8, 16}) {
+        for (int range : {0, 1, 5, 20}) {
+            failed |= compare(block, range, 0, 0);
+            failed |= compare(block, range, width / 2, height / 2);
+            failed |= compare(block, range, width - block, height - block);
+        }
+    }
+
+    std::fill(frame.begin(), frame.end(), 0.25f);
+    failed |= compare(8, 20, 17, 13);
+    failed |= compare(16, 0, 25, 19);
+    frame[13 * stride + 17] = std::numeric_limits<float>::quiet_NaN();
+    nss::Match nonfinite_a[16]{};
+    nss::Match nonfinite_b[16]{};
+    const int nonfinite_count_a =
+        nss::nlh_spatial_match16(frame.data(), stride, width, height, 17, 13, 8, 20, nonfinite_a);
+    const int nonfinite_count_b =
+        nss::nlh_spatial_match16(frame.data(), stride, width, height, 17, 13, 8, 20, nonfinite_b);
+    bool seen_nonfinite = false;
+    if (nonfinite_count_a != nonfinite_count_b || nonfinite_count_a != 16 || nonfinite_a[0].ordinal != 0) {
+        failed |= fail("match16 non-finite count or self mismatch");
+    }
+    for (int i = 0; i < nonfinite_count_a; ++i) {
+        if (nonfinite_a[i].x != nonfinite_b[i].x || nonfinite_a[i].y != nonfinite_b[i].y ||
+            nonfinite_a[i].ordinal != nonfinite_b[i].ordinal ||
+            std::bit_cast<std::uint32_t>(nonfinite_a[i].dist) !=
+                std::bit_cast<std::uint32_t>(nonfinite_b[i].dist)) {
+            failed |= fail("match16 non-finite result is not deterministic");
+            break;
+        }
+        const bool finite = std::isfinite(nonfinite_a[i].dist);
+        if (seen_nonfinite && finite) {
+            failed |= fail("match16 ordered a finite result after a non-finite result");
+            break;
+        }
+        seen_nonfinite = seen_nonfinite || !finite;
+    }
+
+    std::fill(frame.begin(), frame.end(), 0.5f);
+    nss::MatchBatchItem items[2] = {{4, 3, 8, 20, 16}, {29, 23, 8, 20, 16}};
+    nss::Match shared_batch[2 * nss::kBmMaxGroup]{};
+    nss::Match dedicated_batch[2 * nss::kBmMaxGroup]{};
+    int shared_counts[2]{};
+    int dedicated_counts[2]{};
+    const int shared_status = nss::spatial_match_batch(frame.data(), stride, width, height, items, 2, shared_batch,
+                                                       nss::kBmMaxGroup, shared_counts);
+    const int dedicated_status = nss::nlh_spatial_match_batch(frame.data(), stride, width, height, items, 2,
+                                                              dedicated_batch, nss::kBmMaxGroup, dedicated_counts);
+    if (shared_status != dedicated_status) {
+        failed |= fail("match16 batch status mismatch");
+    }
+    for (int item = 0; item < 2; ++item) {
+        if (shared_counts[item] != dedicated_counts[item]) {
+            failed |= fail("match16 batch count mismatch");
+            break;
+        }
+        for (int i = 0; i < shared_counts[item]; ++i) {
+            const auto& shared = shared_batch[item * nss::kBmMaxGroup + i];
+            const auto& dedicated = dedicated_batch[item * nss::kBmMaxGroup + i];
+            if (shared.x != dedicated.x || shared.y != dedicated.y || shared.ordinal != dedicated.ordinal) {
+                failed |= fail("match16 batch ordering mismatch");
+                break;
+            }
+        }
+    }
+    if (nss::nlh_spatial_match16(nullptr, stride, width, height, 0, 0, 8, 20, nullptr) != 0) {
+        failed |= fail("match16 invalid input must reject");
+    }
+    std::printf("nlh match16 differential checks complete\n");
+    return failed;
+}
+
 int main() {
     int failed = 0;
     failed |= haar_roundtrip(16);
@@ -130,6 +254,7 @@ int main() {
     failed |= haar_roundtrip(2);
     failed |= pixel_match_includes_self();
     failed |= filter_group_snapshot_and_finite();
+    failed |= match16_differential();
     {
         std::vector<int> idx(6 * 4, -1);
         std::vector<float> group(8 * 4, 0.f);

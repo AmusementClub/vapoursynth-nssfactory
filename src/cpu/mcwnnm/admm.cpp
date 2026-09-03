@@ -82,12 +82,13 @@ static int GramShrink8(const float* input, int m, float constant, int start_k, f
     HWY_ALIGN float eig_vt[kN * kN];
     HWY_ALIGN float eig_v[kN * kN];
     HWY_ALIGN float singular[kN];
+    HWY_ALIGN float spectral_factor[kN];
     HWY_ALIGN float transform[kN * kN];
 
     gemm_tn_hwy(m, kN, kN, input, m, input, m, gram, kN);
     jacobi_svd_8(gram, kN, eig_u, kN, eig_s, eig_vt, kN, eig_v);
     for (int k = 0; k < kN; ++k) {
-        if (!std::isfinite(eig_s[k]) || eig_s[k] < 0.f) {
+        if (!is_finite_bits(eig_s[k]) || eig_s[k] < 0.f) {
             return -1;
         }
         singular[k] = std::sqrt(eig_s[k]);
@@ -99,18 +100,21 @@ static int GramShrink8(const float* input, int m, float constant, int start_k, f
         }
     }
     const int kept = sv_shrink(singular, kN, constant, start_k);
+    for (int k = 0; k < kept; ++k) {
+        const float original = std::sqrt(eig_s[k]);
+        spectral_factor[k] = original > 1e-20f ? singular[k] / original : 0.f;
+    }
     for (int col = 0; col < kN; ++col) {
-        for (int row = 0; row < kN; ++row) {
+        for (int row = 0; row <= col; ++row) {
             float value = 0.f;
             for (int k = 0; k < kept; ++k) {
-                const float original = std::sqrt(eig_s[k]);
-                const float factor = original > 1e-20f ? singular[k] / original : 0.f;
-                value += eig_vt[k + row * kN] * factor * eig_vt[k + col * kN];
+                value += eig_vt[k + row * kN] * spectral_factor[k] * eig_vt[k + col * kN];
             }
-            if (!std::isfinite(value)) {
+            if (!is_finite_bits(value)) {
                 return -1;
             }
             transform[row + col * kN] = value;
+            transform[col + row * kN] = value;
         }
     }
     gemm_nn_hwy(m, kN, kN, input, m, transform, kN, output, m);
@@ -148,7 +152,7 @@ static int McwnnmAdmmGram8(float* Y, int m, int lda, int nch, const float* sigma
         }
         DualAdd(A, X, Z, m, n, rho);
         rho = std::min(1e4f, mu * rho);
-        if (!(rho > 0.f) || !std::isfinite(rho)) {
+        if (!(rho > 0.f) || !is_finite_bits(rho)) {
             return -1;
         }
     }
@@ -159,7 +163,7 @@ static int McwnnmAdmmGram8(float* Y, int m, int lda, int nch, const float* sigma
 int McwnnmAdmm(float* Y, int m, int n, int lda, int nch, const float* sigma, int admm_iter, float rho0, float mu,
                int sv_start_k, float* work, int work_floats) {
     if (!Y || !sigma || m < 1 || n < 1 || lda < m || nch < 1 || m % nch != 0 || m > kSvdMaxM || n > kSvdMaxN ||
-        admm_iter < 1 || !(rho0 > 0.f) || !std::isfinite(rho0) || !std::isfinite(mu) || mu < 1.f) {
+        admm_iter < 1 || !(rho0 > 0.f) || !is_finite_bits(rho0) || !is_finite_bits(mu) || mu < 1.f) {
         return -1;
     }
     const int need = mcwnnm_admm_work_floats(m, n);
@@ -225,7 +229,7 @@ int McwnnmAdmm(float* Y, int m, int n, int lda, int nch, const float* sigma, int
         }
         DualAdd(A, X, Z, m, n, rho);
         rho = std::min(1e4f, mu * rho);
-        if (!(rho > 0.f) || !std::isfinite(rho)) {
+        if (!(rho > 0.f) || !is_finite_bits(rho)) {
             return -1;
         }
     }

@@ -333,8 +333,17 @@ const VSFrame* VS_CC nlmGetFrame(int n, int activationReason, void* instanceData
                             break;
                         }
                     };
-                    distance(temp_bwd, refp, refp_strides, refp_bwd, refp_bwd_strides);
-                    nss::nlm_horizontal(temp, temp_bwd, d->s, w, ext_h, stride);
+                    auto distance_horizontal = [&](const PlanePtrs& c, const PlaneStrides& cs,
+                                                   const PlanePtrs& nb, const PlaneStrides& ns) {
+                        if (!mixed_strides && d->channels == nss::ChannelMode::Y) {
+                            nss::nlm_distance_luma_horizontal_f32(temp, temp_bwd, c[0], nb[0], ox, oy, d->s, w,
+                                                                  ext_h, stride);
+                            return;
+                        }
+                        distance(temp_bwd, c, cs, nb, ns);
+                        nss::nlm_horizontal(temp, temp_bwd, d->s, w, ext_h, stride);
+                    };
+                    distance_horizontal(refp, refp_strides, refp_bwd, refp_bwd_strides);
                     nss::nlm_vertical_welsch(temp_bwd, temp, d->s, h2_inv_norm, w, ext_h, stride, buffer);
                     auto accum_range = [&](const PlanePtrs& sb, const PlaneStrides& sbs, const PlanePtrs& sf,
                                            const PlaneStrides& sfs, const float* t1, const float* t2, int y0, int y1,
@@ -371,8 +380,7 @@ const VSFrame* VS_CC nlmGetFrame(int n, int activationReason, void* instanceData
                                     temp_bwd + static_cast<std::size_t>(core_local + yy) * static_cast<std::size_t>(stride),
                                     static_cast<std::size_t>(stride) * sizeof(float));
                     }
-                    distance(temp_bwd, refp_fwd, refp_fwd_strides, refp, refp_strides);
-                    nss::nlm_horizontal(temp, temp_bwd, d->s, w, ext_h, stride);
+                    distance_horizontal(refp_fwd, refp_fwd_strides, refp, refp_strides);
                     const int temp2_base_y = mixed_strides ? 0 : std::clamp(core_local - oy, 0, ext_h - 1);
                     if (mixed_strides) {
                         nss::nlm_vertical_welsch(temp_bwd, temp, d->s, h2_inv_norm, w, ext_h, stride, buffer);

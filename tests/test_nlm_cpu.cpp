@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <limits>
@@ -53,6 +55,88 @@ bool check_horizontal() {
             }
         }
     }
+    return true;
+}
+
+bool check_distance_horizontal_luma() {
+    int max_ulp = 0;
+    float max_abs = 0.f;
+    for (const int w : {1, 3, 7, 15, 16, 31, 65}) {
+        for (const int h : {1, 2, 5, 11}) {
+            const int stride = w + 7;
+            std::vector<float> center(static_cast<std::size_t>(stride * h), -3.f);
+            std::vector<float> neighbor(static_cast<std::size_t>(stride * h), -5.f);
+            std::vector<float> distance(static_cast<std::size_t>(stride * h), -7.f);
+            std::vector<float> expected(static_cast<std::size_t>(stride * h), -11.f);
+            std::vector<float> got(static_cast<std::size_t>(stride * h), -11.f);
+            std::vector<float> repeat(static_cast<std::size_t>(stride * h), -11.f);
+            std::vector<float> scratch(static_cast<std::size_t>(stride), -13.f);
+            for (int y = 0; y < h; ++y) {
+                for (int x = 0; x < w; ++x) {
+                    center[static_cast<std::size_t>(y * stride + x)] =
+                        0.001f * static_cast<float>(1 + (x * 37 + y * 101) % 997);
+                    neighbor[static_cast<std::size_t>(y * stride + x)] =
+                        -0.0013f * static_cast<float>(1 + (x * 53 + y * 89) % 991);
+                }
+            }
+            for (int radius = 0; radius <= 6; ++radius) {
+                for (const int oy : {-2, -1, 0, 1, 2}) {
+                    for (const int ox : {-2, -1, 0, 1, 2}) {
+                        if (std::abs(ox) >= w) {
+                            continue;
+                        }
+                        std::fill(distance.begin(), distance.end(), -7.f);
+                        std::fill(expected.begin(), expected.end(), -11.f);
+                        std::fill(got.begin(), got.end(), -11.f);
+                        std::fill(repeat.begin(), repeat.end(), -11.f);
+                        std::fill(scratch.begin(), scratch.end(), -13.f);
+                        nss::nlm_distance_luma_f32(distance.data(), center.data(), neighbor.data(), ox, oy, w, h,
+                                                   stride);
+                        nss::nlm_horizontal(expected.data(), distance.data(), radius, w, h, stride);
+                        nss::nlm_distance_luma_horizontal_f32(got.data(), scratch.data(), center.data(),
+                                                              neighbor.data(), ox, oy, radius, w, h, stride);
+                        nss::nlm_distance_luma_horizontal_f32(repeat.data(), scratch.data(), center.data(),
+                                                              neighbor.data(), ox, oy, radius, w, h, stride);
+                        for (int y = 0; y < h; ++y) {
+                            for (int x = 0; x < w; ++x) {
+                                const float want = expected[static_cast<std::size_t>(y * stride + x)];
+                                const float value = got[static_cast<std::size_t>(y * stride + x)];
+                                const float abs_error = std::fabs(value - want);
+                                const auto want_bits = std::bit_cast<std::uint32_t>(want);
+                                const auto value_bits = std::bit_cast<std::uint32_t>(value);
+                                const int ulp = static_cast<int>(want_bits > value_bits ? want_bits - value_bits
+                                                                                     : value_bits - want_bits);
+                                max_abs = std::max(max_abs, abs_error);
+                                max_ulp = std::max(max_ulp, ulp);
+                                if (!std::isfinite(value) || ulp > 8 ||
+                                    abs_error > 2e-6f * (1.f + std::fabs(want))) {
+                                    std::fprintf(stderr,
+                                                 "distance-horizontal mismatch w=%d h=%d radius=%d offset=%d,%d "
+                                                 "at %d,%d: %a vs %a ulp=%d\n",
+                                                 w, h, radius, ox, oy, x, y, static_cast<double>(value),
+                                                 static_cast<double>(want), ulp);
+                                    return false;
+                                }
+                            }
+                            if (std::memcmp(got.data() + static_cast<std::size_t>(y * stride),
+                                            repeat.data() + static_cast<std::size_t>(y * stride),
+                                            static_cast<std::size_t>(w) * sizeof(float)) != 0) {
+                                std::fprintf(stderr, "distance-horizontal is not repeat-exact\n");
+                                return false;
+                            }
+                            for (int x = w; x < stride; ++x) {
+                                if (got[static_cast<std::size_t>(y * stride + x)] != -11.f) {
+                                    std::fprintf(stderr, "distance-horizontal overwrote padding at %d,%d\n", x, y);
+                                    return false;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    std::printf("distance-horizontal differential max_abs=%g max_ulp=%d\n", max_abs, max_ulp);
     return true;
 }
 
@@ -365,7 +449,8 @@ int main() {
         std::fprintf(stderr, "nlm produced non-finite values\n");
         return 1;
     }
-    if (!check_horizontal() || !check_vertical_welsch() || !check_mixed_plane_strides()) {
+    if (!check_horizontal() || !check_distance_horizontal_luma() || !check_vertical_welsch() ||
+        !check_mixed_plane_strides()) {
         return 1;
     }
     return 0;

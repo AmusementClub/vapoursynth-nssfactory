@@ -45,7 +45,7 @@ bool finite_singular_values(const float* values, int count) {
         return false;
     }
     for (int i = 0; i < count; ++i) {
-        if (!std::isfinite(values[i]) || values[i] < 0.f) {
+        if (!is_finite_bits(values[i]) || values[i] < 0.f) {
             return false;
         }
     }
@@ -85,7 +85,7 @@ void finish_twsc_batch_item(TwscPcaBatchItem& item) {
     bool same = true;
     for (int col = 0; col < n; ++col) {
         float sigma = item.col_sigma ? item.col_sigma[col] : item.sigma;
-        if (!std::isfinite(sigma) || sigma < 0.f) {
+        if (!is_finite_bits(sigma) || sigma < 0.f) {
             sigma = 0.f;
         }
         sigmas[col] = sigma;
@@ -131,7 +131,7 @@ void finish_ncsr_batch_item(NcsrFilterBatchItem& item) {
     float* mean = S + n;
     float* B = mean + m;
     gemm_tn_hwy(m, n, r, U, m, item.group, item.lda, B, r);
-    if (!(item.sigma > 0.f) || !std::isfinite(item.sigma)) {
+    if (!(item.sigma > 0.f) || !is_finite_bits(item.sigma)) {
         gemm_nn_hwy(m, n, r, U, m, B, r, item.group, item.lda);
         group_center_add(item.group, m, n, item.lda, mean);
         return;
@@ -612,8 +612,8 @@ int wnnm_shrink_batch(WnnmShrinkBatchItem* items, int count) {
                 s[pos] = S;
                 vt[pos] = Vt;
             }
-            if (svd_economy_8_batch_hwy(first.m, a.data(), lda.data(), u.data(), ldu.data(), s.data(), vt.data(),
-                                        ldvt.data(), static_cast<int>(size)) != 0) {
+            if (svd_economy_8_batch_qreplay_hwy(first.m, a.data(), lda.data(), u.data(), ldu.data(), s.data(),
+                                                vt.data(), ldvt.data(), static_cast<int>(size)) != 0) {
                 for (int index : batch_indices) {
                     auto& item = items[index];
                     if (item.residual) {
@@ -775,8 +775,8 @@ int twsc_pca_soft_batch(TwscPcaBatchItem* items, int count) {
                 ldu[pos] = item.m;
                 s[pos] = S;
             }
-            if (svd_economy_8_batch_u_hwy(m, a.data(), lda.data(), u.data(), ldu.data(), s.data(),
-                                          static_cast<int>(size)) != 0) {
+            if (svd_economy_8_batch_u_qreplay_hwy(m, a.data(), lda.data(), u.data(), ldu.data(), s.data(),
+                                                  static_cast<int>(size)) != 0) {
                 for (int index : batch_indices) {
                     auto& item = items[index];
                     float* mean = item.work + item.m * item.n + item.n;
@@ -904,8 +904,9 @@ int ncsr_filter_group_batch(NcsrFilterBatchItem* items, int count) {
             s[pos] = S;
             vt[pos] = Vt;
         }
-        const bool batch_ok = svd_economy_8_batch_hwy(m, a.data(), lda.data(), u.data(), ldu.data(), s.data(),
-                                                       vt.data(), ldvt.data(), static_cast<int>(size)) == 0;
+        const bool batch_ok = svd_economy_8_batch_u_compat_hwy(
+                                  m, a.data(), lda.data(), u.data(), ldu.data(), s.data(), vt.data(), ldvt.data(),
+                                  static_cast<int>(size)) == 0;
         for (int index : batch_indices) {
             auto& item = items[index];
             float* U = item.work;

@@ -145,7 +145,7 @@ int TwscPcaSoft(float* group, int m, int n, int lda, float sigma, const float* c
         if (col_sigma) {
             s = col_sigma[j];
         }
-        if (!std::isfinite(s) || s < 0.f) {
+        if (!is_finite_bits(s) || s < 0.f) {
             s = 0.f;
         }
         sigj[j] = s;

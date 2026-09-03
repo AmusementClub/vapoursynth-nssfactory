@@ -17,7 +17,7 @@ void SoftThreshold(float* x, int n, float tau) {
     if (!x || n < 1) {
         return;
     }
-    const float t = tau < 0.f ? 0.f : tau;
+    const float t = is_finite_bits(tau) && tau > 0.f ? tau : 0.f;
     const hn::ScalableTag<float> d;
     const int N = static_cast<int>(hn::Lanes(d));
     const auto vt = hn::Set(d, t);
@@ -46,13 +46,14 @@ void SoftThresholdVar(float* x, const float* tau, int n) {
     int i = 0;
     for (; i + N <= n; i += N) {
         const auto v = hn::LoadU(d, x + i);
-        const auto vt = hn::Max(hn::LoadU(d, tau + i), z);
+        const auto raw_t = hn::LoadU(d, tau + i);
+        const auto vt = hn::IfThenElse(hn::IsFinite(raw_t), hn::Max(raw_t, z), z);
         const auto a = hn::Abs(v);
         const auto shrunk = hn::CopySign(hn::Sub(a, vt), v);
         hn::StoreU(hn::IfThenElse(hn::Gt(a, vt), shrunk, z), d, x + i);
     }
     for (; i < n; ++i) {
-        const float t = tau[i] < 0.f ? 0.f : tau[i];
+        const float t = is_finite_bits(tau[i]) && tau[i] > 0.f ? tau[i] : 0.f;
         const float v = x[i];
         const float a = std::fabs(v);
         x[i] = (a > t) ? std::copysign(a - t, v) : 0.f;

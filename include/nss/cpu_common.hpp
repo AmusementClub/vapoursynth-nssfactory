@@ -1,6 +1,17 @@
 #pragma once
 
+#include <bit>
+#include <cstdint>
+
 namespace nss {
+
+// Finite classification used by correctness guards. This remains reliable in
+// translation units compiled with aggressive floating-point optimizations.
+inline bool is_finite_bits(float value) noexcept {
+    constexpr std::uint32_t kExponentMask = 0x7f800000u;
+    const std::uint32_t bits = std::bit_cast<std::uint32_t>(value);
+    return (bits & kExponentMask) != kExponentMask;
+}
 
 // Row means of an m×n column-major group. mean[i] = avg_j group[i + j*lda].
 void group_center_sub(float* group, int m, int n, int lda, float* mean);

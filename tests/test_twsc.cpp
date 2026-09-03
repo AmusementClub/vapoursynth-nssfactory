@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <random>
 #include <vector>
 
@@ -147,6 +148,49 @@ int main() {
         std::printf("twsc W1 L1=%.6g\n", d);
         if (!(d > 1e-4)) {
             return fail("row_w W1 must change the estimate");
+        }
+    }
+    {
+        constexpr int m = 16;
+        constexpr int n = 4;
+        std::vector<float> input(m * n);
+        std::mt19937 rng4(11);
+        std::uniform_real_distribution<float> dist4(-1.f, 1.f);
+        for (float& v : input) {
+            v = dist4(rng4);
+        }
+        const int wn = nss::twsc_pca_soft_work_floats(m, n);
+        std::vector<float> work(static_cast<std::size_t>(wn));
+        const float bad_values[] = {
+            std::numeric_limits<float>::quiet_NaN(),
+            -std::numeric_limits<float>::quiet_NaN(),
+            std::numeric_limits<float>::infinity(),
+            -std::numeric_limits<float>::infinity(),
+        };
+        for (float bad : bad_values) {
+            std::vector<float> got = input;
+            std::vector<float> want = input;
+            if (nss::twsc_pca_soft(got.data(), m, n, m, bad, work.data(), wn) != 0 ||
+                nss::twsc_pca_soft(want.data(), m, n, m, 0.f, work.data(), wn) != 0) {
+                return fail("twsc non-finite sigma call failed");
+            }
+            if (got != want) {
+                return fail("twsc non-finite sigma was not clamped to zero");
+            }
+        }
+
+        float bad_sigma[n] = {bad_values[0], bad_values[1], bad_values[2], bad_values[3]};
+        float zero_sigma[n]{};
+        float got_w[n]{};
+        float want_w[n]{};
+        std::vector<float> got = input;
+        std::vector<float> want = input;
+        if (nss::twsc_pca_soft(got.data(), m, n, m, 0.f, work.data(), wn, bad_sigma, got_w) != 0 ||
+            nss::twsc_pca_soft(want.data(), m, n, m, 0.f, work.data(), wn, zero_sigma, want_w) != 0) {
+            return fail("twsc non-finite col_sigma call failed");
+        }
+        if (got != want || !std::equal(std::begin(got_w), std::end(got_w), std::begin(want_w))) {
+            return fail("twsc non-finite col_sigma was not clamped to zero");
         }
     }
     std::printf("test_twsc ok\n");

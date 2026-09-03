@@ -3,7 +3,6 @@
 #include "cpu/bm/matcher.hpp"
 
 #include <algorithm>
-#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -24,6 +23,7 @@ static float HSum8(hn::Vec<hn::FixedTag<float, 8>> v) {
     const hn::FixedTag<float, 4> d4;
     return hn::ReduceSum(d4, hn::Add(hn::LowerHalf(d4, v), hn::UpperHalf(d4, v)));
 }
+
 #endif
 
 static float Ssd8(const float* a, int sa, const float* b, int sb) {
@@ -120,21 +120,7 @@ static int SpatialMatch8(const float* ref, int stride, int width, int height, in
     const auto one = hn::Set(di, 1);
     int filled = 1;
     float worst = std::numeric_limits<float>::max();
-    auto consider = [&](int x, int y, float dist) {
-        if (x == cx && y == cy) {
-            return;
-        }
-        if (filled == 8 && !(dist < worst)) {
-            return;
-        }
-        const auto vdist = hn::Set(df, dist);
-        const int count = static_cast<int>(hn::CountTrue(df, hn::Lt(vdist, errors)));
-        if (count == 0) {
-            return;
-        }
-        if (filled < 8) {
-            ++filled;
-        }
+    auto insert = [&](int x, int y, hn::Vec<decltype(df)> vdist, int count) {
         const int pos = 8 - count;
         const auto posi = hn::Set(di, pos);
         const auto src = hn::IfThenElse(hn::Gt(iota, posi), hn::Sub(iota, one), iota);
@@ -144,7 +130,25 @@ static int SpatialMatch8(const float* ref, int stride, int width, int height, in
         errors = hn::IfThenElse(at, vdist, hn::TableLookupLanes(errors, idxf));
         vx = hn::IfThenElse(hn::Eq(iota, posi), hn::Set(di, x), hn::TableLookupLanes(vx, idxi));
         vy = hn::IfThenElse(hn::Eq(iota, posi), hn::Set(di, y), hn::TableLookupLanes(vy, idxi));
-        if (filled == 8) {
+    };
+    auto consider = [&](int x, int y, float dist) {
+        if (x == cx && y == cy) {
+            return;
+        }
+        if (filled < 8) {
+            const auto vdist = hn::Set(df, dist);
+            const int count = static_cast<int>(hn::CountTrue(df, hn::Lt(vdist, errors)));
+            if (count != 0) {
+                insert(x, y, vdist, count);
+                ++filled;
+            }
+            if (filled == 8) {
+                worst = hn::ExtractLane(errors, 7);
+            }
+        } else if (dist < worst) {
+            const auto vdist = hn::Set(df, dist);
+            const int count = static_cast<int>(hn::CountTrue(df, hn::Lt(vdist, errors)));
+            insert(x, y, vdist, count);
             worst = hn::ExtractLane(errors, 7);
         }
     };
@@ -186,9 +190,6 @@ static int SpatialMatch8(const float* ref, int stride, int width, int height, in
             }
             const float dist0 = HSum8(hn::Add(hn::Add(a00, a02), hn::Add(a01, a03)));
             const float dist1 = HSum8(hn::Add(hn::Add(a10, a12), hn::Add(a11, a13)));
-            if (!detail::finite_distance(dist0) || !detail::finite_distance(dist1)) {
-                return fallback();
-            }
             consider(x, y, dist0);
             consider(x + 1, y, dist1);
         }
@@ -208,11 +209,24 @@ static int SpatialMatch8(const float* ref, int stride, int width, int height, in
                 acc3 = hn::MulAdd(d3, d3, acc3);
             }
             const float dist = HSum8(hn::Add(hn::Add(acc0, acc2), hn::Add(acc1, acc3)));
-            if (!detail::finite_distance(dist)) {
-                return fallback();
-            }
             consider(x, y, dist);
         }
+    }
+    std::uint32_t max_bits = hn::ReduceMax(du, hn::BitCast(du, errors));
+#if defined(__GNUC__) || defined(__clang__)
+    __asm__ volatile("" : "+r"(max_bits));
+#else
+    volatile std::uint32_t retained_max_bits = max_bits;
+    max_bits = retained_max_bits;
+#endif
+    // Non-finite SSD results cannot pass the ordered lane comparison. The
+    // fill count proves that enough candidates displaced the FLT_MAX
+    // sentinels; the integer reduction keeps that conclusion valid under
+    // -ffinite-math-only and also catches a retained NaN or infinity.
+    const int candidate_count = (right - left + 1) * (bottom - top + 1) - 1;
+    const int expected = 1 + std::min(7, std::max(candidate_count, 0));
+    if (filled != expected || max_bits >= 0x7f800000u) {
+        return fallback();
     }
     HWY_ALIGN float dists[8];
     HWY_ALIGN std::int32_t xs[8];

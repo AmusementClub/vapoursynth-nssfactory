@@ -4,6 +4,23 @@
 
 namespace nss {
 
+struct Match;
+struct MatchBatchItem;
+
+// NLH's common spatial shape keeps the 15 non-reference matches sorted while
+// traversing candidates. Other group sizes and temporal matching stay on the
+// shared matcher path.
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((visibility("hidden")))
+#endif
+int nlh_spatial_match16(const float* ref, int stride, int width, int height, int bx, int by, int block,
+                        int bm_range, Match* out);
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((visibility("hidden")))
+#endif
+int nlh_spatial_match_batch(const float* ref, int stride, int width, int height, const MatchBatchItem* items,
+                            int count, Match* matches, int match_stride, int* counts);
+
 // Orthonormal Haar (normalized LHWT) on length n in {1,2,4,8,16}. Other n is a no-op. in == out is allowed.
 void haar1d(const float* in, float* out, int n);
 void ihaar1d(const float* in, float* out, int n);

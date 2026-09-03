@@ -381,7 +381,7 @@ const VSFrame* VS_CC twscGetFrame(int n, int activationReason, void* instanceDat
                                               result.weights[j]);
                     }
                 };
-                (void)nss::host_detail::execute_ordered_chunk<Result>(jobs, begin, end, prepare, commit);
+                (void)nss::host_detail::commit_prepared_chunk<Result>(jobs, begin, end, prepare, commit);
             }
             const bool last = (iter == niter - 1);
             if (last && fat) {
@@ -653,7 +653,7 @@ const VSFrame* VS_CC twscGetFrame(int n, int activationReason, void* instanceDat
                                            result.weights[j]);
                     }
                 };
-                (void)nss::host_detail::execute_ordered_chunk<Result>(jobs, begin, end, prepare, commit);
+                (void)nss::host_detail::commit_prepared_chunk<Result>(jobs, begin, end, prepare, commit);
             }
             const bool last = (iter == niter - 1);
             if (last && fat) {

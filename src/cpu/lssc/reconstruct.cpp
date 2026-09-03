@@ -121,7 +121,7 @@ static bool LsscUpdateGroupSoft(float* A, const float* G, int atoms, int n, floa
         }
         for (; i < atoms; ++i) {
             aj[i] *= scale[i];
-            if (!std::isfinite(aj[i]) || std::fabs(aj[i]) > absolute_limit) {
+            if (!is_finite_bits(aj[i]) || std::fabs(aj[i]) > absolute_limit) {
                 exploded = true;
             }
         }
@@ -172,7 +172,7 @@ static void LsscReconstructImpl(float* patches, int m, int n, int lda, const flo
     }
 
     std::memset(A, 0, static_cast<std::size_t>(atoms) * static_cast<std::size_t>(n) * sizeof(float));
-    if (!(lipschitz > 1e-6f) || !std::isfinite(lipschitz)) {
+    if (!(lipschitz > 1e-6f) || !is_finite_bits(lipschitz)) {
         lipschitz = 1.f;
     }
     const float mu = 0.9f / lipschitz;
@@ -215,7 +215,7 @@ static void LsscReconstructImpl(float* patches, int m, int n, int lda, const flo
         }
         for (; i < m; ++i) {
             float value = rj[i] + mean[j];
-            if (!std::isfinite(value) || std::fabs(rj[i]) > 8.f) {
+            if (!is_finite_bits(value) || std::fabs(rj[i]) > 8.f) {
                 value = mean[j];
             }
             yj[i] = value;
@@ -314,7 +314,7 @@ int lssc_prepare_context(const float* D, int m, int atoms, int ldd, float* work,
         for (int a = 0; a < atoms; ++a) {
             v2 += pv[a] * pv[a];
         }
-        if (!(v2 > 1e-20f) || !std::isfinite(v2)) {
+        if (!(v2 > 1e-20f) || !is_finite_bits(v2)) {
             lipschitz = 1.f;
             break;
         }
@@ -323,7 +323,7 @@ int lssc_prepare_context(const float* D, int m, int atoms, int ldd, float* work,
             pv[a] *= inv;
         }
     }
-    if (!(lipschitz > 1e-6f) || !std::isfinite(lipschitz)) {
+    if (!(lipschitz > 1e-6f) || !is_finite_bits(lipschitz)) {
         lipschitz = 1.f;
     }
     context->dictionary = D;

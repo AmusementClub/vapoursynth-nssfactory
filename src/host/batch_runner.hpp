@@ -66,6 +66,24 @@ bool execute_ordered_chunk(const std::vector<GroupJob>& jobs, std::size_t begin,
     return queue.complete();
 }
 
+// The host filters call this after their batch kernel has already bucketed and
+// completed every item. At that point a second key sort only creates work that
+// the ordered queue must undo, so copy and commit the prepared results in their
+// original raster order.
+template <typename Result, typename Prepare, typename Commit>
+bool commit_prepared_chunk(const std::vector<GroupJob>& jobs, std::size_t begin, std::size_t end, Prepare&& prepare,
+                           Commit&& commit) {
+    if (begin >= end || end > jobs.size()) {
+        return true;
+    }
+    for (std::size_t index = begin; index < end; ++index) {
+        Result result{};
+        (void)prepare(jobs[index], result);
+        commit(result);
+    }
+    return true;
+}
+
 template <typename Result, typename Prepare, typename Commit>
 bool execute_ordered_jobs(const std::vector<GroupJob>& jobs, Prepare&& prepare, Commit&& commit) {
     for (std::size_t begin = 0; begin < jobs.size(); begin += kGroupBatchWindow) {

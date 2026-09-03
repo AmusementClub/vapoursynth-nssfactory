@@ -19,7 +19,12 @@ struct RefMatch {
 };
 
 bool less_ref(const RefMatch& a, const RefMatch& b) {
-    if (a.dist != b.dist) {
+    const bool a_finite = std::isfinite(a.dist);
+    const bool b_finite = std::isfinite(b.dist);
+    if (a_finite != b_finite) {
+        return a_finite;
+    }
+    if (a_finite && a.dist != b.dist) {
         return a.dist < b.dist;
     }
     if (a.y != b.y) {
@@ -72,6 +77,12 @@ std::vector<RefMatch> scalar_spatial(const float* frame, int stride, int width, 
 }
 
 bool close_distance(float a, float b) {
+    if (!std::isfinite(a) || !std::isfinite(b)) {
+        if (std::isnan(a) || std::isnan(b)) {
+            return std::isnan(a) && std::isnan(b);
+        }
+        return a == b;
+    }
     const float scale = std::max({1.f, std::fabs(a), std::fabs(b)});
     return std::fabs(a - b) <= 8e-6f * scale;
 }
@@ -249,30 +260,109 @@ int check_predictive_stability() {
 }
 
 int check_nonfinite_fast_path() {
-    constexpr int width = 24;
-    constexpr int height = 24;
-    constexpr int stride = 32;
-    std::vector<float> frame(static_cast<std::size_t>(stride * height), 0.25f);
-    // These values force the block=8/group=8 Highway path to exercise its
-    // deterministic scalar fallback rather than admitting a NaN distance.
-    frame[1 * stride + 1] = std::numeric_limits<float>::quiet_NaN();
-    frame[15 * stride + 15] = std::numeric_limits<float>::infinity();
-    nss::Match a[8]{}, b[8]{};
-    const int na = nss::spatial_match(frame.data(), stride, width, height, 8, 8, 8, 8, 8, a);
-    const int nb = nss::spatial_match(frame.data(), stride, width, height, 8, 8, 8, 8, 8, b);
-    if (na != nb || na < 1 || a[0].x != 8 || a[0].y != 8 || a[0].ordinal != 0) {
-        std::fprintf(stderr, "non-finite matcher lost self result\n");
-        return 1;
-    }
-    for (int i = 0; i < na; ++i) {
-        if (a[i].x != b[i].x || a[i].y != b[i].y || a[i].t != b[i].t ||
-            (std::isfinite(a[i].dist) != std::isfinite(b[i].dist))) {
-            std::fprintf(stderr, "non-finite matcher is not deterministic\n");
+    struct Case {
+        int width;
+        int height;
+        int stride;
+        int bx;
+        int by;
+        int range;
+        int bad_x;
+        int bad_y;
+        float bad_value;
+        int bad2_x;
+        int bad2_y;
+        float bad2_value;
+        const char* name;
+    };
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    const float max_root = std::sqrt(std::numeric_limits<float>::max());
+    const Case cases[] = {
+        // One bad candidate is ignored once seven finite candidates have
+        // filled the SIMD top-k set; no scalar fallback is needed.
+        {24, 24, 32, 8, 8, 8, 0, 0, nan, -1, -1, 0.f, "nan-with-full-finite-topk"},
+        // The reference block is non-finite, so every computed distance is
+        // non-finite and the fast path must rebuild through StableTopK.
+        {24, 24, 32, 8, 8, 8, 15, 15, inf, -1, -1, 0.f, "nonfinite-reference"},
+        // Only six of the eight non-self candidates remain finite. This is
+        // the finite-count fallback boundary for an eight-element group.
+        {16, 8, 16, 0, 0, 64, 14, 0, nan, -1, -1, 0.f, "short-finite-set"},
+        // The two squared terms sum to FLT_MAX. That distance compares equal
+        // to the SIMD empty-lane sentinel, so the final count check must
+        // retain it via the scalar fallback when all seven candidates are
+        // required.
+        {15, 8, 15, 0, 0, 64, 13, 0, max_root, 14, 0, std::ldexp(1.f, 52), "flt-max-distance"},
+    };
+
+    for (const Case& test : cases) {
+        std::vector<float> frame(static_cast<std::size_t>(test.stride * test.height), 0.f);
+        frame[static_cast<std::size_t>(test.bad_y * test.stride + test.bad_x)] = test.bad_value;
+        if (test.bad2_x >= 0) {
+            frame[static_cast<std::size_t>(test.bad2_y * test.stride + test.bad2_x)] = test.bad2_value;
+        }
+        nss::Match got[8]{};
+        const int n = nss::spatial_match(frame.data(), test.stride, test.width, test.height, test.bx, test.by, 8,
+                                         test.range, 8, got);
+        const auto want = scalar_spatial(frame.data(), test.stride, test.width, test.height, test.bx, test.by, 8,
+                                         test.range, 8);
+        if (test.bad2_x >= 0 && (want.empty() || want.back().dist != std::numeric_limits<float>::max())) {
+            std::fprintf(stderr, "%s did not construct an exact FLT_MAX distance\n", test.name);
             return 1;
         }
-        if (i > 0 && !std::isfinite(a[i - 1].dist) && std::isfinite(a[i].dist)) {
-            std::fprintf(stderr, "non-finite distance was ordered before finite distance\n");
+        if (n != static_cast<int>(want.size())) {
+            std::fprintf(stderr, "%s count mismatch got=%d want=%zu\n", test.name, n, want.size());
             return 1;
+        }
+        for (int i = 0; i < n; ++i) {
+            const auto& ref = want[static_cast<std::size_t>(i)];
+            if (got[i].x != ref.x || got[i].y != ref.y || got[i].ordinal != ref.ordinal ||
+                !close_distance(got[i].dist, ref.dist)) {
+                std::fprintf(stderr,
+                             "%s mismatch at %d got=(%d,%d,%.8g,%u) want=(%d,%d,%.8g,%u)\n", test.name, i,
+                             got[i].x, got[i].y, got[i].dist, got[i].ordinal, ref.x, ref.y, ref.dist, ref.ordinal);
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+int check_nonfinite_top1() {
+    constexpr int width = 12;
+    constexpr int height = 10;
+    constexpr int stride = 16;
+    constexpr int block = 4;
+    constexpr int bx = 4;
+    constexpr int by = 3;
+    constexpr int range = 4;
+    struct Case {
+        int bad_x;
+        int bad_y;
+        float bad_value;
+        const char* name;
+    };
+    const Case cases[] = {
+        {0, 0, std::numeric_limits<float>::quiet_NaN(), "top1-nan-candidate"},
+        {bx, by, std::numeric_limits<float>::infinity(), "top1-nonfinite-reference"},
+    };
+    for (const Case& test : cases) {
+        std::vector<float> frame(static_cast<std::size_t>(stride * height), 0.25f);
+        frame[static_cast<std::size_t>(test.bad_y * stride + test.bad_x)] = test.bad_value;
+        nss::Match got[2]{};
+        const int n = nss::spatial_match(frame.data(), stride, width, height, bx, by, block, range, 2, got);
+        const auto want = scalar_spatial(frame.data(), stride, width, height, bx, by, block, range, 2);
+        if (n != static_cast<int>(want.size())) {
+            std::fprintf(stderr, "%s count mismatch got=%d want=%zu\n", test.name, n, want.size());
+            return 1;
+        }
+        for (int i = 0; i < n; ++i) {
+            const auto& ref = want[static_cast<std::size_t>(i)];
+            if (got[i].x != ref.x || got[i].y != ref.y || got[i].ordinal != ref.ordinal ||
+                !close_distance(got[i].dist, ref.dist)) {
+                std::fprintf(stderr, "%s mismatch at %d\n", test.name, i);
+                return 1;
+            }
         }
     }
     return 0;
@@ -291,7 +381,7 @@ int main() {
         v = dist(rng);
     }
     int failed = check_constant_ties() | check_short_window() | check_multichannel() | check_predictive_stability() |
-                 check_nonfinite_fast_path();
+                 check_nonfinite_fast_path() | check_nonfinite_top1();
     for (int block : {1, 2, 4, 8, 16}) {
         if (block > width || block > height) {
             continue;

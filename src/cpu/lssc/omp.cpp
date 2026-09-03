@@ -399,7 +399,7 @@ void lssc_denoise_plane(const float* src, int width, int height, int sstride, fl
         const float* col = patches + static_cast<std::size_t>(j) * static_cast<std::size_t>(lda);
         for (int i = 0; i < m; ++i) {
             const float v = col[i];
-            if (!std::isfinite(v) || std::fabs(v) > 8.f) {
+            if (!is_finite_bits(v) || std::fabs(v) > 8.f) {
                 pack_patch(patches + static_cast<std::size_t>(j) * static_cast<std::size_t>(lda), lda, src, sstride, bx,
                            by, block, width, height);
                 break;

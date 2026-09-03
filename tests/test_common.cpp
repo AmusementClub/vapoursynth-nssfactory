@@ -1,8 +1,11 @@
 #include "nss/cpu_api.hpp"
 #include "nss/cpu_common.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <iterator>
+#include <limits>
 #include <vector>
 
 static int fail(const char* msg) {
@@ -11,6 +14,15 @@ static int fail(const char* msg) {
 }
 
 int main() {
+    {
+        const float nan = std::numeric_limits<float>::quiet_NaN();
+        const float inf = std::numeric_limits<float>::infinity();
+        if (!nss::is_finite_bits(0.f) || nss::is_finite_bits(-inf) || nss::is_finite_bits(nan) ||
+            nss::is_finite_bits(-nan) || nss::is_finite_bits(inf)) {
+            return fail("is_finite_bits classification");
+        }
+    }
+
     float S[4] = {10.f, 4.f, 1.f, 0.5f};
     const int k = nss::sv_shrink(S, 4, 4.f, 1);
     if (k != 2) {
@@ -106,6 +118,20 @@ int main() {
         if (std::fabs(xv[0] - 1.f) > 1e-6f || xv[1] != 0.f || xv[2] != 0.f || std::fabs(xv[3] + 2.5f) > 1e-6f) {
             return fail("soft_threshold_var");
         }
+        float bad_thresholds[4] = {std::numeric_limits<float>::quiet_NaN(),
+                                   -std::numeric_limits<float>::quiet_NaN(),
+                                   std::numeric_limits<float>::infinity(),
+                                   -std::numeric_limits<float>::infinity()};
+        float xt[4] = {2.f, -2.f, 3.f, -3.f};
+        nss::soft_threshold_var(xt, bad_thresholds, 4);
+        if (xt[0] != 2.f || xt[1] != -2.f || xt[2] != 3.f || xt[3] != -3.f) {
+            return fail("soft_threshold_var non-finite threshold guard");
+        }
+        float xs = 2.f;
+        nss::soft_threshold(&xs, 1, std::numeric_limits<float>::infinity());
+        if (xs != 2.f) {
+            return fail("soft_threshold non-finite threshold guard");
+        }
         float a[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
         const float b[9] = {2, 2, 2, 2, 2, 2, 2, 2, 2};
         nss::iter_regularize(a, b, 9, 0.5f);
@@ -124,11 +150,30 @@ int main() {
         if (std::fabs(X[0] - 0.5f) > 1e-5f) {
             return fail("admm_weighted_x");
         }
+        for (const float bad_rho : {std::numeric_limits<float>::quiet_NaN(),
+                                    -std::numeric_limits<float>::quiet_NaN(),
+                                    std::numeric_limits<float>::infinity(),
+                                    -std::numeric_limits<float>::infinity()}) {
+            std::fill(std::begin(X), std::end(X), 7.f);
+            nss::admm_weighted_x(X, Y, 4, Z, A, w2, 4, 1, bad_rho);
+            if (std::any_of(std::begin(X), std::end(X), [](float value) { return value != 7.f; })) {
+                return fail("admm_weighted_x non-finite rho guard");
+            }
+        }
         float sigma[2] = {2.f, 4.f};
         float ww[8];
         const float smin = nss::channel_weight_diag(ww, 8, 2, sigma);
         if (std::fabs(smin - 2.f) > 1e-6f || std::fabs(ww[0] - 1.f) > 1e-6f || std::fabs(ww[4] - 0.25f) > 1e-6f) {
             return fail("channel_weight_diag");
+        }
+
+        const float bad_sigma[3] = {std::numeric_limits<float>::quiet_NaN(),
+                                    -std::numeric_limits<float>::infinity(), 2.f};
+        float bad_w[12]{};
+        const float bad_min = nss::channel_weight_diag(bad_w, 12, 3, bad_sigma);
+        if (std::fabs(bad_min - 2.f) > 1e-6f || !nss::is_finite_bits(bad_w[0]) || !nss::is_finite_bits(bad_w[4]) ||
+            !nss::is_finite_bits(bad_w[8])) {
+            return fail("channel_weight_diag non-finite sigma guard");
         }
     }
 

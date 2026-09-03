@@ -33,7 +33,7 @@ int mcwnnm_filter_group(float* Y, int m, int n, int lda, int nch, const float* s
     bool any_sigma = false;
     if (sigma) {
         for (int c = 0; c < nch; ++c) {
-            if (sigma[c] > 0.f && std::isfinite(sigma[c])) {
+            if (sigma[c] > 0.f && is_finite_bits(sigma[c])) {
                 any_sigma = true;
                 break;
             }

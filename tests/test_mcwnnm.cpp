@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <vector>
 
 static int fail(const char* msg) {
@@ -100,6 +101,49 @@ int main() {
         for (int i = 0; i < lda * n; ++i) {
             if (std::fabs(Y0[static_cast<std::size_t>(i)] - orig[static_cast<std::size_t>(i)]) > 1e-6f) {
                 return fail("sigma=0 should be identity");
+            }
+        }
+    }
+
+    {
+        // Invalid channel noise is handled by the shared finite guard rather
+        // than being allowed to contaminate the Gram/QR path. The valid
+        // channel still supplies the scale and the operation remains finite.
+        std::vector<float> Ybad(static_cast<std::size_t>(lda * n), 0.21f);
+        const float bad_sigma[3] = {std::numeric_limits<float>::quiet_NaN(),
+                                    std::numeric_limits<float>::infinity(), sigma[2]};
+        float aw_bad = 0.f;
+        if (nss::mcwnnm_filter_group(Ybad.data(), m, n, lda, nch, bad_sigma, 2, 1.f, 1.f, 0, 1, &aw_bad,
+                                     work.data(), work_n) != 0) {
+            return fail("mcwnnm non-finite sigma fallback failed");
+        }
+        for (float value : Ybad) {
+            if (!nss::is_finite_bits(value)) {
+                return fail("mcwnnm non-finite sigma produced non-finite output");
+            }
+        }
+    }
+
+    {
+        constexpr int gm = 192;
+        constexpr int gn = 8;
+        std::vector<float> gram_group(static_cast<std::size_t>(gm * gn), 0.f);
+        for (int col = 0; col < gn; ++col) {
+            for (int row = 0; row < gm; ++row) {
+                gram_group[static_cast<std::size_t>(row + col * gm)] =
+                    0.1f + 0.001f * static_cast<float>((row + 3 * col) % 17);
+            }
+        }
+        const int gram_work_n = nss::mcwnnm_filter_work_floats(gm, gn);
+        std::vector<float> gram_work(static_cast<std::size_t>(gram_work_n));
+        const float gram_sigma[3] = {sigma[0], std::numeric_limits<float>::infinity(), sigma[2]};
+        if (nss::mcwnnm_filter_group(gram_group.data(), gm, gn, gm, nch, gram_sigma, 2, 1.f, 1.f, 0, 0, nullptr,
+                                     gram_work.data(), gram_work_n) != 0) {
+            return fail("mcwnnm Gram path failed with non-finite sigma");
+        }
+        for (float value : gram_group) {
+            if (!nss::is_finite_bits(value)) {
+                return fail("mcwnnm Gram path produced non-finite output");
             }
         }
     }

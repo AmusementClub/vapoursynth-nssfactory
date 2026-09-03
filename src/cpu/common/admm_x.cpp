@@ -2,7 +2,6 @@
 #include "cpu/hwy_config.hpp"
 
 #include <algorithm>
-#include <cmath>
 
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE "cpu/common/admm_x.cpp"
@@ -21,7 +20,7 @@ float ChannelWeightDiag(float* w2, int m, int nch, const float* sigma) {
     const int area = m / nch;
     float smin = 0.f;
     for (int c = 0; c < nch; ++c) {
-        if (sigma[c] > 0.f && std::isfinite(sigma[c])) {
+        if (sigma[c] > 0.f && is_finite_bits(sigma[c])) {
             smin = (smin == 0.f) ? sigma[c] : std::min(smin, sigma[c]);
         }
     }
@@ -31,7 +30,7 @@ float ChannelWeightDiag(float* w2, int m, int nch, const float* sigma) {
     const hn::ScalableTag<float> d;
     const int N = static_cast<int>(hn::Lanes(d));
     for (int c = 0; c < nch; ++c) {
-        const float sc = (sigma[c] > 0.f && std::isfinite(sigma[c])) ? sigma[c] : smin * 1e-6f;
+        const float sc = (sigma[c] > 0.f && is_finite_bits(sigma[c])) ? sigma[c] : smin * 1e-6f;
         const float wc2 = (smin / sc) * (smin / sc);
         const auto v = hn::Set(d, wc2);
         float* row = w2 + c * area;
@@ -48,7 +47,7 @@ float ChannelWeightDiag(float* w2, int m, int nch, const float* sigma) {
 
 void AdmmWeightedX(float* X, const float* Y, int ldy, const float* Z, const float* A, const float* w2, int m, int n,
                    float rho) {
-    if (!X || !Y || !Z || !A || !w2 || m < 1 || n < 1 || ldy < m || !(rho > 0.f)) {
+    if (!X || !Y || !Z || !A || !w2 || m < 1 || n < 1 || ldy < m || !(rho > 0.f) || !is_finite_bits(rho)) {
         return;
     }
     const float rho2 = 0.5f * rho;
@@ -57,22 +56,31 @@ void AdmmWeightedX(float* X, const float* Y, int ldy, const float* Z, const floa
     const int N = static_cast<int>(hn::Lanes(d));
     const auto vrho2 = hn::Set(d, rho2);
     const auto vinv = hn::Set(d, inv_rho);
-    for (int j = 0; j < n; ++j) {
-        const float* ycol = Y + j * ldy;
-        const float* zcol = Z + j * m;
-        const float* acol = A + j * m;
-        float* xcol = X + j * m;
-        int i = 0;
-        for (; i + N <= m; i += N) {
-            const auto w = hn::LoadU(d, w2 + i);
+    const auto one = hn::Set(d, 1.f);
+    int i = 0;
+    for (; i + N <= m; i += N) {
+        const auto w = hn::LoadU(d, w2 + i);
+        const auto reciprocal = hn::Div(one, hn::Add(w, vrho2));
+        for (int j = 0; j < n; ++j) {
+            const float* ycol = Y + j * ldy;
+            const float* zcol = Z + j * m;
+            const float* acol = A + j * m;
+            float* xcol = X + j * m;
             const auto yv = hn::LoadU(d, ycol + i);
             const auto zv = hn::LoadU(d, zcol + i);
             const auto av = hn::LoadU(d, acol + i);
             const auto num = hn::MulAdd(w, yv, hn::Mul(vrho2, hn::Sub(zv, hn::Mul(av, vinv))));
-            hn::StoreU(hn::Div(num, hn::Add(w, vrho2)), d, xcol + i);
+            hn::StoreU(hn::Mul(num, reciprocal), d, xcol + i);
         }
-        for (; i < m; ++i) {
-            xcol[i] = (w2[i] * ycol[i] + rho2 * (zcol[i] - acol[i] * inv_rho)) / (w2[i] + rho2);
+    }
+    for (; i < m; ++i) {
+        const float reciprocal = 1.f / (w2[i] + rho2);
+        for (int j = 0; j < n; ++j) {
+            const float* ycol = Y + j * ldy;
+            const float* zcol = Z + j * m;
+            const float* acol = A + j * m;
+            float* xcol = X + j * m;
+            xcol[i] = (w2[i] * ycol[i] + rho2 * (zcol[i] - acol[i] * inv_rho)) * reciprocal;
         }
     }
 }

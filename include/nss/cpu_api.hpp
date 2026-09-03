@@ -12,6 +12,12 @@ enum class ChannelMode { Y, UV, YUV, RGB };
 
 void nlm_distance_luma_f32(float* dst, const float* center, const float* neighbor,
                            int ox, int oy, int w, int h, int stride);
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((visibility("hidden")))
+#endif
+void nlm_distance_luma_horizontal_f32(float* dst, float* row_scratch, const float* center,
+                                      const float* neighbor, int ox, int oy, int radius,
+                                      int w, int h, int stride);
 void nlm_distance_chroma_f32(float* dst, const float* c1, const float* c2,
                              const float* n1, const float* n2,
                              int ox, int oy, int w, int h, int stride);
