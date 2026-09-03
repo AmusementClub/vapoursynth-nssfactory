@@ -220,6 +220,55 @@ int check_multichannel() {
             return 1;
         }
     }
+
+    constexpr int b8 = 8;
+    nss::Match got8[8]{};
+    const int n8 = nss::spatial_match_nch(refs, strides, 3, width, height, 8, 7, b8, 5, 8, got8);
+    std::vector<RefMatch> want8;
+    const int max_x8 = width - b8;
+    const int max_y8 = height - b8;
+    const int cx8 = std::clamp(8, 0, max_x8);
+    const int cy8 = std::clamp(7, 0, max_y8);
+    for (int y = std::max(0, cy8 - 5); y <= std::min(max_y8, cy8 + 5); ++y) {
+        for (int x = std::max(0, cx8 - 5); x <= std::min(max_x8, cx8 + 5); ++x) {
+            if (x == cx8 && y == cy8) {
+                continue;
+            }
+            float d = 0.f;
+            for (int c = 0; c < 3; ++c) {
+                d += scalar_ssd(refs[c] + cy8 * stride + cx8, stride, refs[c] + y * stride + x, stride, b8);
+            }
+            want8.push_back({x, y, d, static_cast<std::uint32_t>(want8.size() + 1)});
+        }
+    }
+    std::stable_sort(want8.begin(), want8.end(), less_ref);
+    if (want8.size() > 7) {
+        want8.resize(7);
+    }
+    want8.insert(want8.begin(), RefMatch{cx8, cy8, 0.f, 0});
+    if (n8 != static_cast<int>(want8.size())) {
+        std::fprintf(stderr, "multichannel8 count=%d want=%zu\n", n8, want8.size());
+        return 1;
+    }
+    for (int i = 0; i < n8; ++i) {
+        if (got8[i].x != want8[static_cast<std::size_t>(i)].x || got8[i].y != want8[static_cast<std::size_t>(i)].y ||
+            !close_distance(got8[i].dist, want8[static_cast<std::size_t>(i)].dist)) {
+            std::fprintf(stderr, "multichannel8 mismatch at %d\n", i);
+            return 1;
+        }
+    }
+    const float* pa8[3] = {p0.data() + 3 * stride + 2, p1.data() + 3 * stride + 2, p2.data() + 3 * stride + 2};
+    const float* pb8[3] = {p0.data() + 4 * stride + 3, p1.data() + 4 * stride + 3, p2.data() + 4 * stride + 3};
+    const int sa8[3] = {stride, stride, stride};
+    float fused = nss::ssd_nch(pa8, sa8, pb8, sa8, 3, 8);
+    float parts = 0.f;
+    for (int c = 0; c < 3; ++c) {
+        parts += nss::ssd_block(pa8[c], stride, pb8[c], stride, 8);
+    }
+    if (!close_distance(fused, parts)) {
+        std::fprintf(stderr, "ssd_nch != sum ssd_block: %g vs %g\n", fused, parts);
+        return 1;
+    }
     return 0;
 }
 

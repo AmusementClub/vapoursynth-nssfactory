@@ -10,14 +10,25 @@ namespace nss {
 namespace {
 
 float DistNch(const float* const* refs, const int* strides, int nch, int cx, int cy, int x, int y, int block) {
-    float d = 0.f;
-    for (int c = 0; c < nch; ++c) {
+    const float* a[3];
+    const float* b[3];
+    int sa[3];
+    int sb[3];
+    const int n = std::min(nch, 3);
+    for (int c = 0; c < n; ++c) {
         if (!refs[c]) {
+            a[c] = nullptr;
+            b[c] = nullptr;
+            sa[c] = 0;
+            sb[c] = 0;
             continue;
         }
-        d += ssd_block(refs[c] + cy * strides[c] + cx, strides[c], refs[c] + y * strides[c] + x, strides[c], block);
+        a[c] = refs[c] + cy * strides[c] + cx;
+        b[c] = refs[c] + y * strides[c] + x;
+        sa[c] = strides[c];
+        sb[c] = strides[c];
     }
-    return d;
+    return ssd_nch(a, sa, b, sb, n, block);
 }
 
 }  // namespace

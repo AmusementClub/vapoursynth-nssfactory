@@ -117,6 +117,7 @@ void dct8_2d(float block[64]);
 void idct8_2d(float block[64]);
 
 float ssd_block(const float* a, int sa, const float* b, int sb, int block);
+float ssd_nch(const float* const* a, const int* sa, const float* const* b, const int* sb, int nch, int block);
 
 struct Match {
     int x = 0;

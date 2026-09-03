@@ -80,6 +80,38 @@ float SsdBlock(const float* a, int sa, const float* b, int sb, int block) {
     return hn::ReduceSum(d, acc);
 }
 
+float SsdNch(const float* const* a, const int* sa, const float* const* b, const int* sb, int nch, int block) {
+    if (!a || !sa || !b || !sb || nch < 1 || block < 1) {
+        return std::numeric_limits<float>::max();
+    }
+#if HWY_MAX_BYTES >= 32
+    if (nch == 3 && block == 8 && a[0] && a[1] && a[2] && b[0] && b[1] && b[2] && sa[0] >= 8 && sa[1] >= 8 &&
+        sa[2] >= 8 && sb[0] >= 8 && sb[1] >= 8 && sb[2] >= 8) {
+        const hn::FixedTag<float, 8> d;
+        auto acc0 = hn::Zero(d);
+        auto acc1 = hn::Zero(d);
+        auto acc2 = hn::Zero(d);
+        for (int y = 0; y < 8; ++y) {
+            const auto d0 = hn::Sub(hn::LoadU(d, a[0] + y * sa[0]), hn::LoadU(d, b[0] + y * sb[0]));
+            const auto d1 = hn::Sub(hn::LoadU(d, a[1] + y * sa[1]), hn::LoadU(d, b[1] + y * sb[1]));
+            const auto d2 = hn::Sub(hn::LoadU(d, a[2] + y * sa[2]), hn::LoadU(d, b[2] + y * sb[2]));
+            acc0 = hn::MulAdd(d0, d0, acc0);
+            acc1 = hn::MulAdd(d1, d1, acc1);
+            acc2 = hn::MulAdd(d2, d2, acc2);
+        }
+        return HSum8(hn::Add(acc0, hn::Add(acc1, acc2)));
+    }
+#endif
+    float acc = 0.f;
+    for (int c = 0; c < nch; ++c) {
+        if (!a[c] || !b[c]) {
+            continue;
+        }
+        acc += SsdBlock(a[c], sa[c], b[c], sb[c], block);
+    }
+    return acc;
+}
+
 static int clampi(int x, int lo, int hi) {
     return x < lo ? lo : (x > hi ? hi : x);
 }
@@ -286,10 +318,15 @@ HWY_AFTER_NAMESPACE();
 #if HWY_ONCE
 namespace nss {
 HWY_EXPORT(SsdBlock);
+HWY_EXPORT(SsdNch);
 HWY_EXPORT(SpatialMatch);
 
 float ssd_block(const float* a, int sa, const float* b, int sb, int block) {
     return HWY_DYNAMIC_DISPATCH(SsdBlock)(a, sa, b, sb, block);
+}
+
+float ssd_nch(const float* const* a, const int* sa, const float* const* b, const int* sb, int nch, int block) {
+    return HWY_DYNAMIC_DISPATCH(SsdNch)(a, sa, b, sb, nch, block);
 }
 
 int spatial_match(const float* ref, int stride, int width, int height, int bx, int by, int block, int bm_range,

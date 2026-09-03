@@ -85,7 +85,64 @@ static int GramShrink8(const float* input, int m, float constant, int start_k, f
     HWY_ALIGN float spectral_factor[kN];
     HWY_ALIGN float transform[kN * kN];
 
-    gemm_tn_hwy(m, kN, kN, input, m, input, m, gram, kN);
+    // AᵀA is symmetric; skip the strictly lower triangle of gemm_tn.
+    const hn::ScalableTag<float> dg;
+    const int Ng = static_cast<int>(hn::Lanes(dg));
+    for (int j = 0; j < kN; ++j) {
+        const float* bj = input + j * m;
+        int t = 0;
+        for (; t + 3 <= j; t += 4) {
+            auto acc0 = hn::Zero(dg);
+            auto acc1 = hn::Zero(dg);
+            auto acc2 = hn::Zero(dg);
+            auto acc3 = hn::Zero(dg);
+            const float* a0 = input + t * m;
+            const float* a1 = input + (t + 1) * m;
+            const float* a2 = input + (t + 2) * m;
+            const float* a3 = input + (t + 3) * m;
+            int i = 0;
+            for (; i + Ng <= m; i += Ng) {
+                const auto bv = hn::LoadU(dg, bj + i);
+                acc0 = hn::MulAdd(hn::LoadU(dg, a0 + i), bv, acc0);
+                acc1 = hn::MulAdd(hn::LoadU(dg, a1 + i), bv, acc1);
+                acc2 = hn::MulAdd(hn::LoadU(dg, a2 + i), bv, acc2);
+                acc3 = hn::MulAdd(hn::LoadU(dg, a3 + i), bv, acc3);
+            }
+            float s0 = hn::ReduceSum(dg, acc0);
+            float s1 = hn::ReduceSum(dg, acc1);
+            float s2 = hn::ReduceSum(dg, acc2);
+            float s3 = hn::ReduceSum(dg, acc3);
+            for (; i < m; ++i) {
+                const float bv = bj[i];
+                s0 += a0[i] * bv;
+                s1 += a1[i] * bv;
+                s2 += a2[i] * bv;
+                s3 += a3[i] * bv;
+            }
+            gram[t + j * kN] = s0;
+            gram[j + t * kN] = s0;
+            gram[(t + 1) + j * kN] = s1;
+            gram[j + (t + 1) * kN] = s1;
+            gram[(t + 2) + j * kN] = s2;
+            gram[j + (t + 2) * kN] = s2;
+            gram[(t + 3) + j * kN] = s3;
+            gram[j + (t + 3) * kN] = s3;
+        }
+        for (; t <= j; ++t) {
+            const float* at = input + t * m;
+            auto acc = hn::Zero(dg);
+            int i = 0;
+            for (; i + Ng <= m; i += Ng) {
+                acc = hn::MulAdd(hn::LoadU(dg, at + i), hn::LoadU(dg, bj + i), acc);
+            }
+            float s = hn::ReduceSum(dg, acc);
+            for (; i < m; ++i) {
+                s += at[i] * bj[i];
+            }
+            gram[t + j * kN] = s;
+            gram[j + t * kN] = s;
+        }
+    }
     jacobi_svd_8(gram, kN, eig_u, kN, eig_s, eig_vt, kN, eig_v);
     for (int k = 0; k < kN; ++k) {
         if (!is_finite_bits(eig_s[k]) || eig_s[k] < 0.f) {
