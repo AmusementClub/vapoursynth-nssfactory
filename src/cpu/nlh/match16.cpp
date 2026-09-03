@@ -126,6 +126,42 @@ int NlhSpatialMatch16(const float* ref, int stride, int width, int height, int b
         for (int y = top; y <= bottom; ++y) {
             const float* row = ref + y * stride;
             int x = left;
+#if HWY_MAX_BYTES >= 64
+            for (; x + 3 <= right; x += 4, ordinal += 4) {
+                auto a00 = hn::Zero(df);
+                auto a01 = hn::Zero(df);
+                auto a10 = hn::Zero(df);
+                auto a11 = hn::Zero(df);
+                auto a20 = hn::Zero(df);
+                auto a21 = hn::Zero(df);
+                auto a30 = hn::Zero(df);
+                auto a31 = hn::Zero(df);
+                for (int i = 0; i < 8; i += 2) {
+                    const auto r0 = refb[i];
+                    const auto r1 = refb[i + 1];
+                    const auto d00 = hn::Sub(r0, hn::LoadU(df, row + x + i * stride));
+                    const auto d01 = hn::Sub(r1, hn::LoadU(df, row + x + (i + 1) * stride));
+                    const auto d10 = hn::Sub(r0, hn::LoadU(df, row + x + 1 + i * stride));
+                    const auto d11 = hn::Sub(r1, hn::LoadU(df, row + x + 1 + (i + 1) * stride));
+                    const auto d20 = hn::Sub(r0, hn::LoadU(df, row + x + 2 + i * stride));
+                    const auto d21 = hn::Sub(r1, hn::LoadU(df, row + x + 2 + (i + 1) * stride));
+                    const auto d30 = hn::Sub(r0, hn::LoadU(df, row + x + 3 + i * stride));
+                    const auto d31 = hn::Sub(r1, hn::LoadU(df, row + x + 3 + (i + 1) * stride));
+                    a00 = hn::MulAdd(d00, d00, a00);
+                    a01 = hn::MulAdd(d01, d01, a01);
+                    a10 = hn::MulAdd(d10, d10, a10);
+                    a11 = hn::MulAdd(d11, d11, a11);
+                    a20 = hn::MulAdd(d20, d20, a20);
+                    a21 = hn::MulAdd(d21, d21, a21);
+                    a30 = hn::MulAdd(d30, d30, a30);
+                    a31 = hn::MulAdd(d31, d31, a31);
+                }
+                consider(x, y, HSum8(hn::Add(a00, a01)), ordinal);
+                consider(x + 1, y, HSum8(hn::Add(a10, a11)), ordinal + 1);
+                consider(x + 2, y, HSum8(hn::Add(a20, a21)), ordinal + 2);
+                consider(x + 3, y, HSum8(hn::Add(a30, a31)), ordinal + 3);
+            }
+#endif
             for (; x + 1 <= right; x += 2, ordinal += 2) {
                 auto a00 = hn::Zero(df);
                 auto a01 = hn::Zero(df);
