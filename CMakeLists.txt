@@ -146,6 +146,7 @@ set_source_files_properties(
   src/cpu/nlh/haar.cpp
   src/cpu/nlh/pixel_match.cpp
   src/cpu/nlh/filter_group.cpp
+  src/cpu/mcwnnm/match_nch.cpp
   PROPERTIES COMPILE_OPTIONS "${NSS_HOT_COMPILE_OPTIONS}"
 )
 set(NSS_FINITE_HOT_COMPILE_OPTIONS ${NSS_HOT_COMPILE_OPTIONS})
