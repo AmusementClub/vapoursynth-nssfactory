@@ -164,18 +164,12 @@ int lssc_omp(const float* y, int m, const float* D, int atoms, int ldd, int spar
         for (int p = 0; p < ksel; ++p) {
             a[supp[static_cast<std::size_t>(p)]] = b[static_cast<std::size_t>(p)];
         }
-        for (int i = 0; i < m; ++i) {
-            float s = 0.f;
-            for (int p = 0; p < ksel; ++p) {
-                s += Ds[static_cast<std::size_t>(i) + static_cast<std::size_t>(p) * static_cast<std::size_t>(m)] *
-                     b[static_cast<std::size_t>(p)];
-            }
-            r[static_cast<std::size_t>(i)] = y[i] - s;
+        std::memcpy(r, y, static_cast<std::size_t>(m) * sizeof(float));
+        for (int p = 0; p < ksel; ++p) {
+            axpy_n(r, Ds + static_cast<std::size_t>(p) * static_cast<std::size_t>(m), -b[static_cast<std::size_t>(p)],
+                   m);
         }
-        float rn = 0.f;
-        for (int i = 0; i < m; ++i) {
-            rn += r[static_cast<std::size_t>(i)] * r[static_cast<std::size_t>(i)];
-        }
+        const float rn = dot_n(r, r, m);
         if (rn < 1e-12f) {
             break;
         }
@@ -255,18 +249,11 @@ int lssc_omp_workspace(const float* y, int m, const float* D, int atoms, int ldd
         for (int p = 0; p < ksel; ++p) {
             a[supp[p]] = b[p];
         }
-        for (int i = 0; i < m; ++i) {
-            float sum = 0.f;
-            for (int p = 0; p < ksel; ++p) {
-                sum += Ds[static_cast<std::size_t>(i) + static_cast<std::size_t>(p) * static_cast<std::size_t>(m)] *
-                       b[p];
-            }
-            r[i] = y[i] - sum;
+        std::memcpy(r, y, static_cast<std::size_t>(m) * sizeof(float));
+        for (int p = 0; p < ksel; ++p) {
+            axpy_n(r, Ds + static_cast<std::size_t>(p) * static_cast<std::size_t>(m), -b[p], m);
         }
-        float rn = 0.f;
-        for (int i = 0; i < m; ++i) {
-            rn += r[i] * r[i];
-        }
+        const float rn = dot_n(r, r, m);
         if (rn < 1e-12f) {
             break;
         }

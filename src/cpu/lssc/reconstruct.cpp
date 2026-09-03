@@ -51,7 +51,17 @@ void LsscGroupSoft(float* A, int atoms, int n, int lda_a, float lambda) {
             nrm2[i] += col[i] * col[i];
         }
     }
-    for (int i = 0; i < atoms; ++i) {
+    const auto vlam = hn::Set(d, lam);
+    const auto one = hn::Set(d, 1.f);
+    const auto z = hn::Zero(d);
+    int i = 0;
+    for (; i + N <= atoms; i += N) {
+        const auto nrm = hn::Sqrt(hn::LoadU(d, nrm2 + i));
+        const auto keep = hn::Gt(nrm, vlam);
+        const auto denom = hn::IfThenElse(keep, nrm, one);
+        hn::StoreU(hn::IfThenElse(keep, hn::Sub(one, hn::Div(vlam, denom)), z), d, scale + i);
+    }
+    for (; i < atoms; ++i) {
         const float nrm = std::sqrt(nrm2[i]);
         scale[i] = (nrm <= lam) ? 0.f : (1.f - lam / nrm);
     }
@@ -102,9 +112,19 @@ static bool LsscUpdateGroupSoft(float* A, const float* G, int atoms, int n, floa
             nrm2[i] += aj[i] * aj[i];
         }
     }
-    for (int i = 0; i < atoms; ++i) {
-        const float nrm = std::sqrt(nrm2[i]);
-        scale[i] = (nrm <= lam) ? 0.f : (1.f - lam / nrm);
+    const auto vlam = hn::Set(d, lam);
+    const auto one = hn::Set(d, 1.f);
+    const auto z = hn::Zero(d);
+    int s = 0;
+    for (; s + N <= atoms; s += N) {
+        const auto nrm = hn::Sqrt(hn::LoadU(d, nrm2 + s));
+        const auto keep = hn::Gt(nrm, vlam);
+        const auto denom = hn::IfThenElse(keep, nrm, one);
+        hn::StoreU(hn::IfThenElse(keep, hn::Sub(one, hn::Div(vlam, denom)), z), d, scale + s);
+    }
+    for (; s < atoms; ++s) {
+        const float nrm = std::sqrt(nrm2[s]);
+        scale[s] = (nrm <= lam) ? 0.f : (1.f - lam / nrm);
     }
 
     bool exploded = false;
