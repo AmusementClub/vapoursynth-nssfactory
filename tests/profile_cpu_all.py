@@ -64,7 +64,16 @@ def make_filter(core: vs.Core, algorithm: str, source: vs.VideoNode) -> vs.Video
     if algorithm == "nlm":
         return core.nss.NLM(source, d=1, a=2, s=4, h=1.2, channels="Y")
     if algorithm == "bm3d":
-        return core.nss.BM3D(source, sigma=3, radius=0)
+        block_size = int(os.environ.get("NSS_PROFILE_BM3D_BLOCK", "8"))
+        return core.nss.BM3D(
+            source,
+            sigma=3,
+            radius=int(os.environ.get("NSS_PROFILE_BM3D_RADIUS", "0")),
+            block_size=block_size,
+            block_step=int(os.environ.get("NSS_PROFILE_BM3D_STEP", str(min(block_size, 8)))),
+            group_size=int(os.environ.get("NSS_PROFILE_BM3D_GROUP", "8")),
+            bm_range=int(os.environ.get("NSS_PROFILE_BM3D_RANGE", "7")),
+        )
     if algorithm == "wnnm":
         return core.nss.WNNM(source, sigma=3, residual=0, radius=0)
     if algorithm == "twsc":
@@ -80,7 +89,17 @@ def make_filter(core: vs.Core, algorithm: str, source: vs.VideoNode) -> vs.Video
             iters=int(os.environ.get("NSS_PROFILE_TWSC_ITERS", "2")),
         )
     if algorithm == "ncsr":
-        return core.nss.NCSR(source, sigma=3, radius=0)
+        block_size = int(os.environ.get("NSS_PROFILE_NCSR_BLOCK", "8"))
+        return core.nss.NCSR(
+            source,
+            sigma=3,
+            radius=int(os.environ.get("NSS_PROFILE_NCSR_RADIUS", "0")),
+            block_size=block_size,
+            block_step=int(os.environ.get("NSS_PROFILE_NCSR_STEP", str(min(block_size, 8)))),
+            group_size=int(os.environ.get("NSS_PROFILE_NCSR_GROUP", "8")),
+            bm_range=int(os.environ.get("NSS_PROFILE_NCSR_RANGE", "7")),
+            iters=int(os.environ.get("NSS_PROFILE_NCSR_ITERS", "2")),
+        )
     if algorithm == "lssc":
         return core.nss.LSSC(
             source,
