@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE "cpu/nlm/nlm.cpp"
@@ -43,10 +44,11 @@ static inline void add_exp_sub_row(float* dst, float* buffer, const float* add, 
         hn::StoreU(hn::FastExp</*kHandleSubnormals=*/false>(d, exponent), d, dst + x);
         hn::StoreU(hn::Sub(sum, hn::LoadU(d, sub + x)), d, buffer + x);
     }
-    for (; x < n; ++x) {
-        const float sum = buffer[x] + add[x];
-        dst[x] = std::exp(sum * scale);
-        buffer[x] = sum - sub[x];
+    if (x < n) {
+        const std::size_t remaining = static_cast<std::size_t>(n - x);
+        const auto sum = hn::Add(hn::LoadN(d, buffer + x, remaining), hn::LoadN(d, add + x, remaining));
+        hn::StoreN(hn::FastExp</*kHandleSubnormals=*/false>(d, hn::Mul(sum, vs)), d, dst + x, remaining);
+        hn::StoreN(hn::Sub(sum, hn::LoadN(d, sub + x, remaining)), d, buffer + x, remaining);
     }
 }
 
