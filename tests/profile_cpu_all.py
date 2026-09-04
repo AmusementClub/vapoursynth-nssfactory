@@ -62,11 +62,17 @@ def make_source(
 
 def make_filter(core: vs.Core, algorithm: str, source: vs.VideoNode) -> vs.VideoNode:
     if algorithm == "nlm":
-        return core.nss.NLM(source, d=1, a=2, s=4, h=1.2, channels="Y")
+        return core.nss.NLM(
+            source,
+            d=int(os.environ.get("NSS_PROFILE_NLM_D", "1")),
+            a=int(os.environ.get("NSS_PROFILE_NLM_A", "2")),
+            s=int(os.environ.get("NSS_PROFILE_NLM_S", "4")),
+            h=1.2,
+            channels="Y",
+        )
     if algorithm == "bm3d":
         block_size = int(os.environ.get("NSS_PROFILE_BM3D_BLOCK", "8"))
-        return core.nss.BM3D(
-            source,
+        kwargs = dict(
             sigma=3,
             radius=int(os.environ.get("NSS_PROFILE_BM3D_RADIUS", "0")),
             block_size=block_size,
@@ -74,8 +80,27 @@ def make_filter(core: vs.Core, algorithm: str, source: vs.VideoNode) -> vs.Video
             group_size=int(os.environ.get("NSS_PROFILE_BM3D_GROUP", "8")),
             bm_range=int(os.environ.get("NSS_PROFILE_BM3D_RANGE", "7")),
         )
+        if os.environ.get("NSS_PROFILE_BM3D_V2", "0") == "1":
+            return core.nss.BM3Dv2(
+                source,
+                temporal_mode=os.environ.get("NSS_PROFILE_BM3D_TEMPORAL_MODE", "rolling"),
+                rolling_chunk=int(os.environ.get("NSS_PROFILE_BM3D_ROLLING_CHUNK", "4")),
+                rolling_cache_limit=int(os.environ.get("NSS_PROFILE_BM3D_ROLLING_CACHE", "16")),
+                **kwargs,
+            )
+        return core.nss.BM3D(source, **kwargs)
     if algorithm == "wnnm":
-        return core.nss.WNNM(source, sigma=3, residual=0, radius=0)
+        block_size = int(os.environ.get("NSS_PROFILE_WNNM_BLOCK", "8"))
+        return core.nss.WNNM(
+            source,
+            sigma=3,
+            radius=int(os.environ.get("NSS_PROFILE_WNNM_RADIUS", "0")),
+            block_size=block_size,
+            block_step=int(os.environ.get("NSS_PROFILE_WNNM_STEP", str(min(block_size, 8)))),
+            group_size=int(os.environ.get("NSS_PROFILE_WNNM_GROUP", "8")),
+            bm_range=int(os.environ.get("NSS_PROFILE_WNNM_RANGE", "7")),
+            residual=int(os.environ.get("NSS_PROFILE_WNNM_RESIDUAL", "0")),
+        )
     if algorithm == "twsc":
         block_size = int(os.environ.get("NSS_PROFILE_TWSC_BLOCK", "8"))
         return core.nss.TWSC(
@@ -104,7 +129,7 @@ def make_filter(core: vs.Core, algorithm: str, source: vs.VideoNode) -> vs.Video
         return core.nss.LSSC(
             source,
             sigma=3,
-            radius=0,
+            radius=int(os.environ.get("NSS_PROFILE_LSSC_RADIUS", "0")),
             block_size=int(os.environ.get("NSS_PROFILE_LSSC_BLOCK", "8")),
             block_step=int(os.environ.get("NSS_PROFILE_LSSC_STEP", "8")),
         )
