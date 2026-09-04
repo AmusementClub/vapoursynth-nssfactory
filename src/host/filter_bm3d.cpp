@@ -12,7 +12,10 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <list>
 #include <memory>
+#include <mutex>
+#include <string>
 #include <vector>
 
 namespace {
@@ -413,7 +416,364 @@ void VS_CC bm3dFree(void* instanceData, VSCore* core, const VSAPI* vsapi) {
     delete d;
 }
 
+struct RollingPlane {
+    std::vector<float> data;
+    int width = 0;
+    int height = 0;
+};
+
+struct RollingFrameStore {
+    std::vector<RollingPlane> planes;
+};
+
+struct RollingChunkStore {
+    int start = 0;
+    int count = 0;
+    std::vector<RollingFrameStore> frames;
+};
+
+struct RollingData {
+    Bm3dData bm;
+    int rolling_chunk = 4;
+    int cache_limit = 16;
+    std::mutex cache_mu;
+    std::mutex compute_mu;
+    std::list<RollingChunkStore> cache;
+};
+
+int rolling_chunk_start(int n, int chunk) {
+    return (n / chunk) * chunk;
+}
+
+RollingChunkStore* rolling_find_chunk(RollingData* d, int start) {
+    for (auto& chunk : d->cache) {
+        if (chunk.start == start) {
+            return &chunk;
+        }
+    }
+    return nullptr;
+}
+
+void rolling_touch_chunk(RollingData* d, int start) {
+    auto it = std::find_if(d->cache.begin(), d->cache.end(),
+                           [start](const RollingChunkStore& c) { return c.start == start; });
+    if (it != d->cache.end() && it != d->cache.begin()) {
+        d->cache.splice(d->cache.begin(), d->cache, it);
+    }
+}
+
+void rolling_store_plane(RollingPlane& plane, const float* src, int width, int height, int stride) {
+    plane.width = width;
+    plane.height = height;
+    plane.data.resize(static_cast<std::size_t>(width) * static_cast<std::size_t>(height));
+    for (int y = 0; y < height; ++y) {
+        std::memcpy(plane.data.data() + static_cast<std::size_t>(y) * width, src + y * stride,
+                    static_cast<std::size_t>(width) * sizeof(float));
+    }
+}
+
+void rolling_write_plane(float* dst, int dstride, const RollingPlane& plane) {
+    for (int y = 0; y < plane.height; ++y) {
+        std::memcpy(dst + y * dstride, plane.data.data() + static_cast<std::size_t>(y) * plane.width,
+                    static_cast<std::size_t>(plane.width) * sizeof(float));
+    }
+}
+
+bool rolling_fill_chunk(RollingData* d, RollingChunkStore& store, int start, int count, VSFrameContext* frameCtx,
+                        VSCore* core, const VSAPI* vsapi) {
+    (void)core;
+    auto& bm = d->bm;
+    const int radius = bm.radius;
+    const int ntemp = 2 * radius + 1;
+    const int nframes = bm.vi.numFrames;
+    const int np = bm.vi.format.numPlanes;
+    store.start = start;
+    store.count = count;
+    store.frames.assign(static_cast<std::size_t>(count), RollingFrameStore{});
+    for (int i = 0; i < count; ++i) {
+        store.frames[static_cast<std::size_t>(i)].planes.resize(static_cast<std::size_t>(np));
+    }
+
+    for (int local = 0; local < count; ++local) {
+        const int center = start + local;
+        std::vector<const VSFrame*> srcf(static_cast<std::size_t>(ntemp));
+        std::vector<const VSFrame*> reff(static_cast<std::size_t>(ntemp));
+        for (int t = 0; t < ntemp; ++t) {
+            const int fn = std::clamp(center - radius + t, 0, nframes - 1);
+            srcf[static_cast<std::size_t>(t)] = vsapi->getFrameFilter(fn, bm.node, frameCtx);
+            reff[static_cast<std::size_t>(t)] =
+                vsapi->getFrameFilter(fn, bm.ref ? bm.ref : bm.node, frameCtx);
+        }
+        const int t0 = radius;
+        for (int plane = 0; plane < np; ++plane) {
+            const int pw = nss::plane_width(bm.vi, plane);
+            const int ph = nss::plane_height(bm.vi, plane);
+            const int sstride =
+                static_cast<int>(vsapi->getStride(srcf[static_cast<std::size_t>(t0)], plane) / sizeof(float));
+            const float* srcp =
+                reinterpret_cast<const float*>(vsapi->getReadPtr(srcf[static_cast<std::size_t>(t0)], plane));
+            if (bm.sigma[plane] == 0.f) {
+                rolling_store_plane(store.frames[static_cast<std::size_t>(local)].planes[static_cast<std::size_t>(plane)],
+                                    srcp, pw, ph, sstride);
+                continue;
+            }
+            std::vector<const float*> srcs(static_cast<std::size_t>(ntemp));
+            std::vector<const float*> refs(static_cast<std::size_t>(ntemp));
+            for (int t = 0; t < ntemp; ++t) {
+                srcs[static_cast<std::size_t>(t)] = reinterpret_cast<const float*>(
+                    vsapi->getReadPtr(srcf[static_cast<std::size_t>(t)], plane));
+                refs[static_cast<std::size_t>(t)] = reinterpret_cast<const float*>(
+                    vsapi->getReadPtr(reff[static_cast<std::size_t>(t)], plane));
+            }
+            const int slices = ntemp;
+            const int block = bm.block_size[plane];
+            const int group = bm.group_size[plane];
+            const int area = block * block;
+            const std::size_t fat_n =
+                static_cast<std::size_t>(slices) * 2 * static_cast<std::size_t>(pw) * static_cast<std::size_t>(ph);
+            const std::size_t need = fat_n + static_cast<std::size_t>(nss::bm3d_filter_work_floats(group, block)) +
+                                     static_cast<std::size_t>(group) * static_cast<std::size_t>(area) *
+                                         (bm.ref != nullptr ? 2u : 1u) +
+                                     64;
+            float* scratch = bm.ws.get(need);
+            std::vector<float> fat(fat_n, 0.f);
+            process_plane_batched(srcs.data(), refs.data(), ntemp, t0, fat.data(), pw, ph, sstride, pw, pw,
+                                  bm.sigma[plane], bm.block_size[plane], bm.group_size[plane], bm.block_step[plane],
+                                  bm.bm_range[plane], bm.ps_num[plane], bm.ps_range[plane], bm.radius,
+                                  bm.ref != nullptr, true, scratch);
+            std::vector<float> out(static_cast<std::size_t>(pw) * static_cast<std::size_t>(ph), 0.f);
+            nss::vaggregate_reduce(out.data(), fat.data(), srcp, pw, ph, pw, pw, radius);
+            RollingPlane& stored =
+                store.frames[static_cast<std::size_t>(local)].planes[static_cast<std::size_t>(plane)];
+            stored.width = pw;
+            stored.height = ph;
+            stored.data = std::move(out);
+        }
+        for (int t = 0; t < ntemp; ++t) {
+            vsapi->freeFrame(srcf[static_cast<std::size_t>(t)]);
+            vsapi->freeFrame(reff[static_cast<std::size_t>(t)]);
+        }
+    }
+    return true;
+}
+
+const VSFrame* VS_CC rollingGetFrame(int n, int activationReason, void* instanceData, void** frameData,
+                                     VSFrameContext* frameCtx, VSCore* core, const VSAPI* vsapi) {
+    auto* d = static_cast<RollingData*>(instanceData);
+    (void)frameData;
+    const int chunk = d->rolling_chunk;
+    const int start = rolling_chunk_start(n, chunk);
+    const int count = std::min(chunk, d->bm.vi.numFrames - start);
+    if (activationReason == arInitial) {
+        vsapi->requestFrameFilter(n, d->bm.node, frameCtx);
+        bool hit = false;
+        {
+            std::lock_guard<std::mutex> guard(d->cache_mu);
+            hit = rolling_find_chunk(d, start) != nullptr;
+        }
+        if (!hit) {
+            const int radius = d->bm.radius;
+            const int first = std::max(0, start - radius);
+            const int last = std::min(d->bm.vi.numFrames - 1, start + count - 1 + radius);
+            for (int i = first; i <= last; ++i) {
+                vsapi->requestFrameFilter(i, d->bm.node, frameCtx);
+                if (d->bm.ref) {
+                    vsapi->requestFrameFilter(i, d->bm.ref, frameCtx);
+                }
+            }
+        }
+        return nullptr;
+    }
+    if (activationReason != arAllFramesReady) {
+        return nullptr;
+    }
+
+    const VSFrame* srcn = vsapi->getFrameFilter(n, d->bm.node, frameCtx);
+    VSFrame* dst = vsapi->newVideoFrame(&d->bm.vi.format, d->bm.vi.width, d->bm.vi.height, srcn, core);
+    vsapi->freeFrame(srcn);
+
+    RollingFrameStore local;
+    auto copy_local = [&](const RollingChunkStore& chunk) {
+        local = chunk.frames[static_cast<std::size_t>(n - chunk.start)];
+    };
+    bool have = false;
+    {
+        std::lock_guard<std::mutex> guard(d->cache_mu);
+        if (RollingChunkStore* hit = rolling_find_chunk(d, start)) {
+            rolling_touch_chunk(d, start);
+            copy_local(*hit);
+            have = true;
+        }
+    }
+    if (!have) {
+        std::lock_guard<std::mutex> compute(d->compute_mu);
+        {
+            std::lock_guard<std::mutex> guard(d->cache_mu);
+            if (RollingChunkStore* hit = rolling_find_chunk(d, start)) {
+                rolling_touch_chunk(d, start);
+                copy_local(*hit);
+                have = true;
+            }
+        }
+        if (!have) {
+            RollingChunkStore computed;
+            rolling_fill_chunk(d, computed, start, count, frameCtx, core, vsapi);
+            copy_local(computed);
+            std::lock_guard<std::mutex> guard(d->cache_mu);
+            d->cache.push_front(std::move(computed));
+            while (static_cast<int>(d->cache.size()) > d->cache_limit) {
+                d->cache.pop_back();
+            }
+        }
+    }
+
+    for (int plane = 0; plane < d->bm.vi.format.numPlanes; ++plane) {
+        const int dstride = static_cast<int>(vsapi->getStride(dst, plane) / sizeof(float));
+        float* outp = reinterpret_cast<float*>(vsapi->getWritePtr(dst, plane));
+        rolling_write_plane(outp, dstride, local.planes[static_cast<std::size_t>(plane)]);
+    }
+    return dst;
+}
+
+void VS_CC rollingFree(void* instanceData, VSCore* core, const VSAPI* vsapi) {
+    (void)core;
+    auto* d = static_cast<RollingData*>(instanceData);
+    vsapi->freeNode(d->bm.node);
+    if (d->bm.ref) {
+        vsapi->freeNode(d->bm.ref);
+    }
+    delete d;
+}
+
 }  // namespace
+
+const char* fill_bm3d_data(Bm3dData& d, const VSMap* in, const VSAPI* vsapi) {
+    d.node = vsapi->mapGetNode(in, "clip", 0, nullptr);
+    d.vi = *vsapi->getVideoInfo(d.node);
+    if (!nss::is_const_32f(d.vi)) {
+        return "nss.BM3D: constant Gray/YUV/RGB 32-bit float required";
+    }
+    int e = 0;
+    d.ref = vsapi->mapGetNode(in, "ref", 0, &e);
+    if (e) {
+        d.ref = nullptr;
+    } else if (!nss::same_video(d.vi, *vsapi->getVideoInfo(d.ref))) {
+        return "nss.BM3D: ref must match clip";
+    }
+    const int np = d.vi.format.numPlanes;
+    nss::map_float_array(vsapi, in, "sigma", d.sigma, np, nss::kBmDefaultSigma);
+    for (int i = 0; i < np; ++i) {
+        if (d.sigma[i] != 0.f) {
+            d.sigma[i] *= (1.f / 255.f);
+        }
+    }
+    nss::map_inherit_int(vsapi, in, "block_size", d.block_size, np, nss::kBmBlock);
+    nss::map_inherit_int(vsapi, in, "group_size", d.group_size, np, nss::kBmGroup);
+    {
+        const int nstep = vsapi->mapNumElements(in, "block_step");
+        if (nstep <= 0) {
+            for (int i = 0; i < np; ++i) {
+                d.block_step[i] = std::min(nss::kBmDefaultStep, d.block_size[i]);
+            }
+        } else {
+            nss::map_inherit_int(vsapi, in, "block_step", d.block_step, np, nss::kBmDefaultStep);
+        }
+    }
+    nss::map_int_array(vsapi, in, "bm_range", d.bm_range, np, nss::kBmDefaultRange);
+    {
+        const int nps = vsapi->mapNumElements(in, "ps_num");
+        if (nps <= 0) {
+            for (int i = 0; i < np; ++i) {
+                d.ps_num[i] = std::min(nss::kBmDefaultPsNum, d.group_size[i]);
+            }
+        } else {
+            nss::map_inherit_int(vsapi, in, "ps_num", d.ps_num, np, nss::kBmDefaultPsNum);
+        }
+    }
+    nss::map_int_array(vsapi, in, "ps_range", d.ps_range, np, nss::kBmDefaultPsRange);
+    d.radius = nss::map_int(vsapi, in, "radius", 0);
+    if (d.radius < 0 || d.radius > nss::kBmMaxRadius) {
+        return "nss.BM3D: radius must be in [0, 16]";
+    }
+    for (int i = 0; i < np; ++i) {
+        if (!nss::bm_allowed_block(d.block_size[i])) {
+            return "nss.BM3D: block_size must be one of 1, 2, 4, 8, 16, 32";
+        }
+        if (!nss::bm_allowed_group(d.group_size[i])) {
+            return "nss.BM3D: group_size must be one of 1, 2, 4, 8, 16, 32, 64";
+        }
+        if (d.block_size[i] > nss::plane_width(d.vi, i) || d.block_size[i] > nss::plane_height(d.vi, i)) {
+            return "nss.BM3D: block_size must not exceed plane dimensions";
+        }
+        if (d.block_step[i] < 1 || d.block_step[i] > d.block_size[i]) {
+            return "nss.BM3D: block_step must be in [1, block_size]";
+        }
+        if (d.ps_num[i] < 1 || d.ps_num[i] > d.group_size[i]) {
+            return "nss.BM3D: ps_num must be in [1, group_size]";
+        }
+        if (d.bm_range[i] < 1 || d.bm_range[i] > nss::kBmMaxRange) {
+            return "nss.BM3D: bm_range must be in [1, 64]";
+        }
+    }
+    d.vi_out = d.vi;
+    return nullptr;
+}
+
+void release_bm3d_nodes(Bm3dData& d, const VSAPI* vsapi) {
+    if (d.node) {
+        vsapi->freeNode(d.node);
+        d.node = nullptr;
+    }
+    if (d.ref) {
+        vsapi->freeNode(d.ref);
+        d.ref = nullptr;
+    }
+}
+
+VSNode* create_rolling_bm3dv2(const VSMap* in, VSCore* core, const VSAPI* vsapi, VSMap* err) {
+    if (!nss::cpu_has_avx2()) {
+        vsapi->mapSetError(err, "nss.BM3Dv2: AVX2 is required");
+        return nullptr;
+    }
+    auto d = std::make_unique<RollingData>();
+    if (const char* msg = fill_bm3d_data(d->bm, in, vsapi)) {
+        vsapi->mapSetError(err, msg);
+        release_bm3d_nodes(d->bm, vsapi);
+        return nullptr;
+    }
+    d->rolling_chunk = nss::map_int(vsapi, in, "rolling_chunk", 4);
+    d->cache_limit = nss::map_int(vsapi, in, "rolling_cache_limit", 16);
+    int cache_chunks_err = 0;
+    const int cache_chunks = nss::map_int(vsapi, in, "rolling_cache_chunks", 1, &cache_chunks_err);
+    if (!cache_chunks_err) {
+        d->cache_limit = std::max(d->cache_limit, cache_chunks);
+    }
+    auto fail = [&](const char* msg) -> VSNode* {
+        vsapi->mapSetError(err, msg);
+        release_bm3d_nodes(d->bm, vsapi);
+        return nullptr;
+    };
+    if (d->bm.radius < 1) {
+        return fail("nss.BM3Dv2: rolling mode requires radius > 0");
+    }
+    if (d->rolling_chunk < 1 || d->rolling_chunk > 64) {
+        return fail("nss.BM3Dv2: rolling_chunk must be in [1, 64]");
+    }
+    if (d->cache_limit < 1 || d->cache_limit > 64) {
+        return fail("nss.BM3Dv2: rolling_cache_limit must be in [1, 64]");
+    }
+    d->bm.vi_out = d->bm.vi;
+    VSFilterDependency deps[2]{{d->bm.node, rpGeneral}, {d->bm.ref, rpGeneral}};
+    const int ndeps = d->bm.ref ? 2 : 1;
+    RollingData* raw = d.get();
+    VSNode* node = vsapi->createVideoFilter2("BM3Dv2", &raw->bm.vi_out, rollingGetFrame, rollingFree, fmParallel, deps,
+                                            ndeps, raw, core);
+    if (!node) {
+        return fail("nss.BM3Dv2: failed to create rolling filter");
+    }
+    d.release();
+    return node;
+}
 
 VSNode* nss_create_bm3d(const VSMap* in, VSCore* core, const VSAPI* vsapi, VSMap* err) {
     if (!nss::cpu_has_avx2()) {
@@ -421,88 +781,10 @@ VSNode* nss_create_bm3d(const VSMap* in, VSCore* core, const VSAPI* vsapi, VSMap
         return nullptr;
     }
     auto d = std::make_unique<Bm3dData>();
-    d->node = vsapi->mapGetNode(in, "clip", 0, nullptr);
-    d->vi = *vsapi->getVideoInfo(d->node);
-    if (!nss::is_const_32f(d->vi)) {
-        vsapi->mapSetError(err, "nss.BM3D: constant Gray/YUV/RGB 32-bit float required");
-        vsapi->freeNode(d->node);
-        return nullptr;
-    }
-    int e = 0;
-    d->ref = vsapi->mapGetNode(in, "ref", 0, &e);
-    if (e) {
-        d->ref = nullptr;
-    } else if (!nss::same_video(d->vi, *vsapi->getVideoInfo(d->ref))) {
-        vsapi->mapSetError(err, "nss.BM3D: ref must match clip");
-        vsapi->freeNode(d->node);
-        vsapi->freeNode(d->ref);
-        return nullptr;
-    }
-    const int np = d->vi.format.numPlanes;
-    nss::map_float_array(vsapi, in, "sigma", d->sigma, np, nss::kBmDefaultSigma);
-    // User sigma is 8-bit units, same as bm3dcpu. Clip is 32f in 0-1.
-    // General sizes: orthonormal DCT-II, only /255. Hard lambda 2.7 in the kernel.
-    // Fused 8x8x8 radius=0 copies bm3dcpu FFTW scale inside bm3d_filter8: extra (3/4)*64 and 1/4096.
-    for (int i = 0; i < np; ++i) {
-        if (d->sigma[i] != 0.f) {
-            d->sigma[i] *= (1.f / 255.f);
-        }
-    }
-    nss::map_inherit_int(vsapi, in, "block_size", d->block_size, np, nss::kBmBlock);
-    nss::map_inherit_int(vsapi, in, "group_size", d->group_size, np, nss::kBmGroup);
-    {
-        const int nstep = vsapi->mapNumElements(in, "block_step");
-        if (nstep <= 0) {
-            for (int i = 0; i < np; ++i) {
-                d->block_step[i] = std::min(nss::kBmDefaultStep, d->block_size[i]);
-            }
-        } else {
-            nss::map_inherit_int(vsapi, in, "block_step", d->block_step, np, nss::kBmDefaultStep);
-        }
-    }
-    nss::map_int_array(vsapi, in, "bm_range", d->bm_range, np, nss::kBmDefaultRange);
-    {
-        const int nps = vsapi->mapNumElements(in, "ps_num");
-        if (nps <= 0) {
-            for (int i = 0; i < np; ++i) {
-                d->ps_num[i] = std::min(nss::kBmDefaultPsNum, d->group_size[i]);
-            }
-        } else {
-            nss::map_inherit_int(vsapi, in, "ps_num", d->ps_num, np, nss::kBmDefaultPsNum);
-        }
-    }
-    nss::map_int_array(vsapi, in, "ps_range", d->ps_range, np, nss::kBmDefaultPsRange);
-    d->radius = nss::map_int(vsapi, in, "radius", 0);
-    auto fail = [&](const char* msg) -> VSNode* {
+    if (const char* msg = fill_bm3d_data(*d, in, vsapi)) {
         vsapi->mapSetError(err, msg);
-        vsapi->freeNode(d->node);
-        if (d->ref) {
-            vsapi->freeNode(d->ref);
-        }
+        release_bm3d_nodes(*d, vsapi);
         return nullptr;
-    };
-    if (d->radius < 0 || d->radius > nss::kBmMaxRadius) {
-        return fail("nss.BM3D: radius must be in [0, 16]");
-    }
-    for (int i = 0; i < np; ++i) {
-        if (!nss::bm_allowed_block(d->block_size[i])) {
-            return fail("nss.BM3D: block_size must be one of 1, 2, 4, 8, 16, 32");
-        }
-        if (!nss::bm_allowed_group(d->group_size[i])) {
-            return fail("nss.BM3D: group_size must be one of 1, 2, 4, 8, 16, 32, 64");
-        }
-        if (d->block_size[i] > nss::plane_width(d->vi, i) || d->block_size[i] > nss::plane_height(d->vi, i)) {
-            return fail("nss.BM3D: block_size must not exceed plane dimensions");
-        }
-        if (d->block_step[i] < 1 || d->block_step[i] > d->block_size[i]) {
-            return fail("nss.BM3D: block_step must be in [1, block_size]");
-        }
-        if (d->ps_num[i] < 1 || d->ps_num[i] > d->group_size[i]) {
-            return fail("nss.BM3D: ps_num must be in [1, group_size]");
-        }
-        if (d->bm_range[i] < 1 || d->bm_range[i] > nss::kBmMaxRange) {
-            return fail("nss.BM3D: bm_range must be in [1, 64]");
-        }
     }
     d->vi_out = d->vi;
     if (d->radius > 0) {
@@ -516,10 +798,7 @@ VSNode* nss_create_bm3d(const VSMap* in, VSCore* core, const VSAPI* vsapi, VSMap
                                             core);
     if (!node) {
         vsapi->mapSetError(err, "nss.BM3D: failed to create filter");
-        vsapi->freeNode(d->node);
-        if (d->ref) {
-            vsapi->freeNode(d->ref);
-        }
+        release_bm3d_nodes(*d, vsapi);
         return nullptr;
     }
     d.release();
@@ -537,6 +816,29 @@ void VS_CC bm3dCreate(const VSMap* in, VSMap* out, void* userData, VSCore* core,
 void VS_CC bm3dv2Create(const VSMap* in, VSMap* out, void* userData, VSCore* core, const VSAPI* vsapi) {
     (void)userData;
     const int radius = nss::map_int(vsapi, in, "radius", 0);
+    int mode_err = 0;
+    const char* mode = vsapi->mapGetData(in, "temporal_mode", 0, &mode_err);
+    std::string mode_s;
+    if (!mode_err && mode) {
+        mode_s = mode;
+        for (char& c : mode_s) {
+            if (c >= 'A' && c <= 'Z') {
+                c = static_cast<char>(c - 'A' + 'a');
+            }
+        }
+    }
+    if (mode_s == "fused") {
+        vsapi->mapSetError(out, "nss.BM3Dv2: temporal_mode=fused is not supported; use rolling or legacy");
+        return;
+    }
+    const bool rolling = radius > 0 && mode_s != "legacy";
+    if (rolling) {
+        VSNode* node = create_rolling_bm3dv2(in, core, vsapi, out);
+        if (node) {
+            vsapi->mapConsumeNode(out, "clip", node, maAppend);
+        }
+        return;
+    }
     VSNode* bm = nss_create_bm3d(in, core, vsapi, out);
     if (!bm) {
         return;
@@ -557,6 +859,10 @@ void register_bm3d(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
     const char* args =
         "clip:vnode;ref:vnode:opt;sigma:float[]:opt;block_size:int[]:opt;group_size:int[]:opt;"
         "block_step:int[]:opt;bm_range:int[]:opt;radius:int:opt;ps_num:int[]:opt;ps_range:int[]:opt;";
+    const char* v2_args =
+        "clip:vnode;ref:vnode:opt;sigma:float[]:opt;block_size:int[]:opt;group_size:int[]:opt;"
+        "block_step:int[]:opt;bm_range:int[]:opt;radius:int:opt;ps_num:int[]:opt;ps_range:int[]:opt;"
+        "temporal_mode:data:opt;rolling_chunk:int:opt;rolling_cache_chunks:int:opt;rolling_cache_limit:int:opt;";
     vspapi->registerFunction("BM3D", args, "clip:vnode;", bm3dCreate, nullptr, plugin);
-    vspapi->registerFunction("BM3Dv2", args, "clip:vnode;", bm3dv2Create, nullptr, plugin);
+    vspapi->registerFunction("BM3Dv2", v2_args, "clip:vnode;", bm3dv2Create, nullptr, plugin);
 }
