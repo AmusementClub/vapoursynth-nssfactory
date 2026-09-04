@@ -89,6 +89,12 @@ void process_plane(const float* const* srcs, const float* const* refs, int ntemp
                                   num0, den0, width, width, height);
                 continue;
             }
+            if (radius == 0 && (block == 4 || block == 8)) {
+                nss::bm3d_filter_direct(srcs[t0], sstride, matches, k, block, group, sigma, wiener,
+                                        wiener ? refs[t0] : nullptr, sstride, num0, den0, width, width, height, patches,
+                                        work);
+                continue;
+            }
             for (int i = 0; i < k; ++i) {
                 const int t = (radius > 0) ? matches[i].t : t0;
                 nss::pack_patch(patches + static_cast<std::size_t>(i) * lda, lda, srcs[t], sstride, matches[i].x,
@@ -164,6 +170,14 @@ void process_plane_batched(const float* const* srcs, const float* const* refs, i
     }
 
     const bool fused = block == 8 && group == 8 && radius == 0;
+    const bool direct = radius == 0 && (block == 4 || block == 8) && !fused;
+    const int area = block * block;
+    std::vector<float> direct_cube;
+    std::vector<float> direct_work;
+    if (direct) {
+        direct_cube.resize(static_cast<std::size_t>(group) * static_cast<std::size_t>(area) * (wiener ? 2u : 1u), 0.f);
+        direct_work.resize(static_cast<std::size_t>(nss::bm3d_filter_work_floats(group, block)), 0.f);
+    }
     for (std::size_t begin = 0; begin < jobs.size(); begin += nss::host_detail::kGroupBatchWindow) {
         const std::size_t end = std::min(jobs.size(), begin + nss::host_detail::kGroupBatchWindow);
         const int count = static_cast<int>(end - begin);
@@ -200,6 +214,20 @@ void process_plane_batched(const float* const* srcs, const float* const* refs, i
                                              static_cast<std::size_t>(i) * nss::kBmMaxGroup;
                 nss::bm3d_filter8(srcs[t0], sstride, matches, k, sigma, wiener,
                                   wiener ? refs[t0] : nullptr, sstride, num, den, width, width, height);
+            }
+            continue;
+        }
+        if (direct) {
+            for (int i = 0; i < count; ++i) {
+                const int k = counts[static_cast<std::size_t>(i)];
+                if (k <= 0) {
+                    continue;
+                }
+                const nss::Match* matches = match_storage.data() +
+                                             static_cast<std::size_t>(i) * nss::kBmMaxGroup;
+                nss::bm3d_filter_direct(srcs[t0], sstride, matches, k, block, group, sigma, wiener,
+                                        wiener ? refs[t0] : nullptr, sstride, num, den, width, width, height,
+                                        direct_cube.data(), direct_work.data());
             }
             continue;
         }
