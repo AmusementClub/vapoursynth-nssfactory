@@ -435,7 +435,10 @@ int main() {
         if (block > width || block > height) {
             continue;
         }
-        for (int group : {1, 2, 4, 8, 16}) {
+        for (int group : {1, 2, 4, 8, 16, 32, 64}) {
+            if (block != 8 && group > 16) {
+                continue;
+            }
             failed |= compare_spatial(frame, stride, width, height, block, 5, group, 0, 0);
             failed |= compare_spatial(frame, stride, width, height, block, 5, group, width - block, height - block);
         }
