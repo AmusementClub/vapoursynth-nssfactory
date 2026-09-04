@@ -172,6 +172,58 @@ static int bm3d_sigma0_roundtrip() {
     return 0;
 }
 
+static int bm3d_direct_matches_group() {
+    constexpr int block = 4;
+    constexpr int group = 8;
+    constexpr int width = 48;
+    constexpr int height = 40;
+    constexpr int stride = 48;
+    constexpr int area = block * block;
+    std::vector<float> src(static_cast<std::size_t>(stride * height));
+    std::mt19937 rng(77);
+    std::uniform_real_distribution<float> dist(-0.4f, 0.4f);
+    for (float& v : src) {
+        v = dist(rng);
+    }
+    nss::Match matches[nss::kBmMaxGroup]{};
+    const int k = nss::spatial_match(src.data(), stride, width, height, 12, 10, block, 7, group, matches);
+    if (k < 1) {
+        std::fprintf(stderr, "bm3d_direct matcher returned %d\n", k);
+        return 1;
+    }
+    std::vector<float> packed(static_cast<std::size_t>(group) * area, 0.f);
+    for (int g = 0; g < k; ++g) {
+        nss::pack_patch(packed.data() + static_cast<std::size_t>(g) * area, area, src.data(), stride, matches[g].x,
+                        matches[g].y, block, width, height);
+    }
+    std::vector<float> work(static_cast<std::size_t>(nss::bm3d_filter_work_floats(group, block)));
+    float weight = 1.f;
+    nss::bm3d_filter_group(packed.data(), area, group, k, block, 0.02f, false, nullptr, &weight, work.data());
+    std::vector<float> num_a(static_cast<std::size_t>(stride * height), 0.f);
+    std::vector<float> den_a(num_a.size(), 0.f);
+    for (int g = 0; g < k; ++g) {
+        nss::aggregate_add(num_a.data(), den_a.data(), stride, matches[g].x, matches[g].y,
+                           packed.data() + static_cast<std::size_t>(g) * area, block, width, height, weight);
+    }
+
+    std::vector<float> cube(static_cast<std::size_t>(group) * area, 0.f);
+    std::vector<float> num_b(num_a.size(), 0.f);
+    std::vector<float> den_b(den_a.size(), 0.f);
+    nss::bm3d_filter_direct(src.data(), stride, matches, k, block, group, 0.02f, false, nullptr, stride, num_b.data(),
+                            den_b.data(), stride, width, height, cube.data(), work.data());
+    double max_err = 0.0;
+    for (std::size_t i = 0; i < num_a.size(); ++i) {
+        max_err = std::max(max_err, std::fabs(static_cast<double>(num_a[i] - num_b[i])));
+        max_err = std::max(max_err, std::fabs(static_cast<double>(den_a[i] - den_b[i])));
+    }
+    std::printf("bm3d_direct vs group block=4 max_abs=%.6g\n", max_err);
+    if (max_err > 1e-6) {
+        std::fprintf(stderr, "bm3d_direct mismatch\n");
+        return 1;
+    }
+    return 0;
+}
+
 int main() {
     const int sizes1d[] = {1, 2, 4, 8, 16, 32, 64};
     const int sizes2d[] = {1, 2, 4, 8, 16, 32};
@@ -189,6 +241,7 @@ int main() {
         }
     }
     failed |= bm3d_sigma0_roundtrip();
+    failed |= bm3d_direct_matches_group();
     for (int n : sizes1d) {
         failed |= roundtrip_1d(n, n >= 32 ? 2e-4 : 1e-4);
     }

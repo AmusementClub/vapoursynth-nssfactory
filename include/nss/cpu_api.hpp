@@ -154,6 +154,13 @@ void bm3d_filter_group(float* patches, int lda, int group, int k, int block, flo
 void bm3d_filter8(const float* src, int sstride, const Match* matches, int k, float sigma, bool wiener,
                   const float* ref, int rstride, float* num, float* den, int dstride, int width, int height);
 
+// Load from the source image, orthonormal bm3d_filter_group, accumulate. Not the 8x8x8 FFTW path.
+// `cube` holds group*block*block floats, plus another group*block*block if wiener.
+// `work` holds bm3d_filter_work_floats(group, block) floats.
+void bm3d_filter_direct(const float* src, int sstride, const Match* matches, int k, int block, int group, float sigma,
+                        bool wiener, const float* ref, int rstride, float* num, float* den, int dstride, int width,
+                        int height, float* cube, float* work);
+
 void aggregate_add(float* num, float* den, int stride, int x, int y,
                    const float* patch, int block, int width, int height, float w);
 // sstride < 1 means src uses dstride (Wave 1 callers). dst uses dstride; num/den use buf_stride.

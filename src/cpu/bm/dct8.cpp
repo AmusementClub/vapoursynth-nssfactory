@@ -381,6 +381,56 @@ static void Dct8Rows16(float* base, bool inverse) {
 #endif
 #endif
 
+#if HWY_MAX_BYTES >= 16
+using D4 = hn::FixedTag<float, 4>;
+using V4 = hn::Vec<D4>;
+
+template <class D>
+HWY_INLINE void Dct4Apply(D d, hn::Vec<D> x0, hn::Vec<D> x1, hn::Vec<D> x2, hn::Vec<D> x3, bool inverse,
+                          hn::Vec<D>* y) {
+    const float* M = DctTable<4>();
+    const hn::Vec<D> xs[4] = {x0, x1, x2, x3};
+    for (int outb = 0; outb < 4; ++outb) {
+        auto acc = hn::Zero(d);
+        for (int inb = 0; inb < 4; ++inb) {
+            const float c = inverse ? M[inb * 4 + outb] : M[outb * 4 + inb];
+            acc = hn::MulAdd(hn::Set(d, c), xs[inb], acc);
+        }
+        y[outb] = acc;
+    }
+}
+
+HWY_INLINE V4 Dct4Horz(V4 x, bool inverse) {
+    const D4 d4;
+    HWY_ALIGN float t[4];
+    HWY_ALIGN float o[4];
+    hn::StoreU(x, d4, t);
+    const float* M = DctTable<4>();
+    for (int outb = 0; outb < 4; ++outb) {
+        float acc = 0.f;
+        for (int inb = 0; inb < 4; ++inb) {
+            const float c = inverse ? M[inb * 4 + outb] : M[outb * 4 + inb];
+            acc += c * t[inb];
+        }
+        o[outb] = acc;
+    }
+    return hn::LoadU(d4, o);
+}
+
+static void Dct4PatchCols(float* patch, bool inverse) {
+    const D4 d4;
+    V4 r[4];
+    V4 y[4];
+    for (int i = 0; i < 4; ++i) {
+        r[i] = hn::LoadU(d4, patch + i * 4);
+    }
+    Dct4Apply(d4, r[0], r[1], r[2], r[3], inverse, y);
+    for (int i = 0; i < 4; ++i) {
+        hn::StoreU(y[i], d4, patch + i * 4);
+    }
+}
+#endif
+
 // Independent length-n vectors: sample i of line v is at
 // base[v * line_stride + i * sample_stride]. inverse = orthonormal DCT-III.
 static void DctLines(float* base, int n, int line_stride, int sample_stride, int count, bool inverse) {
@@ -425,6 +475,20 @@ static void DctLines(float* base, int n, int line_stride, int sample_stride, int
             for (int i = 0; i < 8; ++i) {
                 hn::StoreU(hn::LoadU(d, y + i * L), d, base + v0 + i * sample_stride);
             }
+            continue;
+        }
+#endif
+#if HWY_MAX_BYTES >= 16
+        if (n == 4 && sample_stride == 1 && line_stride == 4) {
+            for (int v = 0; v < lanes; ++v) {
+                const D4 d4;
+                const auto in = hn::LoadU(d4, base + (v0 + v) * 4);
+                hn::StoreU(Dct4Horz(in, inverse), d4, base + (v0 + v) * 4);
+            }
+            continue;
+        }
+        if (n == 4 && line_stride == 1 && sample_stride == 4 && lanes == 4) {
+            Dct4PatchCols(base + v0, inverse);
             continue;
         }
 #endif
@@ -577,6 +641,14 @@ void Bm3dFilterGroup(float* patches, int lda, int group, int k, int block, float
     }
     auto dct2 = [&](float* c, bool inverse) {
         DctLines(c, block, block, 1, group * block, inverse);
+#if HWY_MAX_BYTES >= 16
+        if (block == 4) {
+            for (int g = 0; g < group; ++g) {
+                Dct4PatchCols(c + static_cast<size_t>(g) * 16, inverse);
+            }
+            return;
+        }
+#endif
 #if HWY_MAX_BYTES >= 64
         if (block == 8) {
             int g = 0;
@@ -1003,6 +1075,38 @@ void bm3d_filter8(const float* src, int sstride, const Match* matches, int k, fl
                   const float* ref, int rstride, float* num, float* den, int dstride, int width, int height) {
     HWY_DYNAMIC_DISPATCH(Bm3dFilter8)(src, sstride, matches, k, sigma, wiener, ref, rstride, num, den, dstride, width,
                                      height);
+}
+
+void bm3d_filter_direct(const float* src, int sstride, const Match* matches, int k, int block, int group, float sigma,
+                        bool wiener, const float* ref, int rstride, float* num, float* den, int dstride, int width,
+                        int height, float* cube, float* work) {
+    if (!src || !matches || !cube || !work || !num || !den || k < 1 || block < 1 || group < 1 || width < 1 ||
+        height < 1) {
+        return;
+    }
+    const int kk = std::min(k, group);
+    const int area = block * block;
+    const std::size_t cube_n = static_cast<std::size_t>(group) * static_cast<std::size_t>(area);
+    std::memset(cube, 0, cube_n * sizeof(float));
+    for (int g = 0; g < kk; ++g) {
+        pack_patch(cube + static_cast<std::size_t>(g) * area, area, src, sstride, matches[g].x, matches[g].y, block,
+                   width, height);
+    }
+    float* refc = nullptr;
+    if (wiener && ref) {
+        refc = cube + cube_n;
+        std::memset(refc, 0, cube_n * sizeof(float));
+        for (int g = 0; g < kk; ++g) {
+            pack_patch(refc + static_cast<std::size_t>(g) * area, area, ref, rstride, matches[g].x, matches[g].y, block,
+                       width, height);
+        }
+    }
+    float weight = 1.f;
+    bm3d_filter_group(cube, area, group, kk, block, sigma, wiener, refc, &weight, work);
+    for (int g = 0; g < kk; ++g) {
+        aggregate_add(num, den, dstride, matches[g].x, matches[g].y,
+                      cube + static_cast<std::size_t>(g) * area, block, width, height, weight);
+    }
 }
 
 }  // namespace nss
