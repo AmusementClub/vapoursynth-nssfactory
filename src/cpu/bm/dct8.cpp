@@ -2,6 +2,9 @@
 #include "cpu/hwy_config.hpp"
 #include "cpu/bm/dct12.hpp"
 #include "cpu/bm/dct16.hpp"
+#ifdef NSS_BM_KERNEL_LAB
+#include "cpu/bm/kernel_lab.hpp"
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -638,6 +641,10 @@ void TransformLines(float* base, int n, int line_stride, int sample_stride, int 
     DctLines(base, n, line_stride, sample_stride, count, inverse);
 }
 
+#ifdef NSS_BM_KERNEL_LAB
+#include "cpu/bm/dct-small-lab-inl.hpp"
+#endif
+
 void Bm3dFilterGroup(float* patches, int lda, int group, int k, int block, float sigma, bool wiener,
                      const float* ref_patches, float* weight_out, float* work) {
     if (group < 1 || block < 1 || k < 1 || !work) {
@@ -662,6 +669,9 @@ void Bm3dFilterGroup(float* patches, int lda, int group, int k, int block, float
         }
     }
     auto dct2 = [&](float* c, bool inverse) {
+#if defined(NSS_BM_KERNEL_LAB) && defined(NSS_LAB_DCT8_VARIANT)
+        if (block == 8 && DctSmallBatch<8, NSS_LAB_DCT8_VARIANT>(c, group, inverse)) return;
+#endif
 #ifndef NSS_DISABLE_BM3D_B12_FAST
         if (block == 12 && detail::dct12_2d_batch_fast(c, group, inverse)) {
             return;
@@ -902,7 +912,11 @@ HWY_INLINE void Fftw2dInReg(V8* patch) {
     const D8 d8;
     Dct8Fftw<kForward>(patch);
     V8 t[8];
+#if defined(NSS_BM_KERNEL_LAB) && defined(NSS_LAB_FFTW_VARIANT)
+    Transpose8x8Inline(d8, patch, t);
+#else
     Transpose8x8Vec(d8, patch, t);
+#endif
     Dct8Fftw<kForward>(t);
     for (int r = 0; r < 8; ++r) {
         patch[r] = t[r];
@@ -1055,6 +1069,16 @@ HWY_EXPORT(Idct8_2d);
 HWY_EXPORT(TransformLines);
 HWY_EXPORT(Bm3dFilterGroup);
 HWY_EXPORT(Bm3dFilter8);
+#ifdef NSS_BM_KERNEL_LAB
+HWY_EXPORT(ResolveDctSmallLab);
+namespace detail {
+DctKernel dct_lab_kernel(int block, int variant) {
+    if (block == 12) return dct12_lab_kernel(variant);
+    if (block == 16) return dct16_lab_kernel(variant);
+    return HWY_DYNAMIC_DISPATCH(ResolveDctSmallLab)(block, variant);
+}
+}
+#endif
 
 void dct_1d(const float* in, float* out, int n) {
     HWY_DYNAMIC_DISPATCH(Dct1d)(in, out, n);

@@ -11,3 +11,4 @@ __pycache__/
 .omc/
 /docs/
 /ds/
+.DS_Store

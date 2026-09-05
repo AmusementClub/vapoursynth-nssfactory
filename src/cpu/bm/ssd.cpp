@@ -1,6 +1,9 @@
 #include "nss/cpu_api.hpp"
 #include "cpu/hwy_config.hpp"
 #include "cpu/bm/matcher.hpp"
+#ifdef NSS_BM_KERNEL_LAB
+#include "cpu/bm/kernel_lab.hpp"
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -305,6 +308,10 @@ static int SpatialMatch8(const float* ref, int stride, int width, int height, in
     return n;
 }
 
+#ifdef NSS_BM_KERNEL_LAB
+#include "cpu/bm/match8-lab-inl.hpp"
+#endif
+
 // Same hoisted 8x8 SSD as SpatialMatch8, but top-k length follows group.
 // group==8 keeps the lane-sorted path above; this is only the K-generic sibling.
 static int SpatialMatch8Ssd(const float* ref, int stride, int width, int height, int cx, int cy, int bm_range,
@@ -392,7 +399,11 @@ int SpatialMatch(const float* ref, int stride, int width, int height, int bx, in
     const int cy = clampi(by, 0, max_y);
 #if HWY_MAX_BYTES >= 32
     if (block == 8 && group == 8) {
+#if defined(NSS_BM_KERNEL_LAB) && defined(NSS_LAB_MATCH8_VARIANT)
+        return Match8LabEntry<NSS_LAB_MATCH8_VARIANT>(ref, stride, width, height, cx, cy, std::max(bm_range, 0), out);
+#else
         return SpatialMatch8(ref, stride, width, height, cx, cy, std::max(bm_range, 0), out);
+#endif
     }
     if (block == 8) {
         return SpatialMatch8Ssd(ref, stride, width, height, cx, cy, std::max(bm_range, 0), group, out);
@@ -417,12 +428,45 @@ int SpatialMatch(const float* ref, int stride, int width, int height, int bx, in
                                    });
 }
 
+#ifdef NSS_BM_KERNEL_LAB
+nss::detail::Match8Kernel ResolveMatch8Lab(int v) {
+#if HWY_MAX_BYTES >= 32
+    switch (v) { case 0: return Match8LabEntry<0>; case 1: return Match8LabEntry<1>; case 2: return Match8LabEntry<2>; }
+#endif
+    return nullptr;
+}
+nss::detail::Match8Capture ResolveMatch8Capture(int v) {
+#if HWY_MAX_BYTES >= 32
+    switch (v) { case 0: return Match8CaptureEntry<0>; case 1: return Match8CaptureEntry<1>; case 2: return Match8CaptureEntry<2>; }
+    return nullptr;
+#else
+    return nullptr;
+#endif
+}
+nss::detail::Match8Replay ResolveMatch8Replay(int v) {
+#if HWY_MAX_BYTES >= 32
+    switch (v) { case 0: return Match8ReplayEntry<0>; case 1: return Match8ReplayEntry<1>; }
+#endif
+    return nullptr;
+}
+#endif
+
 }  // namespace HWY_NAMESPACE
 }  // namespace nss
 HWY_AFTER_NAMESPACE();
 
 #if HWY_ONCE
 namespace nss {
+#ifdef NSS_BM_KERNEL_LAB
+HWY_EXPORT(ResolveMatch8Lab);
+HWY_EXPORT(ResolveMatch8Capture);
+HWY_EXPORT(ResolveMatch8Replay);
+namespace detail {
+Match8Kernel match8_lab_kernel(int v) { return HWY_DYNAMIC_DISPATCH(ResolveMatch8Lab)(v); }
+Match8Capture match8_capture_kernel(int v) { return HWY_DYNAMIC_DISPATCH(ResolveMatch8Capture)(v); }
+Match8Replay match8_replay_kernel(int v) { return HWY_DYNAMIC_DISPATCH(ResolveMatch8Replay)(v); }
+}
+#endif
 HWY_EXPORT(SsdBlock);
 HWY_EXPORT(SsdNch);
 HWY_EXPORT(SpatialMatch);
