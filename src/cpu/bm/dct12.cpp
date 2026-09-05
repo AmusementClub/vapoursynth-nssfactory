@@ -1,5 +1,8 @@
 #include "cpu/bm/dct12.hpp"
 #include "cpu/hwy_config.hpp"
+#ifdef NSS_BM_KERNEL_LAB
+#include "cpu/bm/kernel_lab.hpp"
+#endif
 
 #include <algorithm>
 #include <cstdint>
@@ -98,11 +101,18 @@ static void Dct12Cols(float* base, bool inverse) {
 }
 #endif
 
+#ifdef NSS_BM_KERNEL_LAB
+#include "cpu/bm/dct12-lab-inl.hpp"
+#endif
+
 bool Dct12Batch(float* patches, int count, bool inverse) {
 #if HWY_MAX_BYTES >= 32
     if (!patches || count < 1) {
         return false;
     }
+#if defined(NSS_BM_KERNEL_LAB) && defined(NSS_LAB_DCT12_VARIANT)
+    return Dct12LayoutBatch<NSS_LAB_DCT12_VARIANT>(patches, count, inverse);
+#endif
     Dct12Rows(patches, count, inverse);
     for (int patch = 0; patch < count; ++patch) {
         Dct12Cols(patches + static_cast<std::size_t>(patch) * 12 * 12, inverse);
@@ -116,6 +126,31 @@ bool Dct12Batch(float* patches, int count, bool inverse) {
 #endif
 }
 
+#ifdef NSS_BM_KERNEL_LAB
+// Variant zero remains the original route even in a selected candidate build.
+static bool Dct12OriginalBatch(float* patches, int count, bool inverse) {
+#if HWY_MAX_BYTES >= 32
+    if (!patches || count < 1) return false;
+    Dct12Rows(patches, count, inverse);
+    for (int p = 0; p < count; ++p) Dct12Cols(patches + p * 144, inverse);
+    return true;
+#else
+    (void)patches; (void)count; (void)inverse;
+    return false;
+#endif
+}
+nss::detail::DctKernel ResolveDct12Lab(int variant) {
+#if HWY_MAX_BYTES >= 32
+    switch (variant) {
+        case 0: return Dct12OriginalBatch;
+        case 1: return Dct12LayoutBatch<1>;
+        case 2: return Dct12LayoutBatch<2>;
+    }
+#endif
+    return nullptr;
+}
+#endif
+
 }  // namespace HWY_NAMESPACE
 }  // namespace nss
 HWY_AFTER_NAMESPACE();
@@ -123,6 +158,10 @@ HWY_AFTER_NAMESPACE();
 #if HWY_ONCE
 namespace nss::detail {
 HWY_EXPORT(Dct12Batch);
+#ifdef NSS_BM_KERNEL_LAB
+HWY_EXPORT(ResolveDct12Lab);
+DctKernel dct12_lab_kernel(int variant) { return HWY_DYNAMIC_DISPATCH(ResolveDct12Lab)(variant); }
+#endif
 
 bool dct12_2d_batch_fast(float* patches, int count, bool inverse) {
     return HWY_DYNAMIC_DISPATCH(Dct12Batch)(patches, count, inverse);

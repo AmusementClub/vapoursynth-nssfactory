@@ -103,6 +103,20 @@ add_library(nss_svd_qreplay STATIC src/cpu/wnnm/svd_batch8_qreplay.cpp)
 add_library(nss_cpu STATIC ${NSS_CPU_SOURCES})
 if(NSS_BM_KERNEL_LAB)
   target_compile_definitions(nss_cpu PRIVATE NSS_BM_KERNEL_LAB=1)
+  # Internal campaign selectors affect only the experimental translation unit.
+  # Ordinary builds contain neither the selectors nor their candidate kernels.
+  foreach(pair "DCT8;dct8" "DCT12;dct12" "MATCH8;ssd" "FFTW;dct8")
+    list(GET pair 0 kernel)
+    list(GET pair 1 source)
+    if(DEFINED NSS_LAB_${kernel}_VARIANT)
+      if(NOT NSS_LAB_${kernel}_VARIANT MATCHES "^[12]$" OR
+         (kernel STREQUAL "FFTW" AND NOT NSS_LAB_${kernel}_VARIANT STREQUAL "1"))
+        message(FATAL_ERROR "Invalid NSS_LAB_${kernel}_VARIANT")
+      endif()
+      set_property(SOURCE src/cpu/bm/${source}.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+        "NSS_LAB_${kernel}_VARIANT=${NSS_LAB_${kernel}_VARIANT}")
+    endif()
+  endforeach()
 endif()
 target_include_directories(nss_svd_qreplay
   PRIVATE

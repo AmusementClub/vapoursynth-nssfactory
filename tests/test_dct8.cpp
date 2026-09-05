@@ -224,6 +224,74 @@ static int bm3d_direct_matches_group() {
     return 0;
 }
 
+// The fused Wiener route reads two independently-strided planes. Compare its
+// logical output with tightly-packed storage and retain output-row sentinels.
+static int bm3d_independent_strides() {
+    constexpr int width = 43, height = 37;
+    constexpr int sstride = 49, rstride = 53, dstride = 57;
+    constexpr float sentinel = -12345.f;
+    std::vector<float> src(width * height), ref(src.size());
+    std::vector<float> padded_src(sstride * height + 1, sentinel);
+    std::vector<float> padded_ref(rstride * height + 1, sentinel);
+    std::mt19937 rng(701);
+    std::uniform_real_distribution<float> dist(-.5f, .5f);
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            src[y * width + x] = padded_src[1 + y * sstride + x] = dist(rng);
+            ref[y * width + x] = padded_ref[1 + y * rstride + x] = dist(rng);
+        }
+    }
+    int failed = 0, cases = 0;
+    for (int block : {4, 8, 12, 16}) {
+        for (int group : {1, 2, 8, 16, 64}) {
+            for (int k : {1, group}) {
+                nss::Match matches[nss::kBmMaxGroup]{};
+                for (int i = 0; i < k; ++i) {
+                    matches[i].x = (i * 7) % (width - block + 1);
+                    matches[i].y = (i * 11) % (height - block + 1);
+                }
+                for (bool wiener : {false, true}) {
+                    for (bool fused : {false, true}) {
+                        if (fused && (block != 8 || group != 8)) continue;
+                        std::vector<float> num(src.size(), 0.f), den(src.size(), 0.f);
+                        std::vector<float> padded_num(dstride * height + 2, sentinel), padded_den = padded_num;
+                        for (int y = 0; y < height; ++y) {
+                            std::fill_n(padded_num.data() + 1 + y * dstride, width, 0.f);
+                            std::fill_n(padded_den.data() + 1 + y * dstride, width, 0.f);
+                        }
+                        std::vector<float> cube(2 * group * block * block);
+                        std::vector<float> work(nss::bm3d_filter_work_floats(group, block));
+                        auto render = [&](const float* s, int ss, const float* r, int rs, float* n, float* d, int ds) {
+                            if (fused) {
+                                nss::bm3d_filter8(s, ss, matches, k, .02f, wiener,
+                                                  wiener ? r : nullptr, rs, n, d, ds, width, height);
+                            } else {
+                                nss::bm3d_filter_direct(s, ss, matches, k, block, group, .02f, wiener,
+                                                        wiener ? r : nullptr, rs, n, d, ds, width, height,
+                                                        cube.data(), work.data());
+                            }
+                        };
+                        render(src.data(), width, ref.data(), width, num.data(), den.data(), width);
+                        render(padded_src.data() + 1, sstride, padded_ref.data() + 1, rstride,
+                               padded_num.data() + 1, padded_den.data() + 1, dstride);
+                        ++cases;
+                        for (std::size_t i = 0; i < padded_num.size(); ++i) {
+                            const bool valid = i >= 1 && i < 1 + dstride * height && (i - 1) % dstride < width;
+                            if (valid) {
+                                const std::size_t at = (i - 1) / dstride * width + (i - 1) % dstride;
+                                if (std::memcmp(&num[at], &padded_num[i], sizeof(float)) ||
+                                    std::memcmp(&den[at], &padded_den[i], sizeof(float))) ++failed;
+                            } else if (padded_num[i] != sentinel || padded_den[i] != sentinel) ++failed;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    std::printf("bm3d independent strides cases=%d failures=%d\n", cases, failed);
+    return failed != 0;
+}
+
 int main() {
     const int sizes1d[] = {1, 2, 4, 8, 12, 16, 32, 64};
     const int sizes2d[] = {1, 2, 4, 8, 12, 16, 32};
@@ -243,6 +311,7 @@ int main() {
     failed |= bm3d_sigma0_roundtrip(8);
     failed |= bm3d_sigma0_roundtrip(12);
     failed |= bm3d_direct_matches_group();
+    failed |= bm3d_independent_strides();
     for (int n : sizes1d) {
         failed |= roundtrip_1d(n, n >= 32 ? 2e-4 : 1e-4);
     }
