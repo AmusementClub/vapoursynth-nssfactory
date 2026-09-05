@@ -38,7 +38,7 @@ struct NlhData {
 void run_groups(const float* const* match_refs, const int* match_strides, const float* const* noisy,
                 const int* noisy_strides, int ntemp, int t0, int pw, int ph, int block, int step, int group,
                 int bm_range, int radius, int ps_num, int ps_range, int q, float sigma, bool wiener, float* num,
-                float* den, float* patches, float* ref_patches, float* work) {
+                float* den) {
     const int m = block * block;
     const int lda = (m + 15) & ~15;
     const int slices = 2 * radius + 1;
@@ -63,6 +63,11 @@ void run_groups(const float* const* match_refs, const int* match_strides, const 
         return;
     }
     const int group_work = nss::nlh_filter_work_floats(m, group, q, lda);
+    const std::size_t group_storage = static_cast<std::size_t>(group) * static_cast<std::size_t>(lda);
+    const std::size_t batch_capacity = std::min(jobs.size(), nss::host_detail::kGroupBatchWindow);
+    std::vector<float> batch_patches(batch_capacity * group_storage);
+    std::vector<float> batch_refs(wiener ? batch_patches.size() : 0);
+    std::vector<float> batch_work(batch_capacity * static_cast<std::size_t>(group_work));
     for (std::size_t begin = 0; begin < jobs.size(); begin += nss::host_detail::kGroupBatchWindow) {
         const std::size_t end = std::min(jobs.size(), begin + nss::host_detail::kGroupBatchWindow);
         const int count = static_cast<int>(end - begin);
@@ -83,13 +88,13 @@ void run_groups(const float* const* match_refs, const int* match_strides, const 
         if (match_rc < 0) {
             continue;
         }
-        const std::size_t group_storage = static_cast<std::size_t>(group) * static_cast<std::size_t>(lda);
-        std::vector<float> batch_patches(static_cast<std::size_t>(count) * group_storage, 0.f);
-        std::vector<float> batch_refs;
+        // Packing leaves lda padding and absent matches untouched. Clear the
+        // active window before reuse so neither can retain a previous group.
+        std::fill_n(batch_patches.data(), static_cast<std::size_t>(count) * group_storage, 0.f);
         if (wiener) {
-            batch_refs.resize(batch_patches.size(), 0.f);
+            std::fill_n(batch_refs.data(), static_cast<std::size_t>(count) * group_storage, 0.f);
         }
-        std::vector<float> batch_work(static_cast<std::size_t>(count) * static_cast<std::size_t>(group_work), 0.f);
+        std::fill_n(batch_work.data(), static_cast<std::size_t>(count) * group_work, 0.f);
         std::array<float, nss::host_detail::kGroupBatchWindow> weights{};
         std::array<int, nss::host_detail::kGroupBatchWindow> filter_status{};
         std::array<nss::NlhFilterBatchItem, nss::host_detail::kGroupBatchWindow> filter_items{};
@@ -149,7 +154,7 @@ void run_groups(const float* const* match_refs, const int* match_strides, const 
                                    result.patches + static_cast<std::size_t>(j) * lda, block, pw, ph, result.weight);
             }
         };
-        (void)nss::host_detail::execute_ordered_chunk<Result>(jobs, begin, end, prepare, commit);
+        (void)nss::host_detail::commit_prepared_chunk<Result>(jobs, begin, end, prepare, commit);
     }
 }
 
@@ -186,8 +191,6 @@ const VSFrame* VS_CC nlhGetFrame(int n, int activationReason, void* instanceData
     VSFrame* dst = vsapi->newVideoFrame(&d->vi_out.format, d->vi_out.width, d->vi_out.height, src0, core);
 
     const int block = d->block_size;
-    const int m = block * block;
-    const int lda = (m + 15) & ~15;
     const int group = d->group_size;
     const int q = d->q;
 
@@ -233,21 +236,15 @@ const VSFrame* VS_CC nlhGetFrame(int n, int activationReason, void* instanceData
 
         const int slices = ntemp;
         const std::size_t plane_sz = static_cast<std::size_t>(pw * ph);
-        const int work_n = nss::nlh_filter_work_floats(m, group, q, lda);
-        const std::size_t need = plane_sz * static_cast<std::size_t>(slices) * 3 +
-                                 static_cast<std::size_t>(lda * group) * 2 + static_cast<std::size_t>(work_n) + 64;
+        const std::size_t need = plane_sz * static_cast<std::size_t>(slices) * 3;
         float* scratch = d->ws.get(need);
         float* num = scratch;
         float* den = scratch + plane_sz * static_cast<std::size_t>(slices);
         float* basic = den + plane_sz * static_cast<std::size_t>(slices);
-        float* patches = basic + plane_sz * static_cast<std::size_t>(slices);
-        float* ref_patches = patches + static_cast<std::size_t>(lda * group);
-        float* work = ref_patches + static_cast<std::size_t>(lda * group);
         const float sigma = d->sigma[plane] / 255.f;
 
         run_groups(refs.data(), strides, srcs.data(), strides, ntemp, t0, pw, ph, block, d->block_step, group,
-                   d->bm_range, d->radius, d->ps_num, d->ps_range, q, sigma, false, num, den, patches, ref_patches,
-                   work);
+                   d->bm_range, d->radius, d->ps_num, d->ps_range, q, sigma, false, num, den);
         for (int sl = 0; sl < slices; ++sl) {
             nss::aggregate_finish(basic + static_cast<std::size_t>(sl) * plane_sz,
                                   num + static_cast<std::size_t>(sl) * plane_sz,
@@ -262,8 +259,7 @@ const VSFrame* VS_CC nlhGetFrame(int n, int activationReason, void* instanceData
             basic_strides[t] = pw;
         }
         run_groups(basic_refs.data(), basic_strides, srcs.data(), strides, ntemp, t0, pw, ph, block, d->block_step,
-                   group, d->bm_range, d->radius, d->ps_num, d->ps_range, q, sigma, true, num, den, patches, ref_patches,
-                   work);
+                   group, d->bm_range, d->radius, d->ps_num, d->ps_range, q, sigma, true, num, den);
 
         if (fat) {
             for (int sl = 0; sl < slices; ++sl) {
@@ -380,29 +376,9 @@ void VS_CC nlhCreate(const VSMap* in, VSMap* out, void* userData, VSCore* core, 
     }
 }
 
-void VS_CC nlhv2Create(const VSMap* in, VSMap* out, void* userData, VSCore* core, const VSAPI* vsapi) {
-    (void)userData;
-    const int radius = nss::map_int(vsapi, in, "radius", 0);
-    VSNode* wn = nss_create_nlh(in, core, vsapi, out);
-    if (!wn) {
-        return;
-    }
-    if (radius <= 0) {
-        vsapi->mapConsumeNode(out, "clip", wn, maAppend);
-        return;
-    }
-    VSNode* src = vsapi->mapGetNode(in, "clip", 0, nullptr);
-    VSNode* vagg = nss_create_vaggregate(wn, src, radius, nullptr, core, vsapi, out);
-    if (!vagg) {
-        return;
-    }
-    vsapi->mapConsumeNode(out, "clip", vagg, maAppend);
-}
-
 void register_nlh(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
     const char* args =
         "clip:vnode;sigma:float[]:opt;block_size:int:opt;block_step:int:opt;group_size:int:opt;"
         "bm_range:int:opt;radius:int:opt;ps_num:int:opt;ps_range:int:opt;q:int:opt;rclip:vnode:opt;";
     vspapi->registerFunction("NLH", args, "clip:vnode;", nlhCreate, nullptr, plugin);
-    vspapi->registerFunction("NLHv2", args, "clip:vnode;", nlhv2Create, nullptr, plugin);
 }

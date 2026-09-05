@@ -8,6 +8,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 option(NSS_ENABLE_CUDA "Build libnss_cuda.so" OFF)
 option(NSS_ENABLE_VULKAN "Build libnss_vk.so" OFF)
+option(NSS_BM_KERNEL_LAB "Build isolated BM3D SSD/DCT microkernel experiments" OFF)
 
 set(NSS_HWY_X86 FALSE)
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64|i[3-6]86)$" OR
@@ -70,6 +71,11 @@ set(NSS_CPU_SOURCES
   src/cpu/batch.cpp
   src/cpu/nlm/nlm.cpp
   src/cpu/bm/ssd.cpp
+  src/cpu/bm/spatial4.cpp
+  src/cpu/bm/spatial12.cpp
+  src/cpu/bm/spatial16.cpp
+  src/cpu/bm/dct12.cpp
+  src/cpu/bm/dct16.cpp
   src/cpu/bm/dct8.cpp
   src/cpu/bm/match.cpp
   src/cpu/bm/pack.cpp
@@ -95,6 +101,9 @@ list(APPEND NSS_CPU_SOURCES src/cpu/wnnm/svd_batch8_u_compat.cpp)
 
 add_library(nss_svd_qreplay STATIC src/cpu/wnnm/svd_batch8_qreplay.cpp)
 add_library(nss_cpu STATIC ${NSS_CPU_SOURCES})
+if(NSS_BM_KERNEL_LAB)
+  target_compile_definitions(nss_cpu PRIVATE NSS_BM_KERNEL_LAB=1)
+endif()
 target_include_directories(nss_svd_qreplay
   PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
@@ -134,6 +143,11 @@ list(APPEND NSS_SAFE_COMPILE_OPTIONS ${NSS_CPU_ISA_OPTIONS})
 set_source_files_properties(
   src/cpu/nlm/nlm.cpp
   src/cpu/bm/ssd.cpp
+  src/cpu/bm/spatial4.cpp
+  src/cpu/bm/spatial12.cpp
+  src/cpu/bm/spatial16.cpp
+  src/cpu/bm/dct12.cpp
+  src/cpu/bm/dct16.cpp
   src/cpu/bm/dct8.cpp
   src/cpu/bm/agg.cpp
   src/cpu/bm/pack.cpp

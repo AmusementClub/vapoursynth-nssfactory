@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Paired C4 A/B: BM3Dv2 rolling vs legacy, plus a single-run mode for perf."""
+"""Paired C4 A/B: BM3D rolling vs explicit BM3D+VAggregate."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ PLUGIN = Path(os.environ["NSS_SO"])
 GRAY8 = os.environ.get("NSS_PROFILE_GRAY8", "/opt/nss-c4/samples/gray8/MAPPA.gray8")
 WIDTH = int(os.environ.get("NSS_PROFILE_WIDTH", "1920"))
 HEIGHT = int(os.environ.get("NSS_PROFILE_HEIGHT", "1080"))
-OUT = Path(os.environ.get("NSS_GATE_OUT", "/tmp/nss-bm3dv2-rolling-out"))
+OUT = Path(os.environ.get("NSS_GATE_OUT", "/tmp/nss-bm3d-rolling-out"))
 _PLUGIN_LOADED = False
 
 
@@ -44,18 +44,24 @@ def make_source(core: vs.Core, frames: int, seed: int) -> vs.VideoNode:
 
 
 def make_filter(core: vs.Core, source: vs.VideoNode, mode: str, radius: int) -> vs.VideoNode:
-    return core.nss.BM3Dv2(
-        source,
+    kwargs = dict(
         sigma=3,
         radius=radius,
         block_size=8,
         block_step=8,
         group_size=8,
         bm_range=7,
-        temporal_mode=mode,
-        rolling_chunk=4,
-        rolling_cache_limit=16,
     )
+    if mode == "rolling":
+        return core.nss.BM3D(
+            source,
+            temporal_mode="rolling",
+            rolling_chunk=4,
+            rolling_cache_limit=16,
+            **kwargs,
+        )
+    fat = core.nss.BM3D(source, temporal_mode="legacy", **kwargs)
+    return core.nss.VAggregate(fat, source, radius=radius)
 
 
 def run_pass(mode: str, radius: int, frames: int, seed: int, hash_last: bool) -> dict[str, Any]:
@@ -91,9 +97,7 @@ def paired(radius: int, frames: int, pairs: int, seed_base: int) -> dict[str, An
     for pair in range(1, pairs + 1):
         seed = seed_base + pair
         order = ("legacy", "rolling") if pair % 2 else ("rolling", "legacy")
-        results: dict[str, dict[str, Any]] = {}
-        for mode in order:
-            results[mode] = run_pass(mode, radius, frames, seed, hash_last=False)
+        results = {mode: run_pass(mode, radius, frames, seed, hash_last=False) for mode in order}
         legacy_ms = float(results["legacy"]["milliseconds_per_frame"])
         rolling_ms = float(results["rolling"]["milliseconds_per_frame"])
         rows.append(
@@ -146,7 +150,7 @@ def main() -> int:
 
     OUT.mkdir(parents=True, exist_ok=True)
     summary: dict[str, Any] = {
-        "schema": "nssfactory.c4.bm3dv2-rolling.v1",
+        "schema": "nssfactory.c4.bm3d-rolling.v1",
         "sample": Path(GRAY8).name,
         "workloads": [],
         "quality": [],

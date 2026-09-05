@@ -9,6 +9,13 @@
 
 namespace nss::detail {
 
+int spatial_match4_fast(const float* ref, int stride, int width, int height, int cx, int cy, int bm_range, int group,
+                        Match* out);
+int spatial_match12_fast(const float* ref, int stride, int width, int height, int cx, int cy, int bm_range, int group,
+                         Match* out);
+int spatial_match16_fast(const float* ref, int stride, int width, int height, int cx, int cy, int bm_range, int group,
+                         Match* out);
+
 inline bool finite_distance(float value) noexcept {
     return is_finite_bits(value);
 }
@@ -91,6 +98,48 @@ public:
             return;
         }
         size_ = already > capacity_ ? capacity_ : already;
+    }
+
+private:
+    Match* storage_ = nullptr;
+    int capacity_ = 0;
+    int size_ = 0;
+};
+
+// Maintain the retained set in ascending order. This makes the common reject
+// path one comparison instead of rescanning the full retained set for every
+// candidate. Match's deterministic tie keys preserve StableTopK semantics.
+class SortedTopK {
+public:
+    SortedTopK(Match* storage, int capacity) : storage_(storage), capacity_(capacity) {}
+
+    void add(Match candidate) noexcept {
+        if (!storage_ || capacity_ <= 0) {
+            return;
+        }
+        if (size_ < capacity_) {
+            storage_[size_++] = candidate;
+            if (size_ == capacity_) {
+                std::sort(storage_, storage_ + size_, match_less);
+            }
+            return;
+        }
+        if (!match_less(candidate, storage_[size_ - 1])) {
+            return;
+        }
+        int pos = size_ - 1;
+        while (pos > 0 && match_less(candidate, storage_[pos - 1])) {
+            storage_[pos] = storage_[pos - 1];
+            --pos;
+        }
+        storage_[pos] = candidate;
+    }
+
+    int finish() noexcept {
+        if (size_ > 1 && size_ < capacity_) {
+            std::sort(storage_, storage_ + size_, match_less);
+        }
+        return size_;
     }
 
 private:

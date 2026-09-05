@@ -103,7 +103,7 @@ void VS_CC lsscCreate(const VSMap* in, VSMap* out, void* userData, VSCore* core,
     d->block_size = nss::map_int(vsapi, in, "block_size", nss::kLsscDefaultBlock);
     d->block_step = nss::map_int(vsapi, in, "block_step", nss::kLsscDefaultStep);
     d->radius = nss::map_int(vsapi, in, "radius", 0);
-    if (!nss::bm_allowed_block(d->block_size) || d->block_size > 16 || d->block_step < 1 ||
+    if (!nss::lssc_allowed_block(d->block_size) || d->block_step < 1 ||
         d->block_step > d->block_size) {
         fail("nss.LSSC: block_size must be 1, 2, 4, 8, or 16");
         return;

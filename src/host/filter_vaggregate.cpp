@@ -2,7 +2,7 @@
 #include "host/validate.hpp"
 #include "nss/avx2.hpp"
 #include "nss/cpu_api.hpp"
-#include "nss/workspace.hpp"
+#include "nss/params.hpp"
 
 #include <VapourSynth4.h>
 #include <VSHelper4.h>
@@ -10,7 +10,6 @@
 #include <algorithm>
 #include <cstring>
 #include <memory>
-#include <vector>
 
 namespace {
 
@@ -53,7 +52,7 @@ const VSFrame* VS_CC vaggGetFrame(int n, int activationReason, void* instanceDat
             }
             continue;
         }
-        nss::vaggregate_reduce(outp, fatp, srcp, pw, ph, dstride, fstride, d->radius);
+        nss::vaggregate_reduce(outp, fatp, srcp, pw, ph, dstride, fstride, sstride, d->radius);
     }
     vsapi->freeFrame(fat);
     vsapi->freeFrame(src);
@@ -94,17 +93,28 @@ VSNode* nss_create_vaggregate(VSNode* fat, VSNode* src, int radius, const int* p
         d->src = nullptr;
         return fail("nss.VAggregate: constant 32f clips required");
     }
-    if (radius < 0) {
+    if (radius < 0 || radius > nss::kBmMaxRadius) {
         d->clip = nullptr;
         d->src = nullptr;
-        return fail("nss.VAggregate: radius must be >= 0");
+        return fail("nss.VAggregate: radius must be in [0, 16]");
     }
     d->radius = radius;
     const int expect_h = d->vi_src.height * (2 * d->radius + 1) * 2;
-    if (vi_fat->width != d->vi_src.width || vi_fat->height != expect_h) {
+    const VSVideoFormat& src_format = d->vi_src.format;
+    const VSVideoFormat& fat_format = vi_fat->format;
+    const bool same_format = src_format.colorFamily == fat_format.colorFamily &&
+                             src_format.sampleType == fat_format.sampleType &&
+                             src_format.bitsPerSample == fat_format.bitsPerSample &&
+                             src_format.bytesPerSample == fat_format.bytesPerSample &&
+                             src_format.subSamplingW == fat_format.subSamplingW &&
+                             src_format.subSamplingH == fat_format.subSamplingH &&
+                             src_format.numPlanes == fat_format.numPlanes;
+    if (!same_format || vi_fat->width != d->vi_src.width || vi_fat->height != expect_h ||
+        vi_fat->numFrames != d->vi_src.numFrames) {
         d->clip = nullptr;
         d->src = nullptr;
-        return fail("nss.VAggregate: clip height must be src.height*(2*radius+1)*2");
+        return fail("nss.VAggregate: clip must match src format, width, and frame count, with "
+                    "height=src.height*(2*radius+1)*2");
     }
     for (int i = 0; i < 3; ++i) {
         d->planes[i] = planes ? (planes[i] != 0) : 1;
@@ -141,7 +151,21 @@ void VS_CC vaggCreate(const VSMap* in, VSMap* out, void* userData, VSCore* core,
     const int radius = nss::map_int(vsapi, in, "radius", 0);
     const VSVideoInfo* vi_src = vsapi->getVideoInfo(src);
     int pl[3]{1, 1, 1};
-    nss::map_int_array(vsapi, in, "planes", pl, vi_src->format.numPlanes, 1);
+    const int num_plane_args = vsapi->mapNumElements(in, "planes");
+    if (num_plane_args > 0) {
+        std::fill_n(pl, 3, 0);
+        for (int i = 0; i < num_plane_args; ++i) {
+            int err = 0;
+            const int plane = static_cast<int>(vsapi->mapGetInt(in, "planes", i, &err));
+            if (err || plane < 0 || plane >= vi_src->format.numPlanes || pl[plane]) {
+                vsapi->mapSetError(out, "nss.VAggregate: planes must contain unique valid plane indices");
+                vsapi->freeNode(fat);
+                vsapi->freeNode(src);
+                return;
+            }
+            pl[plane] = 1;
+        }
+    }
     VSNode* node = nss_create_vaggregate(fat, src, radius, pl, core, vsapi, out);
     if (node) {
         vsapi->mapConsumeNode(out, "clip", node, maAppend);

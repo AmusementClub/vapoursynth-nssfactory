@@ -140,6 +140,8 @@ void pack_patch(float* col, int lda, const float* src, int stride, int x, int y,
                 int block, int width, int height);
 void unpack_patch(float* num, float* den, int stride, int x, int y,
                   const float* col, int block, int width, int height, float w);
+void unpack_patch_fixed(float* num, float* den, int stride, int x, int y,
+                        const float* col, int block, int width, int height, float w);
 
 inline int bm3d_filter_work_floats(int group, int block) {
     return 2 * group * block * block;
@@ -182,6 +184,6 @@ int wnnm_shrink(float* group, int m, int n, int lda, float sigma,
                 float* work, int work_floats);
 
 void vaggregate_reduce(float* dst, const float* fat, const float* src,
-                       int width, int height, int dstride, int fstride, int radius);
+                       int width, int height, int dstride, int fstride, int sstride, int radius);
 
 }  // namespace nss

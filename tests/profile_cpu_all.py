@@ -80,12 +80,13 @@ def make_filter(core: vs.Core, algorithm: str, source: vs.VideoNode) -> vs.Video
             group_size=int(os.environ.get("NSS_PROFILE_BM3D_GROUP", "8")),
             bm_range=int(os.environ.get("NSS_PROFILE_BM3D_RANGE", "7")),
         )
-        if os.environ.get("NSS_PROFILE_BM3D_V2", "0") == "1":
-            return core.nss.BM3Dv2(
+        temporal_mode = os.environ.get("NSS_PROFILE_BM3D_TEMPORAL_MODE")
+        if temporal_mode:
+            return core.nss.BM3D(
                 source,
-                temporal_mode=os.environ.get("NSS_PROFILE_BM3D_TEMPORAL_MODE", "rolling"),
+                temporal_mode=temporal_mode,
                 rolling_chunk=int(os.environ.get("NSS_PROFILE_BM3D_ROLLING_CHUNK", "4")),
-                rolling_cache_limit=int(os.environ.get("NSS_PROFILE_BM3D_ROLLING_CACHE", "16")),
+                rolling_cache_limit=int(os.environ.get("NSS_PROFILE_BM3D_ROLLING_CACHE", "1")),
                 **kwargs,
             )
         return core.nss.BM3D(source, **kwargs)

@@ -1,5 +1,7 @@
 #include "nss/cpu_api.hpp"
 #include "cpu/hwy_config.hpp"
+#include "cpu/bm/dct12.hpp"
+#include "cpu/bm/dct16.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -18,7 +20,9 @@ namespace hn = hwy::HWY_NAMESPACE;
 
 #include "cpu/bm/dct_codelet_adapter.hpp"
 #if HWY_MAX_BYTES >= 32
+#include "cpu/bm/dct_codelet_fwd_n12_is8.hpp"
 #include "cpu/bm/dct_codelet_fwd_n16_is8.hpp"
+#include "cpu/bm/dct_codelet_inv_n12_is8.hpp"
 #include "cpu/bm/dct_codelet_inv_n16_is8.hpp"
 #include "cpu/bm/dct_codelet_fwd_n32_is8.hpp"
 #include "cpu/bm/dct_codelet_inv_n32_is8.hpp"
@@ -26,7 +30,9 @@ namespace hn = hwy::HWY_NAMESPACE;
 #include "cpu/bm/dct_codelet_inv_n64_is8.hpp"
 #endif
 #if HWY_MAX_BYTES >= 64
+#include "cpu/bm/dct_codelet_fwd_n12_is16.hpp"
 #include "cpu/bm/dct_codelet_fwd_n16_is16.hpp"
+#include "cpu/bm/dct_codelet_inv_n12_is16.hpp"
 #include "cpu/bm/dct_codelet_inv_n16_is16.hpp"
 #include "cpu/bm/dct_codelet_fwd_n32_is16.hpp"
 #include "cpu/bm/dct_codelet_inv_n32_is16.hpp"
@@ -78,6 +84,8 @@ static const float* DctMatrix(int n) {
             return DctTable<4>();
         case 8:
             return DctTable<8>();
+        case 12:
+            return DctTable<12>();
         case 16:
             return DctTable<16>();
         case 32:
@@ -378,6 +386,7 @@ static void Dct8Rows16(float* base, bool inverse) {
         hn::StoreU(r1[i], d8, base + (8 + i) * 8);
     }
 }
+
 #endif
 #endif
 
@@ -503,7 +512,20 @@ static void DctLines(float* base, int n, int line_stride, int sample_stride, int
 #if HWY_MAX_BYTES >= 32
         if (n == 8) {
             Dct8Packed(d, x, y, inverse);
-        } else if (n == 16) {
+        }
+#ifndef NSS_DISABLE_BM3D_B12_CODELET
+        else if (n == 12) {
+#if HWY_MAX_BYTES >= 64
+            if (L == 16) {
+                inverse ? nss_dct12_inv_is16(d, x, y) : nss_dct12_fwd_is16(d, x, y);
+            } else
+#endif
+            {
+                inverse ? nss_dct12_inv_is8(d, x, y) : nss_dct12_fwd_is8(d, x, y);
+            }
+        }
+#endif
+        else if (n == 16) {
 #if HWY_MAX_BYTES >= 64
             if (L == 16) {
                 inverse ? nss_dct16_inv_is16(d, x, y) : nss_dct16_fwd_is16(d, x, y);
@@ -640,6 +662,14 @@ void Bm3dFilterGroup(float* patches, int lda, int group, int k, int block, float
         }
     }
     auto dct2 = [&](float* c, bool inverse) {
+#ifndef NSS_DISABLE_BM3D_B12_FAST
+        if (block == 12 && detail::dct12_2d_batch_fast(c, group, inverse)) {
+            return;
+        }
+#endif
+        if (block == 16 && detail::dct16_2d_batch_fast(c, group, inverse)) {
+            return;
+        }
         DctLines(c, block, block, 1, group * block, inverse);
 #if HWY_MAX_BYTES >= 16
         if (block == 4) {
@@ -864,20 +894,9 @@ HWY_INLINE void TransformPack8(V8* data) {
     }
 }
 
-HWY_INLINE void TransposePack8(V8* data) {
-    const D8 d8;
-    for (int g = 0; g < 8; ++g) {
-        V8 t[8];
-        Transpose8x8Vec(d8, data + g * 8, t);
-        for (int r = 0; r < 8; ++r) {
-            data[g * 8 + r] = t[r];
-        }
-    }
-}
-
 // Per-patch 2D DCT: row transform, in-register 8x8 transpose, column transform.
-// Avoids TransposePack8's store/reload of the whole 8-patch cube between the
-// two spatial passes. Group-axis DCT stays a separate packed pass.
+// Keeps the intermediate patch in registers between the two spatial passes.
+// Group-axis DCT stays a separate packed pass.
 template <bool kForward>
 HWY_INLINE void Fftw2dInReg(V8* patch) {
     const D8 d8;
@@ -1104,8 +1123,8 @@ void bm3d_filter_direct(const float* src, int sstride, const Match* matches, int
     float weight = 1.f;
     bm3d_filter_group(cube, area, group, kk, block, sigma, wiener, refc, &weight, work);
     for (int g = 0; g < kk; ++g) {
-        aggregate_add(num, den, dstride, matches[g].x, matches[g].y,
-                      cube + static_cast<std::size_t>(g) * area, block, width, height, weight);
+        unpack_patch_fixed(num, den, dstride, matches[g].x, matches[g].y,
+                           cube + static_cast<std::size_t>(g) * area, block, width, height, weight);
     }
 }
 

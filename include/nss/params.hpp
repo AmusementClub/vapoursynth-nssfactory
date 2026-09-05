@@ -22,7 +22,11 @@ inline constexpr float kBmDefaultSigma = 3.0f;
 inline constexpr float kBmHardLambda = 2.7f;
 
 inline bool bm_allowed_block(int v) {
-    return v == 1 || v == 2 || v == 4 || v == 8 || v == 16 || v == 32;
+    return v == 1 || v == 2 || v == 4 || v == 8 || v == 12 || v == 16 || v == 32;
+}
+
+inline bool lssc_allowed_block(int v) {
+    return v == 1 || v == 2 || v == 4 || v == 8 || v == 16;
 }
 
 inline bool bm_allowed_group(int v) {

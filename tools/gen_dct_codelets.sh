@@ -53,7 +53,7 @@ generate_one() {
     trap - RETURN
 }
 
-for n in 16 32 64; do
+for n in 12 16 32 64; do
     for direction in fwd inv; do
         for stride in 8 16; do
             generate_one "$n" "$direction" "$stride"

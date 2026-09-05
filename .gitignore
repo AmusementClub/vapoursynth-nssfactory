@@ -6,3 +6,8 @@
 compile_commands.json
 __pycache__/
 *.py[cod]
+/artifacts/
+.omx/
+.omc/
+/docs/
+/ds/

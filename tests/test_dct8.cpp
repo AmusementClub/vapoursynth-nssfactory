@@ -146,10 +146,9 @@ static int lines_vs_reference(int n, int count, int line_stride, int sample_stri
     return 0;
 }
 
-static int bm3d_sigma0_roundtrip() {
+static int bm3d_sigma0_roundtrip(int block) {
     const int group = 8;
-    const int block = 8;
-    const int area = 64;
+    const int area = block * block;
     std::vector<float> patches(static_cast<std::size_t>(group * area));
     std::mt19937 rng(123);
     std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
@@ -164,7 +163,8 @@ static int bm3d_sigma0_roundtrip() {
     for (std::size_t i = 0; i < patches.size(); ++i) {
         max_err = std::max(max_err, std::fabs(static_cast<double>(patches[i] - orig[i])));
     }
-    std::printf("bm3d sigma0 roundtrip max_abs=%.6g w=%.6g\n", max_err, static_cast<double>(w));
+    std::printf("bm3d sigma0 roundtrip block=%d max_abs=%.6g w=%.6g\n", block, max_err,
+                static_cast<double>(w));
     if (max_err > 5e-4) {
         std::fprintf(stderr, "bm3d sigma0 roundtrip failed\n");
         return 1;
@@ -225,9 +225,9 @@ static int bm3d_direct_matches_group() {
 }
 
 int main() {
-    const int sizes1d[] = {1, 2, 4, 8, 16, 32, 64};
-    const int sizes2d[] = {1, 2, 4, 8, 16, 32};
-    const int line_sizes[] = {8, 16, 32, 64};
+    const int sizes1d[] = {1, 2, 4, 8, 12, 16, 32, 64};
+    const int sizes2d[] = {1, 2, 4, 8, 12, 16, 32};
+    const int line_sizes[] = {8, 12, 16, 32, 64};
     const int counts[] = {1, 7, 8, 9, 15, 16, 17};
     int failed = 0;
     failed |= dc_energy();
@@ -240,7 +240,8 @@ int main() {
             }
         }
     }
-    failed |= bm3d_sigma0_roundtrip();
+    failed |= bm3d_sigma0_roundtrip(8);
+    failed |= bm3d_sigma0_roundtrip(12);
     failed |= bm3d_direct_matches_group();
     for (int n : sizes1d) {
         failed |= roundtrip_1d(n, n >= 32 ? 2e-4 : 1e-4);

@@ -431,7 +431,7 @@ int main() {
     }
     int failed = check_constant_ties() | check_short_window() | check_multichannel() | check_predictive_stability() |
                  check_nonfinite_fast_path() | check_nonfinite_top1();
-    for (int block : {1, 2, 4, 8, 16}) {
+    for (int block : {1, 2, 4, 8, 12, 16}) {
         if (block > width || block > height) {
             continue;
         }

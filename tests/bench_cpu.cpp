@@ -1,4 +1,5 @@
 #include "nss/cpu_api.hpp"
+#include "nss/cpu_batch.hpp"
 #include "nss/cpu_common.hpp"
 #include "nss/cpu_lssc.hpp"
 #include "nss/cpu_mcwnnm.hpp"
@@ -8,6 +9,7 @@
 #include "nss/params.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -192,6 +194,62 @@ static double bench_match(Plane& a, int iters) {
         const int bx = (i * 8) % (a.w - 8);
         const int by = (i * 8) % (a.h - 8);
         sink += nss::spatial_match(a.ptr(), a.stride, a.w, a.h, bx, by, 8, 7, 8, m);
+    }
+    (void)sink;
+    return ms_since(t0);
+}
+
+static double bench_match_batch_shape(Plane& a, int block, int step, int group, int range, int iters) {
+    constexpr int count = 32;
+    std::array<nss::MatchBatchItem, count> items{};
+    std::array<nss::Match, count * nss::kBmMaxGroup> matches{};
+    std::array<int, count> counts{};
+    for (int i = 0; i < count; ++i) {
+        items[static_cast<std::size_t>(i)] =
+            nss::MatchBatchItem{range + (i % 8) * step, range + (i / 8) * step, block, range, group};
+    }
+    volatile int sink = 0;
+    const auto t0 = clock::now();
+    for (int i = 0; i < iters; ++i) {
+        sink += nss::spatial_match_batch(a.ptr(), a.stride, a.w, a.h, items.data(), count, matches.data(),
+                                         nss::kBmMaxGroup, counts.data());
+        sink += counts[static_cast<std::size_t>(i % count)];
+    }
+    (void)sink;
+    return ms_since(t0);
+}
+
+static double bench_predictive_batch(Plane& p0, Plane& p1, Plane& p2, int radius, int iters) {
+    constexpr int count = 32;
+    constexpr int max_frames = nss::kBmMaxRadius * 2 + 1;
+    std::array<const float*, max_frames> refs{};
+    std::array<int, max_frames> strides{};
+    const Plane* sources[3] = {&p0, &p1, &p2};
+    const int ntemp = radius * 2 + 1;
+    for (int t = 0; t < ntemp; ++t) {
+        refs[static_cast<std::size_t>(t)] = sources[t % 3]->ptr();
+        strides[static_cast<std::size_t>(t)] = sources[t % 3]->stride;
+    }
+    nss::SearchConfig cfg;
+    cfg.block = 8;
+    cfg.step = 8;
+    cfg.group = 8;
+    cfg.bm_range = 7;
+    cfg.radius = radius;
+    cfg.ps_num = 2;
+    cfg.ps_range = 7;
+    std::array<nss::MatchBatchItem, count> items{};
+    std::array<nss::Match, count * nss::kBmMaxGroup> matches{};
+    std::array<int, count> counts{};
+    for (int i = 0; i < count; ++i) {
+        items[static_cast<std::size_t>(i)] = nss::MatchBatchItem{7 + (i % 8) * 8, 7 + (i / 8) * 8, 8, 7, 8};
+    }
+    volatile int sink = 0;
+    const auto t0 = clock::now();
+    for (int i = 0; i < iters; ++i) {
+        sink += nss::predictive_match_batch(refs.data(), strides.data(), ntemp, p0.w, p0.h, radius, cfg,
+                                            items.data(), count, matches.data(), nss::kBmMaxGroup, counts.data());
+        sink += counts[static_cast<std::size_t>(i % count)];
     }
     (void)sink;
     return ms_since(t0);
@@ -722,6 +780,10 @@ int main(int argc, char** argv) {
     const int frame_iters = (positional.size() > 3) ? std::max(1, std::atoi(positional[3])) : 1;
     const bool warmup = std::getenv("NSS_NO_WARMUP") == nullptr;
     const int thread_count = benchmark_thread_count();
+    const int iteration_multiplier = []() {
+        const char* value = std::getenv("NSS_BENCH_ITERS_MULTIPLIER");
+        return value ? std::max(1, std::atoi(value)) : 1;
+    }();
     const std::string cpu = cpu_description();
     const std::string compiler = compiler_description();
     const std::string revision = NSS_VERSION_STRING;
@@ -748,6 +810,7 @@ int main(int argc, char** argv) {
         if (warmup) {
             fn(1);
         }
+        iters *= iteration_multiplier;
         const double ms = fn(iters);
         if (json) {
             results.push_back(BenchResult{std::string(name), std::string(group ? group : ""), ms, iters, pw, ph});
@@ -759,6 +822,11 @@ int main(int argc, char** argv) {
 
     run("ssd", "wave1", [&](int n) { return bench_ssd(src, n); }, 200000);
     run("match", "wave1", [&](int n) { return bench_match(src, n); }, 4000);
+    run("match_batch8", nullptr, [&](int n) { return bench_match_batch_shape(src, 8, 8, 8, 7, n); }, 1200);
+    run("match_batch8_g3", nullptr, [&](int n) { return bench_match_batch_shape(src, 8, 8, 3, 7, n); }, 1200);
+    run("match_batch4", nullptr, [&](int n) { return bench_match_batch_shape(src, 4, 4, 8, 7, n); }, 500);
+    run("predictive_batch_r1", nullptr, [&](int n) { return bench_predictive_batch(src, p1, p2, 1, n); }, 300);
+    run("predictive_batch_r4", nullptr, [&](int n) { return bench_predictive_batch(src, p1, p2, 4, n); }, 100);
     run("pack", "wave1", [&](int n) { return bench_pack_unpack(src, n); }, 20000);
     run("dct8", "wave1", [&](int n) { return bench_dct(n); }, 50000);
     run("bm3d_group", "wave1", [&](int n) { return bench_bm3d_group(n); }, 2000);

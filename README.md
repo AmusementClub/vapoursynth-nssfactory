@@ -11,19 +11,15 @@ This project is WIP. ARM NEON, CUDA, and Vulkan support may be added later.
 ```python
 core.nss.NLM(clip clip[, int d = 1, int a = 2, int s = 4, float h = 1.2, string channels = "AUTO", int wmode = 0, float wref = 1.0, clip rclip = None])
 
-core.nss.BM3D(clip clip[, clip ref, float[] sigma = 3.0, int[] block_size = 8, int[] group_size = 8, int[] block_step, int[] bm_range = 7, int radius = 0, int[] ps_num, int[] ps_range = 4])
-core.nss.BM3Dv2(...)  # BM3D then VAggregate when radius > 0
+core.nss.BM3D(clip clip[, clip ref, float[] sigma = 3.0, int[] block_size = 8, int[] group_size = 8, int[] block_step, int[] bm_range = 7, int radius = 0, int[] ps_num, int[] ps_range = 4, string temporal_mode = "legacy", int rolling_chunk = 4, int rolling_cache_chunks, int rolling_cache_limit = 1])
 
 core.nss.WNNM(clip clip[, float[] sigma = 3.0, int block_size = 8, int block_step = 8, int group_size = 8, int bm_range = 7, int radius = 0, int ps_num = 2, int ps_range = 4, int residual = 0, int adaptive_aggregation = 1, clip rclip = None])
-core.nss.WNNMv2(...)
 
 core.nss.MCWNNM(clip clip[, float[] sigma = 3.0, int block_size = 8, int block_step = 8, int group_size = 8, int bm_range = 7, int radius = 0, int ps_num = 2, int ps_range = 4, int residual = 1, int adaptive_aggregation = 0, clip rclip = None, int admm_iter = 10, float rho = 3.0, float mu = 1.001, int iters = 2, float delta = 0.1])
-core.nss.MCWNNMv2(...)
 
 core.nss.TWSC(clip clip[, float[] sigma = 3.0, int block_size = 8, int block_step = 8, int group_size = 8, int bm_range = 7, int radius = 0, int ps_num = 2, int ps_range = 4, float lambda1 = 0.0, float lambda2 = 3.0, clip rclip = None, int iters = 2, float delta = 0.1])
 
 core.nss.NLH(clip clip[, float[] sigma = 3.0, int block_size = 8, int block_step = 8, int group_size = 16, int bm_range = 20, int radius = 0, int ps_num = 2, int ps_range = 4, int q = 4, clip rclip = None])
-core.nss.NLHv2(...)
 
 core.nss.NCSR(clip clip[, float[] sigma = 3.0, int block_size = 8, int block_step = 8, int group_size = 8, int bm_range = 7, int radius = 0, int ps_num = 2, int ps_range = 4, clip rclip = None, int iters = 2, float delta = 0.1])
 
@@ -34,7 +30,15 @@ core.nss.VAggregate(clip clip, clip src[, int radius = 0, int[] planes])
 core.nss.Version()  # returns version:data
 ```
 
-`v2` filters are create-time sugar: the matching filter, then `VAggregate` when `radius > 0`.
+With `radius = 0`, BM3D returns a normal-height spatial result and `temporal_mode="rolling"` has no
+effect. With `radius > 0`, the default/`legacy` route returns the weighted intermediate for an explicit
+`VAggregate`; `temporal_mode="rolling"` is an experimental route that returns a normalized normal-height
+result directly. Current CPU rolling is slower than legacy on the formal C4 workloads, but the mode is
+retained because chunked rolling has a useful GPU execution model. Other temporal filters also expose
+their weighted intermediate directly when `radius > 0`.
+
+BM3D accepts `block_size` values 1, 2, 4, 8, 12, 16, and 32. The 12-point path is intended for
+high-noise DCT profiles; 8 remains the general-purpose default.
 
 NLM currently supports `wmode=0` (Welsch) only. TWSC rejects `lambda1 != 0`.
 
@@ -53,7 +57,7 @@ Install `libnss.so` into the VapourSynth plugin directory.
 
 GPLv2. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
-The length-16/32/64 DCT kernels in `src/cpu/bm/dct_codelet_*.hpp` are generated
+The length-12/16/32/64 DCT kernels in `src/cpu/bm/dct_codelet_*.hpp` are generated
 by [FFTW](https://www.fftw.org/) genfft (`gen_r2r`) and are distributed under
 GPLv2 or later. Copyright (c) 1997-1999, 2003, 2007-14 Massachusetts Institute
 of Technology and Matteo Frigo. They are mapped onto Highway and are not linked

@@ -448,25 +448,6 @@ void VS_CC mcwnnmCreate(const VSMap* in, VSMap* out, void* userData, VSCore* cor
     }
 }
 
-void VS_CC mcwnnmv2Create(const VSMap* in, VSMap* out, void* userData, VSCore* core, const VSAPI* vsapi) {
-    (void)userData;
-    const int radius = nss::map_int(vsapi, in, "radius", 0);
-    VSNode* wn = nss_create_mcwnnm(in, core, vsapi, out);
-    if (!wn) {
-        return;
-    }
-    if (radius <= 0) {
-        vsapi->mapConsumeNode(out, "clip", wn, maAppend);
-        return;
-    }
-    VSNode* src = vsapi->mapGetNode(in, "clip", 0, nullptr);
-    VSNode* vagg = nss_create_vaggregate(wn, src, radius, nullptr, core, vsapi, out);
-    if (!vagg) {
-        return;
-    }
-    vsapi->mapConsumeNode(out, "clip", vagg, maAppend);
-}
-
 void register_mcwnnm(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
     const char* args =
         "clip:vnode;sigma:float[]:opt;block_size:int:opt;block_step:int:opt;group_size:int:opt;"
@@ -474,5 +455,4 @@ void register_mcwnnm(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
         "adaptive_aggregation:int:opt;rclip:vnode:opt;admm_iter:int:opt;rho:float:opt;mu:float:opt;"
         "iters:int:opt;delta:float:opt;";
     vspapi->registerFunction("MCWNNM", args, "clip:vnode;", mcwnnmCreate, nullptr, plugin);
-    vspapi->registerFunction("MCWNNMv2", args, "clip:vnode;", mcwnnmv2Create, nullptr, plugin);
 }

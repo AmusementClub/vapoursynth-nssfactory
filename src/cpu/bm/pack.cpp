@@ -84,6 +84,49 @@ void UnpackPatch(float* num, float* den, int stride, int x, int y, const float* 
     }
 }
 
+// BM3D's fixed spatial paths only produce in-bounds matches. Keep the generic
+// clamped implementation as the fallback, but make the common 4/12 rows a
+// single fixed-width SIMD operation so b4 and b12 do not fall through scalar
+// tails on AVX-512.
+void UnpackPatchFixed(float* num, float* den, int stride, int x, int y, const float* col, int block, int width,
+                      int height, float w) {
+    const bool inside = x >= 0 && y >= 0 && x + block <= width && y + block <= height;
+    if (!inside) {
+        UnpackPatch(num, den, stride, x, y, col, block, width, height, w);
+        return;
+    }
+#if HWY_MAX_BYTES >= 16
+    if (block == 4) {
+        const hn::FixedTag<float, 4> d4;
+        const auto vw = hn::Set(d4, w);
+        for (int row = 0; row < 4; ++row) {
+            float* n = num + (y + row) * stride + x;
+            float* de = den + (y + row) * stride + x;
+            const auto values = hn::LoadU(d4, col + row * 4);
+            hn::StoreU(hn::MulAdd(vw, values, hn::LoadU(d4, n)), d4, n);
+            hn::StoreU(hn::Add(hn::LoadU(d4, de), vw), d4, de);
+        }
+        return;
+    }
+#endif
+#if HWY_MAX_BYTES >= 64
+    if (block == 12) {
+        const hn::FixedTag<float, 16> d16;
+        const auto vw = hn::Set(d16, w);
+        const std::size_t count = static_cast<std::size_t>(block);
+        for (int row = 0; row < block; ++row) {
+            float* n = num + (y + row) * stride + x;
+            float* de = den + (y + row) * stride + x;
+            const auto values = hn::LoadN(d16, col + row * block, count);
+            hn::StoreN(hn::MulAdd(vw, values, hn::LoadN(d16, n, count)), d16, n, count);
+            hn::StoreN(hn::Add(hn::LoadN(d16, de, count), vw), d16, de, count);
+        }
+        return;
+    }
+#endif
+    UnpackPatch(num, den, stride, x, y, col, block, width, height, w);
+}
+
 }  // namespace HWY_NAMESPACE
 }  // namespace nss
 HWY_AFTER_NAMESPACE();
@@ -92,6 +135,7 @@ HWY_AFTER_NAMESPACE();
 namespace nss {
 HWY_EXPORT(PackPatch);
 HWY_EXPORT(UnpackPatch);
+HWY_EXPORT(UnpackPatchFixed);
 
 void pack_patch(float* col, int lda, const float* src, int stride, int x, int y,
                 int block, int width, int height) {
@@ -101,6 +145,11 @@ void pack_patch(float* col, int lda, const float* src, int stride, int x, int y,
 void unpack_patch(float* num, float* den, int stride, int x, int y,
                   const float* col, int block, int width, int height, float w) {
     HWY_DYNAMIC_DISPATCH(UnpackPatch)(num, den, stride, x, y, col, block, width, height, w);
+}
+
+void unpack_patch_fixed(float* num, float* den, int stride, int x, int y,
+                        const float* col, int block, int width, int height, float w) {
+    HWY_DYNAMIC_DISPATCH(UnpackPatchFixed)(num, den, stride, x, y, col, block, width, height, w);
 }
 
 }  // namespace nss
