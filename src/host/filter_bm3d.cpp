@@ -1,4 +1,5 @@
 #include "host/filters.hpp"
+#include "host/temporal.hpp"
 #include "host/batch_runner.hpp"
 #include "host/validate.hpp"
 #include "nss/avx2.hpp"
@@ -50,7 +51,7 @@ void process_plane_batched(const float* const* srcs, const float* const* refs, i
                            const int* src_strides, const int* ref_strides, float* dst, int width, int height,
                            int dstride, int fat_stride,
                            float sigma, int block, int group, int step, int bm_range, int ps_num, int ps_range,
-                           int radius, bool wiener, bool emit_fat, float* scratch) {
+                           int radius, bool wiener, bool emit_fat, float* scratch, int center, int frame_count) {
     const int slices = 2 * radius + 1;
     const std::size_t plane_size = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
     float* num = scratch;
@@ -64,6 +65,8 @@ void process_plane_batched(const float* const* srcs, const float* const* refs, i
     cfg.group = group;
     cfg.bm_range = bm_range;
     cfg.radius = radius;
+    cfg.valid_t_begin = std::max(0, radius - center);
+    cfg.valid_t_end = std::min(ntemp, radius + frame_count - center);
     cfg.ps_num = ps_num;
     cfg.ps_range = ps_range;
 
@@ -278,15 +281,7 @@ const VSFrame* VS_CC bm3dGetFrame(int n, int activationReason, void* instanceDat
                 continue;
             }
             const int slices = 2 * d->radius + 1;
-            for (int sl = 0; sl < slices; ++sl) {
-                float* num = outp + static_cast<std::size_t>(sl * 2) * ph * dstride;
-                float* den = outp + static_cast<std::size_t>(sl * 2 + 1) * ph * dstride;
-                for (int y = 0; y < ph; ++y) {
-                    std::memcpy(num + y * dstride, srcp + y * sstride,
-                                static_cast<std::size_t>(pw) * sizeof(float));
-                    std::fill_n(den + y * dstride, pw, 1.f);
-                }
-            }
+            nss::host_detail::temporal_identity(outp, dstride, srcp, sstride, pw, ph, d->radius);
             continue;
         }
         std::vector<const float*> srcs(static_cast<std::size_t>(ntemp));
@@ -317,7 +312,7 @@ const VSFrame* VS_CC bm3dGetFrame(int n, int activationReason, void* instanceDat
                               ph, dstride, dstride,
                               d->sigma[plane], d->block_size[plane], d->group_size[plane], d->block_step[plane],
                               d->bm_range[plane], d->ps_num[plane], d->ps_range[plane], d->radius, d->ref != nullptr,
-                              fat, scratch);
+                              fat, scratch, n, d->vi.numFrames);
         if (!fat && d->sigma[plane] != 0.f) {
             (void)srcp;
         }
@@ -407,83 +402,57 @@ void rolling_write_plane(float* dst, int dstride, const RollingPlane& plane) {
 bool rolling_fill_chunk(RollingData* d, RollingChunkStore& store, int start, int count, VSFrameContext* frameCtx,
                         VSCore* core, const VSAPI* vsapi) {
     (void)core;
-    auto& bm = d->bm;
-    const int radius = bm.radius;
-    const int ntemp = 2 * radius + 1;
-    const int nframes = bm.vi.numFrames;
-    const int np = bm.vi.format.numPlanes;
-    store.start = start;
-    store.count = count;
-    store.frames.assign(static_cast<std::size_t>(count), RollingFrameStore{});
-    for (int i = 0; i < count; ++i) {
-        store.frames[static_cast<std::size_t>(i)].planes.resize(static_cast<std::size_t>(np));
-    }
-
-    for (int local = 0; local < count; ++local) {
-        const int center = start + local;
-        std::vector<const VSFrame*> srcf(static_cast<std::size_t>(ntemp));
-        std::vector<const VSFrame*> reff(static_cast<std::size_t>(ntemp));
-        for (int t = 0; t < ntemp; ++t) {
-            const int fn = std::clamp(center - radius + t, 0, nframes - 1);
-            srcf[static_cast<std::size_t>(t)] = vsapi->getFrameFilter(fn, bm.node, frameCtx);
-            reff[static_cast<std::size_t>(t)] =
-                vsapi->getFrameFilter(fn, bm.ref ? bm.ref : bm.node, frameCtx);
-        }
-        const int t0 = radius;
-        for (int plane = 0; plane < np; ++plane) {
-            const int pw = nss::plane_width(bm.vi, plane);
-            const int ph = nss::plane_height(bm.vi, plane);
-            const int sstride =
-                static_cast<int>(vsapi->getStride(srcf[static_cast<std::size_t>(t0)], plane) / sizeof(float));
-            const float* srcp =
-                reinterpret_cast<const float*>(vsapi->getReadPtr(srcf[static_cast<std::size_t>(t0)], plane));
-            if (bm.sigma[plane] == 0.f) {
-                rolling_store_plane(store.frames[static_cast<std::size_t>(local)].planes[static_cast<std::size_t>(plane)],
-                                    srcp, pw, ph, sstride);
-                continue;
+    auto& bm=d->bm;
+    const int r=bm.radius, ntemp=2*r+1, nframes=bm.vi.numFrames, np=bm.vi.format.numPlanes;
+    store.start=start; store.count=count;
+    store.frames.assign(count,RollingFrameStore{});
+    for(auto& frame:store.frames) frame.planes.resize(np);
+    // One center's fat plus target chunk accumulators, never all centers' fats.
+    for(int plane=0;plane<np;++plane) {
+        const int w=nss::plane_width(bm.vi,plane), h=nss::plane_height(bm.vi,plane);
+        const std::size_t size=static_cast<std::size_t>(w)*h;
+        std::vector<float> sums(bm.sigma[plane] ? count*2*size : 0,0.f);
+        if(bm.sigma[plane]) {
+            std::vector<float> fat(ntemp*2*size);
+            const int block=bm.block_size[plane], group=bm.group_size[plane];
+            float* scratch=bm.ws.get(ntemp*2*size+nss::bm3d_filter_work_floats(group,block)+
+                                     group*block*block*(bm.ref ? 2u : 1u)+64);
+            for(int center=std::max(0,start-r);center<=std::min(nframes-1,start+count-1+r);++center) {
+                std::vector<const VSFrame*> sf(ntemp),rf(ntemp);
+                std::vector<const float*> sp(ntemp),rp(ntemp);
+                std::vector<int> ss(ntemp),rs(ntemp);
+                for(int t=0;t<ntemp;++t) {
+                    int fn=std::clamp(center-r+t,0,nframes-1);
+                    sf[t]=vsapi->getFrameFilter(fn,bm.node,frameCtx);
+                    rf[t]=vsapi->getFrameFilter(fn,bm.ref ? bm.ref : bm.node,frameCtx);
+                    sp[t]=reinterpret_cast<const float*>(vsapi->getReadPtr(sf[t],plane));
+                    rp[t]=reinterpret_cast<const float*>(vsapi->getReadPtr(rf[t],plane));
+                    ss[t]=static_cast<int>(vsapi->getStride(sf[t],plane)/sizeof(float));
+                    rs[t]=static_cast<int>(vsapi->getStride(rf[t],plane)/sizeof(float));
+                }
+                process_plane_batched(sp.data(),rp.data(),ntemp,r,ss.data(),rs.data(),fat.data(),w,h,w,w,
+                                      bm.sigma[plane],block,group,bm.block_step[plane],bm.bm_range[plane],
+                                      bm.ps_num[plane],bm.ps_range[plane],r,bm.ref!=nullptr,true,scratch,center,nframes);
+                for(int target=std::max(start,center-r);target<=std::min(start+count-1,center+r);++target) {
+                    const int slice=target-center+r;
+                    float* num=sums.data()+(target-start)*2*size;
+                    const float* contribution=fat.data()+slice*2*size;
+                    for(std::size_t i=0;i<2*size;++i) num[i]+=contribution[i];
+                }
+                for(int t=0;t<ntemp;++t){vsapi->freeFrame(sf[t]);vsapi->freeFrame(rf[t]);}
             }
-            std::vector<const float*> srcs(static_cast<std::size_t>(ntemp));
-            std::vector<const float*> refs(static_cast<std::size_t>(ntemp));
-            std::vector<int> src_strides(static_cast<std::size_t>(ntemp));
-            std::vector<int> ref_strides(static_cast<std::size_t>(ntemp));
-            for (int t = 0; t < ntemp; ++t) {
-                srcs[static_cast<std::size_t>(t)] = reinterpret_cast<const float*>(
-                    vsapi->getReadPtr(srcf[static_cast<std::size_t>(t)], plane));
-                refs[static_cast<std::size_t>(t)] = reinterpret_cast<const float*>(
-                    vsapi->getReadPtr(reff[static_cast<std::size_t>(t)], plane));
-                src_strides[static_cast<std::size_t>(t)] =
-                    static_cast<int>(vsapi->getStride(srcf[static_cast<std::size_t>(t)], plane) / sizeof(float));
-                ref_strides[static_cast<std::size_t>(t)] =
-                    static_cast<int>(vsapi->getStride(reff[static_cast<std::size_t>(t)], plane) / sizeof(float));
-            }
-            const int slices = ntemp;
-            const int block = bm.block_size[plane];
-            const int group = bm.group_size[plane];
-            const int area = block * block;
-            const std::size_t fat_n =
-                static_cast<std::size_t>(slices) * 2 * static_cast<std::size_t>(pw) * static_cast<std::size_t>(ph);
-            const std::size_t need = fat_n + static_cast<std::size_t>(nss::bm3d_filter_work_floats(group, block)) +
-                                     static_cast<std::size_t>(group) * static_cast<std::size_t>(area) *
-                                         (bm.ref != nullptr ? 2u : 1u) +
-                                     64;
-            float* scratch = bm.ws.get(need);
-            std::vector<float> fat(fat_n, 0.f);
-            process_plane_batched(srcs.data(), refs.data(), ntemp, t0, src_strides.data(), ref_strides.data(),
-                                  fat.data(), pw, ph, pw, pw,
-                                  bm.sigma[plane], bm.block_size[plane], bm.group_size[plane], bm.block_step[plane],
-                                  bm.bm_range[plane], bm.ps_num[plane], bm.ps_range[plane], bm.radius,
-                                  bm.ref != nullptr, true, scratch);
-            std::vector<float> out(static_cast<std::size_t>(pw) * static_cast<std::size_t>(ph), 0.f);
-            nss::vaggregate_reduce(out.data(), fat.data(), srcp, pw, ph, pw, pw, sstride, radius);
-            RollingPlane& stored =
-                store.frames[static_cast<std::size_t>(local)].planes[static_cast<std::size_t>(plane)];
-            stored.width = pw;
-            stored.height = ph;
-            stored.data = std::move(out);
         }
-        for (int t = 0; t < ntemp; ++t) {
-            vsapi->freeFrame(srcf[static_cast<std::size_t>(t)]);
-            vsapi->freeFrame(reff[static_cast<std::size_t>(t)]);
+        for(int i=0;i<count;++i) {
+            const VSFrame* frame=vsapi->getFrameFilter(start+i,bm.node,frameCtx);
+            const float* src=reinterpret_cast<const float*>(vsapi->getReadPtr(frame,plane));
+            int stride=static_cast<int>(vsapi->getStride(frame,plane)/sizeof(float));
+            auto& output=store.frames[i].planes[plane];
+            output.width=w;output.height=h;output.data.resize(size);
+            if(bm.sigma[plane]) {
+                const float* num=sums.data()+i*2*size;
+                nss::aggregate_finish(output.data.data(),num,num+size,src,w,h,w,w,stride);
+            } else rolling_store_plane(output,src,w,h,stride);
+            vsapi->freeFrame(frame);
         }
     }
     return true;
@@ -501,8 +470,8 @@ const VSFrame* VS_CC rollingGetFrame(int n, int activationReason, void* instance
         // be evicted by another request. Always declare the full dependency
         // window so a later miss can safely recompute the chunk.
         const int radius = d->bm.radius;
-        const int first = std::max(0, start - radius);
-        const int last = std::min(d->bm.vi.numFrames - 1, start + count - 1 + radius);
+        const int first = std::max(0, start - 2 * radius);
+        const int last = std::min(d->bm.vi.numFrames - 1, start + count - 1 + 2 * radius);
         for (int i = first; i <= last; ++i) {
             vsapi->requestFrameFilter(i, d->bm.node, frameCtx);
             if (d->bm.ref) {
@@ -590,6 +559,7 @@ const char* fill_bm3d_data(Bm3dData& d, const VSMap* in, const VSAPI* vsapi) {
         }
         if (d.sigma[i] != 0.f) {
             d.sigma[i] *= (1.f / 255.f);
+            d.sigma[i] *= 0.75f;
         }
     }
     nss::map_inherit_int(vsapi, in, "block_size", d.block_size, np, nss::kBmBlock);

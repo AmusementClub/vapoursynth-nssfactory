@@ -62,3 +62,21 @@ by [FFTW](https://www.fftw.org/) genfft (`gen_r2r`) and are distributed under
 GPLv2 or later. Copyright (c) 1997-1999, 2003, 2007-14 Massachusetts Institute
 of Technology and Matteo Frigo. They are mapped onto Highway and are not linked
 against `libfftw3`. Regenerate with `tools/gen_dct_codelets.sh`.
+
+### BM3D effective sigma and temporal contract
+
+BM3D kernels use `sigma_eff = 0.75 * sigma_user / 255` for both Basic and Wiener.
+The public default remains sigma=3 and bm_range=7. Only the scaled 8x8x8 kernel
+converts effective noise to its coefficient scale (64); its inverse scale is 4096.
+Changing block/group/search/temporal settings can change output, even at the same
+sigma. This is a parameter calibration contract, not pixelwise BM3DCPU equality.
+
+Temporal matching compares every candidate against the original center reference,
+with independent forward/backward prediction and unique candidates. Only actual
+frames participate at clip boundaries. The fixed-height fat layout is unchanged:
+center c, slice t-c+radius contains the contribution to target t. VAggregate now
+collects the target slice from all valid centers n-radius through n+radius. Zero
+sigma writes identity only in the center slice; zero total weight copies src[n].
+The shared single- and multichannel matcher fixes also affect other temporal NSS
+filters. Existing intermediates should be regenerated with the same plugin build.
+Rolling still returns normal-height output directly and remains experimental.

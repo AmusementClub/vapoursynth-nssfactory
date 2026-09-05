@@ -56,7 +56,7 @@ def main() -> int:
     fat = core.std.ModifyFrame(clip=fat_blank, clips=fat_blank, selector=fill_fat)
     selected = core.nss.VAggregate(fat, src, radius=radius, planes=[1])
     frame = selected.get_frame(0)
-    expected_plane1 = (2.0 * (1.0 + 2.0 + 3.0)) / (2.0 + 3.0 + 4.0)
+    expected_plane1 = (2.0 * (2.0 + 1.0)) / (3.0 + 2.0)
     if not np.allclose(np.asarray(frame[0])[:, :width], 0.2, atol=1e-6):
         raise AssertionError("planes=[1] did not copy unselected plane 0")
     if not np.allclose(np.asarray(frame[2])[:, :width], 0.4, atol=1e-6):

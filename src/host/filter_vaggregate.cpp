@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cstring>
 #include <memory>
+#include <vector>
 
 namespace {
 
@@ -26,14 +27,18 @@ const VSFrame* VS_CC vaggGetFrame(int n, int activationReason, void* instanceDat
     auto* d = static_cast<VAggData*>(instanceData);
     (void)frameData;
     if (activationReason == arInitial) {
-        vsapi->requestFrameFilter(n, d->clip, frameCtx);
+        for(int c=std::max(0,n-d->radius);c<=std::min(d->vi_src.numFrames-1,n+d->radius);++c)
+            vsapi->requestFrameFilter(c,d->clip,frameCtx);
         vsapi->requestFrameFilter(n, d->src, frameCtx);
         return nullptr;
     }
     if (activationReason != arAllFramesReady) {
         return nullptr;
     }
-    const VSFrame* fat = vsapi->getFrameFilter(n, d->clip, frameCtx);
+    const int first=std::max(0,n-d->radius);
+    const int last=std::min(d->vi_src.numFrames-1,n+d->radius);
+    std::vector<const VSFrame*> frames;
+    for(int c=first;c<=last;++c) frames.push_back(vsapi->getFrameFilter(c,d->clip,frameCtx));
     const VSFrame* src = vsapi->getFrameFilter(n, d->src, frameCtx);
     VSFrame* dst = vsapi->newVideoFrame(&d->vi_src.format, d->vi_src.width, d->vi_src.height, src, core);
 
@@ -41,20 +46,32 @@ const VSFrame* VS_CC vaggGetFrame(int n, int activationReason, void* instanceDat
         const int pw = nss::plane_width(d->vi_src, plane);
         const int ph = nss::plane_height(d->vi_src, plane);
         const int sstride = static_cast<int>(vsapi->getStride(src, plane) / sizeof(float));
-        const int fstride = static_cast<int>(vsapi->getStride(fat, plane) / sizeof(float));
+
         const int dstride = static_cast<int>(vsapi->getStride(dst, plane) / sizeof(float));
         float* outp = reinterpret_cast<float*>(vsapi->getWritePtr(dst, plane));
         const float* srcp = reinterpret_cast<const float*>(vsapi->getReadPtr(src, plane));
-        const float* fatp = reinterpret_cast<const float*>(vsapi->getReadPtr(fat, plane));
+
         if (!d->planes[plane]) {
             for (int y = 0; y < ph; ++y) {
                 std::memcpy(outp + y * dstride, srcp + y * sstride, static_cast<std::size_t>(pw) * sizeof(float));
             }
             continue;
         }
-        nss::vaggregate_reduce(outp, fatp, srcp, pw, ph, dstride, fstride, sstride, d->radius);
+        const float* nums[2*nss::kBmMaxRadius+1];
+        const float* dens[2*nss::kBmMaxRadius+1];
+        int strides[2*nss::kBmMaxRadius+1];
+        for(int c=first;c<=last;++c) {
+            const auto* frame=frames[c-first];
+            const int stride=static_cast<int>(vsapi->getStride(frame,plane)/sizeof(float));
+            const int slice=n-c+d->radius;
+            const float* base=reinterpret_cast<const float*>(vsapi->getReadPtr(frame,plane));
+            nums[c-first]=base+static_cast<std::size_t>(slice*2)*ph*stride;
+            dens[c-first]=nums[c-first]+static_cast<std::size_t>(ph)*stride;
+            strides[c-first]=stride;
+        }
+        nss::vaggregate_target(outp,nums,dens,strides,last-first+1,srcp,pw,ph,dstride,sstride);
     }
-    vsapi->freeFrame(fat);
+    for(auto* frame:frames) vsapi->freeFrame(frame);
     vsapi->freeFrame(src);
     return dst;
 }
@@ -119,7 +136,7 @@ VSNode* nss_create_vaggregate(VSNode* fat, VSNode* src, int radius, const int* p
     for (int i = 0; i < 3; ++i) {
         d->planes[i] = planes ? (planes[i] != 0) : 1;
     }
-    VSFilterDependency deps[2]{{d->clip, rpStrictSpatial}, {d->src, rpStrictSpatial}};
+    VSFilterDependency deps[2]{{d->clip, d->radius ? rpGeneral : rpStrictSpatial}, {d->src, rpStrictSpatial}};
     VAggData* raw = d.get();
     VSNode* node = vsapi->createVideoFilter2("VAggregate", &raw->vi_src, vaggGetFrame, vaggFree, fmParallel, deps, 2,
                                             raw, core);

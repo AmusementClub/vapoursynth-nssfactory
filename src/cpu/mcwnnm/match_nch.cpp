@@ -115,8 +115,8 @@ int spatial_match_nch(const float* const* refs, const int* strides, int nch, int
 
 int predictive_match_nch(const float* const* refs, const int* strides, int nch, int ntemp, int width, int height,
                          int bx, int by, int t0, const SearchConfig& cfg, Match* out) {
-    if (!refs || !strides || !out || nch < 1 || nch > 3 || ntemp < 1 || t0 < 0 || t0 >= ntemp || width < 1 ||
-        height < 1 || cfg.block < 1 || cfg.group < 1 || cfg.group > kBmMaxGroup || cfg.step < 1 || cfg.bm_range < 0 ||
+    if (!refs || !strides || !out || nch < 1 || nch > 3 || ntemp < 1 || t0 < 0 || t0 >= ntemp || width < cfg.block ||
+        height < cfg.block || cfg.block < 1 || cfg.group < 1 || cfg.group > kBmMaxGroup || cfg.step < 1 || cfg.bm_range < 0 ||
         cfg.ps_num < 1 || cfg.ps_range < 0 || cfg.radius < 0 || cfg.radius > kBmMaxRadius) {
         return 0;
     }
@@ -138,42 +138,14 @@ int predictive_match_nch(const float* const* refs, const int* strides, int nch, 
         cur_st[c] = strides[c];
     }
     int n = spatial_match_nch(cur, cur_st, nch_use, width, height, bx, by, cfg.block, cfg.bm_range, cfg.group, out);
-    std::uint32_t next_ordinal = 0;
-    detail::assign_temporal_order(out, n, t0, t0, next_ordinal);
-    if (ntemp <= 1 || cfg.radius <= 0 || n <= 0) {
-        return n;
-    }
-    detail::StableTopK topk(out, cfg.group);
-    topk.adopt(n);
-    int px = out[0].x;
-    int py = out[0].y;
-    for (int dt = 1; dt <= cfg.radius; ++dt) {
-        for (int sign = -1; sign <= 1; sign += 2) {
-            const int t = t0 + sign * dt;
-            if (t < 0 || t >= ntemp) {
-                continue;
-            }
-            const float* fr[3];
-            int fr_st[3];
-            for (int c = 0; c < nch_use; ++c) {
-                fr[c] = refs[c * ntemp + t];
-                fr_st[c] = strides[c];
-            }
-            Match local[kBmMaxGroup];
-            const int got = spatial_match_nch(fr, fr_st, nch_use, width, height, px, py, cfg.block, cfg.ps_range,
-                                              std::min(cfg.ps_num + 1, cfg.group), local);
-            for (int i = 0; i < got; ++i) {
-                local[i].t = t;
-                detail::assign_temporal_order(local + i, 1, t, t0, next_ordinal);
-                topk.add(local[i]);
-            }
-            if (got > 0) {
-                px = local[0].x;
-                py = local[0].y;
-            }
-        }
-    }
-    return topk.finish();
+    const int cx = std::clamp(bx, 0, width - cfg.block);
+    const int cy = std::clamp(by, 0, height - cfg.block);
+    for (int c = 0; c < nch_use; ++c) cur[c] += cy * cur_st[c] + cx;
+    return detail::collect_temporal(width, height, t0, ntemp, cfg, out, n, [&](int t, int x, int y) {
+        const float* candidate[3];
+        for (int c = 0; c < nch_use; ++c) candidate[c] = refs[c * ntemp + t] + y * strides[c] + x;
+        return ssd_nch(cur, cur_st, candidate, strides, nch_use, cfg.block);
+    });
 }
 
 }  // namespace nss

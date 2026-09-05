@@ -79,3 +79,8 @@ if(NSS_BM_KERNEL_LAB)
   add_test(NAME test_match8_lab COMMAND bench_match8 verify)
   set_tests_properties(test_match8_lab PROPERTIES SKIP_RETURN_CODE 77)
 endif()
+
+add_executable(test_bm3d_contract test_bm3d_contract.cpp)
+target_link_libraries(test_bm3d_contract PRIVATE nss_cpu)
+target_include_directories(test_bm3d_contract PRIVATE "${PROJECT_SOURCE_DIR}/include")
+add_test(NAME test_bm3d_contract COMMAND test_bm3d_contract)

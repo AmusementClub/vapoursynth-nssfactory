@@ -214,4 +214,63 @@ inline void assign_temporal_order(Match* matches, int count, int t, int referenc
     }
 }
 
+// Shared predictive control flow. Each layer scans the raster-ordered union
+// of its windows: overlap cannot duplicate a candidate or depend on ps order.
+template <typename DistanceFn>
+int collect_temporal(int width, int height, int t0, int ntemp, const SearchConfig& cfg,
+                     Match* out, int n, DistanceFn&& distance) {
+    std::uint32_t ordinal = 0;
+    assign_temporal_order(out, n, t0, t0, ordinal);
+    if (n <= 0 || cfg.radius == 0 || ntemp == 1 || cfg.group == 1) return n;
+    Match seeds[kBmMaxGroup];
+    const int seed_count = std::min({n, cfg.ps_num, kBmMaxGroup});
+    std::copy_n(out, seed_count, seeds);
+    // The true reference must remain in every group, including nonfinite tests.
+    StableTopK global(out + 1, cfg.group - 1);
+    global.adopt(n - 1);
+    const int first = std::max(0, cfg.valid_t_begin);
+    const int last = cfg.valid_t_end < 0 ? ntemp : std::min(ntemp, cfg.valid_t_end);
+    for (int sign : {-1, 1}) {
+        Match centers[kBmMaxGroup];
+        std::copy_n(seeds, seed_count, centers);
+        int nc = seed_count;
+        for (int dt = 1; dt <= cfg.radius; ++dt) {
+            const int t = t0 + sign * dt;
+            if (t < first || t >= last) break;
+            Match local[kBmMaxGroup];
+            StableTopK top(local, std::min(cfg.ps_num, cfg.group));
+            int ymin = height, ymax = -1;
+            for (int i = 0; i < nc; ++i) {
+                ymin = std::min(ymin, std::max(0, centers[i].y - cfg.ps_range));
+                ymax = std::max(ymax, std::min(height - cfg.block, centers[i].y + cfg.ps_range));
+            }
+            std::uint32_t visit = 1;
+            for (int y = ymin; y <= ymax; ++y) {
+                std::pair<int,int> intervals[kBmMaxGroup];
+                int ni = 0;
+                for (int i = 0; i < nc; ++i) {
+                    if (std::abs(y - centers[i].y) <= cfg.ps_range)
+                        intervals[ni++] = {std::max(0, centers[i].x - cfg.ps_range),
+                                          std::min(width - cfg.block, centers[i].x + cfg.ps_range)};
+                }
+                std::sort(intervals, intervals + ni);
+                int done = -1;
+                for (int i = 0; i < ni; ++i) {
+                    for (int x = std::max(done + 1, intervals[i].first); x <= intervals[i].second; ++x) {
+                        Match m{x,y,t,distance(t,x,y), visit++};
+                        assign_temporal_order(&m, 1, t, t0, ordinal);
+                        top.add(m);
+                    }
+                    done = std::max(done, intervals[i].second);
+                }
+            }
+            nc = top.finish();
+            for (int i = 0; i < nc; ++i) global.add(local[i]);
+            std::copy_n(local, nc, centers);
+            if (nc == 0) break;
+        }
+    }
+    return 1 + global.finish();
+}
+
 }  // namespace nss::detail

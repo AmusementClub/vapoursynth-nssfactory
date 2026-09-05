@@ -998,8 +998,8 @@ void Bm3dFilter8(const float* src, int sstride, const Match* matches, int k, flo
             G[g * 8 + r] = hn::Zero(d8);
         }
     }
-    // bm3dcpu: user sigma * (3/4)/255 * 64 * (hard ? 2.7 : 1). Host already /255.
-    const float s = sigma * 0.75f * 64.f;
+    // sigma is effective normalized-pixel noise; only transform scaling remains.
+    const float s = sigma * 64.f;
     float wgt = 1.f;
     if (wiener && ref) {
         V8 R[64];

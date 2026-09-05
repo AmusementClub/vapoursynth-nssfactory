@@ -1,4 +1,5 @@
 #include "host/filters.hpp"
+#include "host/temporal.hpp"
 #include "host/batch_runner.hpp"
 #include "host/validate.hpp"
 #include "nss/avx2.hpp"
@@ -38,7 +39,7 @@ struct NlhData {
 void run_groups(const float* const* match_refs, const int* match_strides, const float* const* noisy,
                 const int* noisy_strides, int ntemp, int t0, int pw, int ph, int block, int step, int group,
                 int bm_range, int radius, int ps_num, int ps_range, int q, float sigma, bool wiener, float* num,
-                float* den) {
+                float* den, int center, int frame_count) {
     const int m = block * block;
     const int lda = (m + 15) & ~15;
     const int slices = 2 * radius + 1;
@@ -52,6 +53,8 @@ void run_groups(const float* const* match_refs, const int* match_strides, const 
     cfg.group = group;
     cfg.bm_range = bm_range;
     cfg.radius = radius;
+    cfg.valid_t_begin = std::max(0, radius - center);
+    cfg.valid_t_end = std::min(ntemp, radius + frame_count - center);
     cfg.ps_num = ps_num;
     cfg.ps_range = ps_range;
 
@@ -207,18 +210,7 @@ const VSFrame* VS_CC nlhGetFrame(int n, int activationReason, void* instanceData
                     std::memcpy(outp + y * dstride, srcp + y * sstride, static_cast<std::size_t>(pw) * sizeof(float));
                 }
             } else {
-                for (int sl = 0; sl < ntemp; ++sl) {
-                    const float* sp = reinterpret_cast<const float*>(
-                        vsapi->getReadPtr(srcf[static_cast<std::size_t>(sl)], plane));
-                    float* on = outp + (sl * 2) * ph * dstride;
-                    float* od = outp + (sl * 2 + 1) * ph * dstride;
-                    for (int y = 0; y < ph; ++y) {
-                        std::memcpy(on + y * dstride, sp + y * sstride, static_cast<std::size_t>(pw) * sizeof(float));
-                        for (int x = 0; x < pw; ++x) {
-                            od[y * dstride + x] = 1.f;
-                        }
-                    }
-                }
+                nss::host_detail::temporal_identity(outp, dstride, srcp, sstride, pw, ph, d->radius);
             }
             continue;
         }
@@ -244,7 +236,7 @@ const VSFrame* VS_CC nlhGetFrame(int n, int activationReason, void* instanceData
         const float sigma = d->sigma[plane] / 255.f;
 
         run_groups(refs.data(), strides, srcs.data(), strides, ntemp, t0, pw, ph, block, d->block_step, group,
-                   d->bm_range, d->radius, d->ps_num, d->ps_range, q, sigma, false, num, den);
+                   d->bm_range, d->radius, d->ps_num, d->ps_range, q, sigma, false, num, den, n, d->vi.numFrames);
         for (int sl = 0; sl < slices; ++sl) {
             nss::aggregate_finish(basic + static_cast<std::size_t>(sl) * plane_sz,
                                   num + static_cast<std::size_t>(sl) * plane_sz,
@@ -259,7 +251,7 @@ const VSFrame* VS_CC nlhGetFrame(int n, int activationReason, void* instanceData
             basic_strides[t] = pw;
         }
         run_groups(basic_refs.data(), basic_strides, srcs.data(), strides, ntemp, t0, pw, ph, block, d->block_step,
-                   group, d->bm_range, d->radius, d->ps_num, d->ps_range, q, sigma, true, num, den);
+                   group, d->bm_range, d->radius, d->ps_num, d->ps_range, q, sigma, true, num, den, n, d->vi.numFrames);
 
         if (fat) {
             for (int sl = 0; sl < slices; ++sl) {

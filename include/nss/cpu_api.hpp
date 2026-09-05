@@ -1,3 +1,5 @@
+// BM3D sigma fields/arguments use sigma_eff = 0.75 * sigma_user / 255.
+// Applies to group, fused, direct and batch; callers must not rescale twice.
 #pragma once
 
 #include "nss/params.hpp"
@@ -187,3 +189,9 @@ void vaggregate_reduce(float* dst, const float* fat, const float* src,
                        int width, int height, int dstride, int fstride, int sstride, int radius);
 
 }  // namespace nss
+
+namespace nss {
+// Already selected target-time slices, in ascending center-frame order.
+void vaggregate_target(float* dst, const float* const* nums, const float* const* dens, const int* strides,
+                       int count, const float* src, int width, int height, int dstride, int sstride);
+}

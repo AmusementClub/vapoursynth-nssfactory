@@ -16,6 +16,8 @@ import statistics
 import subprocess
 import sys
 import time
+import resource
+from bm_numerics import compare
 
 
 def worker(plugin, config):
@@ -28,7 +30,10 @@ def worker(plugin, config):
     frames = config.get('frames', 12)
     w, h = config.get('size', [1920, 1080])
     algorithm = config.get('algorithm', 'bm3d')
-    source = make_source(core, algorithm, frames, w, h, 42, config.get('sample'))
+    radius=config.get('kwargs',{}).get('radius',config.get('radius',0))
+    warmup=config.get('warmup',3)
+    first=warmup+4*radius
+    source = make_source(core, algorithm, frames+warmup+8*radius, w, h, 42, config.get('sample'))
     if 'kwargs' not in config and algorithm != 'bm3d':
         output = make_filter(core, algorithm, source)
     else:
@@ -42,18 +47,20 @@ def worker(plugin, config):
         fn = getattr(core.nss, {'bm3d': 'BM3D', 'nlh': 'NLH'}[algorithm])
         if stage == 'two_stage':
             pilot = fn(source, **kw)
-            if radius: pilot = core.nss.VAggregate(pilot, source, radius=radius)
+            if radius and kw.get('temporal_mode','legacy') != 'rolling': pilot = core.nss.VAggregate(pilot, source, radius=radius)
             output = fn(source, ref=pilot, **kw)
         elif stage == 'wiener': output = fn(source, ref=source, **kw)
         else: output = fn(source, **kw)
-        if radius and algorithm == 'bm3d' and config.get('aggregate_temporal', True): output = core.nss.VAggregate(output, source, radius=radius)
-    output.get_frame(0)
+        if radius and algorithm == 'bm3d' and kw.get('temporal_mode','legacy') != 'rolling' and config.get('aggregate_temporal', True): output = core.nss.VAggregate(output, source, radius=radius)
+    # Materialize raw input before timing; retain references through the timed window.
+    inputs=[source.get_frame(i) for i in range(source.num_frames)]
+    for n in range(max(0,first-warmup),first): output.get_frame(n)
     start = time.perf_counter()
     if core.num_threads > 1:
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(core.num_threads) as pool:
-            results = list(pool.map(output.get_frame, range(1, frames + 1)))
-    else: results = [output.get_frame(i) for i in range(1, frames + 1)]
+            results = list(pool.map(output.get_frame, range(first, first + frames)))
+    else: results = [output.get_frame(i) for i in range(first, first + frames)]
     elapsed = time.perf_counter() - start
     digest = hashlib.sha256()
     for frame in results:
@@ -61,7 +68,10 @@ def worker(plugin, config):
             values = np.ascontiguousarray(np.asarray(frame[plane]), dtype=np.float32)
             if not np.isfinite(values).all(): raise RuntimeError('nonfinite output')
             digest.update(values.tobytes())
-    return dict(ms=elapsed * 1000 / frames, sha256=digest.hexdigest())
+    if config.get('_dump'):
+        selected=results if w<256 else results[:1]
+        np.save(config['_dump'],np.stack([np.stack([np.array(f[p]) for p in range(f.format.num_planes)]) for f in selected]))
+    return dict(ms=elapsed * 1000 / frames, sha256=digest.hexdigest(),peak_rss_kib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
 
 
 def interval(ratios):
@@ -89,7 +99,7 @@ def run(args):
     configs = json.loads(Path(args.configs).read_text())
     manifest = {str(p): hashlib.sha256(Path(p).read_bytes()).hexdigest()
                 for p in [args.baseline, args.candidate, __file__, args.configs,
-                          Path(__file__).with_name('profile_cpu_all.py')]}
+                          Path(__file__).with_name('profile_cpu_all.py'),Path(__file__).with_name('bm_numerics.py')]}
     for config in configs:
         if config.get('sample'):
             p = config['sample']; manifest[p] = hashlib.sha256(Path(p).read_bytes()).hexdigest()
@@ -101,15 +111,17 @@ def run(args):
 
     summary = []
     with (out / 'raw.jsonl').open('w') as raw:
-        for config in configs:
+        for case_id, config in enumerate(configs):
             case_before = cpu_stat()
             rows = {'baseline': [], 'candidate': []}
             target = args.pairs
             pair = 0
             while pair < target:
                 for name in (['baseline', 'candidate'] if pair % 2 == 0 else ['candidate', 'baseline']):
+                    worker_config=dict(config)
+                    if pair==0: worker_config['_dump']=str(out / f'{case_id}-{name}.npy')
                     cmd = ['taskset', '-c', '0', sys.executable, __file__, 'worker',
-                           '--plugin', getattr(args, name), '--config', json.dumps(config)]
+                           '--plugin', getattr(args, name), '--config', json.dumps(worker_config)]
                     row = json.loads(subprocess.check_output(cmd, text=True))
                     rows[name].append(row)
                     raw.write(json.dumps(dict(config=config, variant=name, pair=pair, **row)) + '\n'); raw.flush()
@@ -122,7 +134,9 @@ def run(args):
                                                       or (ci[0] <= 1 / 1.01 <= ci[1])):
                         target = 15
             hashes = {r['sha256'] for values in rows.values() for r in values}
-            item = dict(config=config, pairs=pair, exact=len(hashes) == 1,
+            import numpy as np
+            numerical=compare(np.load(out/f'{case_id}-baseline.npy'),np.load(out/f'{case_id}-candidate.npy'))
+            item = dict(numerical=numerical,config=config, pairs=pair, exact=len(hashes) == 1,
                         paired_speedup=statistics.median(ratios), ci95=ci, ratios=ratios,
                         no_regression_confirmed=ci[0] >= 1 / 1.01,
                         benefit_confirmed=ci[0] > 1,
@@ -130,7 +144,10 @@ def run(args):
             summary.append(item)
             (out / 'summary.json').write_text(json.dumps(summary, indent=2))
             print(json.dumps(item), flush=True)
-            if not item['exact']: raise RuntimeError('output mismatch')
+            if not numerical['passed'] and not args.semantic_change: raise RuntimeError('numerical deviation requires stage replay; arrays preserved')
+            if numerical['passed']:
+                (out/f'{case_id}-baseline.npy').unlink()
+                (out/f'{case_id}-candidate.npy').unlink()
     for name, digest in manifest.items():
         if hashlib.sha256(Path(name).read_bytes()).hexdigest() != digest:
             raise RuntimeError('input changed during paired run: ' + name)
@@ -146,8 +163,8 @@ def run(args):
     benefit = bool(stages) and geometric >= 1.01 and aggregate_ci[0] > 1
     decision = dict(kind='regression' if args.regression_only else 'optimization',
                     two_stage_geomean=geometric, two_stage_ci95=aggregate_ci,
-                    passed=(args.regression_only or benefit) and bool(summary)
-                    and args.pairs >= 7 and all(r['exact'] and r['no_regression_confirmed'] for r in summary)
+                    passed=not args.semantic_change and (args.regression_only or benefit) and bool(summary)
+                    and args.pairs >= 7 and all(r['numerical']['passed'] and r['no_regression_confirmed'] for r in summary)
                     and environment['valid'])
     (out / 'decision.json').write_text(json.dumps(decision, indent=2))
     print(json.dumps(decision), flush=True)
@@ -159,6 +176,7 @@ def main():
     for name in ['plugin', 'config', 'baseline', 'candidate', 'configs', 'out']: p.add_argument('--' + name)
     p.add_argument('--pairs', type=int, choices=[1, 3, 7, 15], default=7)
     p.add_argument('--extend', action='store_true')
+    p.add_argument('--semantic-change',action='store_true',help='B0-to-B1 diagnostic only; cannot pass an optimization gate')
     p.add_argument('--regression-only', action='store_true',
                    help='neutral cleanup/control gate; no speedup requirement')
     a = p.parse_args()
