@@ -57,12 +57,14 @@ def run(args):
             before = cpu_stat()
             start = time.monotonic()
             try:
-                for level in ('TopdownL1', 'TopdownL2', 'TopdownL3', 'counters', 'record'):
+                for level in ('TopdownL1', 'TopdownL2', 'TopdownL3', 'TopdownL3Supported', 'counters', 'record'):
                     if level == 'record':
                         perf = ['perf', 'record', '-q', *control, '-e', 'cycles:u', '-F', '997',
                                 '-o', str(directory / 'perf.data')]
                     else:
-                        events = ['-e', 'cycles:u,instructions:u,branches:u,branch-misses:u'] if level == 'counters' else ['-M', level]
+                        metric = ('tma_l1_bound,tma_l2_bound,tma_l3_bound,tma_dram_bound,tma_store_bound,'
+                                  'tma_ports_utilization,tma_divider') if level == 'TopdownL3Supported' else level
+                        events = ['-e', 'cycles:u,instructions:u,branches:u,branch-misses:u'] if level == 'counters' else ['-M', metric]
                         perf = ['perf', 'stat', *control, *events, '-o', str(directory / (level + '.txt'))]
                     proc = subprocess.run(['taskset', '-c', '0', *perf, '--', *command],
                                           capture_output=True, text=True, timeout=60)
@@ -77,15 +79,22 @@ def run(args):
                                    stdout=output, stderr=subprocess.STDOUT, check=True)
                 assert (directory / 'perf.data').stat().st_size > 0
                 assert 'Total Lost Samples: 0' in (directory / 'hot.txt').read_text()
-                for level in ('TopdownL1', 'TopdownL2', 'TopdownL3', 'counters'):
+                for level in ('TopdownL1', 'TopdownL2', 'TopdownL3Supported', 'counters'):
                     text = (directory / (level + '.txt')).read_text()
                     assert 'not counted' not in text and 'not supported' not in text, level
                 counters = (directory / 'counters.txt').read_text()
                 for event in ('cycles:u', 'instructions:u'):
                     count = re.search(r'([\d,]+)\s+' + re.escape(event), counters)
                     assert count and int(count[1].replace(',', '')) > 0, event
+                # GCP STANDARD PMU rejects some UOPS_RETIRED.MS/branch-cycle
+                # events. Preserve the full L3 attempt and report its limits;
+                # require the separately collected supported subset to work.
+                l3_text = (directory / 'TopdownL3.txt').read_text()
+                unavailable = [line.strip() for line in l3_text.splitlines()
+                               if 'not supported' in line or 'not counted' in line or ' nan ' in line]
                 results.append(dict(name=config['name'], variant=label, config=config,
                                     seconds=time.monotonic() - start,
+                                    l3_complete=not unavailable, l3_unavailable=unavailable,
                                     environment=environment_delta(before, cpu_stat())))
                 (out / 'summary.json').write_text(json.dumps(results, indent=2))
                 print(json.dumps(results[-1]), flush=True)
