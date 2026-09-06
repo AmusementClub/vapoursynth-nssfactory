@@ -54,6 +54,11 @@ target_link_libraries(bench_cpu PRIVATE nss_cpu)
 target_include_directories(bench_cpu PRIVATE "${PROJECT_SOURCE_DIR}/include")
 target_compile_options(bench_cpu PRIVATE -O3)
 
+add_executable(bm_match_quality bm_match_quality.cpp)
+target_link_libraries(bm_match_quality PRIVATE nss_cpu)
+target_include_directories(bm_match_quality PRIVATE "${PROJECT_SOURCE_DIR}/include")
+target_compile_options(bm_match_quality PRIVATE -O3)
+
 add_executable(bench_nlm_frame bench_nlm_frame.cpp)
 target_link_libraries(bench_nlm_frame PRIVATE nss_cpu)
 target_include_directories(bench_nlm_frame PRIVATE "${PROJECT_SOURCE_DIR}/include")

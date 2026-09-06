@@ -3,9 +3,11 @@
 #include "cpu/bm/matcher.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <limits>
 
 #undef HWY_TARGET_INCLUDE
@@ -131,6 +133,176 @@ float SsdNch(const float* const* a, const int* sa, const float* const* b, const 
 
 static int clampi(int x, int lo, int hi) {
     return x < lo ? lo : (x > hi ? hi : x);
+}
+
+// Experimental structural matcher switch used by C4 campaigns. A positive
+// value is the number of descriptor-ranked candidates that receive a full
+// SSD. The environment is read once per process so it is not in the hot loop.
+static int ApproxShortlistSize() {
+    static const int value = []() {
+        const char* text = std::getenv("NSS_BM_APPROX_SHORTLIST");
+        if (!text || !*text) {
+            return 0;
+        }
+        char* end = nullptr;
+        const long parsed = std::strtol(text, &end, 10);
+        return end != text && *end == '\0' ? clampi(static_cast<int>(parsed), 0, 256) : 0;
+    }();
+    return value;
+}
+
+static int ApproxSampleCount(int block) {
+    static const int value = []() {
+        const char* text = std::getenv("NSS_BM_APPROX_SAMPLES");
+        if (!text || !*text) {
+            return 2;
+        }
+        char* end = nullptr;
+        const long parsed = std::strtol(text, &end, 10);
+        return end != text && *end == '\0' ? clampi(static_cast<int>(parsed), 1, 8) : 2;
+    }();
+    return std::min(value, block == 8 ? 8 : 4);
+}
+
+struct ApproxCandidate {
+    float score;
+    int x;
+    int y;
+    std::uint32_t ordinal;
+};
+
+static bool ApproxLess(const ApproxCandidate& a, const ApproxCandidate& b) {
+    if (a.score != b.score) {
+        return a.score < b.score;
+    }
+    return a.ordinal < b.ordinal;
+}
+
+// Use a sparse, symmetric descriptor only to choose which candidates receive
+// the exact existing SSD. Final distances and top-k ordering remain exact for
+// the retained shortlist.
+static float ApproxScore(const float* query, const float* candidate, int stride, int block, int count) {
+    static constexpr int kPoints8[8][2] = {{2, 2}, {5, 5}, {2, 5}, {5, 2},
+                                           {0, 0}, {0, 7}, {7, 0}, {7, 7}};
+    static constexpr int kPoints4[4][2] = {{1, 1}, {2, 2}, {1, 2}, {2, 1}};
+    const int (*points)[2] = block == 8 ? kPoints8 : kPoints4;
+    float score = 0.f;
+    for (int i = 0; i < count; ++i) {
+        const int y = points[i][0];
+        const int x = points[i][1];
+        const float diff = query[y * stride + x] - candidate[y * stride + x];
+        score += diff * diff;
+    }
+    return score;
+}
+
+static int SpatialMatchApprox(const float* ref, int stride, int width, int height, int cx, int cy, int block,
+                              int bm_range, int group, int requested, Match* out) {
+    const int wanted = std::min(group, kBmMaxGroup);
+    const int max_x = width - block;
+    const int max_y = height - block;
+    const int top = std::max(cy - bm_range, 0);
+    const int bottom = std::min(cy + bm_range, max_y);
+    const int left = std::max(cx - bm_range, 0);
+    const int right = std::min(cx + bm_range, max_x);
+    const int candidate_count = (right - left + 1) * (bottom - top + 1) - 1;
+    const int shortlist = std::min(256, std::max(wanted - 1, std::min(requested, candidate_count)));
+    if (shortlist >= candidate_count || candidate_count > 1024) {
+        return detail::collect_spatial(ref, stride, width, height, cx, cy, block, bm_range, group, out,
+                                       [](const float* a, const float* b, int st, int bs) {
+                                           return SsdBlock(a, st, b, st, bs);
+                                       });
+    }
+
+    std::array<ApproxCandidate, 1024> candidates{};
+    int count = 0;
+    bool nonfinite = false;
+    const float* query = ref + cy * stride + cx;
+    const int span = right - left + 1;
+    const int samples = ApproxSampleCount(block);
+    for (int y = top; y <= bottom && !nonfinite; ++y) {
+        for (int x = left; x <= right; ++x) {
+            if (x == cx && y == cy) {
+                continue;
+            }
+            const float score = ApproxScore(query, ref + y * stride + x, stride, block, samples);
+            if (!detail::finite_distance(score)) {
+                nonfinite = true;
+                break;
+            }
+            const std::uint32_t ordinal = static_cast<std::uint32_t>((y - top) * span + (x - left) + 1);
+            candidates[static_cast<std::size_t>(count++)] = ApproxCandidate{score, x, y, ordinal};
+        }
+    }
+    if (nonfinite) {
+        return detail::collect_spatial(ref, stride, width, height, cx, cy, block, bm_range, group, out,
+                                       [](const float* a, const float* b, int st, int bs) {
+                                           return SsdBlock(a, st, b, st, bs);
+                                       });
+    }
+
+    std::nth_element(candidates.begin(), candidates.begin() + shortlist, candidates.begin() + count, ApproxLess);
+    std::sort(candidates.begin(), candidates.begin() + shortlist,
+              [](const ApproxCandidate& a, const ApproxCandidate& b) { return a.ordinal < b.ordinal; });
+    out[0] = Match{cx, cy, 0, 0.f, 0};
+    if (wanted <= 1) {
+        return 1;
+    }
+    detail::StableTopK topk(out + 1, wanted - 1);
+#if HWY_MAX_BYTES >= 32
+    const hn::FixedTag<float, 8> df8;
+    hn::Vec<decltype(df8)> ref8[8];
+    if (block == 8) {
+        for (int y = 0; y < 8; ++y) {
+            ref8[y] = hn::LoadU(df8, query + y * stride);
+        }
+    }
+#endif
+#if HWY_MAX_BYTES >= 16
+    const hn::FixedTag<float, 4> df4;
+    hn::Vec<decltype(df4)> ref4[4];
+    if (block == 4) {
+        for (int y = 0; y < 4; ++y) {
+            ref4[y] = hn::LoadU(df4, query + y * stride);
+        }
+    }
+#endif
+    auto exact_distance = [&](const ApproxCandidate& candidate) {
+        const float* patch = ref + candidate.y * stride + candidate.x;
+#if HWY_MAX_BYTES >= 32
+        if (block == 8) {
+            auto acc = hn::Zero(df8);
+            for (int y = 0; y < 8; ++y) {
+                const auto diff = hn::Sub(ref8[y], hn::LoadU(df8, patch + y * stride));
+                acc = hn::MulAdd(diff, diff, acc);
+            }
+            return HSum8(acc);
+        }
+#endif
+#if HWY_MAX_BYTES >= 16
+        if (block == 4) {
+            auto acc = hn::Zero(df4);
+            for (int y = 0; y < 4; ++y) {
+                const auto diff = hn::Sub(ref4[y], hn::LoadU(df4, patch + y * stride));
+                acc = hn::MulAdd(diff, diff, acc);
+            }
+            return hn::ReduceSum(df4, acc);
+        }
+#endif
+        return SsdBlock(query, stride, patch, stride, block);
+    };
+    for (int i = 0; i < shortlist; ++i) {
+        const auto& candidate = candidates[static_cast<std::size_t>(i)];
+        const float distance = exact_distance(candidate);
+        if (!detail::finite_distance(distance)) {
+            return detail::collect_spatial(ref, stride, width, height, cx, cy, block, bm_range, group, out,
+                                           [](const float* a, const float* b, int st, int bs) {
+                                               return SsdBlock(a, st, b, st, bs);
+                                           });
+        }
+        topk.add(Match{candidate.x, candidate.y, 0, distance, candidate.ordinal});
+    }
+    return 1 + topk.finish();
 }
 
 #if HWY_MAX_BYTES >= 32
@@ -463,6 +635,11 @@ int SpatialMatch(const float* ref, int stride, int width, int height, int bx, in
     }
     const int cx = clampi(bx, 0, max_x);
     const int cy = clampi(by, 0, max_y);
+    const int approx = ApproxShortlistSize();
+    if (approx > 0 && (block == 4 || block == 8)) {
+        return SpatialMatchApprox(ref, stride, width, height, cx, cy, block, std::max(bm_range, 0), group, approx,
+                                  out);
+    }
 #if HWY_MAX_BYTES >= 32
     if (block == 8 && group == 8) {
         return SpatialMatch8(ref, stride, width, height, cx, cy, std::max(bm_range, 0), out);
