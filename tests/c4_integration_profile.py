@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import time
@@ -79,6 +80,10 @@ def run(args):
                 for level in ('TopdownL1', 'TopdownL2', 'TopdownL3', 'counters'):
                     text = (directory / (level + '.txt')).read_text()
                     assert 'not counted' not in text and 'not supported' not in text, level
+                counters = (directory / 'counters.txt').read_text()
+                for event in ('cycles:u', 'instructions:u'):
+                    count = re.search(r'([\d,]+)\s+' + re.escape(event), counters)
+                    assert count and int(count[1].replace(',', '')) > 0, event
                 results.append(dict(name=config['name'], variant=label, config=config,
                                     seconds=time.monotonic() - start,
                                     environment=environment_delta(before, cpu_stat())))
