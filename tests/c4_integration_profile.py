@@ -21,7 +21,7 @@ def run(args):
     rows = json.loads(source.read_text())
     if args.configs:
         rows = [dict(config=c) for c in rows]
-    selected = [r for r in rows if r['config']['name'].endswith('_1080') or
+    selected = rows if args.all_configs else [r for r in rows if r['config']['name'].endswith('_1080') or
                 r['config']['name'] in ('bm3d_g32_chain', 'bm3d_motion_r1')]
     manifest = {str(p): hashlib.sha256(p.read_bytes()).hexdigest()
                 for p in [args.baseline, args.candidate, source, driver, Path(__file__),
@@ -113,4 +113,5 @@ if __name__ == '__main__':
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument('--summary', type=Path)
     source.add_argument('--configs', type=Path)
+    parser.add_argument('--all-configs', action='store_true', help='profile every explicitly supplied configuration')
     run(parser.parse_args())
