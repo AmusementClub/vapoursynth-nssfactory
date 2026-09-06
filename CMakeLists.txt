@@ -70,6 +70,7 @@ set(NSS_CPU_SOURCES
   src/cpu/batch.cpp
   src/cpu/nlm/nlm.cpp
   src/cpu/bm/ssd.cpp
+  src/cpu/bm/spatial4.cpp
   src/cpu/bm/dct8.cpp
   src/cpu/bm/match.cpp
   src/cpu/bm/pack.cpp
@@ -134,6 +135,7 @@ list(APPEND NSS_SAFE_COMPILE_OPTIONS ${NSS_CPU_ISA_OPTIONS})
 set_source_files_properties(
   src/cpu/nlm/nlm.cpp
   src/cpu/bm/ssd.cpp
+  src/cpu/bm/spatial4.cpp
   src/cpu/bm/dct8.cpp
   src/cpu/bm/agg.cpp
   src/cpu/bm/pack.cpp
