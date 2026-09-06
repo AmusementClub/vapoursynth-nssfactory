@@ -295,7 +295,7 @@ static double bench_bm3d_group(int iters) {
     float w = 1.f;
     const auto t0 = clock::now();
     for (int i = 0; i < iters; ++i) {
-        nss::bm3d_filter_group(patches.data(), area, group, group, block, 3.f / 255.f, false, nullptr, &w,
+        nss::bm3d_filter_group(patches.data(), area, group, group, block, 0.75f * 3.f / 255.f, false, nullptr, &w,
                                work.data());
     }
     volatile float sink = patches[0] + w;
@@ -323,7 +323,7 @@ static double bench_bm3d_frame(Plane& src, int iters) {
                 if (k <= 0) {
                     continue;
                 }
-                nss::bm3d_filter8(src.ptr(), src.stride, matches, k, 3.f / 255.f, false, nullptr, src.stride, num.data(),
+                nss::bm3d_filter8(src.ptr(), src.stride, matches, k, 0.75f * 3.f / 255.f, false, nullptr, src.stride, num.data(),
                                   den.data(), src.w, src.w, src.h);
             }
         }

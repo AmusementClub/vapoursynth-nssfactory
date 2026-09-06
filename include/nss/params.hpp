@@ -105,6 +105,9 @@ struct SearchConfig {
     int radius = 0;
     int ps_num = kBmDefaultPsNum;
     int ps_range = kBmDefaultPsRange;
+    // Valid slots in the fixed 2*radius+1 layout; -1 means ntemp.
+    int valid_t_begin = 0;
+    int valid_t_end = -1;
 };
 
 }  // namespace nss

@@ -8,11 +8,13 @@ namespace nss {
 
 int predictive_match(const float* const* refs, const int* strides, int ntemp, int width, int height, int bx, int by,
                      int t0, const SearchConfig& cfg, Match* out) {
-    if (!refs || !strides || !out || ntemp < 1 || t0 < 0 || t0 >= ntemp || width < 1 || height < 1 || cfg.block < 1 ||
+    if (!refs || !strides || !out || ntemp < 1 || t0 < 0 || t0 >= ntemp || width < cfg.block || height < cfg.block || cfg.block < 1 ||
         cfg.group < 1 || cfg.group > kBmMaxGroup || cfg.step < 1 || cfg.bm_range < 0 || cfg.ps_num < 1 ||
         cfg.ps_range < 0 || cfg.radius < 0 || cfg.radius > kBmMaxRadius || !refs[t0] || strides[t0] < width) {
         return 0;
     }
+    if (cfg.valid_t_begin < 0 || cfg.valid_t_begin > t0 ||
+        (cfg.valid_t_end != -1 && (cfg.valid_t_end <= t0 || cfg.valid_t_end > ntemp))) return 0;
     for (int t = 0; t < ntemp; ++t) {
         if (!refs[t] || strides[t] < width) {
             return 0;
@@ -21,39 +23,12 @@ int predictive_match(const float* const* refs, const int* strides, int ntemp, in
     const int block = cfg.block;
     const int group = cfg.group;
     int n = spatial_match(refs[t0], strides[t0], width, height, bx, by, block, cfg.bm_range, group, out);
-    std::uint32_t next_ordinal = 0;
-    detail::assign_temporal_order(out, n, t0, t0, next_ordinal);
-    if (ntemp <= 1 || cfg.radius <= 0 || n <= 0) {
-        return n;
-    }
-
-    detail::StableTopK topk(out, group);
-    topk.adopt(n);
-    int px = out[0].x;
-    int py = out[0].y;
-    for (int dt = 1; dt <= cfg.radius; ++dt) {
-        for (int sign = -1; sign <= 1; sign += 2) {
-            const int t = t0 + sign * dt;
-            if (t < 0 || t >= ntemp) {
-                continue;
-            }
-            Match local[kBmMaxGroup];
-            const int got = spatial_match(refs[t], strides[t], width, height, px, py, block, cfg.ps_range,
-                                          std::min(cfg.ps_num + 1, group), local);
-            for (int i = 0; i < got; ++i) {
-                local[i].t = t;
-                // spatial_match has already assigned the original traversal
-                // ordinal; only add the temporal frame component here.
-                detail::assign_temporal_order(local + i, 1, t, t0, next_ordinal);
-                topk.add(local[i]);
-            }
-            if (got > 0) {
-                px = local[0].x;
-                py = local[0].y;
-            }
-        }
-    }
-    return topk.finish();
+    const int cx = std::clamp(bx, 0, width - block);
+    const int cy = std::clamp(by, 0, height - block);
+    const float* reference = refs[t0] + cy * strides[t0] + cx;
+    return detail::collect_temporal(width, height, t0, ntemp, cfg, out, n, [&](int t, int x, int y) {
+        return ssd_block(reference, strides[t0], refs[t] + y * strides[t] + x, strides[t], block);
+    });
 }
 
 }  // namespace nss

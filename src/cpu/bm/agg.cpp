@@ -142,6 +142,33 @@ void VAggReduce(float* dst, const float* fat, const float* src, int width, int h
     }
 }
 
+void VAggTarget(float* dst, const float* const* nums, const float* const* dens, const int* strides,
+                       int count, const float* src, int width, int height, int dstride, int sstride) {
+    const hn::ScalableTag<float> d;
+    const int lanes = static_cast<int>(hn::Lanes(d));
+    for (int y=0; y<height; ++y) {
+        int x=0;
+        for (; x+lanes<=width; x+=lanes) {
+            auto num=hn::Zero(d), den=hn::Zero(d);
+            for (int c=0; c<count; ++c) {
+                num=hn::Add(num,hn::LoadU(d,nums[c]+y*strides[c]+x));
+                den=hn::Add(den,hn::LoadU(d,dens[c]+y*strides[c]+x));
+            }
+            auto ok=hn::Gt(den,hn::Set(d,1e-12f));
+            auto safe=hn::IfThenElse(ok,den,hn::Set(d,1.f));
+            // Disabled planes contribute one exact identity slice. Preserve
+            // that identity even when the ISA's division uses a reciprocal.
+            auto normalized=hn::IfThenElse(hn::Eq(den,hn::Set(d,1.f)),num,hn::Div(num,safe));
+            hn::StoreU(hn::IfThenElse(ok,normalized,hn::LoadU(d,src+y*sstride+x)),d,dst+y*dstride+x);
+        }
+        for (;x<width;++x) {
+            float num=0,den=0;
+            for(int c=0;c<count;++c){num+=nums[c][y*strides[c]+x];den+=dens[c][y*strides[c]+x];}
+            dst[y*dstride+x]=den>1e-12f ? num/den : src[y*sstride+x];
+        }
+    }
+}
+
 }  // namespace HWY_NAMESPACE
 }  // namespace nss
 HWY_AFTER_NAMESPACE();
@@ -150,6 +177,12 @@ HWY_AFTER_NAMESPACE();
 namespace nss {
 HWY_EXPORT(AggFinish);
 HWY_EXPORT(VAggReduce);
+HWY_EXPORT(VAggTarget);
+void vaggregate_target(float* dst, const float* const* nums, const float* const* dens, const int* strides,
+                       int count, const float* src, int width, int height, int dstride, int sstride) {
+    HWY_DYNAMIC_DISPATCH(VAggTarget)(dst,nums,dens,strides,count,src,width,height,dstride,sstride);
+}
+
 
 void aggregate_add(float* num, float* den, int stride, int x, int y,
                    const float* patch, int block, int width, int height, float w) {

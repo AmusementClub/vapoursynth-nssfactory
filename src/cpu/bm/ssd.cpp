@@ -214,6 +214,22 @@ static int SpatialMatch8(const float* ref, int stride, int width, int height, in
         const float* row = ref + y * stride;
         int x = left;
         for (; x + 1 <= right; x += 2) {
+#if NSS_BM_EXPERIMENT & 1024
+            // The normalized DC coefficient is sum(a-b)/8, so its square
+            // lower-bounds the complete 8x8 SSD. Double accumulation and an
+            // outward margin preserve cutoff/tie competitors. This opt-in
+            // prototype measures the bound's construction cost as well.
+            if (filled == 8) {
+                double sum0=0, sum1=0;
+                for (int iy=0; iy<8; ++iy) for (int ix=0; ix<8; ++ix) {
+                    const double a=static_cast<double>(self[iy*stride+ix]);
+                    sum0 += a-static_cast<double>(row[x+iy*stride+ix]);
+                    sum1 += a-static_cast<double>(row[x+1+iy*stride+ix]);
+                }
+                const double cutoff=static_cast<double>(worst)*(1.0+2e-5)+1e-12;
+                if (sum0*sum0/64>cutoff && sum1*sum1/64>cutoff) continue;
+            }
+#endif
             auto a00 = hn::Zero(df);
             auto a01 = hn::Zero(df);
             auto a02 = hn::Zero(df);
@@ -222,6 +238,9 @@ static int SpatialMatch8(const float* ref, int stride, int width, int height, in
             auto a11 = hn::Zero(df);
             auto a12 = hn::Zero(df);
             auto a13 = hn::Zero(df);
+#if NSS_BM_EXPERIMENT & 32
+            bool rejected=false;
+#endif
             for (int i = 0; i < 8; i += 4) {
                 const auto d00 = hn::Sub(refb[i], hn::LoadU(df, row + x + i * stride));
                 const auto d01 = hn::Sub(refb[i + 1], hn::LoadU(df, row + x + (i + 1) * stride));
@@ -239,7 +258,18 @@ static int SpatialMatch8(const float* ref, int stride, int width, int height, in
                 a11 = hn::MulAdd(d11, d11, a11);
                 a12 = hn::MulAdd(d12, d12, a12);
                 a13 = hn::MulAdd(d13, d13, a13);
+#if NSS_BM_EXPERIMENT & 32
+                if(i==0&&filled==8){
+                    float p0=HSum8(hn::Add(hn::Add(a00,a02),hn::Add(a01,a03)));
+                    float p1=HSum8(hn::Add(hn::Add(a10,a12),hn::Add(a11,a13)));
+                    float bound=worst*(1.f+2e-5f)+1e-12f;
+                    if(detail::finite_distance(p0)&&detail::finite_distance(p1)&&p0>bound&&p1>bound){rejected=true;break;}
+                }
+#endif
             }
+#if NSS_BM_EXPERIMENT & 32
+            if(rejected)continue;
+#endif
             const float dist0 = HSum8(hn::Add(hn::Add(a00, a02), hn::Add(a01, a03)));
             const float dist1 = HSum8(hn::Add(hn::Add(a10, a12), hn::Add(a11, a13)));
             consider(x, y, dist0);
@@ -314,6 +344,9 @@ static int SpatialMatch8(const float* ref, int stride, int width, int height, in
 
 // Same hoisted 8x8 SSD as SpatialMatch8, but top-k length follows group.
 // group==8 keeps the lane-sorted path above; this is only the K-generic sibling.
+#if NSS_BM_EXPERIMENT & 1
+template <class TopK>
+#endif
 static int SpatialMatch8Ssd(const float* ref, int stride, int width, int height, int cx, int cy, int bm_range,
                             int group, Match* out) {
     const hn::FixedTag<float, 8> df;
@@ -340,7 +373,11 @@ static int SpatialMatch8Ssd(const float* ref, int stride, int width, int height,
                                        });
     };
 
-    detail::StableTopK topk(out + 1, wanted - 1);
+#if NSS_BM_EXPERIMENT & 1
+    TopK topk(out + 1, wanted - 1);
+#else
+    detail::CandidateTopK topk(out + 1, wanted - 1);
+#endif
     bool nonfinite = false;
     const int span = right - left + 1;
     auto consider = [&](int x, int y, float dist) {
@@ -406,7 +443,18 @@ int SpatialMatch(const float* ref, int stride, int width, int height, int bx, in
 #endif
     }
     if (block == 8) {
+#if (NSS_BM_EXPERIMENT & 1) && HWY_MAX_BYTES >= 64
+        if (group >= 16) {
+            return SpatialMatch8Ssd<detail::SpatialSortedTopK>(
+                ref, stride, width, height, cx, cy, std::max(bm_range, 0), group, out);
+        }
+#endif
+#if NSS_BM_EXPERIMENT & 1
+        return SpatialMatch8Ssd<detail::CandidateTopK>(
+            ref, stride, width, height, cx, cy, std::max(bm_range, 0), group, out);
+#else
         return SpatialMatch8Ssd(ref, stride, width, height, cx, cy, std::max(bm_range, 0), group, out);
+#endif
     }
 #endif
 #if HWY_MAX_BYTES >= 16
@@ -481,6 +529,7 @@ float ssd_nch(const float* const* a, const int* sa, const float* const* b, const
 
 int spatial_match(const float* ref, int stride, int width, int height, int bx, int by, int block, int bm_range,
                   int group, Match* out) {
+
     return HWY_DYNAMIC_DISPATCH(SpatialMatch)(ref, stride, width, height, bx, by, block, bm_range, group, out);
 }
 

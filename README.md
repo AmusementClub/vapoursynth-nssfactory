@@ -33,8 +33,8 @@ core.nss.Version()  # returns version:data
 With `radius = 0`, BM3D returns a normal-height spatial result and `temporal_mode="rolling"` has no
 effect. With `radius > 0`, the default/`legacy` route returns the weighted intermediate for an explicit
 `VAggregate`; `temporal_mode="rolling"` is an experimental route that returns a normalized normal-height
-result directly. Current CPU rolling is slower than legacy on the formal C4 workloads, but the mode is
-retained because chunked rolling has a useful GPU execution model. Other temporal filters also expose
+result directly. Earlier C4 workloads measured the pre-correction rolling route slower than legacy.
+The corrected route remains experimental pending its new paired performance gate. Other temporal filters also expose
 their weighted intermediate directly when `radius > 0`.
 
 BM3D accepts `block_size` values 1, 2, 4, 8, 12, 16, and 32. The 12-point path is intended for
@@ -53,6 +53,17 @@ cmake --build build -j
 
 Install `libnss.so` into the VapourSynth plugin directory.
 
+Fresh builds select `NSS_BM_EXPERIMENT=2305`: AVX3 SortedTopK for b8 groups of
+at least 16, BM3D patch/work reuse, and rolling target-ring/direct-scratch
+aggregation. The ordinary spatial b8/g8 route is largely unchanged. Existing
+CMake caches retain their previous setting; use `-DNSS_BM_EXPERIMENT=2305`
+to select the new combination, or `=0` for the pure-correctness reference.
+Cached-worst remains an alternative (`=2`); it cannot be combined with SortedTopK.
+See [bounded C4 selection](docs/c4-selection-20260906.md) for measured algorithm,
+group-size and temporal cases. Rolling remains explicitly requested through
+`temporal_mode="rolling"`; its improvements here are relative to unoptimized
+rolling, not a claim that it is faster than legacy mode.
+
 ## License
 
 GPLv2. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
@@ -62,3 +73,21 @@ by [FFTW](https://www.fftw.org/) genfft (`gen_r2r`) and are distributed under
 GPLv2 or later. Copyright (c) 1997-1999, 2003, 2007-14 Massachusetts Institute
 of Technology and Matteo Frigo. They are mapped onto Highway and are not linked
 against `libfftw3`. Regenerate with `tools/gen_dct_codelets.sh`.
+
+### BM3D effective sigma and temporal contract
+
+BM3D kernels use `sigma_eff = 0.75 * sigma_user / 255` for both Basic and Wiener.
+The public default remains sigma=3 and bm_range=7. Only the scaled 8x8x8 kernel
+converts effective noise to its coefficient scale (64); its inverse scale is 4096.
+Changing block/group/search/temporal settings can change output, even at the same
+sigma. This is a parameter calibration contract, not pixelwise BM3DCPU equality.
+
+Temporal matching compares every candidate against the original center reference,
+with independent forward/backward prediction and unique candidates. Only actual
+frames participate at clip boundaries. The fixed-height fat layout is unchanged:
+center c, slice t-c+radius contains the contribution to target t. VAggregate now
+collects the target slice from all valid centers n-radius through n+radius. Zero
+sigma writes identity only in the center slice; zero total weight copies src[n].
+The shared single- and multichannel matcher fixes also affect other temporal NSS
+filters. Existing intermediates should be regenerated with the same plugin build.
+Rolling still returns normal-height output directly and remains experimental.

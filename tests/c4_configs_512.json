@@ -1,0 +1,44 @@
+[
+  {
+    "sample": "/opt/nss-c4/samples/gray8/MAPPA.gray8",
+    "frames": 2,
+    "name": "mask512_basic",
+    "kwargs": {
+      "sigma": 3,
+      "bm_range": 7,
+      "block_step": 8,
+      "block_size": 8,
+      "group_size": 16
+    },
+    "stage": "basic",
+    "warmup": 2
+  },
+  {
+    "sample": "/opt/nss-c4/samples/gray8/MAPPA.gray8",
+    "frames": 2,
+    "name": "mask512_wiener",
+    "kwargs": {
+      "sigma": 3,
+      "bm_range": 7,
+      "block_step": 8,
+      "block_size": 8,
+      "group_size": 16
+    },
+    "stage": "wiener",
+    "warmup": 2
+  },
+  {
+    "sample": "/opt/nss-c4/samples/gray8/MAPPA.gray8",
+    "frames": 2,
+    "name": "mask512_two_stage",
+    "kwargs": {
+      "sigma": 3,
+      "bm_range": 7,
+      "block_step": 8,
+      "block_size": 8,
+      "group_size": 16
+    },
+    "stage": "two_stage",
+    "warmup": 2
+  }
+]

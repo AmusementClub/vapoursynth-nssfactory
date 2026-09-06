@@ -1,4 +1,5 @@
 #include "host/filters.hpp"
+#include "host/temporal.hpp"
 #include "host/batch_runner.hpp"
 #include "host/validate.hpp"
 #include "nss/avx2.hpp"
@@ -47,7 +48,7 @@ struct WnnmBatchResult {
 void process_plane_batched(const float* const* srcs, const float* const* refs, int ntemp, int t0, float* dst,
                            int width, int height, int sstride, int dstride, float sigma, int block, int group, int step,
                            int bm_range, int ps_num, int ps_range, int radius, int residual, int adaptive,
-                           bool emit_fat, float* scratch) {
+                           bool emit_fat, float* scratch, int center, int frame_count) {
     const int slices = 2 * radius + 1;
     const std::size_t plane_size = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
     float* num = scratch;
@@ -61,6 +62,8 @@ void process_plane_batched(const float* const* srcs, const float* const* refs, i
     cfg.group = group;
     cfg.bm_range = bm_range;
     cfg.radius = radius;
+    cfg.valid_t_begin = std::max(0, radius - center);
+    cfg.valid_t_end = radius + std::min(radius + 1, frame_count - center);
     cfg.ps_num = ps_num;
     cfg.ps_range = ps_range;
     int strides[nss::kBmMaxRadius * 2 + 1]{};
@@ -178,7 +181,7 @@ const VSFrame* VS_CC wnnmGetFrame(int n, int activationReason, void* instanceDat
     (void)frameData;
     if (activationReason == arInitial) {
         const int start = std::max(0, n - d->radius);
-        const int end = std::min(n + d->radius, d->vi.numFrames - 1);
+        const int end = nss::host_detail::temporal_last(n,d->radius,d->vi.numFrames);
         for (int i = start; i <= end; ++i) {
             vsapi->requestFrameFilter(i, d->node, frameCtx);
             if (d->rclip) {
@@ -197,7 +200,7 @@ const VSFrame* VS_CC wnnmGetFrame(int n, int activationReason, void* instanceDat
     std::vector<const VSFrame*> srcf(static_cast<std::size_t>(ntemp));
     std::vector<const VSFrame*> reff(static_cast<std::size_t>(ntemp));
     for (int t = 0; t < ntemp; ++t) {
-        const int fn = std::clamp(n - d->radius + t, 0, d->vi.numFrames - 1);
+        const int fn = nss::host_detail::temporal_slot_frame(n,t,d->radius,d->vi.numFrames);
         srcf[static_cast<std::size_t>(t)] = vsapi->getFrameFilter(fn, d->node, frameCtx);
         reff[static_cast<std::size_t>(t)] = vsapi->getFrameFilter(fn, d->rclip ? d->rclip : d->node, frameCtx);
     }
@@ -215,10 +218,9 @@ const VSFrame* VS_CC wnnmGetFrame(int n, int activationReason, void* instanceDat
         float* outp = reinterpret_cast<float*>(vsapi->getWritePtr(dst, plane));
         const float* srcp = reinterpret_cast<const float*>(vsapi->getReadPtr(src0, plane));
         if (d->sigma[plane] == 0.f) {
-            for (int y = 0; y < (fat ? ph * ntemp * 2 : ph); ++y) {
-                const float* row = srcp + (y % ph) * sstride;
-                std::memcpy(outp + y * dstride, row, static_cast<std::size_t>(pw) * sizeof(float));
-            }
+            if (fat) nss::host_detail::temporal_identity(outp, dstride, srcp, sstride, pw, ph, d->radius);
+            else for (int y=0; y<ph; ++y)
+                std::memcpy(outp+y*dstride, srcp+y*sstride, pw*sizeof(float));
             continue;
         }
 
@@ -239,7 +241,7 @@ const VSFrame* VS_CC wnnmGetFrame(int n, int activationReason, void* instanceDat
         float* scratch = d->ws.get(need);
         process_plane_batched(srcs.data(), refs.data(), ntemp, t0, outp, pw, ph, sstride, dstride,
                               d->sigma[plane] / 255.f, block, group, d->block_step, d->bm_range, d->ps_num,
-                              d->ps_range, d->radius, d->residual, d->adaptive, fat, scratch);
+                              d->ps_range, d->radius, d->residual, d->adaptive, fat, scratch, n, d->vi.numFrames);
     }
 
     for (int t = 0; t < ntemp; ++t) {

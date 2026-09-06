@@ -79,3 +79,22 @@ if(NSS_BM_KERNEL_LAB)
   add_test(NAME test_match8_lab COMMAND bench_match8 verify)
   set_tests_properties(test_match8_lab PROPERTIES SKIP_RETURN_CODE 77)
 endif()
+
+add_executable(test_bm3d_contract test_bm3d_contract.cpp)
+target_link_libraries(test_bm3d_contract PRIVATE nss_cpu)
+target_include_directories(test_bm3d_contract PRIVATE "${PROJECT_SOURCE_DIR}/include" "${PROJECT_SOURCE_DIR}/src")
+add_test(NAME test_bm3d_contract COMMAND test_bm3d_contract)
+
+add_executable(bm3d_stage_probe bm3d_stage_probe.cpp)
+target_link_libraries(bm3d_stage_probe PRIVATE nss_cpu)
+target_include_directories(bm3d_stage_probe PRIVATE "${PROJECT_SOURCE_DIR}/include")
+
+add_executable(bm_topk_trace bm_topk_trace.cpp)
+target_link_libraries(bm_topk_trace PRIVATE nss_cpu)
+target_include_directories(bm_topk_trace PRIVATE "${PROJECT_SOURCE_DIR}/include" "${PROJECT_SOURCE_DIR}/src")
+target_compile_options(bm_topk_trace PRIVATE -O3)
+
+add_executable(bm_sliding_trace bm_sliding_trace.cpp)
+target_link_libraries(bm_sliding_trace PRIVATE nss_cpu)
+target_include_directories(bm_sliding_trace PRIVATE "${PROJECT_SOURCE_DIR}/include" "${PROJECT_SOURCE_DIR}/src")
+target_compile_options(bm_sliding_trace PRIVATE -O3)
