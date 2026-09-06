@@ -33,8 +33,8 @@ core.nss.Version()  # returns version:data
 With `radius = 0`, BM3D returns a normal-height spatial result and `temporal_mode="rolling"` has no
 effect. With `radius > 0`, the default/`legacy` route returns the weighted intermediate for an explicit
 `VAggregate`; `temporal_mode="rolling"` is an experimental route that returns a normalized normal-height
-result directly. Current CPU rolling is slower than legacy on the formal C4 workloads, but the mode is
-retained because chunked rolling has a useful GPU execution model. Other temporal filters also expose
+result directly. Earlier C4 workloads measured the pre-correction rolling route slower than legacy.
+The corrected route remains experimental pending its new paired performance gate. Other temporal filters also expose
 their weighted intermediate directly when `radius > 0`.
 
 BM3D accepts `block_size` values 1, 2, 4, 8, 12, 16, and 32. The 12-point path is intended for
@@ -52,6 +52,17 @@ cmake --build build -j
 ```
 
 Install `libnss.so` into the VapourSynth plugin directory.
+
+Fresh builds select `NSS_BM_EXPERIMENT=2305`: AVX3 SortedTopK for b8 groups of
+at least 16, BM3D patch/work reuse, and rolling target-ring/direct-scratch
+aggregation. The ordinary spatial b8/g8 route is largely unchanged. Existing
+CMake caches retain their previous setting; use `-DNSS_BM_EXPERIMENT=2305`
+to select the new combination, or `=0` for the pure-correctness reference.
+Cached-worst remains an alternative (`=2`); it cannot be combined with SortedTopK.
+See [bounded C4 selection](docs/c4-selection-20260906.md) for measured algorithm,
+group-size and temporal cases. Rolling remains explicitly requested through
+`temporal_mode="rolling"`; its improvements here are relative to unoptimized
+rolling, not a claim that it is faster than legacy mode.
 
 ## License
 

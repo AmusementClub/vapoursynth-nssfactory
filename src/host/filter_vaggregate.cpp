@@ -1,4 +1,5 @@
 #include "host/filters.hpp"
+#include "host/temporal.hpp"
 #include "host/validate.hpp"
 #include "nss/avx2.hpp"
 #include "nss/cpu_api.hpp"
@@ -27,7 +28,7 @@ const VSFrame* VS_CC vaggGetFrame(int n, int activationReason, void* instanceDat
     auto* d = static_cast<VAggData*>(instanceData);
     (void)frameData;
     if (activationReason == arInitial) {
-        for(int c=std::max(0,n-d->radius);c<=std::min(d->vi_src.numFrames-1,n+d->radius);++c)
+        for(int c=std::max(0,n-d->radius);c<=nss::host_detail::temporal_last(n,d->radius,d->vi_src.numFrames);++c)
             vsapi->requestFrameFilter(c,d->clip,frameCtx);
         vsapi->requestFrameFilter(n, d->src, frameCtx);
         return nullptr;
@@ -36,7 +37,7 @@ const VSFrame* VS_CC vaggGetFrame(int n, int activationReason, void* instanceDat
         return nullptr;
     }
     const int first=std::max(0,n-d->radius);
-    const int last=std::min(d->vi_src.numFrames-1,n+d->radius);
+    const int last=nss::host_detail::temporal_last(n,d->radius,d->vi_src.numFrames);
     std::vector<const VSFrame*> frames;
     for(int c=first;c<=last;++c) frames.push_back(vsapi->getFrameFilter(c,d->clip,frameCtx));
     const VSFrame* src = vsapi->getFrameFilter(n, d->src, frameCtx);

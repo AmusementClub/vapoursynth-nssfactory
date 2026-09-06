@@ -28,6 +28,11 @@ template <typename Item, typename Less>
 std::vector<int> bucket_order(const Item* items, int count, Less less) {
     std::vector<int> order(static_cast<std::size_t>(count));
     std::iota(order.begin(), order.end(), 0);
+#if NSS_BM_HOMOGENEOUS
+    bool homogeneous=true;
+    for(int i=1;i<count;++i)if(less(items[0],items[i])||less(items[i],items[0])){homogeneous=false;break;}
+    if(homogeneous)return order;
+#endif
     std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
         if (less(items[a], items[b])) {
             return true;
@@ -442,6 +447,13 @@ int bm3d_filter_group_batch(Bm3dFilterBatchItem* items, int count) {
     for (int i = 0; i < count; ++i) {
         set_status(items[i], 0);
     }
+#if NSS_BM_HOMOGENEOUS
+    bool homogeneous=count>0;
+    for(int i=0;i<count;++i){const auto& p=items[i];const auto& q=items[0];
+        if(!p.patches||!p.weight||!p.work||p.block<1||p.group<1||p.k<1||p.k>p.group||p.lda<p.block*p.block||(p.wiener&&!p.ref_patches)||p.block!=q.block||p.group!=q.group||p.wiener!=q.wiener)homogeneous=false;
+    }
+    if(homogeneous){bm3d_filter_homogeneous_batch(items,count);return 0;}
+#endif
     const auto order = bucket_order(items, count, [](const Bm3dFilterBatchItem& a, const Bm3dFilterBatchItem& b) {
         if (a.block != b.block) {
             return a.block < b.block;
@@ -474,8 +486,13 @@ int bm3d_filter_group_batch(Bm3dFilterBatchItem* items, int count) {
             }
             continue;
         }
+#if NSS_BM_EXPERIMENT & 128
+        bm3d_filter_group_keyed(item.patches, item.lda, item.group, item.k, item.block, item.sigma, item.wiener,
+                          item.wiener ? item.ref_patches : nullptr, item.weight, item.work,item.keys,item.ref_keys);
+#else
         bm3d_filter_group(item.patches, item.lda, item.group, item.k, item.block, item.sigma, item.wiener,
                           item.wiener ? item.ref_patches : nullptr, item.weight, item.work);
+#endif
         set_status(item, 1);
     }
     return first_error;

@@ -1,3 +1,5 @@
+#include "host/temporal.hpp"
+#include <limits>
 #include "nss/cpu_api.hpp"
 #include "nss/cpu_mcwnnm.hpp"
 #include <algorithm>
@@ -52,7 +54,19 @@ void kernels(){
   for(int g=0;g<k;++g)for(int y=0;y<8;++y)for(int x=0;x<8;++x){int i=y*w+g*8+x;near(den[i],weight,1e-5,"fused weight");near(num[i]/den[i],v[g*64+y*8+x],3e-5,"fused sigma output");}
  }
 }
+void aliased_reference(){
+    std::vector<float> p(512),q,ref,w0(bm3d_filter_work_floats(8,8)),w1(w0.size());
+    for(int i=0;i<512;++i)p[i]=.3f+.02f*std::sin(i*.7f);
+    q=p;ref=p;float a,b;
+    bm3d_filter_group(p.data(),64,8,8,8,.015f,true,p.data(),&a,w0.data());
+    bm3d_filter_group(q.data(),64,8,8,8,.015f,true,ref.data(),&b,w1.data());
+    near(a,b,1e-7,"alias weight");for(int i=0;i<512;++i)near(p[i],q[i],1e-6,"aliased reference input");
+}
 void matching(){
+ const int length=std::numeric_limits<int>::max();
+ require(host_detail::temporal_last(length-2,16,length)==length-1,"large frame end overflow");
+ require(host_detail::temporal_slot_frame(length-2,32,16,length)==length-1,"large slot overflow");
+ require(host_detail::temporal_first(0,16)==0,"first frame bound");
  float a[64],b[72],c[80];std::fill_n(a,64,1.f);std::fill_n(b,72,0.f);std::fill_n(c,80,2.f);
  const float* refs[]={a,b,c};int strides[]={8,9,10};Match out[64];SearchConfig cfg;cfg.block=8;cfg.group=8;cfg.radius=1;cfg.bm_range=0;cfg.ps_range=0;cfg.ps_num=2;
  int n=predictive_match(refs,strides,3,8,8,0,0,1,cfg,out);require(n==3,"three actual frames");
@@ -60,6 +74,17 @@ void matching(){
  cfg.valid_t_begin=1;n=predictive_match(refs,strides,3,8,8,0,0,1,cfg,out);require(n==2,"clamped slot skipped");cfg.valid_t_begin=0;
  const float* rgb[9]={a,a,a,b,b,b,c,c,c};int st[3]={8,9,10};
  n=predictive_match_nch(rgb,st,3,3,8,8,0,0,1,cfg,out);require(n==3,"RGB unique frames");for(int i=0;i<n;++i)near(out[i].dist,0,0,"static RGB zero distance");
+ std::array<std::vector<float>,9> rgb_motion;
+ std::array<const float*,9> rgb_views;
+ const float levels[3]={1.f,0.f,2.f};
+ for(int ch=0;ch<3;++ch)for(int t=0;t<3;++t){
+  auto& v=rgb_motion[ch*3+t];v.assign(st[ch]*8,-100.f);
+  for(int y=0;y<8;++y)for(int x=0;x<8;++x)v[y*st[ch]+x]=levels[t]*(ch+1);
+  rgb_views[ch*3+t]=v.data();
+ }
+ n=predictive_match_nch(rgb_views.data(),st,3,3,8,8,0,0,1,cfg,out);
+ require(n==3,"RGB moving real frames");
+ for(int i=0;i<n;++i)near(out[i].dist,out[i].t==0?896:out[i].t==1?0:3584,0,"RGB mixed-stride temporal SSD");
  // Each layer has a distinct translated image; opposite directions diverge.
  int w=40,h=24;std::array<std::vector<float>,5> frames;std::array<const float*,5>p;int ss[]={40,40,40,40,40};
  for(int t=0;t<5;++t){frames[t].resize(w*h);int shift=(t-2)*2;for(int y=0;y<h;++y)for(int x=0;x<w;++x)frames[t][y*w+x]=float(std::sin((x-shift)*.91+y*.73));p[t]=frames[t].data();}
@@ -69,10 +94,16 @@ void matching(){
  for(bool f:found)require(f,"directional motion advance");
 }
 void aggregation(){
+ {
+  std::vector<float> values(64,.05f),weights(64,1.f),dst(64),source(64,.7f);
+  const float* nums[]={values.data()};const float* dens[]={weights.data()};int strides[]={64};
+  vaggregate_target(dst.data(),nums,dens,strides,1,source.data(),64,1,64,64);
+  require(dst==values,"unit-weight aggregation must preserve identity exactly");
+ }
  for(int count:{1,2,3,9,33}){int w=19,h=3,ds=23,ss=25;std::vector<std::vector<float>> n(count),d(count);std::vector<const float*>np(count),dp(count);std::vector<int>st(count);std::vector<float>src(ss*h,.27f),dst(ds*h,-9.f);
   for(int c=0;c<count;++c){st[c]=w+c+1;n[c].resize(st[c]*h);d[c].resize(st[c]*h);for(int y=0;y<h;++y)for(int x=0;x<w;++x){n[c][y*st[c]+x]=float((c+1)*(x+y));d[c][y*st[c]+x]=x?float(c+1):0;}np[c]=n[c].data();dp[c]=d[c].data();}
   vaggregate_target(dst.data(),np.data(),dp.data(),st.data(),count,src.data(),w,h,ds,ss);
-  for(int y=0;y<h;++y){for(int x=0;x<w;++x)near(dst[y*ds+x],x?x+y:.27f,1e-6,"target slices/stride/fallback");for(int x=w;x<ds;++x)require(dst[y*ds+x]==-9.f,"output padding");}
+  for(int y=0;y<h;++y){for(int x=0;x<w;++x){double expected=x?x+y:.27f;near(dst[y*ds+x],expected,2*std::numeric_limits<float>::epsilon()*std::max(1.,std::abs(expected)),"target slices/stride/fallback");}for(int x=w;x<ds;++x)require(dst[y*ds+x]==-9.f,"output padding");}
  }
 }
-int main(){try{matching();aggregation();kernels();std::puts("BM3D independent contracts passed");return 0;}catch(const std::exception&e){std::fprintf(stderr,"%s\n",e.what());return 1;}}
+int main(){try{matching();aggregation();kernels();aliased_reference();std::puts("BM3D independent contracts passed");return 0;}catch(const std::exception&e){std::fprintf(stderr,"%s\n",e.what());return 1;}}

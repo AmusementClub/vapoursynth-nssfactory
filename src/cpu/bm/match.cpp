@@ -13,6 +13,8 @@ int predictive_match(const float* const* refs, const int* strides, int ntemp, in
         cfg.ps_range < 0 || cfg.radius < 0 || cfg.radius > kBmMaxRadius || !refs[t0] || strides[t0] < width) {
         return 0;
     }
+    if (cfg.valid_t_begin < 0 || cfg.valid_t_begin > t0 ||
+        (cfg.valid_t_end != -1 && (cfg.valid_t_end <= t0 || cfg.valid_t_end > ntemp))) return 0;
     for (int t = 0; t < ntemp; ++t) {
         if (!refs[t] || strides[t] < width) {
             return 0;

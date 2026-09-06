@@ -207,6 +207,10 @@ struct Bm3dFilterBatchItem {
     float* weight = nullptr;
     float* work = nullptr;
     int* status = nullptr;
+#if NSS_BM_EXPERIMENT & 128
+    const Bm3dPatchKey* keys = nullptr;
+    const Bm3dPatchKey* ref_keys = nullptr;
+#endif
 };
 
 // Applies independent BM3D group transforms in stable dimension buckets.
@@ -298,3 +302,13 @@ struct NlhFilterBatchItem {
 int nlh_filter_group_batch(NlhFilterBatchItem* items, int count);
 
 }  // namespace nss
+
+namespace nss {
+// Validated homogeneous batches, one ISA dispatch.
+#if NSS_BM_HOMOGENEOUS
+void bm3d_filter_homogeneous_batch(Bm3dFilterBatchItem* items,int count);
+#endif
+#if NSS_BM_EXPERIMENT & 128
+void bm3d_cache_epoch();
+#endif
+}

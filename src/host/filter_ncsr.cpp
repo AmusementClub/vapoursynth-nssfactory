@@ -42,7 +42,7 @@ const VSFrame* VS_CC ncsrGetFrame(int n, int activationReason, void* instanceDat
     (void)frameData;
     if (activationReason == arInitial) {
         const int start = std::max(0, n - d->radius);
-        const int end = std::min(n + d->radius, d->vi.numFrames - 1);
+        const int end = nss::host_detail::temporal_last(n,d->radius,d->vi.numFrames);
         for (int i = start; i <= end; ++i) {
             vsapi->requestFrameFilter(i, d->node, frameCtx);
             if (d->rclip) {
@@ -61,7 +61,7 @@ const VSFrame* VS_CC ncsrGetFrame(int n, int activationReason, void* instanceDat
     std::vector<const VSFrame*> srcf(static_cast<std::size_t>(ntemp));
     std::vector<const VSFrame*> reff(static_cast<std::size_t>(ntemp));
     for (int t = 0; t < ntemp; ++t) {
-        const int fn = std::clamp(n - d->radius + t, 0, d->vi.numFrames - 1);
+        const int fn = nss::host_detail::temporal_slot_frame(n,t,d->radius,d->vi.numFrames);
         srcf[static_cast<std::size_t>(t)] = vsapi->getFrameFilter(fn, d->node, frameCtx);
         reff[static_cast<std::size_t>(t)] = vsapi->getFrameFilter(fn, d->rclip ? d->rclip : d->node, frameCtx);
     }
@@ -136,7 +136,7 @@ const VSFrame* VS_CC ncsrGetFrame(int n, int activationReason, void* instanceDat
         cfg.bm_range = d->bm_range;
         cfg.radius = d->radius;
         cfg.valid_t_begin = std::max(0, d->radius - n);
-        cfg.valid_t_end = std::min(ntemp, d->radius + d->vi.numFrames - n);
+        cfg.valid_t_end = d->radius + std::min(d->radius + 1, d->vi.numFrames - n);
         cfg.ps_num = d->ps_num;
         cfg.ps_range = d->ps_range;
 

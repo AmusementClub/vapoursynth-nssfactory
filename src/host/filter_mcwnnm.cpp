@@ -51,7 +51,7 @@ const VSFrame* VS_CC mcwnnmGetFrame(int n, int activationReason, void* instanceD
     (void)frameData;
     if (activationReason == arInitial) {
         const int start = std::max(0, n - d->radius);
-        const int end = std::min(n + d->radius, d->vi.numFrames - 1);
+        const int end = nss::host_detail::temporal_last(n,d->radius,d->vi.numFrames);
         for (int i = start; i <= end; ++i) {
             vsapi->requestFrameFilter(i, d->node, frameCtx);
             if (d->rclip) {
@@ -70,7 +70,7 @@ const VSFrame* VS_CC mcwnnmGetFrame(int n, int activationReason, void* instanceD
     std::vector<const VSFrame*> srcf(static_cast<std::size_t>(ntemp));
     std::vector<const VSFrame*> reff(static_cast<std::size_t>(ntemp));
     for (int t = 0; t < ntemp; ++t) {
-        const int fn = std::clamp(n - d->radius + t, 0, d->vi.numFrames - 1);
+        const int fn = nss::host_detail::temporal_slot_frame(n,t,d->radius,d->vi.numFrames);
         srcf[static_cast<std::size_t>(t)] = vsapi->getFrameFilter(fn, d->node, frameCtx);
         reff[static_cast<std::size_t>(t)] = vsapi->getFrameFilter(fn, d->rclip ? d->rclip : d->node, frameCtx);
     }
@@ -142,7 +142,7 @@ const VSFrame* VS_CC mcwnnmGetFrame(int n, int activationReason, void* instanceD
     cfg.bm_range = d->bm_range;
     cfg.radius = d->radius;
         cfg.valid_t_begin = std::max(0, d->radius - n);
-        cfg.valid_t_end = std::min(ntemp, d->radius + d->vi.numFrames - n);
+        cfg.valid_t_end = d->radius + std::min(d->radius + 1, d->vi.numFrames - n);
     cfg.ps_num = d->ps_num;
     cfg.ps_range = d->ps_range;
 
@@ -302,6 +302,12 @@ const VSFrame* VS_CC mcwnnmGetFrame(int n, int activationReason, void* instanceD
 
     for (int plane = 0; plane < nch; ++plane) {
         const int dstride = static_cast<int>(vsapi->getStride(dst, plane) / sizeof(float));
+        if(d->sigma[plane]==0.f){
+            const float* identity=src_planes[static_cast<std::size_t>(plane)*ntemp+t0];
+            if(fat)nss::host_detail::temporal_identity(outp[plane],dstride,identity,sstride[plane],pw,ph,d->radius);
+            else for(int y=0;y<ph;++y)std::memcpy(outp[plane]+y*dstride,identity+y*sstride[plane],pw*sizeof(float));
+            continue;
+        }
         float* plane_num = num + static_cast<std::size_t>(plane) * static_cast<std::size_t>(slices) * plane_sz;
         float* plane_den = den + static_cast<std::size_t>(plane) * static_cast<std::size_t>(slices) * plane_sz;
         if (fat) {

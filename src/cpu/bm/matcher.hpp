@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 
 namespace nss::detail {
 
@@ -148,6 +149,97 @@ private:
     int size_ = 0;
 };
 
+class CachedWorstTopK {
+public:
+    CachedWorstTopK(Match* p, int cap) : p_(p), cap_(cap) {}
+
+    void add(Match m) {
+        if (cap_ <= 0) return;
+        if (n_ < cap_) {
+            p_[n_++] = m;
+            if (n_ == cap_) scan();
+            return;
+        }
+        if (match_less(m, p_[worst_])) {
+            p_[worst_] = m;
+            scan();
+        }
+    }
+
+    float threshold() const {
+        return n_ == cap_ && n_ > 0 ? p_[worst_].dist : std::numeric_limits<float>::infinity();
+    }
+
+    void adopt(int n) {
+        n_ = std::clamp(n, 0, cap_);
+        if (n_) scan();
+    }
+
+    int finish() {
+        std::sort(p_, p_ + n_, match_less);
+        return n_;
+    }
+
+private:
+    void scan() {
+        worst_ = 0;
+        for (int i = 1; i < n_; ++i) {
+            if (match_less(p_[worst_], p_[i])) worst_ = i;
+        }
+    }
+    Match* p_;
+    int cap_, n_ = 0, worst_ = 0;
+};
+
+// Keep this policy separate from the established SortedTopK used by the
+// independent 4/12/16 TUs. Sharing its add() through the temporal fallback
+// changed GCC's inlining decisions in those otherwise unchanged hot loops.
+class SpatialSortedTopK {
+public:
+    SpatialSortedTopK(Match* storage, int capacity) : storage_(storage), capacity_(capacity) {}
+
+#if defined(__GNUC__) || defined(__clang__)
+    __attribute__((always_inline))
+#endif
+    void add(Match candidate) noexcept {
+        if (!storage_ || capacity_ <= 0) return;
+        if (size_ < capacity_) {
+            storage_[size_++] = candidate;
+            if (size_ == capacity_) sort_initial();
+            return;
+        }
+        if (!match_less(candidate, storage_[size_ - 1])) return;
+        int pos = size_ - 1;
+        while (pos > 0 && match_less(candidate, storage_[pos - 1])) {
+            storage_[pos] = storage_[pos - 1];
+            --pos;
+        }
+        storage_[pos] = candidate;
+    }
+
+    int finish() noexcept {
+        if (size_ > 1 && size_ < capacity_) sort_initial();
+        return size_;
+    }
+
+private:
+#if defined(__GNUC__) || defined(__clang__)
+    __attribute__((noinline))
+#endif
+    void sort_initial() noexcept { std::sort(storage_, storage_ + size_, match_less); }
+    Match* storage_;
+    int capacity_, size_ = 0;
+};
+
+// Cached-worst remains a separate broad opt-in. The revised sorted candidate
+// is selected only by SpatialMatch8Ssd for the measured group>=16 crossover.
+#if NSS_BM_EXPERIMENT & 2
+using CandidateTopK = CachedWorstTopK;
+#else
+using CandidateTopK = StableTopK;
+#endif
+
+
 template <typename DistanceFn>
 int collect_spatial_coords(int width, int height, int bx, int by, int block, int bm_range, int group, Match* out,
                            DistanceFn&& distance) {
@@ -169,7 +261,7 @@ int collect_spatial_coords(int width, int height, int bx, int by, int block, int
     if (wanted == 1) {
         return 1;
     }
-    StableTopK topk(out + 1, wanted - 1);
+    CandidateTopK topk(out + 1, wanted - 1);
     std::uint32_t ordinal = 1;
     for (int y = top; y <= bottom; ++y) {
         for (int x = left; x <= right; ++x, ++ordinal) {
@@ -226,7 +318,7 @@ int collect_temporal(int width, int height, int t0, int ntemp, const SearchConfi
     const int seed_count = std::min({n, cfg.ps_num, kBmMaxGroup});
     std::copy_n(out, seed_count, seeds);
     // The true reference must remain in every group, including nonfinite tests.
-    StableTopK global(out + 1, cfg.group - 1);
+    CandidateTopK global(out + 1, cfg.group - 1);
     global.adopt(n - 1);
     const int first = std::max(0, cfg.valid_t_begin);
     const int last = cfg.valid_t_end < 0 ? ntemp : std::min(ntemp, cfg.valid_t_end);
@@ -238,7 +330,7 @@ int collect_temporal(int width, int height, int t0, int ntemp, const SearchConfi
             const int t = t0 + sign * dt;
             if (t < first || t >= last) break;
             Match local[kBmMaxGroup];
-            StableTopK top(local, std::min(cfg.ps_num, cfg.group));
+            CandidateTopK top(local, std::min(cfg.ps_num, cfg.group));
             int ymin = height, ymax = -1;
             for (int i = 0; i < nc; ++i) {
                 ymin = std::min(ymin, std::max(0, centers[i].y - cfg.ps_range));

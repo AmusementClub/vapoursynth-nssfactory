@@ -21,6 +21,8 @@ def clip(values,fmt=vs.GRAYS):
 
 def arrays(c,n):return [np.array(c.get_frame(n)[p]) for p in range(c.format.num_planes)]
 def close(a,b,msg,tol=1e-5):
+    if not np.isfinite(a).all() or not np.isfinite(b).all():
+        raise AssertionError(f'{msg}: nonfinite value')
     err=float(np.max(np.abs(np.asarray(a,dtype=np.float64)-b)))
     if err>tol:raise AssertionError(f'{msg}: max_abs={err}')
 
@@ -49,6 +51,35 @@ def temporal():
         fat=getattr(core.nss,name)(src,**kw)
         dst=core.nss.VAggregate(fat,src,radius=2)
         for n in range(5):close(arrays(dst,n),v[n],f'disabled {name} n{n}',0)
+    for name in ('TWSC','MCWNNM'):
+        for radius in (0,1):
+            kw=dict(sigma=[3,0],radius=radius,block_size=4,block_step=4,group_size=4,bm_range=2,iters=1)
+            out=getattr(core.nss,name)(src,**kw)
+            if radius:out=core.nss.VAggregate(out,src,radius=radius)
+            for n in range(5):
+                values = arrays(out, n)
+                if not np.isfinite(values).all():
+                    raise AssertionError(f'partial-zero {name}: nonfinite active output')
+                close(values[1:],v[n,1:],f'joint zero-channel {name} r{radius}',0)
+    noisy = np.random.default_rng(73).uniform(.1, .8, (3, 3, 12, 12)).astype(np.float32)
+    shared_src = clip(noisy, vs.RGBS)
+    for name in ('WNNM', 'NLH', 'NCSR', 'TWSC', 'MCWNNM'):
+        kw = dict(sigma=3, radius=1, block_size=4, block_step=2,
+                  group_size=4, bm_range=2, ps_range=1)
+        if name in ('TWSC', 'MCWNNM', 'NCSR'):
+            kw['iters'] = 1
+        fat = getattr(core.nss, name)(shared_src, **kw)
+        target = core.nss.VAggregate(fat, shared_src, radius=1)
+        for n in range(3):
+            num = np.zeros((3, 12, 12), np.float64)
+            den = np.zeros_like(num)
+            for center in range(max(0, n-1), min(3, n+2)):
+                values = np.stack(arrays(fat, center))
+                slot = n-center+1
+                num += values[:, 2*slot*12:(2*slot+1)*12]
+                den += values[:, (2*slot+1)*12:(2*slot+2)*12]
+            expected = np.divide(num, den, out=noisy[n].astype(np.float64).copy(), where=den>1e-12)
+            close(arrays(target, n), expected, f'shared nonzero target oracle {name}')
     for radius in (1,2,4):
         for wiener in (False,True):
             kw=dict(sigma=[3,0],radius=radius,block_size=4,block_step=4,group_size=8,bm_range=2,ps_range=1)
@@ -70,12 +101,30 @@ def temporal():
             with ThreadPoolExecutor(2) as pool:
                 results=list(pool.map(lambda n:arrays(roll,n),order))
             for n,out in zip(order,results):close(out,expected[n],f'rolling oracle r{radius} n{n}')
+    # Actual two-stage rolling has a second dependency expansion through ref.
+    kw=dict(sigma=[3,0],radius=2,block_size=4,block_step=4,group_size=8,bm_range=2,ps_range=1)
+    bfat=core.nss.BM3D(src,**kw);basic=core.nss.VAggregate(bfat,src,radius=2)
+    finalfat=core.nss.BM3D(src,ref=basic,**kw);final=core.nss.VAggregate(finalfat,src,radius=2)
+    rb=core.nss.BM3D(src,temporal_mode='rolling',rolling_chunk=2,rolling_cache_limit=1,**kw)
+    rf=core.nss.BM3D(src,ref=rb,temporal_mode='rolling',rolling_chunk=2,rolling_cache_limit=1,**kw)
+    for n in [4,0,2,1,3,0]:close(arrays(rf,n),arrays(final,n),'actual two-stage rolling')
     # Single-frame maximum-radius must not replicate source candidates.
     one=clip(v[:1],vs.RGBS)
     for mode in ('legacy','rolling'):
         out=core.nss.BM3D(one,sigma=[0,0,0],radius=16,temporal_mode=mode)
         if mode=='legacy':out=core.nss.VAggregate(out,one,radius=16)
         close(arrays(out,0),v[0],'one frame disabled',0)
+    one = clip(noisy[:1], vs.RGBS)
+    for wiener in (False, True):
+        kw = dict(sigma=3, block_size=4, group_size=8, block_step=2, bm_range=2)
+        if wiener:
+            kw['ref'] = one
+        spatial = core.nss.BM3D(one, **kw)
+        for mode in ('legacy', 'rolling'):
+            out = core.nss.BM3D(one, radius=16, temporal_mode=mode, **kw)
+            if mode == 'legacy':
+                out = core.nss.VAggregate(out, one, radius=16)
+            close(arrays(out, 0), arrays(spatial, 0), 'one real nonzero frame at maximum radius')
 
 def matrix(n):
     k=np.arange(n)[:,None];x=np.arange(n)[None,:]

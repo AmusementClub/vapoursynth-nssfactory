@@ -149,6 +149,18 @@ inline int bm3d_filter_work_floats(int group, int block) {
     return 2 * group * block * block;
 }
 
+// Immutable frame view plus patch coordinates. A host epoch supplies plane/center identity.
+#if NSS_BM_EXPERIMENT & 128
+struct Bm3dPatchKey {
+    const float* frame=nullptr;
+    int stride=0,x=0,y=0;
+    bool operator==(const Bm3dPatchKey& b) const {return frame==b.frame && stride==b.stride && x==b.x && y==b.y;}
+};
+void bm3d_filter_group_keyed(float* patches,int lda,int group,int k,int block,float sigma,bool wiener,
+                            const float* ref_patches,float* weight_out,float* work,
+                            const Bm3dPatchKey* keys,const Bm3dPatchKey* ref_keys);
+#endif
+
 // `k` real patches in patches[0..k); `group` is the zero-padded 3D-transform length.
 // `work` must hold bm3d_filter_work_floats(group, block) floats.
 void bm3d_filter_group(float* patches, int lda, int group, int k, int block, float sigma, bool wiener,

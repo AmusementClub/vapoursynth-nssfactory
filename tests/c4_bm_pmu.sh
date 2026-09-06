@@ -20,8 +20,9 @@ sha256sum "$plugin" "$sample" "$script_dir/c4_paired_bm.py" "$script_dir/profile
 cat /proc/stat > "$output/proc-before.txt"
 perf version > "$output/perf-version.txt"
 lscpu > "$output/lscpu.txt"
-for stage in basic wiener; do
-    config=$("$NSS_C4_PYTHON" -c 'import json,sys; print(json.dumps(dict(stage=sys.argv[1],sample=sys.argv[2],frames=int(sys.argv[3]))))' "$stage" "$sample" "$frames")
+for stage in basic wiener two_stage; do
+    config=$("$NSS_C4_PYTHON" -c 'import json,sys,os; print(json.dumps(dict(stage=sys.argv[1],sample=sys.argv[2],frames=int(sys.argv[3]),kwargs=dict(sigma=3,block_size=8,group_size=int(os.environ.get("NSS_PMU_BM_GROUP","8")),block_step=8,bm_range=7,radius=int(os.environ.get("NSS_PMU_BM_RADIUS","0"))))))' "$stage" "$sample" "$frames")
+    printf '%s\n' "$config" > "$output/$stage-config.json"
     command=("$NSS_C4_PYTHON" "$script_dir/c4_paired_bm.py" worker --plugin "$plugin" --config "$config")
     taskset -c 0 perf stat -M TopdownL1,TopdownL2 -o "$output/$stage-topdown.txt" -- "${command[@]}" > "$output/$stage-topdown.json"
     taskset -c 0 perf stat -e cycles:u,instructions:u,branches:u,branch-misses:u -o "$output/$stage-counters.txt" -- "${command[@]}" > "$output/$stage-counters.json"
@@ -38,12 +39,12 @@ import json
 import re
 import sys
 root = Path(sys.argv[1])
-for stage in ['basic', 'wiener']:
+for stage in ['basic', 'wiener', 'two_stage']:
     counters = (root / f'{stage}-counters.txt').read_text()
     cycles = re.search(r'([\d,]+)\s+cycles:u', counters)
     assert cycles and int(cycles[1].replace(',', '')) > 0, 'missing hardware cycles'
     assert 'not counted' not in counters and 'not supported' not in counters
     assert re.search(r'Total Lost Samples:\s+0\b', (root / f'{stage}-hot.txt').read_text())
     assert (root / f'{stage}.data').stat().st_size > 0
-print(json.dumps({'hardware_events_valid': True, 'lost_samples': 0, 'stages': ['basic', 'wiener']}))
+print(json.dumps({'hardware_events_valid': True, 'lost_samples': 0, 'stages': ['basic', 'wiener', 'two_stage']}))
 PY

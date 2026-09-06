@@ -1,8 +1,14 @@
+#if NSS_BM_EXPERIMENT & 128
+#include <cstdlib>
+#include <cstdio>
+#include <cstdint>
+#endif
 #include "nss/cpu_api.hpp"
+#include "nss/cpu_batch.hpp"
 #include "cpu/hwy_config.hpp"
 #include "cpu/bm/dct12.hpp"
 #include "cpu/bm/dct16.hpp"
-#ifdef NSS_BM_KERNEL_LAB
+#if defined(NSS_BM_KERNEL_LAB) || (NSS_BM_EXPERIMENT & 512)
 #include "cpu/bm/kernel_lab.hpp"
 #endif
 
@@ -102,9 +108,101 @@ static const float* DctMatrix(int n) {
 
 #if HWY_MAX_BYTES >= 32
 // Lanes(d) independent 8-point orthonormal DCT-II / IDCT-III on registers.
+#if NSS_BM_EXPERIMENT & 8
+template <bool kForward, class D>
+HWY_INLINE void Dct8Butterfly(D d8, hn::Vec<D> block[8]) {
+    const auto kp414 = hn::Set(d8, 0.414213562373095048801688724209698078569671875f);
+    const auto kp1847 = hn::Set(d8, 1.847759065022573512256366378793576573644833252f);
+    const auto kp198 = hn::Set(d8, 0.198912367379658006911597622644676228597850501f);
+    const auto kp1961 = hn::Set(d8, 1.961570560806460898252364472268478073947867462f);
+    const auto kp1414 = hn::Set(d8, 1.414213562373095048801688724209698078569671875f);
+    const auto kp668 = hn::Set(d8, 0.668178637919298919997757686523080761552472251f);
+    const auto kp1662 = hn::Set(d8, 1.662939224605090474157576755235811513477121624f);
+    const auto kp707 = hn::Set(d8, 0.707106781186547524400844362104849039284835938f);
+    if constexpr (kForward) {
+        const auto t1 = block[0];
+        const auto t2 = block[7];
+        const auto t3 = hn::Sub(t1, t2);
+        const auto tj = hn::Add(t1, t2);
+        const auto tc = block[4];
+        const auto td = block[3];
+        const auto te = hn::Sub(tc, td);
+        const auto tk = hn::Add(tc, td);
+        const auto t4 = block[2];
+        const auto t5 = block[5];
+        const auto t6 = hn::Sub(t4, t5);
+        const auto t7 = block[1];
+        const auto t8 = block[6];
+        const auto t9 = hn::Sub(t7, t8);
+        const auto ta = hn::Add(t6, t9);
+        const auto tn = hn::Add(t7, t8);
+        const auto tf = hn::Sub(t6, t9);
+        const auto tm = hn::Add(t4, t5);
+        const auto tb = hn::NegMulAdd(kp707, ta, t3);
+        const auto tg = hn::NegMulAdd(kp707, tf, te);
+        block[3] = hn::Mul(kp1662, hn::MulAdd(kp668, tg, tb));
+        block[5] = hn::Neg(hn::Mul(kp1662, hn::NegMulAdd(kp668, tb, tg)));
+        const auto tp = hn::Add(tj, tk);
+        const auto tq = hn::Add(tm, tn);
+        block[4] = hn::Mul(kp1414, hn::Sub(tp, tq));
+        block[0] = hn::Mul(kp1414, hn::Add(tp, tq));
+        const auto th = hn::MulAdd(kp707, ta, t3);
+        const auto ti = hn::MulAdd(kp707, tf, te);
+        block[1] = hn::Mul(kp1961, hn::NegMulAdd(kp198, ti, th));
+        block[7] = hn::Mul(kp1961, hn::MulAdd(kp198, th, ti));
+        const auto tl = hn::Sub(tj, tk);
+        const auto to = hn::Sub(tm, tn);
+        block[2] = hn::Mul(kp1847, hn::NegMulAdd(kp414, to, tl));
+        block[6] = hn::Mul(kp1847, hn::MulAdd(kp414, tl, to));
+    } else {
+        const auto t1 = hn::Mul(kp1414, block[0]);
+        const auto t2 = block[4];
+        const auto t3 = hn::MulAdd(kp1414, t2, t1);
+        const auto tj = hn::NegMulAdd(kp1414, t2, t1);
+        const auto t4 = block[2];
+        const auto t5 = block[6];
+        const auto t6 = hn::MulAdd(kp414, t5, t4);
+        const auto tk = hn::Sub(hn::Mul(kp414, t4), t5);
+        const auto t8 = block[1];
+        const auto td = block[7];
+        const auto t9 = block[5];
+        const auto ta = block[3];
+        const auto tb = hn::Add(t9, ta);
+        const auto te = hn::Sub(ta, t9);
+        const auto tc = hn::MulAdd(kp707, tb, t8);
+        const auto tn = hn::NegMulAdd(kp707, te, td);
+        const auto tf = hn::MulAdd(kp707, te, td);
+        const auto tm = hn::NegMulAdd(kp707, tb, t8);
+        const auto t7 = hn::MulAdd(kp1847, t6, t3);
+        const auto tg = hn::MulAdd(kp198, tf, tc);
+        block[7] = hn::NegMulAdd(kp1961, tg, t7);
+        block[0] = hn::MulAdd(kp1961, tg, t7);
+        const auto tp = hn::NegMulAdd(kp1847, tk, tj);
+        const auto tq = hn::MulAdd(kp668, tm, tn);
+        block[5] = hn::NegMulAdd(kp1662, tq, tp);
+        block[2] = hn::MulAdd(kp1662, tq, tp);
+        const auto th = hn::NegMulAdd(kp1847, t6, t3);
+        const auto ti = hn::NegMulAdd(kp198, tc, tf);
+        block[3] = hn::NegMulAdd(kp1961, ti, th);
+        block[4] = hn::MulAdd(kp1961, ti, th);
+        const auto tl = hn::MulAdd(kp1847, tk, tj);
+        const auto to = hn::NegMulAdd(kp668, tn, tm);
+        block[6] = hn::NegMulAdd(kp1662, to, tl);
+        block[1] = hn::MulAdd(kp1662, to, tl);
+    }
+}
+
+#endif
 template <class D>
 HWY_INLINE void Dct8Apply(D d, hn::Vec<D> x0, hn::Vec<D> x1, hn::Vec<D> x2, hn::Vec<D> x3, hn::Vec<D> x4,
                           hn::Vec<D> x5, hn::Vec<D> x6, hn::Vec<D> x7, bool inverse, hn::Vec<D>* y) {
+#if NSS_BM_EXPERIMENT & 8
+    hn::Vec<D> v[8]={x0,x1,x2,x3,x4,x5,x6,x7};
+    if(inverse)Dct8Butterfly<false>(d,v);else Dct8Butterfly<true>(d,v);
+    for(int i=0;i<8;++i)y[i]=hn::Mul(v[i],hn::Set(d,.25f));
+    return;
+#endif
+
     const auto s0 = hn::Set(d, 0.3535533905932738f);
     const auto s1 = hn::Set(d, 0.4903926402016152f);
     const auto s2 = hn::Set(d, 0.4619397662556434f);
@@ -400,6 +498,19 @@ using V4 = hn::Vec<D4>;
 template <class D>
 HWY_INLINE void Dct4Apply(D d, hn::Vec<D> x0, hn::Vec<D> x1, hn::Vec<D> x2, hn::Vec<D> x3, bool inverse,
                           hn::Vec<D>* y) {
+#if NSS_BM_EXPERIMENT & 8
+    const auto half=hn::Set(d,.5f),c=hn::Set(d,.6532814824381883f),q=hn::Set(d,.2705980500730985f);
+    if(!inverse){
+        auto a=hn::Add(x0,x3),b=hn::Add(x1,x2),u=hn::Sub(x0,x3),v=hn::Sub(x1,x2);
+        y[0]=hn::Mul(half,hn::Add(a,b));y[2]=hn::Mul(half,hn::Sub(a,b));
+        y[1]=hn::MulAdd(c,u,hn::Mul(q,v));y[3]=hn::Sub(hn::Mul(q,u),hn::Mul(c,v));
+    }else{
+        auto a=hn::Mul(half,hn::Add(x0,x2)),b=hn::Mul(half,hn::Sub(x0,x2));
+        auto u=hn::MulAdd(c,x1,hn::Mul(q,x3)),v=hn::Sub(hn::Mul(q,x1),hn::Mul(c,x3));
+        y[0]=hn::Add(a,u);y[3]=hn::Sub(a,u);y[1]=hn::Add(b,v);y[2]=hn::Sub(b,v);
+    }return;
+#endif
+
     const float* M = DctTable<4>();
     const hn::Vec<D> xs[4] = {x0, x1, x2, x3};
     for (int outb = 0; outb < 4; ++outb) {
@@ -417,6 +528,17 @@ HWY_INLINE V4 Dct4Horz(V4 x, bool inverse) {
     HWY_ALIGN float t[4];
     HWY_ALIGN float o[4];
     hn::StoreU(x, d4, t);
+#if NSS_BM_EXPERIMENT & 8
+    const float c=.6532814824381883f,q=.2705980500730985f;
+    if(!inverse){
+        const float a=t[0]+t[3],b=t[1]+t[2],u=t[0]-t[3],v=t[1]-t[2];
+        o[0]=.5f*(a+b);o[2]=.5f*(a-b);o[1]=c*u+q*v;o[3]=q*u-c*v;
+    }else{
+        const float a=.5f*(t[0]+t[2]),b=.5f*(t[0]-t[2]),u=c*t[1]+q*t[3],v=q*t[1]-c*t[3];
+        o[0]=a+u;o[3]=a-u;o[1]=b+v;o[2]=b-v;
+    }
+    return hn::LoadU(d4,o);
+#endif
     const float* M = DctTable<4>();
     for (int outb = 0; outb < 4; ++outb) {
         float acc = 0.f;
@@ -641,12 +763,48 @@ void TransformLines(float* base, int n, int line_stride, int sample_stride, int 
     DctLines(base, n, line_stride, sample_stride, count, inverse);
 }
 
-#ifdef NSS_BM_KERNEL_LAB
+#if defined(NSS_BM_KERNEL_LAB) || ((NSS_BM_EXPERIMENT & 512) && HWY_MAX_BYTES >= 64)
 #include "cpu/bm/dct-small-lab-inl.hpp"
 #endif
 
+
+#if NSS_BM_EXPERIMENT & 128
+struct DctMemo {
+    struct Entry {std::uint64_t hash=0,epoch=0; Bm3dPatchKey key{}; bool keyed=false; std::vector<float> input,output;};
+    std::vector<Entry> table;int block=0;
+    std::uint64_t hits=0,misses=0,epoch=1;
+    ~DctMemo(){if(std::getenv("NSS_BM_STATS"))std::fprintf(stderr,"{\"dct_cache_hits\":%llu,\"dct_cache_misses\":%llu,\"budget_bytes\":4194304}\n",(unsigned long long)hits,(unsigned long long)misses);}
+    void transform(float* data,int b,int group,const Bm3dPatchKey* keys){
+        int area=b*b;
+        if(block!=b){block=b;table=std::vector<Entry>(std::min(2048,std::max(1,4194304/(2*area*4+int(sizeof(Entry))))));}
+        for(int g=0;g<group;++g){
+            float* v=data+g*area;std::uint64_t h=1469598103934665603ull;
+            const bool keyed=keys && keys[g].frame;
+            if(keyed){const auto& key=keys[g];h^=reinterpret_cast<std::uintptr_t>(key.frame)>>6;h=(h^std::uint64_t(key.x))*1099511628211ull;h=(h^std::uint64_t(key.y))*1099511628211ull;h^=std::uint64_t(key.stride);}
+            else for(int i=0;i<area;++i){std::uint32_t word;std::memcpy(&word,v+i,4);h=(h^word)*1099511628211ull;}
+            auto& e=table[h%table.size()];
+            const bool same=keyed ? e.keyed && e.key==keys[g] : !e.keyed && e.input.size()==std::size_t(area)&&std::memcmp(e.input.data(),v,area*4)==0;
+            if(e.epoch==epoch&&e.hash==h&&same){++hits;std::memcpy(v,e.output.data(),area*4);continue;}
+            ++misses;e.hash=h;e.epoch=epoch;e.keyed=keyed;
+            if(keyed){e.key=keys[g];e.input.clear();}else e.input.assign(v,v+area);
+            bool done=false;
+#ifndef NSS_DISABLE_BM3D_B12_FAST
+            if(b==12)done=detail::dct12_2d_batch_fast(v,1,false);
+#endif
+            if(b==16)done=detail::dct16_2d_batch_fast(v,1,false);
+            if(!done){DctLines(v,b,b,1,b,false);DctLines(v,b,1,b,b,false);}
+            e.output.assign(v,v+area);
+        }
+    }
+};
+DctMemo& dct_memo(){static thread_local DctMemo memo;return memo;}
+#endif
 void Bm3dFilterGroup(float* patches, int lda, int group, int k, int block, float sigma, bool wiener,
-                     const float* ref_patches, float* weight_out, float* work) {
+                     const float* ref_patches, float* weight_out, float* work
+#if NSS_BM_EXPERIMENT & 128
+                     , const Bm3dPatchKey* keys=nullptr, const Bm3dPatchKey* ref_keys=nullptr
+#endif
+                     ) {
     if (group < 1 || block < 1 || k < 1 || !work) {
         if (weight_out) {
             *weight_out = 1.f;
@@ -668,7 +826,19 @@ void Bm3dFilterGroup(float* patches, int lda, int group, int k, int block, float
                         static_cast<size_t>(group - kk) * static_cast<size_t>(area) * sizeof(float));
         }
     }
+#if NSS_BM_EXPERIMENT & 128
+    const Bm3dPatchKey* transform_keys=keys;
+#endif
     auto dct2 = [&](float* c, bool inverse) {
+#if (NSS_BM_EXPERIMENT & 512) && HWY_MAX_BYTES >= 64
+        // Only complete AVX3 pairs use this layout. A one-patch group and
+        // AVX2 retain the established packed path, as required by controls.
+        if (block == 8 && group >= 2 && DctSmallBatch<8, 2>(c, group, inverse)) return;
+#endif
+#if NSS_BM_EXPERIMENT & 128
+        if(!inverse){dct_memo().transform(c,block,group,transform_keys);return;}
+#endif
+
 #if defined(NSS_BM_KERNEL_LAB) && defined(NSS_LAB_DCT8_VARIANT)
         if (block == 8 && DctSmallBatch<8, NSS_LAB_DCT8_VARIANT>(c, group, inverse)) return;
 #endif
@@ -705,7 +875,6 @@ void Bm3dFilterGroup(float* patches, int lda, int group, int k, int block, float
             DctLines(c + static_cast<size_t>(g) * area, block, 1, block, block, inverse);
         }
     };
-    dct2(cube, false);
     if (wiener && ref_patches) {
         for (int i = 0; i < kk; ++i) {
             std::memcpy(refw + static_cast<size_t>(i) * area, ref_patches + i * lda,
@@ -715,9 +884,46 @@ void Bm3dFilterGroup(float* patches, int lda, int group, int k, int block, float
             std::memset(refw + static_cast<size_t>(kk) * area, 0,
                         static_cast<size_t>(group - kk) * static_cast<size_t>(area) * sizeof(float));
         }
+    }
+    dct2(cube, false);
+    if (wiener && ref_patches) {
+#if NSS_BM_EXPERIMENT & 128
+        transform_keys = ref_keys;
+#endif
         dct2(refw, false);
     }
 
+#if NSS_BM_EXPERIMENT & 16
+    int kept=0;float w2sum=0.f;
+    const hn::CappedTag<float,16> td;
+    const int lanes=static_cast<int>(hn::Lanes(td));
+    for(int first=0;first<area;first+=16){
+        const int count=std::min(16,area-first);
+        DctLines(cube+first,group,1,area,count,false);
+        if(wiener && ref_patches)DctLines(refw+first,group,1,area,count,false);
+        for(int g=0;g<group;++g){
+            int f=first;
+            for(;f+lanes<=first+count;f+=lanes){
+                int i=g*area+f;auto v=hn::LoadU(td,cube+i);
+                if(wiener && ref_patches){
+                    auto rv=hn::LoadU(td,refw+i),q=hn::Mul(rv,rv);
+                    auto w=hn::Div(q,hn::Add(q,hn::Set(td,sigma*sigma)));
+                    if(i==0)w=hn::IfThenElse(hn::FirstN(td,1),hn::Set(td,1.f),w);
+                    hn::StoreU(hn::Mul(v,w),td,cube+i);w2sum+=hn::ReduceSum(td,hn::Mul(w,w));
+                }else{
+                    auto kill=hn::Lt(hn::Abs(v),hn::Set(td,kBmHardLambda*sigma));
+                    if(i==0)kill=hn::And(kill,hn::Not(hn::FirstN(td,1)));
+                    kept+=lanes-static_cast<int>(hn::CountTrue(td,kill));hn::StoreU(hn::IfThenZeroElse(kill,v),td,cube+i);
+                }
+            }
+            for(;f<first+count;++f){int i=g*area+f;
+                if(wiener && ref_patches){float q=refw[i]*refw[i];float w=i?q/(q+sigma*sigma):1.f;cube[i]*=w;w2sum+=w*w;}
+                else{bool keep=i==0||std::abs(cube[i])>=kBmHardLambda*sigma;kept+=keep;if(!keep)cube[i]=0.f;}
+            }
+        }
+        DctLines(cube+first,group,1,area,count,true);
+    }
+#else
     DctLines(cube, group, 1, area, area, false);
     int kept = 0;
     float w2sum = 0.f;
@@ -783,6 +989,7 @@ void Bm3dFilterGroup(float* patches, int lda, int group, int k, int block, float
         }
     }
     DctLines(cube, group, 1, area, area, true);
+#endif
     dct2(cube, true);
     if (!inplace) {
         for (int i = 0; i < kk; ++i) {
@@ -798,6 +1005,26 @@ void Bm3dFilterGroup(float* patches, int lda, int group, int k, int block, float
         }
     }
 }
+
+#if NSS_BM_HOMOGENEOUS
+void Bm3dHomogeneousBatch(Bm3dFilterBatchItem* items, int count) {
+    for (int i = 0; i < count; ++i) {
+        auto& p = items[i];
+        Bm3dFilterGroup(p.patches, p.lda, p.group, p.k, p.block, p.sigma,
+                       p.wiener, p.ref_patches, p.weight, p.work
+#if NSS_BM_EXPERIMENT & 128
+                       , p.keys, p.ref_keys
+#endif
+                       );
+        if (p.status) *p.status = 1;
+    }
+}
+#endif
+#if NSS_BM_EXPERIMENT & 128
+void Bm3dCacheEpoch() {
+    ++dct_memo().epoch;
+}
+#endif
 
 #if HWY_MAX_BYTES >= 32
 // FFTW 3.3.9 e10_8 / e01_8, same layout as bm3dcpu: G[g*8+r] is row r of patch g, lanes = x.
@@ -1067,6 +1294,14 @@ HWY_EXPORT(Idct8_1d);
 HWY_EXPORT(Dct8_2d);
 HWY_EXPORT(Idct8_2d);
 HWY_EXPORT(TransformLines);
+#if NSS_BM_HOMOGENEOUS
+HWY_EXPORT(Bm3dHomogeneousBatch);
+void bm3d_filter_homogeneous_batch(Bm3dFilterBatchItem* items,int count){HWY_DYNAMIC_DISPATCH(Bm3dHomogeneousBatch)(items,count);}
+#endif
+#if NSS_BM_EXPERIMENT & 128
+HWY_EXPORT(Bm3dCacheEpoch);
+void bm3d_cache_epoch(){HWY_DYNAMIC_DISPATCH(Bm3dCacheEpoch)();}
+#endif
 HWY_EXPORT(Bm3dFilterGroup);
 HWY_EXPORT(Bm3dFilter8);
 #ifdef NSS_BM_KERNEL_LAB
@@ -1111,8 +1346,20 @@ void dct_lines(float* base, int n, int line_stride, int sample_stride, int count
 
 void bm3d_filter_group(float* patches, int lda, int group, int k, int block, float sigma, bool wiener,
                        const float* ref_patches, float* weight_out, float* work) {
-    HWY_DYNAMIC_DISPATCH(Bm3dFilterGroup)(patches, lda, group, k, block, sigma, wiener, ref_patches, weight_out, work);
+    HWY_DYNAMIC_DISPATCH(Bm3dFilterGroup)(patches, lda, group, k, block, sigma, wiener, ref_patches, weight_out, work
+#if NSS_BM_EXPERIMENT & 128
+                                       , nullptr, nullptr
+#endif
+                                       );
 }
+
+#if NSS_BM_EXPERIMENT & 128
+void bm3d_filter_group_keyed(float* patches,int lda,int group,int k,int block,float sigma,bool wiener,
+                            const float* ref_patches,float* weight_out,float* work,
+                            const Bm3dPatchKey* keys,const Bm3dPatchKey* ref_keys){
+    HWY_DYNAMIC_DISPATCH(Bm3dFilterGroup)(patches,lda,group,k,block,sigma,wiener,ref_patches,weight_out,work,keys,ref_keys);
+}
+#endif
 
 void bm3d_filter8(const float* src, int sstride, const Match* matches, int k, float sigma, bool wiener,
                   const float* ref, int rstride, float* num, float* den, int dstride, int width, int height) {
@@ -1130,7 +1377,11 @@ void bm3d_filter_direct(const float* src, int sstride, const Match* matches, int
     const int kk = std::min(k, group);
     const int area = block * block;
     const std::size_t cube_n = static_cast<std::size_t>(group) * static_cast<std::size_t>(area);
+#if NSS_BM_HOMOGENEOUS
+    if(kk<group)std::memset(cube+static_cast<std::size_t>(kk)*area,0,(group-kk)*area*sizeof(float));
+#else
     std::memset(cube, 0, cube_n * sizeof(float));
+#endif
     for (int g = 0; g < kk; ++g) {
         pack_patch(cube + static_cast<std::size_t>(g) * area, area, src, sstride, matches[g].x, matches[g].y, block,
                    width, height);
@@ -1145,7 +1396,13 @@ void bm3d_filter_direct(const float* src, int sstride, const Match* matches, int
         }
     }
     float weight = 1.f;
+#if NSS_BM_EXPERIMENT & 128
+    Bm3dPatchKey keys[kBmMaxGroup]{},rkeys[kBmMaxGroup]{};
+    if(group<=kBmMaxGroup)for(int i=0;i<kk;++i){keys[i]={src,sstride,matches[i].x,matches[i].y};rkeys[i]={ref,rstride,matches[i].x,matches[i].y};}
+    bm3d_filter_group_keyed(cube, area, group, kk, block, sigma, wiener, refc, &weight, work,group<=kBmMaxGroup?keys:nullptr,group<=kBmMaxGroup?rkeys:nullptr);
+#else
     bm3d_filter_group(cube, area, group, kk, block, sigma, wiener, refc, &weight, work);
+#endif
     for (int g = 0; g < kk; ++g) {
         unpack_patch_fixed(num, den, dstride, matches[g].x, matches[g].y,
                            cube + static_cast<std::size_t>(g) * area, block, width, height, weight);

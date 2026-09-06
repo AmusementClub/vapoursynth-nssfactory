@@ -123,6 +123,7 @@ HWY_NOINLINE bool DctSmallBatch(float* base, int count, bool inverse) {
 #endif
 }
 
+#ifdef NSS_BM_KERNEL_LAB
 nss::detail::DctKernel ResolveDctSmallLab(int block, int variant) {
 #if HWY_MAX_BYTES >= 32
     if (block == 4) {
@@ -138,3 +139,4 @@ nss::detail::DctKernel ResolveDctSmallLab(int block, int variant) {
 #endif
     return nullptr;
 }
+#endif

@@ -27,6 +27,27 @@ inline void append_raster_jobs(std::vector<GroupJob>& jobs, int width, int heigh
     }
 }
 
+// Lazy raster indexing preserves the exact last-row/column and ordinal contract.
+class RasterJobs {
+public:
+    RasterJobs(int w, int h, int b, int step, GroupKey key, int t)
+        : w_(w), h_(h), b_(b), step_(step), key_(key), t_(t),
+          nx_((w - b + step - 1) / step + 1), ny_((h - b + step - 1) / step + 1) {}
+
+    std::size_t size() const { return static_cast<std::size_t>(nx_) * ny_; }
+    bool empty() const { return size() == 0; }
+
+    GroupJob operator[](std::size_t i) const {
+        return GroupJob{i, std::min(static_cast<int>(i % nx_) * step_, w_ - b_),
+                        std::min(static_cast<int>(i / nx_) * step_, h_ - b_), t_, key_};
+    }
+
+private:
+    int w_, h_, b_, step_;
+    GroupKey key_;
+    int t_, nx_, ny_;
+};
+
 // Execute one bounded raster chunk. `prepare` fills a result for a job in any
 // bucket order and returns false for a skipped/failed group. `commit` receives
 // results strictly in ordinal order, including failed results so gaps cannot
@@ -70,8 +91,8 @@ bool execute_ordered_chunk(const std::vector<GroupJob>& jobs, std::size_t begin,
 // completed every item. At that point a second key sort only creates work that
 // the ordered queue must undo, so copy and commit the prepared results in their
 // original raster order.
-template <typename Result, typename Prepare, typename Commit>
-bool commit_prepared_chunk(const std::vector<GroupJob>& jobs, std::size_t begin, std::size_t end, Prepare&& prepare,
+template <typename Result, typename Prepare, typename Commit, typename Jobs>
+bool commit_prepared_chunk(const Jobs& jobs, std::size_t begin, std::size_t end, Prepare&& prepare,
                            Commit&& commit) {
     if (begin >= end || end > jobs.size()) {
         return true;

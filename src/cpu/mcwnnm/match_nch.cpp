@@ -120,6 +120,8 @@ int predictive_match_nch(const float* const* refs, const int* strides, int nch, 
         cfg.ps_num < 1 || cfg.ps_range < 0 || cfg.radius < 0 || cfg.radius > kBmMaxRadius) {
         return 0;
     }
+    if (cfg.valid_t_begin < 0 || cfg.valid_t_begin > t0 ||
+        (cfg.valid_t_end != -1 && (cfg.valid_t_end <= t0 || cfg.valid_t_end > ntemp))) return 0;
     for (int c = 0; c < nch; ++c) {
         if (strides[c] < width) {
             return 0;

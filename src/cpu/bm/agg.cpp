@@ -156,7 +156,10 @@ void VAggTarget(float* dst, const float* const* nums, const float* const* dens, 
             }
             auto ok=hn::Gt(den,hn::Set(d,1e-12f));
             auto safe=hn::IfThenElse(ok,den,hn::Set(d,1.f));
-            hn::StoreU(hn::IfThenElse(ok,hn::Div(num,safe),hn::LoadU(d,src+y*sstride+x)),d,dst+y*dstride+x);
+            // Disabled planes contribute one exact identity slice. Preserve
+            // that identity even when the ISA's division uses a reciprocal.
+            auto normalized=hn::IfThenElse(hn::Eq(den,hn::Set(d,1.f)),num,hn::Div(num,safe));
+            hn::StoreU(hn::IfThenElse(ok,normalized,hn::LoadU(d,src+y*sstride+x)),d,dst+y*dstride+x);
         }
         for (;x<width;++x) {
             float num=0,den=0;
