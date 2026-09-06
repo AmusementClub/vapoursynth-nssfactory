@@ -233,7 +233,7 @@ clip:vnode; src:vnode; radius:int:opt; planes:int[]:opt;
 
 `clip` 为未聚合中间量，`src` 为原始（拷属性、未处理平面）。语义对齐 bm3dcuda 自带 `VAggregate`（复制 padding；与 HOVE 的 zero padding 不同，文档写明）。
 
-CPU：普通平面归约。  
+CPU：普通平面归约。
 GPU：独立 compute kernel，输入中间量在 device 上，输出最终帧。
 
 ### 5.4 `nss.WNNM`
@@ -247,7 +247,7 @@ ps_num:int:opt; ps_range:int:opt; residual:int:opt;
 adaptive_aggregation:int:opt; rclip:vnode:opt;
 ```
 
-默认与 WolframRhodium 插件相同（含加速过的 `block_size/step/group_size`）。  
+默认与 WolframRhodium 插件相同（含加速过的 `block_size/step/group_size`）。
 `block_size≠8` 时小 SVD 走通用 Jacobi（仍无 LAPACK）；测试主路径仍是 8。
 
 时间域搜索语义跟 **WNNM / 旧 V-BM3D**（不要 BM3DCUDA 那种可能重复命中的加速搜索）。CPU BM3D 与 WNNM **共用这套搜索**。
@@ -319,7 +319,7 @@ Highway 约定：
 - `BM3Dv2` 在同一 `getFrame` 里连续 launch 这两个核，中间缓冲不暴露为 VS 帧。两段脚本 API（`BM3D` + `VAggregate`）若中间必须出 VS 帧，则不可避免 DTOH 胖帧——GPU 树上 **推荐糖接口 `BM3Dv2`**，两段 API 留给 CPU 和需要看中间量的调试。
 - 第一轮不接 VS GPU VideoNode。
 
-CUDA 特有：`.cu`、stream、pinned host、可参考 nlm-cuda / BM3DCUDA。  
+CUDA 特有：`.cu`、stream、pinned host、可参考 nlm-cuda / BM3DCUDA。
 Vulkan 特有：构建期 `glslangValidator`/`glslc` 出 SPIR-V；计算队列；descriptor set 在创建期搭好；validation layer 仅 Debug。
 
 CMake 默认 `NSS_ENABLE_CUDA=OFF`、`NSS_ENABLE_VULKAN=OFF`。`params.hpp` 从 Phase 0 起三边共用。
@@ -390,7 +390,7 @@ cmake --build build -j
 
 ## 10. 阶段计划（施工顺序）
 
-原则：每个阶段结束时仓库可编译、可运行对应滤镜或测试，不留空 stub 当完成。  
+原则：每个阶段结束时仓库可编译、可运行对应滤镜或测试，不留空 stub 当完成。
 **总顺序：CPU 金标准 → CUDA 把 GPU 算法定死 → Vulkan 做可移植平移。** 不要在 CPU NLM 之后就插 GPU，也不要 CUDA 与 Vulkan 两线同时探索 BM3D。
 
 ### Phase 0 — 空厂能加载
