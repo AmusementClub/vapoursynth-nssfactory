@@ -28,7 +28,7 @@ flowchart LR
  B1 -->|"默认优化 2305"| B2["B2：新代码，优化开启"]
 ```
 
-盘点的五个 worktree 全部归入 main 的提交历史，未提交源码均已保存。正确性工作树提交 `df23068` 通过 `e7b425e` 合并；两个旧实验快照 `532e7f1`、`df2fbfc` 通过 `415207c` 保留历史。旧 shortlist 实验此前已因质量问题被拒绝，旧 b4 和 benchmark 代码已被主仓库后续实现覆盖，因此没有用旧文件覆盖新实现。详见 [旧实验结论](../artifacts/c4/bm3d-four-priorities-20260904-a1/analysis.md) 与 [worktree 清单](../artifacts/c4/integration-20260906/worktrees-after.json)。工作树目录保留为干净的历史检出。
+盘点的五个 worktree 全部归入 main 的提交历史，未提交源码均已保存。正确性工作树提交 `df23068` 通过 `e7b425e` 合并；两个旧实验快照 `532e7f1`、`df2fbfc` 通过 `415207c` 保留历史。旧 shortlist 实验此前已因质量问题被拒绝，旧 b4 和 benchmark 代码已被主仓库后续实现覆盖，因此没有用旧文件覆盖新实现。详见 [旧实验结论](../artifacts/c4/bm3d-four-priorities-20260904-a1/analysis.md) 与 [worktree 清单](../artifacts/c4/integration-20260906/worktrees-after.json)。随后经再次盘点及逐文件SHA256校验，4个冗余worktree目录已删除，仅保留主仓库。1,599个benchmark产物与主目录内容一致；被忽略的文档和缓存也已保留，同名差异另存归档。历史分支与提交保留，详见[迁移及删除校验记录](../artifacts/worktree-migration-20260906/migration.json)。
 
 ## 方法与覆盖
 
