@@ -199,7 +199,7 @@ int spatial_match_batch(const float* ref, int stride, int width, int height, con
     for (int index : order) {
         const auto& item = items[index];
         counts[index] = spatial_match(ref, stride, width, height, item.bx, item.by, item.block, item.bm_range,
-                                      item.group, matches + static_cast<std::size_t>(index) * match_stride);
+                                      item.group, matches + static_cast<std::size_t>(index) * match_stride, item.avx2_features);
         if (counts[index] <= 0) {
             if (first_error == 0) {
                 first_error = index + 1;
@@ -266,7 +266,7 @@ int predictive_match_batch(const float* const* refs, const int* strides, int nte
         local.group = item.group;
         local.bm_range = item.bm_range;
         counts[index] = predictive_match(refs, strides, ntemp, width, height, item.bx, item.by, t0, local,
-                                         matches + static_cast<std::size_t>(index) * match_stride);
+                                         matches + static_cast<std::size_t>(index) * match_stride, item.avx2_features);
         if (counts[index] <= 0) {
             if (first_error == 0) {
                 first_error = index + 1;
@@ -697,7 +697,7 @@ int mcwnnm_filter_group_batch(McwnnmFilterBatchItem* items, int count) {
         }
         if (mcwnnm_filter_group(item.group, item.m, item.n, item.lda, item.nch, item.sigma, item.admm_iter, item.rho,
                                 item.mu, item.residual, item.adaptive, item.adaptive_weight, item.work,
-                                item.work_floats) != 0) {
+                                item.work_floats, item.avx2_gemm) != 0) {
             if (first_error == 0) {
                 first_error = index + 1;
             }
@@ -979,7 +979,7 @@ int nlh_filter_group_batch(NlhFilterBatchItem* items, int count) {
             continue;
         }
         nlh_filter_group(item.patches, item.m, item.n, item.lda, item.q, item.sigma, item.wiener, item.ref_patches,
-                         item.weight, item.work, item.work_floats);
+                         item.weight, item.work, item.work_floats, item.avx2_features);
         set_status(item, 1);
     }
     return first_error;

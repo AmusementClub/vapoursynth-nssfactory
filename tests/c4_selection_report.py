@@ -36,7 +36,8 @@ def report(root):
             speed=statistics.median(ratios)
             assert speed==item['paired_speedup'] and ratios==item['ratios'], (directory,name,'statistics mismatch')
             env=item['environment'];before,after=env['before'],env['after']
-            delta=[b-a for a,b in zip(before['cpu1'],after['cpu1'])]
+            sibling=f"cpu{env.get('sibling_cpu',1)}"
+            delta=[b-a for a,b in zip(before[sibling],after[sibling])]
             valid=delta[3]/sum(delta[:8])>=.999 and after['cpu'][7]==before['cpu'][7]
             accepted=speed>selection['threshold'] and item['numerical']['passed'] and valid
             assert accepted==item['selected'],(directory,name,'selection mismatch')

@@ -81,7 +81,7 @@ inline int lssc_dict_work_floats(int m, int atoms, int n, int ksvd_iters) {
            lssc_omp_work_floats(mm, aa, 8) + 32;
 }
 void lssc_dict_init_workspace(float* D, int m, int atoms, int ldd, const float* patches, int n, int lda, int block,
-                              int ksvd_iters, unsigned seed, float* work, int work_floats);
+                              int ksvd_iters, unsigned seed, float* work, int work_floats, bool avx2_gemm = false);
 
 // Per-frame dictionary state. The context borrows all storage from the
 // caller's workspace and must not outlive that frame.
@@ -92,6 +92,7 @@ struct LsscPreparedContext {
     int atoms = 0;
     int ldd = 0;
     float lipschitz = 1.f;
+    bool avx2_gemm = false;
 };
 
 inline int lssc_prepare_work_floats(int m, int atoms) {

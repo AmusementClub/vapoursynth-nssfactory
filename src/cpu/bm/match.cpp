@@ -7,7 +7,7 @@
 namespace nss {
 
 int predictive_match(const float* const* refs, const int* strides, int ntemp, int width, int height, int bx, int by,
-                     int t0, const SearchConfig& cfg, Match* out) {
+                     int t0, const SearchConfig& cfg, Match* out, unsigned avx2_features) {
     if (!refs || !strides || !out || ntemp < 1 || t0 < 0 || t0 >= ntemp || width < cfg.block || height < cfg.block || cfg.block < 1 ||
         cfg.group < 1 || cfg.group > kBmMaxGroup || cfg.step < 1 || cfg.bm_range < 0 || cfg.ps_num < 1 ||
         cfg.ps_range < 0 || cfg.radius < 0 || cfg.radius > kBmMaxRadius || !refs[t0] || strides[t0] < width) {
@@ -22,7 +22,7 @@ int predictive_match(const float* const* refs, const int* strides, int ntemp, in
     }
     const int block = cfg.block;
     const int group = cfg.group;
-    int n = spatial_match(refs[t0], strides[t0], width, height, bx, by, block, cfg.bm_range, group, out);
+    int n = spatial_match(refs[t0], strides[t0], width, height, bx, by, block, cfg.bm_range, group, out, avx2_features);
     const int cx = std::clamp(bx, 0, width - block);
     const int cy = std::clamp(by, 0, height - block);
     const float* reference = refs[t0] + cy * strides[t0] + cx;

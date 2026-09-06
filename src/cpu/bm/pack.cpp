@@ -1,3 +1,4 @@
+#include "nss/avx2_policy.hpp"
 #include "nss/cpu_api.hpp"
 #include "cpu/hwy_config.hpp"
 
@@ -89,7 +90,7 @@ void UnpackPatch(float* num, float* den, int stride, int x, int y, const float* 
 // single fixed-width SIMD operation so b4 and b12 do not fall through scalar
 // tails on AVX-512.
 void UnpackPatchFixed(float* num, float* den, int stride, int x, int y, const float* col, int block, int width,
-                      int height, float w) {
+                      int height, float w, unsigned avx2_features) {
     const bool inside = x >= 0 && y >= 0 && x + block <= width && y + block <= height;
     if (!inside) {
         UnpackPatch(num, den, stride, x, y, col, block, width, height, w);
@@ -124,6 +125,24 @@ void UnpackPatchFixed(float* num, float* den, int stride, int x, int y, const fl
         return;
     }
 #endif
+#if (NSS_AVX2_EXPERIMENT & 512) && HWY_TARGET == HWY_AVX2
+    if (block == 12 && (avx2_features & 512)) {
+        const hn::FixedTag<float, 8> d8;
+        const hn::FixedTag<float, 4> d4;
+        const auto w8 = hn::Set(d8, w);
+        const auto w4 = hn::Set(d4, w);
+        for (int row = 0; row < 12; ++row) {
+            float* n = num + (y + row) * stride + x;
+            float* de = den + (y + row) * stride + x;
+            const float* values = col + row * 12;
+            hn::StoreU(hn::MulAdd(w8, hn::LoadU(d8, values), hn::LoadU(d8, n)), d8, n);
+            hn::StoreU(hn::Add(hn::LoadU(d8, de), w8), d8, de);
+            hn::StoreU(hn::MulAdd(w4, hn::LoadU(d4, values + 8), hn::LoadU(d4, n + 8)), d4, n + 8);
+            hn::StoreU(hn::Add(hn::LoadU(d4, de + 8), w4), d4, de + 8);
+        }
+        return;
+    }
+#endif
     UnpackPatch(num, den, stride, x, y, col, block, width, height, w);
 }
 
@@ -148,8 +167,8 @@ void unpack_patch(float* num, float* den, int stride, int x, int y,
 }
 
 void unpack_patch_fixed(float* num, float* den, int stride, int x, int y,
-                        const float* col, int block, int width, int height, float w) {
-    HWY_DYNAMIC_DISPATCH(UnpackPatchFixed)(num, den, stride, x, y, col, block, width, height, w);
+                        const float* col, int block, int width, int height, float w, unsigned avx2_features) {
+    HWY_DYNAMIC_DISPATCH(UnpackPatchFixed)(num, den, stride, x, y, col, block, width, height, w, avx2_features | NSS_AVX2_REQUESTED);
 }
 
 }  // namespace nss

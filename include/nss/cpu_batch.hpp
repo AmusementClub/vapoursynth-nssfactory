@@ -142,6 +142,7 @@ struct MatchBatchItem {
     int block = 8;
     int bm_range = 7;
     int group = 8;
+    unsigned avx2_features = 0;
 };
 
 // Results for item i are written at matches + i * match_stride and counts[i].
@@ -250,6 +251,7 @@ struct McwnnmFilterBatchItem {
     float* work = nullptr;
     int work_floats = 0;
     int* status = nullptr;
+    bool avx2_gemm = false;
 };
 
 int mcwnnm_filter_group_batch(McwnnmFilterBatchItem* items, int count);
@@ -297,6 +299,7 @@ struct NlhFilterBatchItem {
     float* work = nullptr;
     int work_floats = 0;
     int* status = nullptr;
+    unsigned avx2_features = 0;
 };
 
 int nlh_filter_group_batch(NlhFilterBatchItem* items, int count);

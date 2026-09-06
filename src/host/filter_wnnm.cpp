@@ -1,3 +1,4 @@
+#include "nss/avx2_policy.hpp"
 #include "host/filters.hpp"
 #include "host/temporal.hpp"
 #include "host/batch_runner.hpp"
@@ -93,7 +94,7 @@ void process_plane_batched(const float* const* srcs, const float* const* refs, i
         std::array<nss::Match, nss::host_detail::kGroupBatchWindow * nss::kWnnmMaxGroup> match_storage{};
         for (int i = 0; i < count; ++i) {
             const auto& job = jobs[begin + static_cast<std::size_t>(i)];
-            match_items[static_cast<std::size_t>(i)] = nss::MatchBatchItem{job.x, job.y, block, bm_range, group};
+            match_items[static_cast<std::size_t>(i)] = nss::MatchBatchItem{job.x, job.y, block, bm_range, group, nss::detail::avx2_policy(nss::detail::Avx2Algorithm::WNNM, block, group, radius, false, 0)};
         }
         const int match_rc = radius > 0
                                  ? nss::predictive_match_batch(refs, strides, ntemp, width, height, t0, cfg,

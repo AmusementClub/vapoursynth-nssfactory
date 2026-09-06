@@ -16,6 +16,8 @@ def run(a):
                   kwargs=dict(block_size=b,group_size=16,block_step=1,bm_range=2,
                               sigma=3,radius=2,ps_range=1))
              for b in (4,8) for stage in ('basic','wiener','two_stage')]
+    if a.configs:
+        rows=json.loads(Path(a.configs).read_text())
     token=hashlib.sha256((sha(a.baseline)+sha(here/'c4_paired_bm.py')+sha(here/'profile_cpu_all.py')+sha(here/'bm_numerics.py')+json.dumps(rows,sort_keys=True)).encode()).hexdigest()
     cache=Path(a.cache)/token;cache.mkdir(parents=True,exist_ok=True)
     out=Path(a.out);out.mkdir(parents=True,exist_ok=False);results=[]
@@ -26,7 +28,7 @@ def run(a):
         for plugin,path in [(a.baseline,base),(a.candidate,cand)]:
             if path==base and path.exists():continue
             config=dict(cfg,_dump=str(path),warmup=1)
-            proc=subprocess.run(['taskset','-c','0',sys.executable,str(here/'c4_paired_bm.py'),'worker','--plugin',plugin,'--config',json.dumps(config)],text=True,capture_output=True)
+            proc=subprocess.run(['taskset','-c',str(a.cpu),sys.executable,str(here/'c4_paired_bm.py'),'worker','--plugin',plugin,'--config',json.dumps(config)],text=True,capture_output=True)
             if proc.returncode:raise RuntimeError(f'{name}: {proc.stderr}\n{proc.stdout}')
         report=compare(np.load(base),np.load(cand));results.append(dict(name=name,config=cfg,**report))
         (out/'results.json').write_text(json.dumps(results,indent=2))
@@ -41,4 +43,4 @@ def run(a):
     print(json.dumps(dict(passed=passed,cases=len(results),expected=len(rows))),flush=True)
     return 0 if passed else 1
 if __name__=='__main__':
-    p=argparse.ArgumentParser();p.add_argument('--baseline',required=True);p.add_argument('--candidate',required=True);p.add_argument('--out',required=True);p.add_argument('--cache',default='/tmp/nss-numeric-cache');p.add_argument('--keep-going',action='store_true');sys.exit(run(p.parse_args()))
+    p=argparse.ArgumentParser();p.add_argument('--baseline',required=True);p.add_argument('--candidate',required=True);p.add_argument('--out',required=True);p.add_argument('--cache',default='/tmp/nss-numeric-cache');p.add_argument('--keep-going',action='store_true');p.add_argument('--configs');p.add_argument('--cpu',type=int,default=0);sys.exit(run(p.parse_args()))

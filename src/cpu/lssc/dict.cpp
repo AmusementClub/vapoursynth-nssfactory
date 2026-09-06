@@ -79,7 +79,7 @@ void fill_patch_atoms(float* D, int m, int atoms, int ldd, const float* patches,
 }
 
 bool ksvd_lite_workspace(float* D, int m, int atoms, int ldd, const float* patches, int n, int lda, int iters,
-                         float* work, int work_floats) {
+                         float* work, int work_floats, bool avx2_gemm) {
     if (iters < 1 || n < 2 || atoms < 1) {
         return true;
     }
@@ -137,7 +137,7 @@ bool ksvd_lite_workspace(float* D, int m, int atoms, int ldd, const float* patch
                 A[k + j * atoms] = aj[k];
             }
         }
-        gemm_nn_hwy(m, ns, atoms, D, ldd, A, atoms, R, m);
+        gemm_nn_hwy(m, ns, atoms, D, ldd, A, atoms, R, m, avx2_gemm);
         for (int k = 0; k < atoms; ++k) {
             int nsup = 0;
             for (int j = 0; j < ns && nsup < nsvd; ++j) {
@@ -198,7 +198,7 @@ bool ksvd_lite_workspace(float* D, int m, int atoms, int ldd, const float* patch
 }  // namespace
 
 void lssc_dict_init_workspace(float* D, int m, int atoms, int ldd, const float* patches, int n, int lda, int block,
-                              int ksvd_iters, unsigned seed, float* work, int work_floats) {
+                              int ksvd_iters, unsigned seed, float* work, int work_floats, bool avx2_gemm) {
     if (!D || m < 1 || atoms < 1 || ldd < m) {
         return;
     }
@@ -226,7 +226,7 @@ void lssc_dict_init_workspace(float* D, int m, int atoms, int ldd, const float* 
         iters = 8;
     }
     if (patches && n > 0 && lda >= m && iters > 0) {
-        (void)ksvd_lite_workspace(D, m, atoms, ldd, patches, n, lda, iters, work, work_floats);
+        (void)ksvd_lite_workspace(D, m, atoms, ldd, patches, n, lda, iters, work, work_floats, avx2_gemm);
     }
 }
 

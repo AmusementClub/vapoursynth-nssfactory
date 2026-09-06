@@ -49,8 +49,51 @@ static void SsdRow4Candidates16(const float* self, const float* candidates, int 
 }
 #endif
 
+#if (NSS_AVX2_EXPERIMENT & 2) && HWY_TARGET == HWY_AVX2
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((noinline))
+#endif
+static void SsdRow4Candidates8(const float* self, const float* candidates, int stride, int count,
+                                float* distances) {
+    const hn::FixedTag<float, 8> d16;
+    for (int x = 0; x < count; x += 8) {
+        const std::size_t lanes = static_cast<std::size_t>(std::min(8, count - x));
+        auto acc0 = hn::Zero(d16);
+        auto acc1 = hn::Zero(d16);
+        auto acc2 = hn::Zero(d16);
+        auto acc3 = hn::Zero(d16);
+        for (int row = 0; row < 4; ++row) {
+            const float* candidate_row = candidates + row * stride + x;
+            const float* reference_row = self + row * stride;
+            const auto d0 = hn::Sub(hn::Set(d16, reference_row[0]), hn::LoadN(d16, candidate_row, lanes));
+            const auto d1 = hn::Sub(hn::Set(d16, reference_row[1]), hn::LoadN(d16, candidate_row + 1, lanes));
+            const auto d2 = hn::Sub(hn::Set(d16, reference_row[2]), hn::LoadN(d16, candidate_row + 2, lanes));
+            const auto d3 = hn::Sub(hn::Set(d16, reference_row[3]), hn::LoadN(d16, candidate_row + 3, lanes));
+            acc0 = hn::MulAdd(d0, d0, acc0);
+            acc1 = hn::MulAdd(d1, d1, acc1);
+            acc2 = hn::MulAdd(d2, d2, acc2);
+            acc3 = hn::MulAdd(d3, d3, acc3);
+        }
+        // Highway's 4-lane ReduceSum tree is (lane0 + lane3) +
+        // (lane1 + lane2). Reproduce it across candidate lanes so the
+        // matcher keeps the existing distance and tie semantics.
+        auto pair03 = hn::Add(acc0, acc3);
+        auto pair12 = hn::Add(acc1, acc2);
+#if defined(__GNUC__) || defined(__clang__)
+        // GCC -ffast-math reassociates independent candidate vectors into
+        // (acc0 + acc1) + (acc2 + acc3). The original intra-vector ReduceSum
+        // keeps (0 + 3) + (1 + 2) behind shuffles. Materialize both pair sums
+        // at this compiler barrier so candidate parallelism keeps that tree.
+        __asm__ volatile("" : "+x"(pair03.raw), "+x"(pair12.raw));
+#endif
+        const auto sums = hn::Add(pair03, pair12);
+        hn::StoreN(sums, d16, distances + x, lanes);
+    }
+}
+#endif
+
 int SpatialMatch4Fast(const float* ref, int stride, int width, int height, int cx, int cy, int bm_range, int group,
-                      Match* out) {
+                      Match* out, bool avx2_enabled) {
 #if HWY_MAX_BYTES >= 16
     const hn::FixedTag<float, 4> df;
     const int wanted = std::min(group, kBmMaxGroup);
@@ -103,6 +146,17 @@ int SpatialMatch4Fast(const float* ref, int stride, int width, int height, int c
             consider(left + i, y, distances[i]);
         }
 #else
+#if (NSS_AVX2_EXPERIMENT & 2) && HWY_TARGET == HWY_AVX2
+        if (avx2_enabled) {
+        HWY_ALIGN float distances[2 * kBmMaxRange + 1];
+        const int candidate_count = right - left + 1;
+        SsdRow4Candidates8(self, row + left, stride, candidate_count, distances);
+        for (int i = 0; i < candidate_count && !nonfinite; ++i) {
+            consider(left + i, y, distances[i]);
+        }
+        continue;
+        }
+#endif
         int x = left;
         for (; x + 1 <= right && !nonfinite; x += 2) {
             auto acc0 = hn::Zero(df);
@@ -147,8 +201,8 @@ namespace nss::detail {
 HWY_EXPORT(SpatialMatch4Fast);
 
 int spatial_match4_fast(const float* ref, int stride, int width, int height, int cx, int cy, int bm_range, int group,
-                        Match* out) {
-    return HWY_DYNAMIC_DISPATCH(SpatialMatch4Fast)(ref, stride, width, height, cx, cy, bm_range, group, out);
+                        Match* out, bool avx2_enabled) {
+    return HWY_DYNAMIC_DISPATCH(SpatialMatch4Fast)(ref, stride, width, height, cx, cy, bm_range, group, out, avx2_enabled);
 }
 
 }  // namespace nss::detail

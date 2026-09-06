@@ -11,6 +11,14 @@ import c4_paired_bm as bench
 
 
 class BudgetTests(unittest.TestCase):
+    def test_host_specific_sibling(self):
+        before={'cpu':[0]*10,'cpu23':[0]*10,'cpu1':[0]*10}
+        after={'cpu':[100,0,0,1000,0,0,0,0,0,0],
+               'cpu23':[0,0,0,1000,0,0,0,0,0,0],
+               'cpu1':[100,0,0,900,0,0,0,0,0,0]}
+        self.assertTrue(bench.environment_delta(before,after,23)['valid'])
+        self.assertFalse(bench.environment_delta(before,after,1)['valid'])
+
     def calibrate(self, wall, ms, quantum=0):
         row = dict(ms=ms, worker_wall_seconds=wall,
                    timed_frames=quantum or 1, rolling_chunk=quantum)

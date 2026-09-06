@@ -1,3 +1,4 @@
+#include "nss/avx2_policy.hpp"
 #include "nss/cpu_ncsr.hpp"
 
 #include "nss/cpu_api.hpp"
@@ -255,7 +256,7 @@ void ncsr_run_groups(const float* const* refs, const int* rstrides, const float*
         std::array<Match, 32 * kWnnmMaxGroup> match_storage{};
         for (int i = 0; i < count; ++i) {
             const auto& job = jobs[begin + static_cast<std::size_t>(i)];
-            match_items[static_cast<std::size_t>(i)] = MatchBatchItem{job.x, job.y, block, cfg.bm_range, g};
+            match_items[static_cast<std::size_t>(i)] = MatchBatchItem{job.x, job.y, block, cfg.bm_range, g, nss::detail::avx2_policy(nss::detail::Avx2Algorithm::NCSR, block, g, cfg.radius, false, 0)};
         }
         const int match_rc = cfg.radius > 0
                                  ? predictive_match_batch(refs, rstrides, ntemp, width, height, t_ref, cfg,

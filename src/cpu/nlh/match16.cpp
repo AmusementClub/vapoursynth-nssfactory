@@ -162,6 +162,29 @@ int NlhSpatialMatch16(const float* ref, int stride, int width, int height, int b
                 consider(x + 3, y, HSum8(hn::Add(a30, a31)), ordinal + 3);
             }
 #endif
+#if HWY_TARGET == HWY_AVX2 && (NSS_AVX2_EXPERIMENT & 256)
+            // Keep the AVX2 baseline's four independent row accumulators.
+            // Opening the AVX-512 two-accumulator loop would alter distances.
+            for (; x + 3 <= right; x += 4, ordinal += 4) {
+                hn::Vec<decltype(df)> acc[4][4];
+                for (int c = 0; c < 4; ++c) {
+                    for (int k = 0; k < 4; ++k) acc[c][k] = hn::Zero(df);
+                }
+                for (int i = 0; i < 8; i += 4) {
+                    for (int k = 0; k < 4; ++k) {
+                        const auto r = refb[i + k];
+                        for (int c = 0; c < 4; ++c) {
+                            const auto diff = hn::Sub(r, hn::LoadU(df, row + x + c + (i + k) * stride));
+                            acc[c][k] = hn::MulAdd(diff, diff, acc[c][k]);
+                        }
+                    }
+                }
+                for (int c = 0; c < 4; ++c) {
+                    consider(x + c, y, HSum8(hn::Add(hn::Add(acc[c][0], acc[c][2]),
+                                                      hn::Add(acc[c][1], acc[c][3]))), ordinal + c);
+                }
+            }
+#endif
             for (; x + 1 <= right; x += 2, ordinal += 2) {
                 auto a00 = hn::Zero(df);
                 auto a01 = hn::Zero(df);

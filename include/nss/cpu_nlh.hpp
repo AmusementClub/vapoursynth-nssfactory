@@ -46,6 +46,6 @@ inline int nlh_filter_work_floats(int m, int n, int q, int lda = 0) {
 // overwrite earlier pixels. Coeff hard uses λσ, then structural hard (last two
 // rows except column 0). Aggregation counts kept after structural hard.
 void nlh_filter_group(float* patches, int m, int n, int lda, int q, float sigma, bool wiener,
-                      const float* ref_patches, float* weight_out, float* work, int work_floats = 0);
+                      const float* ref_patches, float* weight_out, float* work, int work_floats = 0, unsigned features = 0);
 
 }  // namespace nss

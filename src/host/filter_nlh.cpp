@@ -1,3 +1,4 @@
+#include "nss/avx2_policy.hpp"
 #include "host/filters.hpp"
 #include "host/temporal.hpp"
 #include "host/batch_runner.hpp"
@@ -79,7 +80,7 @@ void run_groups(const float* const* match_refs, const int* match_strides, const 
         std::array<nss::Match, nss::host_detail::kGroupBatchWindow * nss::kBmMaxGroup> match_storage{};
         for (int i = 0; i < count; ++i) {
             const auto& job = jobs[begin + static_cast<std::size_t>(i)];
-            match_items[static_cast<std::size_t>(i)] = nss::MatchBatchItem{job.x, job.y, block, bm_range, group};
+            match_items[static_cast<std::size_t>(i)] = nss::MatchBatchItem{job.x, job.y, block, bm_range, group, nss::detail::avx2_policy(nss::detail::Avx2Algorithm::NLH, block, group, radius, wiener, q)};
         }
         const int match_rc = radius > 0
                                  ? nss::predictive_match_batch(match_refs, match_strides, ntemp, pw, ph, t0, cfg,
@@ -119,7 +120,8 @@ void run_groups(const float* const* match_refs, const int* match_strides, const 
             filter_items[static_cast<std::size_t>(i)] = nss::NlhFilterBatchItem{
                 p, m, k, lda, q, sigma, wiener, rp, &weights[static_cast<std::size_t>(i)],
                 batch_work.data() + static_cast<std::size_t>(i) * static_cast<std::size_t>(group_work), group_work,
-                &filter_status[static_cast<std::size_t>(i)]};
+                &filter_status[static_cast<std::size_t>(i)],
+                nss::detail::avx2_policy(nss::detail::Avx2Algorithm::NLH, block, group, radius, wiener, q)};
         }
         (void)nss::nlh_filter_group_batch(filter_items.data(), count);
 

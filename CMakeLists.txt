@@ -1,6 +1,35 @@
 cmake_minimum_required(VERSION 3.24)
 project(nssfactory LANGUAGES CXX)
 
+# Independent port candidates; new vector paths are restricted to Highway AVX2.
+set(NSS_AVX2_EXPERIMENT "0" CACHE STRING "Additional AVX2 candidate bits; use NSS_AVX2_DEFAULTS=OFF and zero for the baseline")
+if(NOT NSS_AVX2_EXPERIMENT MATCHES "^[0-9]+$" OR NSS_AVX2_EXPERIMENT GREATER 2047)
+  message(FATAL_ERROR "NSS_AVX2_EXPERIMENT must be a bitmask in 0..2047")
+endif()
+option(NSS_AVX2_DEFAULTS "Enable configuration-scoped, dual-host validated AVX2 paths" ON)
+# Only these kernels are compiled for the configuration admission policy.
+# Experimental masks are independent and bypass configuration admission.
+set(NSS_AVX2_DEFAULT_MASK 1789)
+if(NSS_AVX2_DEFAULTS)
+  math(EXPR NSS_AVX2_COMPILED "${NSS_AVX2_EXPERIMENT} | ${NSS_AVX2_DEFAULT_MASK}")
+else()
+  set(NSS_AVX2_COMPILED ${NSS_AVX2_EXPERIMENT})
+endif()
+add_compile_definitions(NSS_AVX2_REQUESTED=${NSS_AVX2_EXPERIMENT}
+                        NSS_AVX2_DEFAULTS=$<BOOL:${NSS_AVX2_DEFAULTS}>)
+# Scope definitions to participating translation units so independent candidate
+# builds do not rebuild unrelated filters or alter their compiler inputs.
+foreach(entry "bm/ssd.cpp|1" "bm/spatial4.cpp|2" "bm/spatial12.cpp|4"
+              "bm/spatial16.cpp|8" "nlh/filter_group.cpp|112" "nlh/haar.cpp|32"
+              "bm/dct16.cpp|128" "nlh/match16.cpp|256" "bm/pack.cpp|512"
+              "wnnm/jacobi8.cpp|1024")
+  string(REPLACE "|" ";" fields "${entry}")
+  list(GET fields 0 file)
+  list(GET fields 1 bits)
+  math(EXPR local_mask "${NSS_AVX2_COMPILED} & ${bits}")
+  set_property(SOURCE "src/cpu/${file}" APPEND PROPERTY COMPILE_DEFINITIONS "NSS_AVX2_EXPERIMENT=${local_mask}")
+endforeach()
+
 # Selected C4 combination: SortedTopK (1), rolling ring/scratch (256), reuse (2048).
 # Zero retains the pure correctness reference; other masks remain selectable.
 set(NSS_BM_EXPERIMENT "2305" CACHE STRING "BM3D feature bitmask; 2305 is the selected default, zero is the reference")

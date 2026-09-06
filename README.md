@@ -53,11 +53,19 @@ cmake --build build -j
 
 Install `libnss.so` into the VapourSynth plugin directory.
 
+Fresh builds also enable `NSS_AVX2_DEFAULTS=ON`, with configuration-scoped
+AVX2 ports validated on C4 and Ryzen 5950X. `NSS_AVX2_EXPERIMENT=0` adds no
+experimental candidates; use `-DNSS_AVX2_DEFAULTS=OFF -DNSS_AVX2_EXPERIMENT=0`
+to retain the AVX2 reference routes. See the [AVX2 campaign report](docs/avx2-port-campaign.md)
+for dispatch limits, numerical replays, per-configuration timings and measured
+NLH fallback overhead.
+
 Fresh builds select `NSS_BM_EXPERIMENT=2305`: AVX3 SortedTopK for b8 groups of
 at least 16, BM3D patch/work reuse, and rolling target-ring/direct-scratch
 aggregation. The ordinary spatial b8/g8 route is largely unchanged. Existing
 CMake caches retain their previous setting; use `-DNSS_BM_EXPERIMENT=2305`
-to select the new combination, or `=0` for the pure-correctness reference.
+to select the BM combination. For the pure-correctness reference use
+`-DNSS_BM_EXPERIMENT=0 -DNSS_AVX2_DEFAULTS=OFF -DNSS_AVX2_EXPERIMENT=0`.
 Cached-worst remains an alternative (`=2`); it cannot be combined with SortedTopK.
 See [bounded C4 selection](docs/c4-selection-20260906.md) for measured algorithm,
 group-size and temporal cases. Rolling remains explicitly requested through

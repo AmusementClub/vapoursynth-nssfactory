@@ -124,7 +124,7 @@ static void HaarColsQ2(float* mat, int n, bool inverse) {
     }
 }
 
-static void Haar2dFast(float* mat, int q, int n, bool inverse);
+static void Haar2dFast(float* mat, int q, int n, bool inverse, bool avx2_enabled = true);
 
 #if HWY_MAX_BYTES >= 64
 static inline hn::Vec<hn::ScalableTag<float>> Haar16Zip8(
@@ -215,6 +215,70 @@ static inline hn::Vec<hn::ScalableTag<float>> Haar16VecInv(hn::Vec<hn::ScalableT
 }
 #endif
 
+#if HWY_TARGET == HWY_AVX2 && (NSS_AVX2_EXPERIMENT & 32)
+template<int Len, bool Inverse>
+static inline hn::Vec<hn::ScalableTag<float>> Haar8Stage(hn::Vec<hn::ScalableTag<float>> v) {
+    const hn::ScalableTag<float> d;
+    const auto scale = hn::Set(d, kHaarInvSqrt2);
+    constexpr auto ai = [](int i) { return Inverse ? (i / 2) % (Len / 2) : 2 * (i % (Len / 2)); };
+    constexpr auto bi = [](int i) { return Inverse ? (i / 2) % (Len / 2) + Len / 2 : 2 * (i % (Len / 2)) + 1; };
+    alignas(32) static constexpr int32_t a[8] = {ai(0), ai(1), ai(2), ai(3), ai(4), ai(5), ai(6), ai(7)};
+    alignas(32) static constexpr int32_t b[8] = {bi(0), bi(1), bi(2), bi(3), bi(4), bi(5), bi(6), bi(7)};
+    const auto x = hn::TableLookupLanes(v, hn::SetTableIndices(d, a));
+    const auto y = hn::TableLookupLanes(v, hn::SetTableIndices(d, b));
+    const auto sums = hn::Mul(hn::Add(x, y), scale);
+    const auto diffs = hn::Mul(hn::Sub(x, y), scale);
+    const auto stage = Inverse ? hn::OddEven(diffs, sums) : hn::IfThenElse(hn::FirstN(d, Len / 2), sums, diffs);
+    return hn::IfThenElse(hn::FirstN(d, Len), stage, v);
+}
+
+// Two registers carry the sixteen columns. Each stage uses the same
+// add/subtract then multiply order as Haar1dN, including the root stage.
+static inline void Haar16Pair(hn::Vec<hn::ScalableTag<float>>& lo,
+                              hn::Vec<hn::ScalableTag<float>>& hi, bool inverse) {
+    const hn::ScalableTag<float> d;
+    const auto scale = hn::Set(d, kHaarInvSqrt2);
+    if (!inverse) {
+        const auto even = hn::ConcatEven(d, hi, lo);
+        const auto odd = hn::ConcatOdd(d, hi, lo);
+        lo = hn::Mul(hn::Add(even, odd), scale);
+        hi = hn::Mul(hn::Sub(even, odd), scale);
+        lo = Haar8Stage<2, false>(Haar8Stage<4, false>(Haar8Stage<8, false>(lo)));
+    } else {
+        lo = Haar8Stage<8, true>(Haar8Stage<4, true>(Haar8Stage<2, true>(lo)));
+        const auto sums = hn::Mul(hn::Add(lo, hi), scale);
+        const auto diffs = hn::Mul(hn::Sub(lo, hi), scale);
+        alignas(32) static constexpr int32_t lower[8] = {0, 0, 1, 1, 2, 2, 3, 3};
+        alignas(32) static constexpr int32_t upper[8] = {4, 4, 5, 5, 6, 6, 7, 7};
+        const auto il = hn::SetTableIndices(d, lower);
+        const auto ih = hn::SetTableIndices(d, upper);
+        lo = hn::OddEven(hn::TableLookupLanes(diffs, il), hn::TableLookupLanes(sums, il));
+        hi = hn::OddEven(hn::TableLookupLanes(diffs, ih), hn::TableLookupLanes(sums, ih));
+    }
+}
+
+static void Haar2dAvx2_4x16(float* mat, bool inverse) {
+    const hn::ScalableTag<float> d;
+    hn::Vec<hn::ScalableTag<float>> a0, a1, a2, a3, b0, b1, b2, b3;
+    hn::LoadInterleaved4(d, mat, a0, a1, a2, a3);
+    hn::LoadInterleaved4(d, mat + 32, b0, b1, b2, b3);
+    if (!inverse) {
+        Haar4Vec(a0, a1, a2, a3, false);
+        Haar4Vec(b0, b1, b2, b3, false);
+    }
+    Haar16Pair(a0, b0, inverse);
+    Haar16Pair(a1, b1, inverse);
+    Haar16Pair(a2, b2, inverse);
+    Haar16Pair(a3, b3, inverse);
+    if (inverse) {
+        Haar4Vec(a0, a1, a2, a3, true);
+        Haar4Vec(b0, b1, b2, b3, true);
+    }
+    hn::StoreInterleaved4(a0, a1, a2, a3, d, mat);
+    hn::StoreInterleaved4(b0, b1, b2, b3, d, mat + 32);
+}
+#endif
+
 static void Haar16InVec(hn::Vec<hn::ScalableTag<float>>& v, bool inverse) {
 #if HWY_MAX_BYTES >= 64
     if (static_cast<int>(hn::Lanes(hn::ScalableTag<float>())) == 16) {
@@ -233,7 +297,7 @@ static void Haar16InVec(hn::Vec<hn::ScalableTag<float>>& v, bool inverse) {
     v = hn::LoadU(d, tmp);
 }
 
-static void Haar2d_4x16(float* mat, bool inverse) {
+static void Haar2d_4x16(float* mat, bool inverse, bool avx2_enabled = true) {
     const hn::ScalableTag<float> d;
     if (static_cast<int>(hn::Lanes(d)) == 16) {
         hn::Vec<hn::ScalableTag<float>> v0, v1, v2, v3;
@@ -254,10 +318,16 @@ static void Haar2d_4x16(float* mat, bool inverse) {
         hn::StoreInterleaved4(v0, v1, v2, v3, d, mat);
         return;
     }
-    Haar2dFast(mat, 4, 16, inverse);
+    Haar2dFast(mat, 4, 16, inverse, avx2_enabled);
 }
 
-static void Haar2dFast(float* mat, int q, int n, bool inverse) {
+static void Haar2dFast(float* mat, int q, int n, bool inverse, bool avx2_enabled) {
+#if HWY_TARGET == HWY_AVX2 && (NSS_AVX2_EXPERIMENT & 32)
+    if (avx2_enabled && q == 4 && n == 16) {
+        Haar2dAvx2_4x16(mat, inverse);
+        return;
+    }
+#endif
     auto cols = [&]() {
         if (q == 4) {
             HaarColsQ4(mat, n, inverse);

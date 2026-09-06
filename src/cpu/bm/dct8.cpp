@@ -1,3 +1,4 @@
+#include "nss/avx2_policy.hpp"
 #if NSS_BM_EXPERIMENT & 128
 #include <cstdlib>
 #include <cstdio>
@@ -800,7 +801,7 @@ struct DctMemo {
 DctMemo& dct_memo(){static thread_local DctMemo memo;return memo;}
 #endif
 void Bm3dFilterGroup(float* patches, int lda, int group, int k, int block, float sigma, bool wiener,
-                     const float* ref_patches, float* weight_out, float* work
+                     const float* ref_patches, float* weight_out, float* work, unsigned avx2_features = NSS_AVX2_REQUESTED
 #if NSS_BM_EXPERIMENT & 128
                      , const Bm3dPatchKey* keys=nullptr, const Bm3dPatchKey* ref_keys=nullptr
 #endif
@@ -847,7 +848,7 @@ void Bm3dFilterGroup(float* patches, int lda, int group, int k, int block, float
             return;
         }
 #endif
-        if (block == 16 && detail::dct16_2d_batch_fast(c, group, inverse)) {
+        if (block == 16 && detail::dct16_2d_batch_fast(c, group, inverse, (avx2_features & 128) != 0)) {
             return;
         }
         DctLines(c, block, block, 1, group * block, inverse);
@@ -1011,7 +1012,7 @@ void Bm3dHomogeneousBatch(Bm3dFilterBatchItem* items, int count) {
     for (int i = 0; i < count; ++i) {
         auto& p = items[i];
         Bm3dFilterGroup(p.patches, p.lda, p.group, p.k, p.block, p.sigma,
-                       p.wiener, p.ref_patches, p.weight, p.work
+                       p.wiener, p.ref_patches, p.weight, p.work, NSS_AVX2_REQUESTED
 #if NSS_BM_EXPERIMENT & 128
                        , p.keys, p.ref_keys
 #endif
@@ -1345,8 +1346,8 @@ void dct_lines(float* base, int n, int line_stride, int sample_stride, int count
 }
 
 void bm3d_filter_group(float* patches, int lda, int group, int k, int block, float sigma, bool wiener,
-                       const float* ref_patches, float* weight_out, float* work) {
-    HWY_DYNAMIC_DISPATCH(Bm3dFilterGroup)(patches, lda, group, k, block, sigma, wiener, ref_patches, weight_out, work
+                       const float* ref_patches, float* weight_out, float* work, unsigned avx2_features) {
+    HWY_DYNAMIC_DISPATCH(Bm3dFilterGroup)(patches, lda, group, k, block, sigma, wiener, ref_patches, weight_out, work, avx2_features | NSS_AVX2_REQUESTED
 #if NSS_BM_EXPERIMENT & 128
                                        , nullptr, nullptr
 #endif
@@ -1357,7 +1358,7 @@ void bm3d_filter_group(float* patches, int lda, int group, int k, int block, flo
 void bm3d_filter_group_keyed(float* patches,int lda,int group,int k,int block,float sigma,bool wiener,
                             const float* ref_patches,float* weight_out,float* work,
                             const Bm3dPatchKey* keys,const Bm3dPatchKey* ref_keys){
-    HWY_DYNAMIC_DISPATCH(Bm3dFilterGroup)(patches,lda,group,k,block,sigma,wiener,ref_patches,weight_out,work,keys,ref_keys);
+    HWY_DYNAMIC_DISPATCH(Bm3dFilterGroup)(patches,lda,group,k,block,sigma,wiener,ref_patches,weight_out,work,NSS_AVX2_REQUESTED,keys,ref_keys);
 }
 #endif
 
@@ -1369,7 +1370,7 @@ void bm3d_filter8(const float* src, int sstride, const Match* matches, int k, fl
 
 void bm3d_filter_direct(const float* src, int sstride, const Match* matches, int k, int block, int group, float sigma,
                         bool wiener, const float* ref, int rstride, float* num, float* den, int dstride, int width,
-                        int height, float* cube, float* work) {
+                        int height, float* cube, float* work, unsigned avx2_features) {
     if (!src || !matches || !cube || !work || !num || !den || k < 1 || block < 1 || group < 1 || width < 1 ||
         height < 1) {
         return;
@@ -1401,11 +1402,11 @@ void bm3d_filter_direct(const float* src, int sstride, const Match* matches, int
     if(group<=kBmMaxGroup)for(int i=0;i<kk;++i){keys[i]={src,sstride,matches[i].x,matches[i].y};rkeys[i]={ref,rstride,matches[i].x,matches[i].y};}
     bm3d_filter_group_keyed(cube, area, group, kk, block, sigma, wiener, refc, &weight, work,group<=kBmMaxGroup?keys:nullptr,group<=kBmMaxGroup?rkeys:nullptr);
 #else
-    bm3d_filter_group(cube, area, group, kk, block, sigma, wiener, refc, &weight, work);
+    bm3d_filter_group(cube, area, group, kk, block, sigma, wiener, refc, &weight, work, avx2_features);
 #endif
     for (int g = 0; g < kk; ++g) {
         unpack_patch_fixed(num, den, dstride, matches[g].x, matches[g].y,
-                           cube + static_cast<std::size_t>(g) * area, block, width, height, weight);
+                           cube + static_cast<std::size_t>(g) * area, block, width, height, weight, avx2_features);
     }
 }
 

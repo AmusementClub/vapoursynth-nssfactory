@@ -1,3 +1,4 @@
+#include "nss/avx2_policy.hpp"
 #include "nss/cpu_api.hpp"
 #include "cpu/hwy_config.hpp"
 #include "cpu/bm/matcher.hpp"
@@ -344,7 +345,7 @@ static int SpatialMatch8(const float* ref, int stride, int width, int height, in
 
 // Same hoisted 8x8 SSD as SpatialMatch8, but top-k length follows group.
 // group==8 keeps the lane-sorted path above; this is only the K-generic sibling.
-#if NSS_BM_EXPERIMENT & 1
+#if (NSS_BM_EXPERIMENT & 1) || ((NSS_AVX2_EXPERIMENT & 1) && HWY_TARGET == HWY_AVX2)
 template <class TopK>
 #endif
 static int SpatialMatch8Ssd(const float* ref, int stride, int width, int height, int cx, int cy, int bm_range,
@@ -373,7 +374,7 @@ static int SpatialMatch8Ssd(const float* ref, int stride, int width, int height,
                                        });
     };
 
-#if NSS_BM_EXPERIMENT & 1
+#if (NSS_BM_EXPERIMENT & 1) || ((NSS_AVX2_EXPERIMENT & 1) && HWY_TARGET == HWY_AVX2)
     TopK topk(out + 1, wanted - 1);
 #else
     detail::CandidateTopK topk(out + 1, wanted - 1);
@@ -425,7 +426,7 @@ static int SpatialMatch8Ssd(const float* ref, int stride, int width, int height,
 #endif
 
 int SpatialMatch(const float* ref, int stride, int width, int height, int bx, int by, int block, int bm_range,
-                 int group, Match* out) {
+                 int group, Match* out, unsigned avx2_features) {
     const int max_x = width - block;
     const int max_y = height - block;
     if (!ref || !out || width < 1 || height < 1 || block < 1 || stride < width || max_x < 0 || max_y < 0 ||
@@ -443,13 +444,17 @@ int SpatialMatch(const float* ref, int stride, int width, int height, int bx, in
 #endif
     }
     if (block == 8) {
-#if (NSS_BM_EXPERIMENT & 1) && HWY_MAX_BYTES >= 64
-        if (group >= 16) {
+#if ((NSS_BM_EXPERIMENT & 1) && HWY_MAX_BYTES >= 64) || ((NSS_AVX2_EXPERIMENT & 1) && HWY_TARGET == HWY_AVX2)
+        if (group >= 16
+#if HWY_TARGET == HWY_AVX2
+            && (avx2_features & 1)
+#endif
+        ) {
             return SpatialMatch8Ssd<detail::SpatialSortedTopK>(
                 ref, stride, width, height, cx, cy, std::max(bm_range, 0), group, out);
         }
 #endif
-#if NSS_BM_EXPERIMENT & 1
+#if (NSS_BM_EXPERIMENT & 1) || ((NSS_AVX2_EXPERIMENT & 1) && HWY_TARGET == HWY_AVX2)
         return SpatialMatch8Ssd<detail::CandidateTopK>(
             ref, stride, width, height, cx, cy, std::max(bm_range, 0), group, out);
 #else
@@ -459,16 +464,16 @@ int SpatialMatch(const float* ref, int stride, int width, int height, int bx, in
 #endif
 #if HWY_MAX_BYTES >= 16
     if (block == 4) {
-        return detail::spatial_match4_fast(ref, stride, width, height, cx, cy, std::max(bm_range, 0), group, out);
+        return detail::spatial_match4_fast(ref, stride, width, height, cx, cy, std::max(bm_range, 0), group, out, (avx2_features & 2) != 0);
     }
 #endif
 #ifndef NSS_DISABLE_BM3D_B12_FAST
     if (block == 12) {
-        return detail::spatial_match12_fast(ref, stride, width, height, cx, cy, std::max(bm_range, 0), group, out);
+        return detail::spatial_match12_fast(ref, stride, width, height, cx, cy, std::max(bm_range, 0), group, out, (avx2_features & 4) != 0);
     }
 #endif
     if (block == 16) {
-        return detail::spatial_match16_fast(ref, stride, width, height, cx, cy, std::max(bm_range, 0), group, out);
+        return detail::spatial_match16_fast(ref, stride, width, height, cx, cy, std::max(bm_range, 0), group, out, (avx2_features & 8) != 0);
     }
     return detail::collect_spatial(ref, stride, width, height, cx, cy, block, bm_range, group, out,
                                    [](const float* a, const float* b, int st, int bs) {
@@ -528,9 +533,8 @@ float ssd_nch(const float* const* a, const int* sa, const float* const* b, const
 }
 
 int spatial_match(const float* ref, int stride, int width, int height, int bx, int by, int block, int bm_range,
-                  int group, Match* out) {
-
-    return HWY_DYNAMIC_DISPATCH(SpatialMatch)(ref, stride, width, height, bx, by, block, bm_range, group, out);
+                  int group, Match* out, unsigned avx2_features) {
+    return HWY_DYNAMIC_DISPATCH(SpatialMatch)(ref, stride, width, height, bx, by, block, bm_range, group, out, avx2_features | NSS_AVX2_REQUESTED);
 }
 
 }  // namespace nss

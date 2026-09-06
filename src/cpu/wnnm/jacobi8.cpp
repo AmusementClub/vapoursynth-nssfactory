@@ -1,3 +1,4 @@
+#include "nss/avx2_policy.hpp"
 #include "cpu/wnnm/jacobi8.hpp"
 #include "cpu/hwy_config.hpp"
 
@@ -391,7 +392,7 @@ void ApplyHouseholder(float* matrix, int ld, int ncols, const float* v, int len,
     ApplyHouseholderCols(matrix, ld, ncols, v, len, beta);
 }
 
-void GemmNN(int m, int n, int k, const float* A, int lda, const float* B, int ldb, float* C, int ldc) {
+void GemmNN(int m, int n, int k, const float* A, int lda, const float* B, int ldb, float* C, int ldc, bool avx2_enabled) {
     if (m < 1 || n < 1 || k < 1) {
         return;
     }
@@ -487,6 +488,66 @@ void GemmNN(int m, int n, int k, const float* A, int lda, const float* B, int ld
             }
         }
     }
+#if HWY_TARGET == HWY_AVX2 && (NSS_AVX2_EXPERIMENT & 1024)
+    // AVX2 has 16 vector registers. Two row vectors across four columns keep
+    // eight accumulators live instead of the generic panel's sixteen.
+    const int avx2_mr = 2 * N;
+    for (; avx2_enabled && j0 + 4 <= n && avx2_mr <= m; j0 += 4) {
+        int i0 = 0;
+        for (; i0 + avx2_mr <= m; i0 += avx2_mr) {
+            auto c00 = hn::Zero(d), c01 = hn::Zero(d);
+            auto c10 = hn::Zero(d), c11 = hn::Zero(d);
+            auto c20 = hn::Zero(d), c21 = hn::Zero(d);
+            auto c30 = hn::Zero(d), c31 = hn::Zero(d);
+            for (int t = 0; t < k; ++t) {
+                const float* at = A + t * lda + i0;
+                const auto a0 = hn::LoadU(d, at);
+                const auto a1 = hn::LoadU(d, at + N);
+                const auto b0 = hn::Set(d, B[t + j0 * ldb]);
+                c00 = hn::MulAdd(a0, b0, c00);
+                c01 = hn::MulAdd(a1, b0, c01);
+                const auto b1 = hn::Set(d, B[t + (j0 + 1) * ldb]);
+                c10 = hn::MulAdd(a0, b1, c10);
+                c11 = hn::MulAdd(a1, b1, c11);
+                const auto b2 = hn::Set(d, B[t + (j0 + 2) * ldb]);
+                c20 = hn::MulAdd(a0, b2, c20);
+                c21 = hn::MulAdd(a1, b2, c21);
+                const auto b3 = hn::Set(d, B[t + (j0 + 3) * ldb]);
+                c30 = hn::MulAdd(a0, b3, c30);
+                c31 = hn::MulAdd(a1, b3, c31);
+            }
+            hn::StoreU(c00, d, C + j0 * ldc + i0);
+            hn::StoreU(c01, d, C + j0 * ldc + i0 + N);
+            hn::StoreU(c10, d, C + (j0 + 1) * ldc + i0);
+            hn::StoreU(c11, d, C + (j0 + 1) * ldc + i0 + N);
+            hn::StoreU(c20, d, C + (j0 + 2) * ldc + i0);
+            hn::StoreU(c21, d, C + (j0 + 2) * ldc + i0 + N);
+            hn::StoreU(c30, d, C + (j0 + 3) * ldc + i0);
+            hn::StoreU(c31, d, C + (j0 + 3) * ldc + i0 + N);
+        }
+        // Preserve the existing vector/scalar tail arithmetic, including
+        // non-contiguous leading dimensions and incomplete row panels.
+        for (int j = j0; j < j0 + 4; ++j) {
+            const float* bj = B + j * ldb;
+            float* cj = C + j * ldc;
+            int i = i0;
+            for (; i + N <= m; i += N) {
+                auto acc = hn::Zero(d);
+                for (int t = 0; t < k; ++t) {
+                    acc = hn::MulAdd(hn::Set(d, bj[t]), hn::LoadU(d, A + t * lda + i), acc);
+                }
+                hn::StoreU(acc, d, cj + i);
+            }
+            for (; i < m; ++i) {
+                float sum = 0.f;
+                for (int t = 0; t < k; ++t) {
+                    sum += A[i + t * lda] * bj[t];
+                }
+                cj[i] = sum;
+            }
+        }
+    }
+#endif
     for (; j0 + 4 <= n && mr <= m; j0 += 4) {
         for (int i0 = 0; i0 + mr <= m; i0 += mr) {
             auto c00 = hn::Zero(d), c01 = hn::Zero(d), c02 = hn::Zero(d), c03 = hn::Zero(d);
@@ -677,8 +738,8 @@ void apply_householder_hwy(float* matrix, int ld, int ncols, const float* v, int
     HWY_DYNAMIC_DISPATCH(ApplyHouseholder)(matrix, ld, ncols, v, len, beta);
 }
 
-void gemm_nn_hwy(int m, int n, int k, const float* A, int lda, const float* B, int ldb, float* C, int ldc) {
-    HWY_DYNAMIC_DISPATCH(GemmNN)(m, n, k, A, lda, B, ldb, C, ldc);
+void gemm_nn_hwy(int m, int n, int k, const float* A, int lda, const float* B, int ldb, float* C, int ldc, bool avx2_enabled) {
+    HWY_DYNAMIC_DISPATCH(GemmNN)(m, n, k, A, lda, B, ldb, C, ldc, avx2_enabled || (NSS_AVX2_REQUESTED & 1024));
 }
 
 void gemm_tn_hwy(int m, int n, int k, const float* A, int lda, const float* B, int ldb, float* C, int ldc) {

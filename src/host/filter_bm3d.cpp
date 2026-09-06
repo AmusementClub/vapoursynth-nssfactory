@@ -1,3 +1,4 @@
+#include "nss/avx2_policy.hpp"
 #if NSS_BM_EXPERIMENT & 64
 #include "cpu/bm/sliding-batch.hpp"
 #endif
@@ -115,7 +116,7 @@ void process_plane_batched(const float* const* srcs, const float* const* refs, i
         for (int i = 0; i < count; ++i) {
             const auto& job = jobs[begin + static_cast<std::size_t>(i)];
             match_items[static_cast<std::size_t>(i)] =
-                nss::MatchBatchItem{job.x, job.y, block, bm_range, group};
+                nss::MatchBatchItem{job.x, job.y, block, bm_range, group, nss::detail::avx2_policy(nss::detail::Avx2Algorithm::BM3D, block, group, radius, wiener, 0)};
         }
         int match_rc=-2;
 #if NSS_BM_EXPERIMENT & 64
@@ -162,7 +163,8 @@ void process_plane_batched(const float* const* srcs, const float* const* refs, i
                                              static_cast<std::size_t>(i) * nss::kBmMaxGroup;
                 nss::bm3d_filter_direct(srcs[t0], src_strides[t0], matches, k, block, group, sigma, wiener,
                                         wiener ? refs[t0] : nullptr, ref_strides[t0], num, den, width, width, height,
-                                        direct_cube.data(), direct_work.data());
+                                        direct_cube.data(), direct_work.data(),
+                                        nss::detail::avx2_policy(nss::detail::Avx2Algorithm::BM3D, block, group, radius, wiener));
             }
             continue;
         }

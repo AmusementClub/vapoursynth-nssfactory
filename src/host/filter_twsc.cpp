@@ -1,3 +1,4 @@
+#include "nss/avx2_policy.hpp"
 #include "host/temporal.hpp"
 #include "host/batch_runner.hpp"
 #include "host/validate.hpp"
@@ -228,7 +229,7 @@ const VSFrame* VS_CC twscGetFrame(int n, int activationReason, void* instanceDat
                 std::array<nss::Match, nss::host_detail::kGroupBatchWindow * nss::kWnnmMaxGroup> match_storage{};
                 for (int i = 0; i < count; ++i) {
                     const auto& job = jobs[begin + static_cast<std::size_t>(i)];
-                    match_items[static_cast<std::size_t>(i)] = nss::MatchBatchItem{job.x, job.y, block, d->bm_range, group};
+                    match_items[static_cast<std::size_t>(i)] = nss::MatchBatchItem{job.x, job.y, block, d->bm_range, group, nss::detail::avx2_policy(nss::detail::Avx2Algorithm::TWSC, block, group, d->radius, false, 0)};
                 }
                 const int match_rc = d->radius > 0
                                          ? nss::predictive_match_nch_batch(match_refs, match_st, nch, ntemp, pw, ph, t0,
@@ -530,7 +531,7 @@ const VSFrame* VS_CC twscGetFrame(int n, int activationReason, void* instanceDat
                 for (int i = 0; i < count; ++i) {
                     const auto& job = jobs[begin + static_cast<std::size_t>(i)];
                     match_items[static_cast<std::size_t>(i)] =
-                        nss::MatchBatchItem{job.x, job.y, block, d->bm_range, group};
+                        nss::MatchBatchItem{job.x, job.y, block, d->bm_range, group, nss::detail::avx2_policy(nss::detail::Avx2Algorithm::TWSC, block, group, d->radius, false, 0)};
                 }
                 const int match_rc = d->radius > 0
                                          ? nss::predictive_match_batch(match_refs, match_st, ntemp, pw, ph, t0, cfg,

@@ -1,3 +1,4 @@
+#include "nss/avx2_policy.hpp"
 #include "host/filters.hpp"
 #include "host/temporal.hpp"
 #include "host/batch_runner.hpp"
@@ -238,7 +239,8 @@ const VSFrame* VS_CC mcwnnmGetFrame(int n, int activationReason, void* instanceD
                     p, m, k, lda, nch, sig, d->admm_iter, d->rho, d->mu, d->residual, d->adaptive,
                     &weights[static_cast<std::size_t>(i)],
                     batch_work.data() + static_cast<std::size_t>(i) * static_cast<std::size_t>(filter_work_floats),
-                    filter_work_floats, &filter_status[static_cast<std::size_t>(i)]};
+                    filter_work_floats, &filter_status[static_cast<std::size_t>(i)],
+                    NSS_AVX2_DEFAULTS && block == 8 && group == 8 && d->radius == 0 && nch == 3};
             }
             (void)nss::mcwnnm_filter_group_batch(filter_items.data(), count);
 

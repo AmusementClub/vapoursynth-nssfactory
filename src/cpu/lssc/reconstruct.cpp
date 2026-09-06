@@ -150,7 +150,7 @@ static bool LsscUpdateGroupSoft(float* A, const float* G, int atoms, int n, floa
 }
 
 static void LsscReconstructImpl(float* patches, int m, int n, int lda, const float* dictionary, int atoms, int ldd,
-                                const float* transpose, float lipschitz, float sigma, float* work, int work_floats) {
+                                const float* transpose, float lipschitz, float sigma, float* work, int work_floats, bool avx2_gemm = false) {
     if (!patches || !dictionary || !transpose || m < 1 || n < 1 || atoms < 1 || lda < m || ldd < m) {
         return;
     }
@@ -202,7 +202,7 @@ static void LsscReconstructImpl(float* patches, int m, int n, int lda, const flo
     constexpr float kALim = 1.0e4f;
     bool exploded = false;
     for (int it = 0; it < kIters; ++it) {
-        gemm_nn_hwy(m, n, atoms, dictionary, ldd, A, atoms, R, m);
+        gemm_nn_hwy(m, n, atoms, dictionary, ldd, A, atoms, R, m, avx2_gemm);
         for (int j = 0; j < n; ++j) {
             const float* yj = patches + static_cast<std::size_t>(j) * static_cast<std::size_t>(lda);
             float* rj = R + static_cast<std::size_t>(j) * static_cast<std::size_t>(m);
@@ -214,14 +214,14 @@ static void LsscReconstructImpl(float* patches, int m, int n, int lda, const flo
                 rj[i] = yj[i] - rj[i];
             }
         }
-        gemm_nn_hwy(atoms, n, m, transpose, atoms, R, m, G, atoms);
+        gemm_nn_hwy(atoms, n, m, transpose, atoms, R, m, G, atoms, avx2_gemm);
         exploded = LsscUpdateGroupSoft(A, G, atoms, n, mu, lam, kALim);
         if (exploded) {
             std::memset(A, 0, static_cast<std::size_t>(atoms) * static_cast<std::size_t>(n) * sizeof(float));
             break;
         }
     }
-    gemm_nn_hwy(m, n, atoms, dictionary, ldd, A, atoms, R, m);
+    gemm_nn_hwy(m, n, atoms, dictionary, ldd, A, atoms, R, m, avx2_gemm);
     const auto vlim = hn::Set(d, 8.f);
     for (int j = 0; j < n; ++j) {
         float* yj = patches + static_cast<std::size_t>(j) * static_cast<std::size_t>(lda);
@@ -274,7 +274,7 @@ void LsscReconstructPrepared(float* patches, int m, int n, int lda, const LsscPr
         return;
     }
     LsscReconstructImpl(patches, m, n, lda, context->dictionary, context->atoms, context->ldd, context->transpose,
-                        context->lipschitz, sigma, work, work_floats);
+                        context->lipschitz, sigma, work, work_floats, context->avx2_gemm);
 }
 
 }  // namespace HWY_NAMESPACE
@@ -352,6 +352,7 @@ int lssc_prepare_context(const float* D, int m, int atoms, int ldd, float* work,
     context->atoms = atoms;
     context->ldd = ldd;
     context->lipschitz = lipschitz;
+    context->avx2_gemm = false;
     return 0;
 }
 

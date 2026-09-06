@@ -18,10 +18,10 @@ inline int mcwnnm_filter_work_floats(int m, int n) {
 // Y is m×n column-major (m = nch·p²). In-place. sigma[nch] already /255.
 // W_c = min(σ)/σ_c on each channel's rows. Returns kept SV count, or -1.
 int mcwnnm_admm(float* Y, int m, int n, int lda, int nch, const float* sigma, int admm_iter, float rho, float mu,
-                int sv_start_k, float* work, int work_floats);
+                int sv_start_k, float* work, int work_floats, bool avx2_gemm = false);
 
 int mcwnnm_filter_group(float* Y, int m, int n, int lda, int nch, const float* sigma, int admm_iter, float rho,
-                        float mu, int residual, int adaptive, float* adaptive_weight, float* work, int work_floats);
+                        float mu, int residual, int adaptive, float* adaptive_weight, float* work, int work_floats, bool avx2_gemm = false);
 
 // Sum of per-plane SSD; does not modify match.cpp. Includes the reference block.
 int spatial_match_nch(const float* const* refs, const int* strides, int nch, int width, int height, int bx, int by,

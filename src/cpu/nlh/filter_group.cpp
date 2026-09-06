@@ -1,3 +1,4 @@
+#include "nss/avx2_policy.hpp"
 #include "nss/cpu_nlh.hpp"
 #include "nss/params.hpp"
 #include "cpu/hwy_config.hpp"
@@ -55,11 +56,11 @@ static int struct_row0(int q) {
     return q > 2 ? q - 2 : 0;
 }
 
-static void haar2d(float* mat, int q, int n, bool inverse) {
-    Haar2dFast(mat, q, n, inverse);
+static void haar2d(float* mat, int q, int n, bool inverse, unsigned features) {
+    Haar2dFast(mat, q, n, inverse, (features & 32) != 0);
 }
 
-static void gather_rows_fix(float* dst, const float* group, int lda, const int* rows, int q, int n) {
+static void gather_rows_fix(float* dst, const float* group, int lda, const int* rows, int q, int n, unsigned features) {
     const hn::ScalableTag<float> d;
     const hn::Rebind<int32_t, hn::ScalableTag<float>> di;
     const int N = static_cast<int>(hn::Lanes(d));
@@ -72,6 +73,19 @@ static void gather_rows_fix(float* dst, const float* group, int lda, const int* 
         hn::StoreInterleaved4(r0, r1, r2, r3, d, dst);
         return;
     }
+#if HWY_TARGET == HWY_AVX2 && (NSS_AVX2_EXPERIMENT & 16)
+    if ((features & 16) && q == 4 && n == 16) {
+        for (int c = 0; c < 16; c += 8) {
+            const auto idx = hn::Mul(hn::Iota(di, c), hn::Set(di, lda));
+            const auto r0 = hn::GatherIndex(d, group + rows[0], idx);
+            const auto r1 = hn::GatherIndex(d, group + rows[1], idx);
+            const auto r2 = hn::GatherIndex(d, group + rows[2], idx);
+            const auto r3 = hn::GatherIndex(d, group + rows[3], idx);
+            hn::StoreInterleaved4(r0, r1, r2, r3, d, dst + c * 4);
+        }
+        return;
+    }
+#endif
     std::memset(dst, 0, static_cast<std::size_t>(q * n) * sizeof(float));
     float tmp[16];
     const auto vlda = hn::Set(di, lda);
@@ -91,17 +105,26 @@ static void gather_rows_fix(float* dst, const float* group, int lda, const int* 
     }
 }
 
-static void bi_hard_4x16(float* y, float thr, int* kept) {
-    Haar2d_4x16(y, false);
+static void bi_hard_4x16(float* y, float thr, int* kept, unsigned features) {
+    Haar2d_4x16(y, false, (features & 32) != 0);
     const hn::ScalableTag<float> d;
     const int N = static_cast<int>(hn::Lanes(d));
     const float dc = y[0];
-    if (N == 16) {
+    if (N == 16
+#if HWY_TARGET == HWY_AVX2 && (NSS_AVX2_EXPERIMENT & 64)
+        || N == 8
+#endif
+    ) {
         const auto vt = hn::Set(d, thr);
         const auto z = hn::Zero(d);
-        for (int i = 0; i < 64; i += 16) {
+        for (int i = 0; i < 64; i += static_cast<int>(hn::Lanes(d))) {
             const auto v = hn::LoadU(d, y + i);
+#if HWY_TARGET == HWY_AVX2 && (NSS_AVX2_EXPERIMENT & 64)
+            // Match scalar hard thresholding: NaN is not below threshold.
+            hn::StoreU(hn::IfThenElse(hn::Lt(hn::Abs(v), vt), z, v), d, y + i);
+#else
             hn::StoreU(hn::IfThenElse(hn::Ge(hn::Abs(v), vt), v, z), d, y + i);
+#endif
         }
     } else {
         for (int i = 0; i < 64; ++i) {
@@ -119,7 +142,7 @@ static void bi_hard_4x16(float* y, float thr, int* kept) {
     for (int i = 1; i < 64; ++i) {
         *kept += (y[i] != 0.f);
     }
-    Haar2d_4x16(y, true);
+    Haar2d_4x16(y, true, (features & 32) != 0);
 }
 
 static void coeff_hard(float* mat, int q, int n, float thr) {
@@ -187,14 +210,14 @@ static void wiener_ac(float* y, const float* r, int q, int n, float sig2, float*
     }
 }
 
-static void bi_wiener_4x16(float* y, float* r, float sig2, float* w2sum) {
-    Haar2d_4x16(y, false);
-    Haar2d_4x16(r, false);
+static void bi_wiener_4x16(float* y, float* r, float sig2, float* w2sum, unsigned features) {
+    Haar2d_4x16(y, false, (features & 32) != 0);
+    Haar2d_4x16(r, false, (features & 32) != 0);
 
     const hn::ScalableTag<float> d;
     const auto vsig2 = hn::Set(d, sig2);
     const float dc = y[0];
-    for (int i = 0; i < 64; i += 16) {
+    for (int i = 0; i < 64; i += static_cast<int>(hn::Lanes(d))) {
         const auto vr = hn::LoadU(d, r + i);
         const auto r2 = hn::Mul(vr, vr);
         const auto w = hn::Div(r2, hn::Add(r2, vsig2));
@@ -213,19 +236,19 @@ static void bi_wiener_4x16(float* y, float* r, float sig2, float* w2sum) {
     for (int i = 0; i < 64; ++i) {
         *w2sum += r[i] * r[i];
     }
-    Haar2d_4x16(y, true);
+    Haar2d_4x16(y, true, (features & 32) != 0);
 }
 
-static void bi_hard_2d(float* y, int q, int n, float thr, int* kept) {
-    haar2d(y, q, n, false);
+static void bi_hard_2d(float* y, int q, int n, float thr, int* kept, unsigned features) {
+    haar2d(y, q, n, false, features);
     coeff_hard(y, q, n, thr);
     structural_hard(y, q, n);
     count_kept(y, q, n, kept);
-    haar2d(y, q, n, true);
+    haar2d(y, q, n, true, features);
 }
 
 void NlhFilterGroup(float* patches, int m, int n, int lda, int q, float sigma, bool wiener, const float* ref_patches,
-                    float* weight_out, float* work, int work_floats) {
+                    float* weight_out, float* work, int work_floats, unsigned features) {
     if (!patches || m < 1 || n < 1 || lda < m) {
         if (weight_out) {
             *weight_out = 1.f;
@@ -280,24 +303,28 @@ void NlhFilterGroup(float* patches, int m, int n, int lda, int q, float sigma, b
     float w2sum = 0.f;
 
     const bool fast416 =
-        q == 4 && n_use == 16 && static_cast<int>(hn::Lanes(hn::ScalableTag<float>())) == 16;
+        q == 4 && n_use == 16 && (static_cast<int>(hn::Lanes(hn::ScalableTag<float>())) == 16
+#if HWY_TARGET == HWY_AVX2 && (NSS_AVX2_EXPERIMENT & 64)
+        || ((features & 64) && static_cast<int>(hn::Lanes(hn::ScalableTag<float>())) == 8)
+#endif
+        );
     for (int row = 0; row < m; ++row) {
         const int* rows = idx + row * q;
-        gather_rows_fix(y, src, lda, rows, q, n_use);
+        gather_rows_fix(y, src, lda, rows, q, n_use, features);
         if (wiener && ref_patches) {
-            gather_rows_fix(rbuf, ref_patches, lda, rows, q, n_use);
+            gather_rows_fix(rbuf, ref_patches, lda, rows, q, n_use, features);
             if (fast416) {
-                bi_wiener_4x16(y, rbuf, sig2, &w2sum);
+                bi_wiener_4x16(y, rbuf, sig2, &w2sum, features);
             } else {
-                haar2d(y, q, n_use, false);
-                haar2d(rbuf, q, n_use, false);
+                haar2d(y, q, n_use, false, features);
+                haar2d(rbuf, q, n_use, false, features);
                 wiener_ac(y, rbuf, q, n_use, sig2, &w2sum);
-                haar2d(y, q, n_use, true);
+                haar2d(y, q, n_use, true, features);
             }
         } else if (fast416) {
-            bi_hard_4x16(y, thr, &kept);
+            bi_hard_4x16(y, thr, &kept, features);
         } else {
-            bi_hard_2d(y, q, n_use, thr, &kept);
+            bi_hard_2d(y, q, n_use, thr, &kept, features);
         }
         for (int c = 0; c < n_use; ++c) {
             patches[row + c * lda] = y[c * q];
@@ -322,9 +349,9 @@ namespace nss {
 HWY_EXPORT(NlhFilterGroup);
 
 void nlh_filter_group(float* patches, int m, int n, int lda, int q, float sigma, bool wiener,
-                      const float* ref_patches, float* weight_out, float* work, int work_floats) {
+                      const float* ref_patches, float* weight_out, float* work, int work_floats, unsigned features) {
     HWY_DYNAMIC_DISPATCH(NlhFilterGroup)(patches, m, n, lda, q, sigma, wiener, ref_patches, weight_out, work,
-                                         work_floats);
+                                         work_floats, features | NSS_AVX2_REQUESTED);
 }
 
 }  // namespace nss

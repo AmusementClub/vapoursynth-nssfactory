@@ -74,7 +74,7 @@ static void CopyBack(float* Y, int lda, const float* Z, int m, int n) {
 // MCWNNM only needs the shrunk reconstruction, not the SVD factors. For the
 // common tall 8-column case, diagonalize A^T A and apply the resulting spectral
 // map directly to A. This avoids forming and replaying the tall QR basis.
-static int GramShrink8(const float* input, int m, float constant, int start_k, float* output) {
+static int GramShrink8(const float* input, int m, float constant, int start_k, float* output, bool avx2_gemm) {
     constexpr int kN = 8;
     HWY_ALIGN float gram[kN * kN];
     HWY_ALIGN float eig_u[kN * kN];
@@ -174,12 +174,12 @@ static int GramShrink8(const float* input, int m, float constant, int start_k, f
             transform[col + row * kN] = value;
         }
     }
-    gemm_nn_hwy(m, kN, kN, input, m, transform, kN, output, m);
+    gemm_nn_hwy(m, kN, kN, input, m, transform, kN, output, m, avx2_gemm);
     return kept;
 }
 
 static int McwnnmAdmmGram8(float* Y, int m, int lda, int nch, const float* sigma, int admm_iter, float rho0,
-                           float mu, float* work) {
+                           float mu, float* work, bool avx2_gemm) {
     constexpr int n = 8;
     float* X = work;
     float* Z = X + m * n;
@@ -203,7 +203,7 @@ static int McwnnmAdmmGram8(float* Y, int m, int lda, int nch, const float* sigma
     for (int it = 0; it < admm_iter; ++it) {
         admm_weighted_x(X, Y, lda, Z, A, w2, m, n, rho);
         TempXp(Temp, X, A, m, n, 1.f / rho);
-        kept = GramShrink8(Temp, m, C * (2.f / rho), 0, Z);
+        kept = GramShrink8(Temp, m, C * (2.f / rho), 0, Z, avx2_gemm);
         if (kept < 0) {
             return -1;
         }
@@ -218,7 +218,7 @@ static int McwnnmAdmmGram8(float* Y, int m, int lda, int nch, const float* sigma
 }
 
 int McwnnmAdmm(float* Y, int m, int n, int lda, int nch, const float* sigma, int admm_iter, float rho0, float mu,
-               int sv_start_k, float* work, int work_floats) {
+               int sv_start_k, float* work, int work_floats, bool avx2_gemm) {
     if (!Y || !sigma || m < 1 || n < 1 || lda < m || nch < 1 || m % nch != 0 || m > kSvdMaxM || n > kSvdMaxN ||
         admm_iter < 1 || !(rho0 > 0.f) || !is_finite_bits(rho0) || !is_finite_bits(mu) || mu < 1.f) {
         return -1;
@@ -231,7 +231,7 @@ int McwnnmAdmm(float* Y, int m, int n, int lda, int nch, const float* sigma, int
     // to the well-conditioned tall shapes observed for legal 3-channel block
     // sizes 8 and 9. The original QR body below remains the fail-closed path.
     if (n == 8 && m >= 192 && sv_start_k == 0) {
-        const int gram_kept = McwnnmAdmmGram8(Y, m, lda, nch, sigma, admm_iter, rho0, mu, work);
+        const int gram_kept = McwnnmAdmmGram8(Y, m, lda, nch, sigma, admm_iter, rho0, mu, work, avx2_gemm);
         if (gram_kept >= 0) {
             return gram_kept;
         }
@@ -282,7 +282,7 @@ int McwnnmAdmm(float* Y, int m, int n, int lda, int nch, const float* sigma, int
                     }
                 }
             }
-            gemm_nn_hwy(m, n, kept, U, m, Vt, n, Z, m);
+            gemm_nn_hwy(m, n, kept, U, m, Vt, n, Z, m, avx2_gemm);
         }
         DualAdd(A, X, Z, m, n, rho);
         rho = std::min(1e4f, mu * rho);
@@ -304,9 +304,9 @@ namespace nss {
 HWY_EXPORT(McwnnmAdmm);
 
 int mcwnnm_admm(float* Y, int m, int n, int lda, int nch, const float* sigma, int admm_iter, float rho, float mu,
-                int sv_start_k, float* work, int work_floats) {
+                int sv_start_k, float* work, int work_floats, bool avx2_gemm) {
     return HWY_DYNAMIC_DISPATCH(McwnnmAdmm)(Y, m, n, lda, nch, sigma, admm_iter, rho, mu, sv_start_k, work,
-                                            work_floats);
+                                            work_floats, avx2_gemm);
 }
 
 }  // namespace nss

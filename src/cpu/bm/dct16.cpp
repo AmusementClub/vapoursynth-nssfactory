@@ -40,6 +40,9 @@ namespace hn = hwy::HWY_NAMESPACE;
 #undef nss_dct16_fwd_is16
 #undef nss_dct16_inv_is16
 #endif  // NSS_BM_KERNEL_LAB
+#endif  // HWY_MAX_BYTES >= 64
+
+#if HWY_MAX_BYTES >= 64 || (HWY_TARGET == HWY_AVX2 && (NSS_AVX2_EXPERIMENT & 128))
 // The is8 arithmetic is unchanged. Map its packed stride-8 loads to the
 // actual stride-16 input and retain each result vector for the output sink.
 #undef LD
@@ -68,7 +71,7 @@ namespace hn = hwy::HWY_NAMESPACE;
 #undef V
 #undef R
 
-#if HWY_MAX_BYTES >= 64
+#if HWY_MAX_BYTES >= 64 || (HWY_TARGET == HWY_AVX2 && (NSS_AVX2_EXPERIMENT & 128))
 using D8 = hn::FixedTag<float, 8>;
 using V8 = hn::Vec<D8>;
 
@@ -102,7 +105,7 @@ static void Transpose8x8(D8 d8, const V8 r[8], V8 c[8]) {
 
 #include "cpu/bm/transpose8-inl.hpp"
 
-#ifdef NSS_BM_KERNEL_LAB
+#if defined(NSS_BM_KERNEL_LAB) && HWY_MAX_BYTES >= 64
 static void Dct16Rows(const float* input, float* output, bool inverse) {
     const D8 d8;
     const hn::FixedTag<float, 16> d16;
@@ -221,7 +224,7 @@ HWY_NOINLINE bool Dct16VectorsBatch(float* patches, int count, bool inverse) {
 #endif  // HWY_MAX_BYTES >= 64
 #endif  // NSS_BM_KERNEL_LAB
 
-#if HWY_MAX_BYTES >= 64
+#if HWY_MAX_BYTES >= 64 || (HWY_TARGET == HWY_AVX2 && (NSS_AVX2_EXPERIMENT & 128))
 template <bool InlineTranspose>
 static HWY_INLINE void Dct16VectorOutput8(const float* input, float* output, bool inverse) {
     const D8 d8;
@@ -263,8 +266,11 @@ HWY_NOINLINE bool Dct16Inline8Batch(float* patches, int count, bool inverse) {
 }
 #endif
 
-bool Dct16Batch(float* patches, int count, bool inverse) {
-#if HWY_MAX_BYTES >= 64
+bool Dct16Batch(float* patches, int count, bool inverse, bool avx2_enabled) {
+#if HWY_TARGET == HWY_AVX2
+    if (!avx2_enabled) return false;
+#endif
+#if HWY_MAX_BYTES >= 64 || (HWY_TARGET == HWY_AVX2 && (NSS_AVX2_EXPERIMENT & 128))
     return Dct16Inline8Batch(patches, count, inverse);
 #else
     (void)patches;
@@ -303,8 +309,8 @@ Dct16Kernel dct16_lab_kernel(int variant) {
 }
 #endif
 
-bool dct16_2d_batch_fast(float* patches, int count, bool inverse) {
-    return HWY_DYNAMIC_DISPATCH(Dct16Batch)(patches, count, inverse);
+bool dct16_2d_batch_fast(float* patches, int count, bool inverse, bool avx2_enabled) {
+    return HWY_DYNAMIC_DISPATCH(Dct16Batch)(patches, count, inverse, avx2_enabled);
 }
 
 }  // namespace nss::detail

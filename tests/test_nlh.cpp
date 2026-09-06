@@ -246,7 +246,88 @@ static int match16_differential() {
     return failed;
 }
 
+// Independent scalar gather/filter oracle exercises the AVX2 q4/n16
+// candidates, including padded strides and hard/Wiener weights.
+static int filter_416_oracle(unsigned features) {
+    constexpr int m = 19, lda = 23, n = 16, q = 4;
+    for (bool wiener : {false, true}) {
+            for (float sigma : {0.001f, 0.025f, 0.25f}) {
+                std::vector<float> src(lda * n, -987.f), ref(lda * n, -876.f);
+                for (int c = 0; c < n; ++c) {
+                    for (int r = 0; r < m; ++r) {
+                        src[c * lda + r] = std::sin(float(19 * c + r) * 0.137f) * 0.4f;
+                        ref[c * lda + r] = src[c * lda + r] * 0.93f + 0.012f;
+                    }
+                }
+                auto actual = src, expect = src;
+                const auto& reference = ref;
+                std::vector<int> idx(m * q);
+                nss::pixel_match(wiener ? reference.data() : src.data(), m, n, lda, q, idx.data());
+                const auto transform = [](float* mat, bool inverse) {
+                    const auto columns = [&]() {
+                        for (int c = 0; c < n; ++c) {
+                            if (inverse) nss::ihaar1d(mat + c * q, mat + c * q, q);
+                            else nss::haar1d(mat + c * q, mat + c * q, q);
+                        }
+                    };
+                    const auto rows = [&]() {
+                        for (int r = 0; r < q; ++r) {
+                            float line[n];
+                            for (int c = 0; c < n; ++c) line[c] = mat[c * q + r];
+                            if (inverse) nss::ihaar1d(line, line, n);
+                            else nss::haar1d(line, line, n);
+                            for (int c = 0; c < n; ++c) mat[c * q + r] = line[c];
+                        }
+                    };
+                    if (inverse) { rows(); columns(); }
+                    else { columns(); rows(); }
+                };
+                int kept = 0;
+                float sum = 0.f;
+                for (int row = 0; row < m; ++row) {
+                    float y[q * n], rbuf[q * n];
+                    for (int c = 0; c < n; ++c) {
+                        for (int r = 0; r < q; ++r) {
+                            y[c * q + r] = src[c * lda + idx[row * q + r]];
+                            rbuf[c * q + r] = reference[c * lda + idx[row * q + r]];
+                        }
+                    }
+                    transform(y, false);
+                    if (wiener) transform(rbuf, false);
+                    for (int i = 0; i < q * n; ++i) {
+                        const bool structural = i / q > 0 && i % q >= 2;
+                        if (wiener) {
+                            const float r2 = rbuf[i] * rbuf[i];
+                            const float w = i == 0 ? 1.f : structural ? 0.f : r2 / (r2 + sigma * sigma);
+                            y[i] *= w;
+                            sum += w * w;
+                        } else {
+                            if (i != 0 && (structural || std::fabs(y[i]) < 2.7f * sigma)) y[i] = 0.f;
+                            kept += i == 0 || y[i] != 0.f;
+                        }
+                    }
+                    transform(y, true);
+                    for (int c = 0; c < n; ++c) expect[c * lda + row] = y[c * q];
+                }
+                const int wn = nss::nlh_filter_work_floats(m, n, q, lda);
+                std::vector<float> work(wn);
+                float weight = 0.f;
+                nss::nlh_filter_group(actual.data(), m, n, lda, q, sigma, wiener,
+                    wiener ? ref.data() : nullptr, &weight, work.data(), wn, features);
+                const float expected_weight = wiener ? 1.f / std::max(sum, 1e-12f) : 1.f / std::max(kept, 1);
+                if (!std::isfinite(weight) || std::fabs(weight - expected_weight) > 1e-6f)
+                    return fail("nlh q4/n16 oracle weight");
+                for (int i = 0; i < lda * n; ++i) {
+                    if (!std::isfinite(actual[i]) || std::fabs(actual[i] - expect[i]) > 1e-5f)
+                        return fail("nlh q4/n16 scalar oracle");
+                }
+            }
+    }
+    return 0;
+}
+
 int main() {
+    if (filter_416_oracle(0) || filter_416_oracle(112)) return 1;
     int failed = 0;
     failed |= haar_roundtrip(16);
     failed |= haar_roundtrip(8);

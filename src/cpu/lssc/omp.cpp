@@ -1,3 +1,4 @@
+#include "nss/avx2_policy.hpp"
 #include "nss/cpu_api.hpp"
 #include "nss/cpu_common.hpp"
 #include "nss/cpu_lssc.hpp"
@@ -340,12 +341,14 @@ void lssc_denoise_plane(const float* src, int width, int height, int sstride, fl
     }
 
     lssc_cluster_workspace(patches, m, n, lda, nclusters, assign, counts, cluster_work, cluster_n);
-    lssc_dict_init_workspace(D, m, atoms, m, patches, n, lda, block, 1, 0x4C535343u, dict_work, dict_n);
+    const bool avx2_gemm = NSS_AVX2_DEFAULTS && block == 8 && step == 8;
+    lssc_dict_init_workspace(D, m, atoms, m, patches, n, lda, block, 1, 0x4C535343u, dict_work, dict_n, avx2_gemm);
 
     LsscPreparedContext prepared;
     if (lssc_prepare_context(D, m, atoms, m, prepare_work, lssc_prepare_work_floats(m, atoms), &prepared) != 0) {
         return;
     }
+    prepared.avx2_gemm = avx2_gemm;
     offsets[0] = 0;
     for (int c = 0; c < nclusters; ++c) {
         offsets[c + 1] = offsets[c] + std::max(0, counts[c]);

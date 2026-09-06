@@ -132,18 +132,18 @@ struct Match {
 
 int spatial_match(const float* ref, int stride, int width, int height,
                   int bx, int by, int block, int bm_range, int group,
-                  Match* out);
+                  Match* out, unsigned avx2_features = 0);
 
 int predictive_match(const float* const* refs, const int* strides, int ntemp,
                      int width, int height, int bx, int by, int t0,
-                     const SearchConfig& cfg, Match* out);
+                     const SearchConfig& cfg, Match* out, unsigned avx2_features = 0);
 
 void pack_patch(float* col, int lda, const float* src, int stride, int x, int y,
                 int block, int width, int height);
 void unpack_patch(float* num, float* den, int stride, int x, int y,
                   const float* col, int block, int width, int height, float w);
 void unpack_patch_fixed(float* num, float* den, int stride, int x, int y,
-                        const float* col, int block, int width, int height, float w);
+                        const float* col, int block, int width, int height, float w, unsigned avx2_features = 0);
 
 inline int bm3d_filter_work_floats(int group, int block) {
     return 2 * group * block * block;
@@ -164,7 +164,7 @@ void bm3d_filter_group_keyed(float* patches,int lda,int group,int k,int block,fl
 // `k` real patches in patches[0..k); `group` is the zero-padded 3D-transform length.
 // `work` must hold bm3d_filter_work_floats(group, block) floats.
 void bm3d_filter_group(float* patches, int lda, int group, int k, int block, float sigma, bool wiener,
-                       const float* ref_patches, float* weight_out, float* work);
+                       const float* ref_patches, float* weight_out, float* work, unsigned avx2_features = 0);
 
 // 8x8x8 fused path: in-register FFTW 3D DCT (bm3dcpu layout), shrink, accumulate. k in [1, 8].
 void bm3d_filter8(const float* src, int sstride, const Match* matches, int k, float sigma, bool wiener,
@@ -175,7 +175,7 @@ void bm3d_filter8(const float* src, int sstride, const Match* matches, int k, fl
 // `work` holds bm3d_filter_work_floats(group, block) floats.
 void bm3d_filter_direct(const float* src, int sstride, const Match* matches, int k, int block, int group, float sigma,
                         bool wiener, const float* ref, int rstride, float* num, float* den, int dstride, int width,
-                        int height, float* cube, float* work);
+                        int height, float* cube, float* work, unsigned avx2_features = 0);
 
 void aggregate_add(float* num, float* den, int stride, int x, int y,
                    const float* patch, int block, int width, int height, float w);

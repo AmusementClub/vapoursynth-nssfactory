@@ -55,9 +55,55 @@ static void SsdRow12(const float* self, const float* candidates, int stride, int
 }
 #endif
 
+#if (NSS_AVX2_EXPERIMENT & 4) && HWY_TARGET == HWY_AVX2
+// Preserve SsdBlock's AVX2 recurrence: both row segments update the
+// same accumulator, in low-then-high order. Separate half accumulators
+// would change distances and the ordering of nearly tied candidates.
+static void SsdRow12Avx2(const float* self, const float* candidates, int stride, int count, float* distances) {
+    const hn::FixedTag<float, 8> d;
+    int x = 0;
+    for (; x + 1 < count; x += 2) {
+        auto acc0 = hn::Zero(d);
+        auto acc1 = hn::Zero(d);
+        for (int row = 0; row < 12; ++row) {
+            const auto lo = hn::LoadU(d, self + row * stride);
+            const auto hi = hn::LoadN(d, self + row * stride + 8, 4);
+            const auto lo0 = hn::Sub(lo, hn::LoadU(d, candidates + x + row * stride));
+            const auto lo1 = hn::Sub(lo, hn::LoadU(d, candidates + x + 1 + row * stride));
+            acc0 = hn::MulAdd(lo0, lo0, acc0);
+            acc1 = hn::MulAdd(lo1, lo1, acc1);
+            const auto hi0 = hn::Sub(hi, hn::LoadN(d, candidates + x + row * stride + 8, 4));
+            const auto hi1 = hn::Sub(hi, hn::LoadN(d, candidates + x + 1 + row * stride + 8, 4));
+            acc0 = hn::MulAdd(hi0, hi0, acc0);
+            acc1 = hn::MulAdd(hi1, hi1, acc1);
+        }
+        distances[x] = hn::ReduceSum(d, acc0);
+        distances[x + 1] = hn::ReduceSum(d, acc1);
+    }
+    if (x < count) {
+        auto acc = hn::Zero(d);
+        for (int row = 0; row < 12; ++row) {
+            const auto lo = hn::Sub(hn::LoadU(d, self + row * stride),
+                                    hn::LoadU(d, candidates + x + row * stride));
+            acc = hn::MulAdd(lo, lo, acc);
+            const auto hi = hn::Sub(hn::LoadN(d, self + row * stride + 8, 4),
+                                    hn::LoadN(d, candidates + x + row * stride + 8, 4));
+            acc = hn::MulAdd(hi, hi, acc);
+        }
+        distances[x] = hn::ReduceSum(d, acc);
+    }
+}
+#endif
+
 int SpatialMatch12Fast(const float* ref, int stride, int width, int height, int cx, int cy, int bm_range, int group,
-                       Match* out) {
-#if HWY_MAX_BYTES >= 64
+                       Match* out, bool avx2_enabled) {
+#if HWY_TARGET == HWY_AVX2
+    if (!avx2_enabled) {
+        return detail::collect_spatial(ref, stride, width, height, cx, cy, 12, bm_range, group, out,
+            [](const float* a, const float* p, int st, int bs) { return nss::ssd_block(a, st, p, st, bs); });
+    }
+#endif
+#if HWY_MAX_BYTES >= 64 || ((NSS_AVX2_EXPERIMENT & 4) && HWY_TARGET == HWY_AVX2)
     const int wanted = std::min(group, kBmMaxGroup);
     const int top = std::max(cy - bm_range, 0);
     const int bottom = std::min(cy + bm_range, height - 12);
@@ -95,7 +141,11 @@ int SpatialMatch12Fast(const float* ref, int stride, int width, int height, int 
     const int candidate_count = right - left + 1;
     for (int y = top; y <= bottom && !nonfinite; ++y) {
         const float* row = ref + y * stride;
+#if HWY_TARGET == HWY_AVX2
+        SsdRow12Avx2(self, row + left, stride, candidate_count, distances);
+#else
         SsdRow12(self, row + left, stride, candidate_count, distances);
+#endif
         for (int i = 0; i < candidate_count && !nonfinite; ++i) {
             consider(left + i, y, distances[i]);
         }
@@ -139,8 +189,8 @@ SsdRowKernel ssd12_lab_kernel(int variant) {
 #endif
 
 int spatial_match12_fast(const float* ref, int stride, int width, int height, int cx, int cy, int bm_range, int group,
-                         Match* out) {
-    return HWY_DYNAMIC_DISPATCH(SpatialMatch12Fast)(ref, stride, width, height, cx, cy, bm_range, group, out);
+                         Match* out, bool avx2_enabled) {
+    return HWY_DYNAMIC_DISPATCH(SpatialMatch12Fast)(ref, stride, width, height, cx, cy, bm_range, group, out, avx2_enabled);
 }
 
 }  // namespace nss::detail

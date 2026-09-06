@@ -53,11 +53,12 @@ def worker(plugin, config):
         stage = config.get('stage', 'wiener' if config.get('wiener') else 'basic')
         fn = getattr(core.nss, {'bm3d': 'BM3D', 'nlh': 'NLH', 'wnnm': 'WNNM',
                                 'twsc': 'TWSC', 'ncsr': 'NCSR', 'mcwnnm': 'MCWNNM'}[algorithm])
+        reference_arg = 'ref' if algorithm == 'bm3d' else 'rclip'
         if stage == 'two_stage':
             pilot = fn(source, **kw)
             if radius and kw.get('temporal_mode','legacy') != 'rolling': pilot = core.nss.VAggregate(pilot, source, radius=radius)
-            output = fn(source, ref=pilot, **kw)
-        elif stage == 'wiener': output = fn(source, ref=source, **kw)
+            output = fn(source, **{reference_arg: pilot}, **kw)
+        elif stage == 'wiener': output = fn(source, **{reference_arg: source}, **kw)
         else: output = fn(source, **kw)
         if radius and kw.get('temporal_mode','legacy') != 'rolling' and config.get('aggregate_temporal', True): output = core.nss.VAggregate(output, source, radius=radius)
     # Materialize raw input before timing; retain references through the timed window.
@@ -95,16 +96,16 @@ def cpu_stat():
             for row in Path('/proc/stat').read_text().splitlines() if row.startswith('cpu')}
 
 
-def environment_delta(before, after):
-    delta = [b - a for a, b in zip(before['cpu1'], after['cpu1'])]
+def environment_delta(before, after, sibling_cpu=1):
+    delta = [b - a for a, b in zip(before[f'cpu{sibling_cpu}'], after[f'cpu{sibling_cpu}'])]
     idle = delta[3] / sum(delta[:8])
     steal = after['cpu'][7] - before['cpu'][7]
-    return dict(cpu1_idle=idle, steal_ticks=steal,
+    return dict(cpu1_idle=idle, sibling_idle=idle, sibling_cpu=sibling_cpu, steal_ticks=steal,
                 valid=idle >= .999 and steal == 0, before=before, after=after)
 
 
 def invoke_worker(args, name, config, timeout=None):
-    cmd = ['taskset', '-c', '0', sys.executable, __file__, 'worker',
+    cmd = ['taskset', '-c', str(getattr(args, 'cpu', 0)), sys.executable, __file__, 'worker',
            '--plugin', getattr(args, name), '--config', json.dumps(config)]
     start = time.monotonic()
     row = json.loads(subprocess.check_output(cmd, text=True, timeout=timeout))
@@ -139,7 +140,9 @@ def calibrate_group(args, config, deadline, dumps=None, case_id=0):
 
 
 def run(args):
-    os.sched_setaffinity(0,{0})
+    cpu = getattr(args, 'cpu', 0)
+    sibling_cpu = getattr(args, 'sibling_cpu', 1)
+    os.sched_setaffinity(0,{cpu})
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=False)
     configs = json.loads(Path(args.configs).read_text())
@@ -150,6 +153,10 @@ def run(args):
         if config.get('sample'):
             p = config['sample']; manifest[p] = hashlib.sha256(Path(p).read_bytes()).hexdigest()
     (out / 'inputs.json').write_text(json.dumps(manifest, indent=2))
+    topology=Path(f'/sys/devices/system/cpu/cpu{cpu}/topology/thread_siblings_list')
+    if topology.exists():
+        siblings=topology.read_text().strip()
+        (out/'affinity.json').write_text(json.dumps(dict(cpu=cpu,sibling_cpu=sibling_cpu,thread_siblings=siblings),indent=2))
     dump_tmp=tempfile.TemporaryDirectory(prefix='nss-paired-',dir='/dev/shm')
     dumps=Path(dump_tmp.name)
     os.sync()
@@ -235,7 +242,7 @@ def run(args):
                         paired_speedup=statistics.median(ratios), ci95=ci, ratios=ratios,
                         no_regression_confirmed=ci[0] >= 1 / 1.01,
                         benefit_confirmed=ci[0] > 1,
-                        environment=environment_delta(case_before, cpu_stat()))
+                        environment=environment_delta(case_before, cpu_stat(), sibling_cpu))
             if getattr(args, 'selection_threshold', None) is not None:
                 item['selected'] = numerical['passed'] and item['environment']['valid'] and item['paired_speedup'] > args.selection_threshold
                 item['selection_evidence'] = 'single_pair' if pair == 1 else 'repeated_pairs'
@@ -244,7 +251,8 @@ def run(args):
             print(json.dumps(item), flush=True)
             if not numerical['passed']:
                 for side in ['baseline','candidate']:shutil.copy2(dumps/f'{case_id}-{side}.npy',out/f'{case_id}-{side}.npy')
-                if not args.semantic_change:raise RuntimeError('numerical deviation requires stage replay; arrays preserved')
+                if not args.semantic_change and not getattr(args, 'continue_numerical_triage', False):
+                    raise RuntimeError('numerical deviation requires stage replay; arrays preserved')
             if numerical['passed']:
                 (dumps/f'{case_id}-baseline.npy').unlink()
                 (dumps/f'{case_id}-candidate.npy').unlink()
@@ -252,7 +260,7 @@ def run(args):
         if hashlib.sha256(Path(name).read_bytes()).hexdigest() != digest:
             raise RuntimeError('input changed during paired run: ' + name)
     after = cpu_stat()
-    environment = environment_delta(before, after)
+    environment = environment_delta(before, after, sibling_cpu)
     (out / 'environment.json').write_text(json.dumps(environment, indent=2))
     stages = [r for r in summary if r['config'].get('stage') == 'two_stage']
     geometric = math.exp(statistics.mean(math.log(r['paired_speedup']) for r in stages)) if stages else None
@@ -284,9 +292,13 @@ def main():
     for name in ['plugin', 'config', 'baseline', 'candidate', 'configs', 'out']: p.add_argument('--' + name)
     p.add_argument('--pairs', type=int, choices=[1, 3, 7, 15], default=7)
     p.add_argument('--extend', action='store_true')
+    p.add_argument('--cpu', type=int, default=0)
+    p.add_argument('--sibling-cpu', type=int, default=1)
     p.add_argument('--selection-threshold', type=float, help='separate per-case selection policy; does not rewrite historical formal gate')
     p.add_argument('--group-seconds', type=float, default=0,
                    help='calibrate each entire A/B group including startup/warmup; disables extension; fewer than 7 pairs cannot pass')
+    p.add_argument('--continue-numerical-triage', action='store_true',
+                   help='Retain every deviation and finish unmeasured configurations; failed rows remain ineligible')
     p.add_argument('--semantic-change',action='store_true',help='B0-to-B1 diagnostic only; cannot pass an optimization gate')
     p.add_argument('--regression-only', action='store_true',
                    help='neutral cleanup/control gate; no speedup requirement')

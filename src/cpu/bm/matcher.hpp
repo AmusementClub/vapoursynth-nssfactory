@@ -11,11 +11,11 @@
 namespace nss::detail {
 
 int spatial_match4_fast(const float* ref, int stride, int width, int height, int cx, int cy, int bm_range, int group,
-                        Match* out);
+                        Match* out, bool avx2_enabled = true);
 int spatial_match12_fast(const float* ref, int stride, int width, int height, int cx, int cy, int bm_range, int group,
-                         Match* out);
+                         Match* out, bool avx2_enabled = true);
 int spatial_match16_fast(const float* ref, int stride, int width, int height, int cx, int cy, int bm_range, int group,
-                         Match* out);
+                         Match* out, bool avx2_enabled = true);
 
 inline bool finite_distance(float value) noexcept {
     return is_finite_bits(value);

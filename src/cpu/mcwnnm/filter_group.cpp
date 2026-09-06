@@ -8,7 +8,7 @@
 namespace nss {
 
 int mcwnnm_filter_group(float* Y, int m, int n, int lda, int nch, const float* sigma, int admm_iter, float rho,
-                        float mu, int residual, int adaptive, float* adaptive_weight, float* work, int work_floats) {
+                        float mu, int residual, int adaptive, float* adaptive_weight, float* work, int work_floats, bool avx2_gemm) {
     if (!Y || m < 1 || n < 1 || lda < m || m > kSvdMaxM || n > kSvdMaxN) {
         return -1;
     }
@@ -23,7 +23,7 @@ int mcwnnm_filter_group(float* Y, int m, int n, int lda, int nch, const float* s
         }
         group_center_sub(Y, m, n, lda, mean);
     }
-    const int kept = mcwnnm_admm(Y, m, n, lda, nch, sigma, admm_iter, rho, mu, residual ? 0 : 1, work, work_floats);
+    const int kept = mcwnnm_admm(Y, m, n, lda, nch, sigma, admm_iter, rho, mu, residual ? 0 : 1, work, work_floats, avx2_gemm);
     if (residual) {
         group_center_add(Y, m, n, lda, mean);
     }
