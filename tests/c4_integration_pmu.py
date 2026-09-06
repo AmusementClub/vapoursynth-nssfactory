@@ -16,8 +16,10 @@ def run(plugin, config, control, acknowledge):
 
     def command(value):
         os.write(ctl, (value + '\n').encode())
-        if os.read(ack, 128).strip() != b'ack':
-            raise RuntimeError('unexpected perf control acknowledgement')
+        response = os.read(ack, 128)
+        # perf 6.17 writes the C string terminator after "ack\n".
+        if response.rstrip(b'\x00\r\n') != b'ack':
+            raise RuntimeError(f'unexpected perf control acknowledgement: {response!r}')
 
     def boundary():
         nonlocal calls
