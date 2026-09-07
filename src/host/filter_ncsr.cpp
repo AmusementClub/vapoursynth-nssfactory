@@ -1,5 +1,7 @@
+#include "nss/resources.hpp"
 #include "host/temporal.hpp"
 #include "host/validate.hpp"
+#include "host/contribution.hpp"
 #include "nss/avx2.hpp"
 #include "nss/cpu_api.hpp"
 #include "nss/cpu_common.hpp"
@@ -19,8 +21,9 @@
 namespace {
 
 struct NcsrData {
-    VSNode* node = nullptr;
-    VSNode* rclip = nullptr;
+    std::shared_ptr<nss::ResourceBudget> budget = nss::current_budget();
+    nss::NodeRef node;
+    nss::NodeRef rclip;
     VSVideoInfo vi{};
     VSVideoInfo vi_out{};
     float sigma[3]{nss::kNcsrDefaultSigma, nss::kNcsrDefaultSigma, nss::kNcsrDefaultSigma};
@@ -39,6 +42,8 @@ struct NcsrData {
 const VSFrame* VS_CC ncsrGetFrame(int n, int activationReason, void* instanceData, void** frameData,
                                   VSFrameContext* frameCtx, VSCore* core, const VSAPI* vsapi) {
     auto* d = static_cast<NcsrData*>(instanceData);
+    nss::ResourceScope resource_scope(d->budget);
+    nss::FrameScope frames_owned(vsapi);
     (void)frameData;
     if (activationReason == arInitial) {
         const int start = std::max(0, n - d->radius);
@@ -58,15 +63,16 @@ const VSFrame* VS_CC ncsrGetFrame(int n, int activationReason, void* instanceDat
     const bool fat = d->radius > 0;
     const int ntemp = 2 * d->radius + 1;
     const int t0 = d->radius;
-    std::vector<const VSFrame*> srcf(static_cast<std::size_t>(ntemp));
-    std::vector<const VSFrame*> reff(static_cast<std::size_t>(ntemp));
+    nss::ResourceVector<const VSFrame*> srcf(static_cast<std::size_t>(ntemp));
+    nss::ResourceVector<const VSFrame*> reff(static_cast<std::size_t>(ntemp));
     for (int t = 0; t < ntemp; ++t) {
         const int fn = nss::host_detail::temporal_slot_frame(n,t,d->radius,d->vi.numFrames);
-        srcf[static_cast<std::size_t>(t)] = vsapi->getFrameFilter(fn, d->node, frameCtx);
-        reff[static_cast<std::size_t>(t)] = vsapi->getFrameFilter(fn, d->rclip ? d->rclip : d->node, frameCtx);
+        srcf[static_cast<std::size_t>(t)] = frames_owned.getFrameFilter(fn, d->node, frameCtx);
+        reff[static_cast<std::size_t>(t)] = frames_owned.getFrameFilter(fn, d->rclip ? d->rclip : d->node, frameCtx);
     }
     const VSFrame* src0 = srcf[static_cast<std::size_t>(t0)];
-    VSFrame* dst = vsapi->newVideoFrame(&d->vi_out.format, d->vi_out.width, d->vi_out.height, src0, core);
+    VSFrame* dst = frames_owned.newVideoFrame(&d->vi_out.format, d->vi_out.width, d->vi_out.height, src0, core);
+    nss::stamp_contribution(dst, d->radius, n, nss::Model::NCSR, vsapi);
 
     const int block = d->block_size;
     const int m = block * block;
@@ -78,8 +84,8 @@ const VSFrame* VS_CC ncsrGetFrame(int n, int activationReason, void* instanceDat
     for (int plane = 0; plane < d->vi.format.numPlanes; ++plane) {
         const int pw = nss::plane_width(d->vi, plane);
         const int ph = nss::plane_height(d->vi, plane);
-        const int sstride = static_cast<int>(vsapi->getStride(src0, plane) / sizeof(float));
-        const int dstride = static_cast<int>(vsapi->getStride(dst, plane) / sizeof(float));
+        const int sstride = static_cast<int>(frames_owned.getStride(src0, plane) / sizeof(float));
+        const int dstride = static_cast<int>(frames_owned.getStride(dst, plane) / sizeof(float));
         float* outp = reinterpret_cast<float*>(vsapi->getWritePtr(dst, plane));
         const float* srcp = reinterpret_cast<const float*>(vsapi->getReadPtr(src0, plane));
         if (d->sigma[plane] == 0.f) {
@@ -93,14 +99,14 @@ const VSFrame* VS_CC ncsrGetFrame(int n, int activationReason, void* instanceDat
             continue;
         }
 
-        std::vector<const float*> srcs(static_cast<std::size_t>(ntemp));
-        std::vector<const float*> refs(static_cast<std::size_t>(ntemp));
+        nss::ResourceVector<const float*> srcs(static_cast<std::size_t>(ntemp));
+        nss::ResourceVector<const float*> refs(static_cast<std::size_t>(ntemp));
         int src_strides[nss::kBmMaxRadius * 2 + 1];
         for (int t = 0; t < ntemp; ++t) {
             srcs[static_cast<std::size_t>(t)] =
-                reinterpret_cast<const float*>(vsapi->getReadPtr(srcf[static_cast<std::size_t>(t)], plane));
+                frames_owned.readPlane(srcf[static_cast<std::size_t>(t)], plane, sstride);
             refs[static_cast<std::size_t>(t)] =
-                reinterpret_cast<const float*>(vsapi->getReadPtr(reff[static_cast<std::size_t>(t)], plane));
+                frames_owned.readPlane(reff[static_cast<std::size_t>(t)], plane, sstride);
             src_strides[t] = sstride;
         }
 
@@ -140,7 +146,7 @@ const VSFrame* VS_CC ncsrGetFrame(int n, int activationReason, void* instanceDat
         cfg.ps_num = d->ps_num;
         cfg.ps_range = d->ps_range;
 
-        std::vector<const float*> est_refs(static_cast<std::size_t>(ntemp));
+        nss::ResourceVector<const float*> est_refs(static_cast<std::size_t>(ntemp));
         int est_strides[nss::kBmMaxRadius * 2 + 1];
         for (int t = 0; t < ntemp; ++t) {
             est_refs[static_cast<std::size_t>(t)] = est + static_cast<std::size_t>(t) * plane_sz;
@@ -192,18 +198,18 @@ const VSFrame* VS_CC ncsrGetFrame(int n, int activationReason, void* instanceDat
     }
 
     for (int t = 0; t < ntemp; ++t) {
-        vsapi->freeFrame(srcf[static_cast<std::size_t>(t)]);
-        vsapi->freeFrame(reff[static_cast<std::size_t>(t)]);
+        frames_owned.freeFrame(srcf[static_cast<std::size_t>(t)]);
+        frames_owned.freeFrame(reff[static_cast<std::size_t>(t)]);
     }
-    return dst;
+    return frames_owned.keep(dst);
 }
 
 void VS_CC ncsrFree(void* instanceData, VSCore* core, const VSAPI* vsapi) {
     (void)core;
     auto* d = static_cast<NcsrData*>(instanceData);
-    vsapi->freeNode(d->node);
+    d->node.reset();
     if (d->rclip) {
-        vsapi->freeNode(d->rclip);
+        d->rclip.reset();
     }
     delete d;
 }
@@ -217,13 +223,13 @@ void VS_CC ncsrCreate(const VSMap* in, VSMap* out, void* userData, VSCore* core,
         return;
     }
     auto d = std::make_unique<NcsrData>();
-    d->node = vsapi->mapGetNode(in, "clip", 0, nullptr);
+    d->node = nss::get_node(vsapi, in, "clip", 0, nullptr);
     d->vi = *vsapi->getVideoInfo(d->node);
     auto fail = [&](const char* msg) {
         vsapi->mapSetError(out, msg);
-        vsapi->freeNode(d->node);
+        d->node.reset();
         if (d->rclip) {
-            vsapi->freeNode(d->rclip);
+            d->rclip.reset();
         }
     };
     if (!nss::is_const_32f(d->vi)) {
@@ -260,22 +266,23 @@ void VS_CC ncsrCreate(const VSMap* in, VSMap* out, void* userData, VSCore* core,
         return;
     }
     int e = 0;
-    d->rclip = vsapi->mapGetNode(in, "rclip", 0, &e);
+    d->rclip = nss::get_node(vsapi, in, "rclip", 0, &e);
     if (e) {
         d->rclip = nullptr;
     } else if (!nss::same_video(d->vi, *vsapi->getVideoInfo(d->rclip))) {
         fail("nss.NCSR: rclip must match clip");
         return;
     }
+    nss::validate_group_planes(d->vi, d->sigma, d->block_size);
     d->vi_out = d->vi;
     if (d->radius > 0) {
-        d->vi_out.height = d->vi.height * (2 * d->radius + 1) * 2;
+        d->vi_out.height = nss::checked_fat_height(d->vi.height, d->radius);
     }
     VSFilterDependency deps[2]{{d->node, d->radius == 0 ? rpStrictSpatial : rpGeneral},
                                {d->rclip, d->radius == 0 ? rpStrictSpatial : rpGeneral}};
     const int ndeps = d->rclip ? 2 : 1;
     NcsrData* raw = d.get();
-    VSNode* node = vsapi->createVideoFilter2("NCSR", &raw->vi_out, ncsrGetFrame, ncsrFree, fmParallel, deps, ndeps, raw,
+    VSNode* node = vsapi->createVideoFilter2("NCSR", &raw->vi_out, nss::checked_frame<ncsrGetFrame>, ncsrFree, fmParallel, deps, ndeps, raw,
                                              core);
     if (!node) {
         fail("nss.NCSR: failed to create filter");
@@ -289,6 +296,6 @@ void register_ncsr(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
     const char* args =
         "clip:vnode;sigma:float[]:opt;block_size:int:opt;block_step:int:opt;group_size:int:opt;"
         "bm_range:int:opt;radius:int:opt;ps_num:int:opt;ps_range:int:opt;rclip:vnode:opt;"
-        "iters:int:opt;delta:float:opt;";
-    vspapi->registerFunction("NCSR", args, "clip:vnode;", ncsrCreate, nullptr, plugin);
+        "iters:int:opt;delta:float:opt;memory_limit_mb:int:opt;";
+    vspapi->registerFunction("NCSR", args, "clip:vnode;", nss::checked_create<ncsrCreate>, nullptr, plugin);
 }

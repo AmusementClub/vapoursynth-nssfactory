@@ -1,3 +1,4 @@
+#include "nss/resources.hpp"
 #include "nss/cpu_api.hpp"
 #include "nss/cpu_lssc.hpp"
 #include "cpu/wnnm/jacobi8.hpp"
@@ -233,7 +234,7 @@ void lssc_dict_init_workspace(float* D, int m, int atoms, int ldd, const float* 
 void lssc_dict_init(float* D, int m, int atoms, int ldd, const float* patches, int n, int lda, int block,
                     int ksvd_iters, unsigned seed) {
     const int need = lssc_dict_work_floats(m, atoms, n, ksvd_iters);
-    std::vector<float> work(static_cast<std::size_t>(std::max(1, need)), 0.f);
+    nss::ResourceVector<float> work(static_cast<std::size_t>(std::max(1, need)), 0.f);
     lssc_dict_init_workspace(D, m, atoms, ldd, patches, n, lda, block, ksvd_iters, seed, work.data(), need);
 }
 

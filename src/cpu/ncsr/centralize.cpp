@@ -1,3 +1,5 @@
+#include "cpu/finishers.hpp"
+#include "nss/resources.hpp"
 #include "nss/avx2_policy.hpp"
 #include "nss/cpu_ncsr.hpp"
 
@@ -156,44 +158,13 @@ int NcsrFilterGroup(float* group, int m, int n, int lda, float sigma, const floa
     if (r < 0) {
         return -1;
     }
-    if (!(sigma > 0.f) || !is_finite_bits(sigma)) {
-        pca_reconstruct(group, m, n, lda, U, B, mean);
-        return 0;
-    }
-    float w[kSvdMaxN];
-    constexpr float kEps = 1e-12f;
-    // Match.dist is total SSD; h = 2 m σ² so a noise-only pair has w ~ exp(-1/2).
-    const float h = std::max(2.f * static_cast<float>(m) * sigma * sigma, kEps);
-    float wsum = NcsrGroupWeights(col_dist, group, m, n, lda, h, w);
-    if (!(wsum > 0.f)) {
-        for (int j = 0; j < n; ++j) {
-            w[j] = 1.f;
+    struct Rows {
+        void gather(float* row, const float* codes, int i, int stride, int count) const {
+            GatherStrided(row, codes + i, stride, count);
         }
-        wsum = static_cast<float>(n);
-    }
-    // TIP 2013 (17): τ_i = 2√2 σ² / σ_θ, σ_θ = weighted std of (α − β) on row i.
-    constexpr float kMap = 2.8284271247461903f;
-    float row_tau[kSvdMaxN];
-    const float sig2 = sigma * sigma;
-    const float inv_w = 1.f / wsum;
-    float row[kSvdMaxN];
-    for (int i = 0; i < r; ++i) {
-        GatherStrided(row, B + i, r, n);
-        float s = 0.f;
-        for (int j = 0; j < n; ++j) {
-            s += w[j] * row[j];
-        }
-        const float beta = s * inv_w;
-        float var = 0.f;
-        for (int j = 0; j < n; ++j) {
-            const float e = row[j] - beta;
-            var += w[j] * e * e;
-        }
-        const float sig_theta = std::sqrt(var * inv_w);
-        row_tau[i] = kMap * sig2 / (sig_theta + kEps);
-    }
-    NcsrCentralizeCodes(B, r, n, r, std::fabs(sigma), w, row_tau);
-    pca_reconstruct(group, m, n, lda, U, B, mean);
+    };
+    detail::finish_ncsr_codes(group, m, n, lda, sigma, col_dist, B, Rows{}, NcsrGroupWeights, NcsrCentralizeCodes);
+    detail::finish_pca_reconstruction(group, m, n, lda, U, B, mean);
     return 0;
 }
 
@@ -239,11 +210,11 @@ void ncsr_run_groups(const float* const* refs, const int* rstrides, const float*
     const int t_ref = std::clamp(t0, 0, slices - 1);
     const std::size_t plane_sz = static_cast<std::size_t>(width * height);
     const int shrink_n = ncsr_filter_work_floats(m, g);
-    std::vector<GroupJob> jobs;
-    for (int by0 = 0; by0 < height - block + step; by0 += step) {
-        const int by = std::min(by0, std::max(0, height - block));
-        for (int bx0 = 0; bx0 < width - block + step; bx0 += step) {
-            const int bx = std::min(bx0, std::max(0, width - block));
+    nss::ResourceVector<GroupJob> jobs;
+    for (std::int64_t by0 = 0; by0 < static_cast<std::int64_t>(height) - block + step; by0 += step) {
+        const int by = static_cast<int>(std::min<std::int64_t>(by0, std::max(0, height - block)));
+        for (std::int64_t bx0 = 0; bx0 < static_cast<std::int64_t>(width) - block + step; bx0 += step) {
+            const int bx = static_cast<int>(std::min<std::int64_t>(bx0, std::max(0, width - block)));
             jobs.push_back(GroupJob{static_cast<std::uint64_t>(jobs.size()), bx, by, t_ref,
                                     GroupKey{m, g, 1, GroupAlgorithm::NCSR, false, false}});
         }
@@ -264,12 +235,12 @@ void ncsr_run_groups(const float* const* refs, const int* rstrides, const float*
                                                          kWnnmMaxGroup, counts.data())
                                  : spatial_match_batch(refs[t_ref], rstrides[t_ref], width, height, match_items.data(),
                                                        count, match_storage.data(), kWnnmMaxGroup, counts.data());
-        if (match_rc < 0) {
-            continue;
+        if (match_rc != 0) {
+            throw std::runtime_error("nss: matching failed for an active group");
         }
-        std::vector<float> batch_patches(static_cast<std::size_t>(count) * static_cast<std::size_t>(g) * lda, 0.f);
-        std::vector<float> batch_dist(static_cast<std::size_t>(count) * static_cast<std::size_t>(g), 0.f);
-        std::vector<float> batch_work(static_cast<std::size_t>(count) * static_cast<std::size_t>(shrink_n), 0.f);
+        nss::ResourceVector<float> batch_patches(static_cast<std::size_t>(count) * static_cast<std::size_t>(g) * lda, 0.f);
+        nss::ResourceVector<float> batch_dist(static_cast<std::size_t>(count) * static_cast<std::size_t>(g), 0.f);
+        nss::ResourceVector<float> batch_work(static_cast<std::size_t>(count) * static_cast<std::size_t>(shrink_n), 0.f);
         std::array<int, 32> filter_status{};
         std::array<NcsrFilterBatchItem, 32> filter_items{};
         for (int i = 0; i < count; ++i) {
@@ -288,7 +259,7 @@ void ncsr_run_groups(const float* const* refs, const int* rstrides, const float*
                 batch_work.data() + static_cast<std::size_t>(i) * static_cast<std::size_t>(shrink_n), shrink_n,
                 &filter_status[static_cast<std::size_t>(i)]};
         }
-        (void)ncsr_filter_group_batch(filter_items.data(), count);
+        if (ncsr_filter_group_batch(filter_items.data(), count) != 0) throw std::runtime_error("nss: numerical group processing failed");
         struct Result {
             bool valid = false;
             int k = 0;

@@ -1,3 +1,4 @@
+#include "nss/contracts.hpp"
 #include "nss/avx2_policy.hpp"
 #if NSS_BM_EXPERIMENT & 128
 #include <cstdlib>
@@ -806,7 +807,7 @@ void Bm3dFilterGroup(float* patches, int lda, int group, int k, int block, float
                      , const Bm3dPatchKey* keys=nullptr, const Bm3dPatchKey* ref_keys=nullptr
 #endif
                      ) {
-    if (group < 1 || block < 1 || k < 1 || !work) {
+    if (!bm_allowed_group(group) || !bm_allowed_block(block) || k < 1 || !work || !patches) {
         if (weight_out) {
             *weight_out = 1.f;
         }
@@ -1227,7 +1228,7 @@ void Bm3dFilter8(const float* src, int sstride, const Match* matches, int k, flo
         }
     }
     // sigma is effective normalized-pixel noise; only transform scaling remains.
-    const float s = sigma * 64.f;
+    const float s = sigma * nss::NoiseProfile::fused8_gain;
     float wgt = 1.f;
     if (wiener && ref) {
         V8 R[64];
@@ -1264,19 +1265,8 @@ void Bm3dFilter8(const float* src, int sstride, const Match* matches, int k, flo
         }
     }
 #else
-    (void)src;
-    (void)sstride;
-    (void)matches;
-    (void)k;
-    (void)sigma;
-    (void)wiener;
-    (void)ref;
-    (void)rstride;
-    (void)num;
-    (void)den;
-    (void)dstride;
-    (void)width;
-    (void)height;
+    nss::bm3d_filter8_portable(src, sstride, matches, k, sigma, wiener, ref, rstride,
+                             num, den, dstride, width, height);
 #endif
 }
 
@@ -1364,14 +1354,23 @@ void bm3d_filter_group_keyed(float* patches,int lda,int group,int k,int block,fl
 
 void bm3d_filter8(const float* src, int sstride, const Match* matches, int k, float sigma, bool wiener,
                   const float* ref, int rstride, float* num, float* den, int dstride, int width, int height) {
+    if (k < 1) return;
     HWY_DYNAMIC_DISPATCH(Bm3dFilter8)(src, sstride, matches, k, sigma, wiener, ref, rstride, num, den, dstride, width,
                                      height);
+}
+
+void bm3d_filter8_portable(const float* src, int sstride, const Match* matches, int k, float sigma, bool wiener,
+                          const float* ref, int rstride, float* num, float* den, int dstride, int width, int height) {
+    alignas(64) float cube[2 * 8 * 64];
+    alignas(64) float work[2 * 8 * 64];
+    bm3d_filter_direct(src, sstride, matches, k, 8, 8, sigma, wiener, ref, rstride,
+                       num, den, dstride, width, height, cube, work);
 }
 
 void bm3d_filter_direct(const float* src, int sstride, const Match* matches, int k, int block, int group, float sigma,
                         bool wiener, const float* ref, int rstride, float* num, float* den, int dstride, int width,
                         int height, float* cube, float* work, unsigned avx2_features) {
-    if (!src || !matches || !cube || !work || !num || !den || k < 1 || block < 1 || group < 1 || width < 1 ||
+    if (!src || !matches || !cube || !work || !num || !den || k < 1 || !bm_allowed_block(block) || !bm_allowed_group(group) || width < 1 ||
         height < 1) {
         return;
     }

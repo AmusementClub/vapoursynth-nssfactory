@@ -49,11 +49,16 @@ def run(a):
     core=vs.core;core.num_threads=1;core.std.LoadPlugin(path=a.nss);core.std.LoadPlugin(path=a.reference)
     out=Path(a.out);out.mkdir(parents=True,exist_ok=False)
     manifests={p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in [a.nss,a.reference,__file__,str(Path(__file__).with_name('bm_numerics.py'))]}
-    (out/'manifest.json').write_text(json.dumps(dict(files=manifests,reference_commit='e869cfae8d2322cf7a2b3c8056ed57e9308b2d33',chroma=False,bm_range=7,reference_bm_range=a.reference_range,step=8,block=8,group=8,temporal_boundary='nss truncate versus reference clamp'),indent=2))
+    (out/'manifest.json').write_text(json.dumps(dict(files=manifests,reference_commit='e869cfae8d2322cf7a2b3c8056ed57e9308b2d33',chroma=False,crop=a.crop,crop_origin=[800,450] if a.crop else None,bm_range=7,reference_bm_range=a.reference_range,step=8,block=8,group=8,temporal_boundary='nss truncate versus reference clamp'),indent=2))
     reports=[]
     for image_id,sample in enumerate(sorted(Path(a.samples).glob('*.gray8'))):
         if a.sample and sample.name!=a.sample:continue
         base=np.fromfile(sample,np.uint8).reshape(1080,1920).astype(np.float32)/255
+        if a.crop:
+            crop_width, crop_height = map(int, a.crop.split(','))
+            if not (1 <= crop_width <= 1120 and 1 <= crop_height <= 630):
+                raise ValueError('crop must fit sample starting at x=800,y=450')
+            base=base[450:450+crop_height,800:800+crop_width]
         for kind in (['static'] if a.spatial_only else a.kinds.split(',')):
             clean=sequence(base if kind=='static' else base[::6,::6],kind)
             radius=0 if kind=='static' else 1
@@ -81,4 +86,4 @@ def run(a):
             print(f'{sample.name} {kind} completed',flush=True)
     (out/'complete.json').write_text(json.dumps(dict(completed=True,cases=len(reports),natural_video_verified=False)))
 if __name__=='__main__':
-    p=argparse.ArgumentParser();p.add_argument('--nss',required=True);p.add_argument('--reference',required=True);p.add_argument('--out',required=True);p.add_argument('--samples',default='/opt/nss-c4/samples/gray8');p.add_argument('--spatial-only',action='store_true');p.add_argument('--sample');p.add_argument('--reference-range',type=int,default=7);p.add_argument('--sigmas',default='0,.5,1,3,5,10,20,40');p.add_argument('--kinds',default='static,translation,brightness,occlusion,cut');run(p.parse_args())
+    p=argparse.ArgumentParser();p.add_argument('--nss',required=True);p.add_argument('--reference',required=True);p.add_argument('--out',required=True);p.add_argument('--samples',default='/opt/nss-c4/samples/gray8');p.add_argument('--spatial-only',action='store_true');p.add_argument('--crop');p.add_argument('--sample');p.add_argument('--reference-range',type=int,default=7);p.add_argument('--sigmas',default='0,.5,1,3,5,10,20,40');p.add_argument('--kinds',default='static,translation,brightness,occlusion,cut');run(p.parse_args())

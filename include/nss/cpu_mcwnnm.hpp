@@ -6,6 +6,7 @@
 namespace nss {
 
 inline int mcwnnm_admm_work_floats(int m, int n) {
+    checked_solver_shape(m, n);
     const int mats = 4 * m * n + m * n + n + n * n + m;
     const int svd = m * n * 6 + n * n * 8 + n + 256;
     return mats + svd;

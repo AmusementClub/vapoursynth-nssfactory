@@ -40,6 +40,13 @@ def temporal():
                 fats[c,:,2*sl*12:(2*sl+1)*12]=clean[t]*(c+1)
                 fats[c,:,(2*sl+1)*12:(2*sl+2)*12]=c+1
         fat=clip(fats,vs.YUV444PS)
+        def stamp(n, f, radius=radius):
+            out = f.copy()
+            for key, value in dict(_NSSFatVersion=2, _NSSFatRadius=radius, _NSSFatCenter=n,
+                                   _NSSFatLayout=1, _NSSModel=1, _NSSModelVersion=2, _NSSNoiseProfile=1).items():
+                out.props[key] = value
+            return out
+        fat=core.std.ModifyFrame(fat,fat,stamp)
         dst=core.nss.VAggregate(fat,src,radius=radius)
         for n in (0,6,3,1,5,2,4):close(arrays(dst,n),clean[n],f'identity r{radius} n{n}',2e-6)
     # Constant image per frame exposes disabled-plane contamination at boundaries.

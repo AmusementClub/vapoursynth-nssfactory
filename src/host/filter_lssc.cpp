@@ -16,7 +16,8 @@
 namespace {
 
 struct LsscData {
-    VSNode* node = nullptr;
+    std::shared_ptr<nss::ResourceBudget> budget = nss::current_budget();
+    nss::NodeRef node;
     VSVideoInfo vi{};
     VSVideoInfo vi_out{};
     float sigma[3]{nss::kLsscDefaultSigma, nss::kLsscDefaultSigma, nss::kLsscDefaultSigma};
@@ -29,6 +30,8 @@ struct LsscData {
 const VSFrame* VS_CC lsscGetFrame(int n, int activationReason, void* instanceData, void** frameData,
                                   VSFrameContext* frameCtx, VSCore* core, const VSAPI* vsapi) {
     auto* d = static_cast<LsscData*>(instanceData);
+    nss::ResourceScope resource_scope(d->budget);
+    nss::FrameScope frames_owned(vsapi);
     (void)frameData;
     if (activationReason == arInitial) {
         vsapi->requestFrameFilter(n, d->node, frameCtx);
@@ -38,8 +41,8 @@ const VSFrame* VS_CC lsscGetFrame(int n, int activationReason, void* instanceDat
         return nullptr;
     }
 
-    const VSFrame* src0 = vsapi->getFrameFilter(n, d->node, frameCtx);
-    VSFrame* dst = vsapi->newVideoFrame(&d->vi_out.format, d->vi_out.width, d->vi_out.height, src0, core);
+    const VSFrame* src0 = frames_owned.getFrameFilter(n, d->node, frameCtx);
+    VSFrame* dst = frames_owned.newVideoFrame(&d->vi_out.format, d->vi_out.width, d->vi_out.height, src0, core);
 
     const int block = d->block_size;
     const int step = d->block_step;
@@ -47,8 +50,8 @@ const VSFrame* VS_CC lsscGetFrame(int n, int activationReason, void* instanceDat
     for (int plane = 0; plane < d->vi.format.numPlanes; ++plane) {
         const int pw = nss::plane_width(d->vi, plane);
         const int ph = nss::plane_height(d->vi, plane);
-        const int sstride = static_cast<int>(vsapi->getStride(src0, plane) / sizeof(float));
-        const int dstride = static_cast<int>(vsapi->getStride(dst, plane) / sizeof(float));
+        const int sstride = static_cast<int>(frames_owned.getStride(src0, plane) / sizeof(float));
+        const int dstride = static_cast<int>(frames_owned.getStride(dst, plane) / sizeof(float));
         float* outp = reinterpret_cast<float*>(vsapi->getWritePtr(dst, plane));
         const float* srcp = reinterpret_cast<const float*>(vsapi->getReadPtr(src0, plane));
         if (d->sigma[plane] == 0.f) {
@@ -70,14 +73,14 @@ const VSFrame* VS_CC lsscGetFrame(int n, int activationReason, void* instanceDat
         nss::aggregate_finish(outp, num, den, srcp, pw, ph, dstride, pw, sstride);
     }
 
-    vsapi->freeFrame(src0);
-    return dst;
+    frames_owned.freeFrame(src0);
+    return frames_owned.keep(dst);
 }
 
 void VS_CC lsscFree(void* instanceData, VSCore* core, const VSAPI* vsapi) {
     (void)core;
     auto* d = static_cast<LsscData*>(instanceData);
-    vsapi->freeNode(d->node);
+    d->node.reset();
     delete d;
 }
 
@@ -88,11 +91,11 @@ void VS_CC lsscCreate(const VSMap* in, VSMap* out, void* userData, VSCore* core,
         return;
     }
     auto d = std::make_unique<LsscData>();
-    d->node = vsapi->mapGetNode(in, "clip", 0, nullptr);
+    d->node = nss::get_node(vsapi, in, "clip", 0, nullptr);
     d->vi = *vsapi->getVideoInfo(d->node);
     auto fail = [&](const char* msg) {
         vsapi->mapSetError(out, msg);
-        vsapi->freeNode(d->node);
+        d->node.reset();
     };
     if (!nss::is_const_32f(d->vi)) {
         fail("nss.LSSC: constant Gray/YUV/RGB 32-bit float required");
@@ -118,11 +121,12 @@ void VS_CC lsscCreate(const VSMap* in, VSMap* out, void* userData, VSCore* core,
         fail("nss.LSSC: grid too large; increase block_step");
         return;
     }
+    nss::validate_group_planes(d->vi, d->sigma, d->block_size);
     d->vi_out = d->vi;
     VSFilterDependency deps[1]{{d->node, d->radius == 0 ? rpStrictSpatial : rpGeneral}};
     LsscData* raw = d.get();
     VSNode* node =
-        vsapi->createVideoFilter2("LSSC", &raw->vi_out, lsscGetFrame, lsscFree, fmParallel, deps, 1, raw, core);
+        vsapi->createVideoFilter2("LSSC", &raw->vi_out, nss::checked_frame<lsscGetFrame>, lsscFree, fmParallel, deps, 1, raw, core);
     if (!node) {
         fail("nss.LSSC: failed to create filter");
         return;
@@ -135,6 +139,6 @@ void VS_CC lsscCreate(const VSMap* in, VSMap* out, void* userData, VSCore* core,
 
 void register_lssc(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
     vspapi->registerFunction("LSSC",
-                             "clip:vnode;sigma:float[]:opt;block_size:int:opt;block_step:int:opt;radius:int:opt;",
-                             "clip:vnode;", lsscCreate, nullptr, plugin);
+                             "clip:vnode;sigma:float[]:opt;block_size:int:opt;block_step:int:opt;radius:int:opt;memory_limit_mb:int:opt;",
+                             "clip:vnode;", nss::checked_create<lsscCreate>, nullptr, plugin);
 }

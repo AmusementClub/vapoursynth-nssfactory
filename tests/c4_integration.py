@@ -43,12 +43,18 @@ def worker(plugin, config):
         rng = np.random.RandomState(42 + n if motion else 42)
         return np.stack([clean + rng.randn(h, w).astype(np.float32) * np.float32(3 / 255) for _ in range(planes)])
     blank = core.std.BlankClip(width=w, height=h, format=vs.RGBS if planes == 3 else vs.GRAYS, length=length)
+    source_fills = 0
     def fill(n, f):
+        nonlocal source_fills
+        source_fills += 1
         out = f.copy()
         for p, values in enumerate(payload(n)):
             np.asarray(out[p])[:] = values
         return out
     source = core.std.ModifyFrame(blank, blank, fill)
+    # Retaining Python frame references alone does not pin the node's cache.
+    # Spatial consumers can make VS disable its automatic source cache.
+    core.std.SetVideoCache(source, mode=1, fixedsize=1, maxsize=length)
     fn = getattr(core.nss, dict(nlm='NLM', bm3d='BM3D', wnnm='WNNM', twsc='TWSC', ncsr='NCSR', lssc='LSSC', nlh='NLH', mcwnnm='MCWNNM')[algorithm])
     def filtered(ref=None):
         args = dict(kw)
@@ -67,9 +73,13 @@ def worker(plugin, config):
     order = list(range(first, first + frames))
     if config.get('access') == 'random':
         random.Random(42).shuffle(order)
+    fills_before_timing = source_fills
     start = time.perf_counter()
     outputs = [output.get_frame(n) for n in order]
     elapsed = time.perf_counter() - start
+    timed_source_fills = source_fills - fills_before_timing
+    if timed_source_fills:
+        raise RuntimeError(f"source was recomputed inside frame timing: {timed_source_fills}")
     arrays = [np.stack([np.array(f[p]) for p in range(planes)]) for f in outputs]
     digest = hashlib.sha256()
     for a in arrays:
@@ -77,9 +87,11 @@ def worker(plugin, config):
             raise RuntimeError('nonfinite output')
         digest.update(a.tobytes())
     if config.get('_dump'):
-        # First seven frames cover a full motion period without unbounded dumps.
-        np.save(config['_dump'], np.stack(arrays[:7]))
+        # Seven small motion frames, or two full-size spatial frames, bound the
+        # temporary float64 clean/SSIM diagnostics outside the timing interval.
+        np.save(config['_dump'], np.stack(arrays[:7 if w * h < 1920 * 1080 else 2]))
     return dict(ms=elapsed * 1000 / frames, timed_first=first, timed_frames=frames,
+                source_fills_before_timing=fills_before_timing, timed_source_fills=timed_source_fills,
                 rolling_chunk=chunk, access=config.get('access', 'sequential'),
                 sha256=digest.hexdigest(), input_sha256=hashlib.sha256(payload(first).tobytes()).hexdigest(),
                 peak_rss_kib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)

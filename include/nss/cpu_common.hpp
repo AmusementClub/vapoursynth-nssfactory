@@ -7,10 +7,19 @@ namespace nss {
 
 // Finite classification used by correctness guards. This remains reliable in
 // translation units compiled with aggressive floating-point optimizations.
+inline std::uint32_t float_classification_bits(float value) noexcept {
+    std::uint32_t bits = std::bit_cast<std::uint32_t>(value);
+#if defined(__clang__)
+    // Clang's fast-math nofpclass argument/SSA attributes can fold even an
+    // integer bit_cast classification to true. Keep the integer identity
+    // opaque to that inference; the barrier emits no machine instruction.
+    __asm__ volatile("" : "+r"(bits));
+#endif
+    return bits;
+}
 inline bool is_finite_bits(float value) noexcept {
     constexpr std::uint32_t kExponentMask = 0x7f800000u;
-    const std::uint32_t bits = std::bit_cast<std::uint32_t>(value);
-    return (bits & kExponentMask) != kExponentMask;
+    return (float_classification_bits(value) & kExponentMask) != kExponentMask;
 }
 
 // Row means of an m×n column-major group. mean[i] = avg_j group[i + j*lda].

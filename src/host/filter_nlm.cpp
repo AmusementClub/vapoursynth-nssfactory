@@ -1,4 +1,6 @@
+#include "nss/resources.hpp"
 #include "host/validate.hpp"
+#include "host/temporal.hpp"
 #include "nss/avx2.hpp"
 #include "nss/cpu_api.hpp"
 #include "nss/params.hpp"
@@ -24,8 +26,9 @@
 namespace {
 
 struct NlmData {
-    VSNode* node = nullptr;
-    VSNode* rclip = nullptr;
+    std::shared_ptr<nss::ResourceBudget> budget = nss::current_budget();
+    nss::NodeRef node;
+    nss::NodeRef rclip;
     const VSAPI* vsapi = nullptr;
     VSVideoInfo vi{};
     int d = nss::kNlmDefaultD;
@@ -75,10 +78,12 @@ std::size_t nlm_scratch_budget() {
 const VSFrame* VS_CC nlmGetFrame(int n, int activationReason, void* instanceData, void** frameData,
                                  VSFrameContext* frameCtx, VSCore* core, const VSAPI* vsapi) {
     auto* d = static_cast<NlmData*>(instanceData);
+    nss::ResourceScope resource_scope(d->budget);
+    nss::FrameScope frames_owned(vsapi);
     (void)frameData;
     if (activationReason == arInitial) {
         const int start = std::max(0, n - d->d);
-        const int end = std::min(n + d->d, d->vi.numFrames - 1);
+        const int end = nss::host_detail::temporal_last(n, d->d, d->vi.numFrames);
         for (int i = start; i <= end; ++i) {
             vsapi->requestFrameFilter(i, d->node, frameCtx);
             if (d->rclip) {
@@ -97,12 +102,12 @@ const VSFrame* VS_CC nlmGetFrame(int n, int activationReason, void* instanceData
     const int nc = num_channels(d->channels);
 
     const int ntemp = 2 * d->d + 1;
-    std::vector<const VSFrame*> src_frames(static_cast<std::size_t>(ntemp));
-    std::vector<const VSFrame*> ref_frames(static_cast<std::size_t>(ntemp));
+    nss::ResourceVector<const VSFrame*> src_frames(static_cast<std::size_t>(ntemp));
+    nss::ResourceVector<const VSFrame*> ref_frames(static_cast<std::size_t>(ntemp));
     for (int t = 0; t < ntemp; ++t) {
-        const int fn = std::clamp(n - d->d + t, 0, d->vi.numFrames - 1);
-        src_frames[static_cast<std::size_t>(t)] = vsapi->getFrameFilter(fn, d->node, frameCtx);
-        ref_frames[static_cast<std::size_t>(t)] = vsapi->getFrameFilter(fn, ref_node, frameCtx);
+        const int fn = nss::host_detail::temporal_slot_frame(n, t, d->d, d->vi.numFrames);
+        src_frames[static_cast<std::size_t>(t)] = frames_owned.getFrameFilter(fn, d->node, frameCtx);
+        ref_frames[static_cast<std::size_t>(t)] = frames_owned.getFrameFilter(fn, ref_node, frameCtx);
     }
     const VSFrame* src_center = src_frames[static_cast<std::size_t>(d->d)];
     const VSFrame* ref_center = ref_frames[static_cast<std::size_t>(d->d)];
@@ -112,12 +117,12 @@ const VSFrame* VS_CC nlmGetFrame(int n, int activationReason, void* instanceData
         PlaneStrides result{};
         for (int c = 0; c < nc; ++c) {
             const int plane = (d->channels == nss::ChannelMode::UV) ? c + 1 : c;
-            result[plane] = static_cast<int>(vsapi->getStride(frame, plane) / sizeof(float));
+            result[plane] = static_cast<int>(frames_owned.getStride(frame, plane) / sizeof(float));
         }
         return result;
     };
-    std::vector<PlaneStrides> src_strides(static_cast<std::size_t>(ntemp));
-    std::vector<PlaneStrides> ref_strides(static_cast<std::size_t>(ntemp));
+    nss::ResourceVector<PlaneStrides> src_strides(static_cast<std::size_t>(ntemp));
+    nss::ResourceVector<PlaneStrides> ref_strides(static_cast<std::size_t>(ntemp));
     int stride = w;
     for (int t = 0; t < ntemp; ++t) {
         src_strides[static_cast<std::size_t>(t)] = plane_strides(src_frames[static_cast<std::size_t>(t)]);
@@ -148,10 +153,10 @@ const VSFrame* VS_CC nlmGetFrame(int n, int activationReason, void* instanceData
     const std::size_t min_tile_bytes = stripe_bytes(static_cast<int>(kMinCoreRows));
     if (stripe_bytes(1) > kNlmMaxScratch) {
         for (const VSFrame* frame : src_frames) {
-            vsapi->freeFrame(frame);
+            frames_owned.freeFrame(frame);
         }
         for (const VSFrame* frame : ref_frames) {
-            vsapi->freeFrame(frame);
+            frames_owned.freeFrame(frame);
         }
         vsapi->setFilterError("nss.NLM: image stride/halo exceeds the 1 MiB workspace limit", frameCtx);
         return nullptr;
@@ -170,10 +175,10 @@ const VSFrame* VS_CC nlmGetFrame(int n, int activationReason, void* instanceData
                                    static_cast<std::size_t>(stride) + static_cast<std::size_t>(w);
     if (floats > kNlmMaxScratch / sizeof(float)) {
         for (const VSFrame* frame : src_frames) {
-            vsapi->freeFrame(frame);
+            frames_owned.freeFrame(frame);
         }
         for (const VSFrame* frame : ref_frames) {
-            vsapi->freeFrame(frame);
+            frames_owned.freeFrame(frame);
         }
         vsapi->setFilterError("nss.NLM: computed workspace exceeds the 1 MiB limit", frameCtx);
         return nullptr;
@@ -184,10 +189,10 @@ const VSFrame* VS_CC nlmGetFrame(int n, int activationReason, void* instanceData
         workspace = d->ws.get(floats);
     } catch (...) {
         for (const VSFrame* frame : src_frames) {
-            vsapi->freeFrame(frame);
+            frames_owned.freeFrame(frame);
         }
         for (const VSFrame* frame : ref_frames) {
-            vsapi->freeFrame(frame);
+            frames_owned.freeFrame(frame);
         }
         vsapi->setFilterError("nss.NLM: workspace allocation failed", frameCtx);
         return nullptr;
@@ -197,13 +202,13 @@ const VSFrame* VS_CC nlmGetFrame(int n, int activationReason, void* instanceData
     if (d->channels == nss::ChannelMode::Y && d->vi.format.numPlanes > 1) {
         const VSFrame* fr[3]{nullptr, src_center, src_center};
         const int pl[3]{0, 1, 2};
-        dst_frame = vsapi->newVideoFrame2(&d->vi.format, d->vi.width, d->vi.height, fr, pl, src_center, core);
+        dst_frame = frames_owned.newVideoFrame2(&d->vi.format, d->vi.width, d->vi.height, fr, pl, src_center, core);
     } else if (d->channels == nss::ChannelMode::UV && d->vi.format.numPlanes > 1) {
         const VSFrame* fr[3]{src_center, nullptr, nullptr};
         const int pl[3]{0, 1, 2};
-        dst_frame = vsapi->newVideoFrame2(&d->vi.format, d->vi.width, d->vi.height, fr, pl, src_center, core);
+        dst_frame = frames_owned.newVideoFrame2(&d->vi.format, d->vi.width, d->vi.height, fr, pl, src_center, core);
     } else {
-        dst_frame = vsapi->newVideoFrame(&d->vi.format, d->vi.width, d->vi.height, src_center, core);
+        dst_frame = frames_owned.newVideoFrame(&d->vi.format, d->vi.width, d->vi.height, src_center, core);
     }
     const PlaneStrides dst_strides = plane_strides(dst_frame);
     bool mixed_strides = false;
@@ -266,7 +271,7 @@ const VSFrame* VS_CC nlmGetFrame(int n, int activationReason, void* instanceData
     };
 
     const float h2_inv_norm =
-        (255.0f * 255.0f) / (3.0f * d->h * d->h * static_cast<float>((2 * d->s + 1) * (2 * d->s + 1)));
+        (255.0f * 255.0f) / (3.0f * d->h * d->h * (static_cast<float>(2 * d->s + 1) * static_cast<float>(2 * d->s + 1)));
 
     auto process_stripe = [&](int core0, int core1) {
         const int ext0 = halo >= core0 ? 0 : core0 - halo;
@@ -464,20 +469,20 @@ const VSFrame* VS_CC nlmGetFrame(int n, int activationReason, void* instanceData
         process_stripe(y0, std::min(h, y0 + core_rows));
     }
     for (const VSFrame* frame : src_frames) {
-        vsapi->freeFrame(frame);
+        frames_owned.freeFrame(frame);
     }
     for (const VSFrame* frame : ref_frames) {
-        vsapi->freeFrame(frame);
+        frames_owned.freeFrame(frame);
     }
-    return dst_frame;
+    return frames_owned.keep(dst_frame);
 }
 
 void VS_CC nlmFree(void* instanceData, VSCore* core, const VSAPI* vsapi) {
     (void)core;
     auto* d = static_cast<NlmData*>(instanceData);
-    vsapi->freeNode(d->node);
+    d->node.reset();
     if (d->rclip) {
-        vsapi->freeNode(d->rclip);
+        d->rclip.reset();
     }
     delete d;
 }
@@ -490,13 +495,13 @@ void VS_CC nlmCreate(const VSMap* in, VSMap* out, void* userData, VSCore* core, 
     }
     auto d = std::make_unique<NlmData>();
     d->vsapi = vsapi;
-    d->node = vsapi->mapGetNode(in, "clip", 0, nullptr);
+    d->node = nss::get_node(vsapi, in, "clip", 0, nullptr);
     d->vi = *vsapi->getVideoInfo(d->node);
     auto fail = [&](const char* msg) {
         vsapi->mapSetError(out, msg);
-        vsapi->freeNode(d->node);
+        d->node.reset();
         if (d->rclip) {
-            vsapi->freeNode(d->rclip);
+            d->rclip.reset();
             d->rclip = nullptr;
         }
     };
@@ -510,7 +515,7 @@ void VS_CC nlmCreate(const VSMap* in, VSMap* out, void* userData, VSCore* core, 
     d->h = nss::map_float(vsapi, in, "h", nss::kNlmDefaultH);
     d->wref = nss::map_float(vsapi, in, "wref", nss::kNlmDefaultWref);
     constexpr int kMaxSafeRadius = (std::numeric_limits<int>::max() - 1) / 2;
-    if (d->d < 0 || d->a <= 0 || d->s < 0 || d->a > kMaxSafeRadius || d->s > kMaxSafeRadius ||
+    if (d->d < 0 || d->d > kMaxSafeRadius || d->a <= 0 || d->s < 0 || d->a > kMaxSafeRadius || d->s > kMaxSafeRadius ||
         !std::isfinite(d->h) || d->h <= 0.f || !std::isfinite(d->wref)) {
         fail("nss.NLM: invalid d/a/s/h");
         return;
@@ -551,7 +556,7 @@ void VS_CC nlmCreate(const VSMap* in, VSMap* out, void* userData, VSCore* core, 
         return;
     }
     err = 0;
-    d->rclip = vsapi->mapGetNode(in, "rclip", 0, &err);
+    d->rclip = nss::get_node(vsapi, in, "rclip", 0, &err);
     if (err) {
         d->rclip = nullptr;
     } else if (!nss::same_video(d->vi, *vsapi->getVideoInfo(d->rclip))) {
@@ -568,8 +573,11 @@ void VS_CC nlmCreate(const VSMap* in, VSMap* out, void* userData, VSCore* core, 
     }
     const int ndeps = d->rclip ? 2 : 1;
     NlmData* raw = d.get();
-    vsapi->createVideoFilter(out, "NLM", &raw->vi, nlmGetFrame, nlmFree, fmParallel, deps, ndeps, raw, core);
+    VSNode* node = vsapi->createVideoFilter2("NLM", &raw->vi, nss::checked_frame<nlmGetFrame>, nlmFree,
+                                            fmParallel, deps, ndeps, raw, core);
+    if (!node) { vsapi->mapSetError(out, "nss.NLM: failed to create filter"); return; }
     d.release();
+    vsapi->mapConsumeNode(out, "clip", node, maAppend);
 }
 
 }  // namespace
@@ -577,6 +585,6 @@ void VS_CC nlmCreate(const VSMap* in, VSMap* out, void* userData, VSCore* core, 
 void register_nlm(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
     vspapi->registerFunction("NLM",
                              "clip:vnode;d:int:opt;a:int:opt;s:int:opt;h:float:opt;channels:data:opt;wmode:int:opt;"
-                             "wref:float:opt;rclip:vnode:opt;",
-                             "clip:vnode;", nlmCreate, nullptr, plugin);
+                             "wref:float:opt;rclip:vnode:opt;memory_limit_mb:int:opt;",
+                             "clip:vnode;", nss::checked_create<nlmCreate>, nullptr, plugin);
 }

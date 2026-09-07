@@ -1,8 +1,10 @@
+#include "nss/resources.hpp"
 #include "nss/avx2_policy.hpp"
 #include "host/filters.hpp"
 #include "host/temporal.hpp"
 #include "host/batch_runner.hpp"
 #include "host/validate.hpp"
+#include "host/contribution.hpp"
 #include "nss/avx2.hpp"
 #include "nss/cpu_api.hpp"
 #include "nss/cpu_nlh.hpp"
@@ -21,8 +23,9 @@
 namespace {
 
 struct NlhData {
-    VSNode* node = nullptr;
-    VSNode* rclip = nullptr;
+    std::shared_ptr<nss::ResourceBudget> budget = nss::current_budget();
+    nss::NodeRef node;
+    nss::NodeRef rclip;
     VSVideoInfo vi{};
     VSVideoInfo vi_out{};
     float sigma[3]{nss::kNlhDefaultSigma, nss::kNlhDefaultSigma, nss::kNlhDefaultSigma};
@@ -59,7 +62,7 @@ void run_groups(const float* const* match_refs, const int* match_strides, const 
     cfg.ps_num = ps_num;
     cfg.ps_range = ps_range;
 
-    std::vector<nss::GroupJob> jobs;
+    nss::ResourceVector<nss::GroupJob> jobs;
     nss::host_detail::append_raster_jobs(
         jobs, pw, ph, block, step,
         nss::GroupKey{m, group, 1, nss::GroupAlgorithm::NLH, !wiener, false}, t0);
@@ -69,9 +72,9 @@ void run_groups(const float* const* match_refs, const int* match_strides, const 
     const int group_work = nss::nlh_filter_work_floats(m, group, q, lda);
     const std::size_t group_storage = static_cast<std::size_t>(group) * static_cast<std::size_t>(lda);
     const std::size_t batch_capacity = std::min(jobs.size(), nss::host_detail::kGroupBatchWindow);
-    std::vector<float> batch_patches(batch_capacity * group_storage);
-    std::vector<float> batch_refs(wiener ? batch_patches.size() : 0);
-    std::vector<float> batch_work(batch_capacity * static_cast<std::size_t>(group_work));
+    nss::ResourceVector<float> batch_patches(batch_capacity * group_storage);
+    nss::ResourceVector<float> batch_refs(wiener ? batch_patches.size() : 0);
+    nss::ResourceVector<float> batch_work(batch_capacity * static_cast<std::size_t>(group_work));
     for (std::size_t begin = 0; begin < jobs.size(); begin += nss::host_detail::kGroupBatchWindow) {
         const std::size_t end = std::min(jobs.size(), begin + nss::host_detail::kGroupBatchWindow);
         const int count = static_cast<int>(end - begin);
@@ -89,8 +92,8 @@ void run_groups(const float* const* match_refs, const int* match_strides, const 
                                  : nss::nlh_spatial_match_batch(match_refs[t0], match_strides[t0], pw, ph,
                                                                match_items.data(), count, match_storage.data(),
                                                                nss::kBmMaxGroup, counts.data());
-        if (match_rc < 0) {
-            continue;
+        if (match_rc != 0) {
+            throw std::runtime_error("nss: matching failed for an active group");
         }
         // Packing leaves lda padding and absent matches untouched. Clear the
         // active window before reuse so neither can retain a previous group.
@@ -123,7 +126,7 @@ void run_groups(const float* const* match_refs, const int* match_strides, const 
                 &filter_status[static_cast<std::size_t>(i)],
                 nss::detail::avx2_policy(nss::detail::Avx2Algorithm::NLH, block, group, radius, wiener, q)};
         }
-        (void)nss::nlh_filter_group_batch(filter_items.data(), count);
+        if (nss::nlh_filter_group_batch(filter_items.data(), count) != 0) throw std::runtime_error("nss: numerical group processing failed");
 
         struct Result {
             bool valid = false;
@@ -166,6 +169,8 @@ void run_groups(const float* const* match_refs, const int* match_strides, const 
 const VSFrame* VS_CC nlhGetFrame(int n, int activationReason, void* instanceData, void** frameData,
                                  VSFrameContext* frameCtx, VSCore* core, const VSAPI* vsapi) {
     auto* d = static_cast<NlhData*>(instanceData);
+    nss::ResourceScope resource_scope(d->budget);
+    nss::FrameScope frames_owned(vsapi);
     (void)frameData;
     if (activationReason == arInitial) {
         const int start = std::max(0, n - d->radius);
@@ -185,15 +190,16 @@ const VSFrame* VS_CC nlhGetFrame(int n, int activationReason, void* instanceData
     const bool fat = d->radius > 0;
     const int ntemp = 2 * d->radius + 1;
     const int t0 = d->radius;
-    std::vector<const VSFrame*> srcf(static_cast<std::size_t>(ntemp));
-    std::vector<const VSFrame*> reff(static_cast<std::size_t>(ntemp));
+    nss::ResourceVector<const VSFrame*> srcf(static_cast<std::size_t>(ntemp));
+    nss::ResourceVector<const VSFrame*> reff(static_cast<std::size_t>(ntemp));
     for (int t = 0; t < ntemp; ++t) {
         const int fn = nss::host_detail::temporal_slot_frame(n,t,d->radius,d->vi.numFrames);
-        srcf[static_cast<std::size_t>(t)] = vsapi->getFrameFilter(fn, d->node, frameCtx);
-        reff[static_cast<std::size_t>(t)] = vsapi->getFrameFilter(fn, d->rclip ? d->rclip : d->node, frameCtx);
+        srcf[static_cast<std::size_t>(t)] = frames_owned.getFrameFilter(fn, d->node, frameCtx);
+        reff[static_cast<std::size_t>(t)] = frames_owned.getFrameFilter(fn, d->rclip ? d->rclip : d->node, frameCtx);
     }
     const VSFrame* src0 = srcf[static_cast<std::size_t>(t0)];
-    VSFrame* dst = vsapi->newVideoFrame(&d->vi_out.format, d->vi_out.width, d->vi_out.height, src0, core);
+    VSFrame* dst = frames_owned.newVideoFrame(&d->vi_out.format, d->vi_out.width, d->vi_out.height, src0, core);
+    nss::stamp_contribution(dst, d->radius, n, nss::Model::NLH, vsapi);
 
     const int block = d->block_size;
     const int group = d->group_size;
@@ -202,8 +208,8 @@ const VSFrame* VS_CC nlhGetFrame(int n, int activationReason, void* instanceData
     for (int plane = 0; plane < d->vi.format.numPlanes; ++plane) {
         const int pw = nss::plane_width(d->vi, plane);
         const int ph = nss::plane_height(d->vi, plane);
-        const int sstride = static_cast<int>(vsapi->getStride(src0, plane) / sizeof(float));
-        const int dstride = static_cast<int>(vsapi->getStride(dst, plane) / sizeof(float));
+        const int sstride = static_cast<int>(frames_owned.getStride(src0, plane) / sizeof(float));
+        const int dstride = static_cast<int>(frames_owned.getStride(dst, plane) / sizeof(float));
         float* outp = reinterpret_cast<float*>(vsapi->getWritePtr(dst, plane));
         const float* srcp = reinterpret_cast<const float*>(vsapi->getReadPtr(src0, plane));
         if (d->sigma[plane] == 0.f) {
@@ -217,14 +223,14 @@ const VSFrame* VS_CC nlhGetFrame(int n, int activationReason, void* instanceData
             continue;
         }
 
-        std::vector<const float*> srcs(static_cast<std::size_t>(ntemp));
-        std::vector<const float*> refs(static_cast<std::size_t>(ntemp));
+        nss::ResourceVector<const float*> srcs(static_cast<std::size_t>(ntemp));
+        nss::ResourceVector<const float*> refs(static_cast<std::size_t>(ntemp));
         int strides[nss::kBmMaxRadius * 2 + 1];
         for (int t = 0; t < ntemp; ++t) {
             srcs[static_cast<std::size_t>(t)] =
-                reinterpret_cast<const float*>(vsapi->getReadPtr(srcf[static_cast<std::size_t>(t)], plane));
+                frames_owned.readPlane(srcf[static_cast<std::size_t>(t)], plane, sstride);
             refs[static_cast<std::size_t>(t)] =
-                reinterpret_cast<const float*>(vsapi->getReadPtr(reff[static_cast<std::size_t>(t)], plane));
+                frames_owned.readPlane(reff[static_cast<std::size_t>(t)], plane, sstride);
             strides[t] = sstride;
         }
 
@@ -246,7 +252,7 @@ const VSFrame* VS_CC nlhGetFrame(int n, int activationReason, void* instanceData
                                   ph, pw, pw, strides[sl]);
         }
 
-        std::vector<const float*> basic_refs(static_cast<std::size_t>(ntemp));
+        nss::ResourceVector<const float*> basic_refs(static_cast<std::size_t>(ntemp));
         int basic_strides[nss::kBmMaxRadius * 2 + 1];
         for (int t = 0; t < ntemp; ++t) {
             basic_refs[static_cast<std::size_t>(t)] = basic + static_cast<std::size_t>(t) * plane_sz;
@@ -272,18 +278,18 @@ const VSFrame* VS_CC nlhGetFrame(int n, int activationReason, void* instanceData
     }
 
     for (int t = 0; t < ntemp; ++t) {
-        vsapi->freeFrame(srcf[static_cast<std::size_t>(t)]);
-        vsapi->freeFrame(reff[static_cast<std::size_t>(t)]);
+        frames_owned.freeFrame(srcf[static_cast<std::size_t>(t)]);
+        frames_owned.freeFrame(reff[static_cast<std::size_t>(t)]);
     }
-    return dst;
+    return frames_owned.keep(dst);
 }
 
 void VS_CC nlhFree(void* instanceData, VSCore* core, const VSAPI* vsapi) {
     (void)core;
     auto* d = static_cast<NlhData*>(instanceData);
-    vsapi->freeNode(d->node);
+    d->node.reset();
     if (d->rclip) {
-        vsapi->freeNode(d->rclip);
+        d->rclip.reset();
     }
     delete d;
 }
@@ -296,13 +302,13 @@ VSNode* nss_create_nlh(const VSMap* in, VSCore* core, const VSAPI* vsapi, VSMap*
         return nullptr;
     }
     auto d = std::make_unique<NlhData>();
-    d->node = vsapi->mapGetNode(in, "clip", 0, nullptr);
+    d->node = nss::get_node(vsapi, in, "clip", 0, nullptr);
     d->vi = *vsapi->getVideoInfo(d->node);
     auto fail = [&](const char* msg) -> VSNode* {
         vsapi->mapSetError(err, msg);
-        vsapi->freeNode(d->node);
+        d->node.reset();
         if (d->rclip) {
-            vsapi->freeNode(d->rclip);
+            d->rclip.reset();
         }
         return nullptr;
     };
@@ -339,21 +345,22 @@ VSNode* nss_create_nlh(const VSMap* in, VSCore* core, const VSAPI* vsapi, VSMap*
         return fail("nss.NLH: bm_range must be in [1, 64]");
     }
     int e = 0;
-    d->rclip = vsapi->mapGetNode(in, "rclip", 0, &e);
+    d->rclip = nss::get_node(vsapi, in, "rclip", 0, &e);
     if (e) {
         d->rclip = nullptr;
     } else if (!nss::same_video(d->vi, *vsapi->getVideoInfo(d->rclip))) {
         return fail("nss.NLH: rclip must match clip");
     }
+    nss::validate_group_planes(d->vi, d->sigma, d->block_size);
     d->vi_out = d->vi;
     if (d->radius > 0) {
-        d->vi_out.height = d->vi.height * (2 * d->radius + 1) * 2;
+        d->vi_out.height = nss::checked_fat_height(d->vi.height, d->radius);
     }
     VSFilterDependency deps[2]{{d->node, d->radius == 0 ? rpStrictSpatial : rpGeneral},
                                {d->rclip, d->radius == 0 ? rpStrictSpatial : rpGeneral}};
     const int ndeps = d->rclip ? 2 : 1;
     NlhData* raw = d.get();
-    VSNode* node = vsapi->createVideoFilter2("NLH", &raw->vi_out, nlhGetFrame, nlhFree, fmParallel, deps, ndeps, raw,
+    VSNode* node = vsapi->createVideoFilter2("NLH", &raw->vi_out, nss::checked_frame<nlhGetFrame>, nlhFree, fmParallel, deps, ndeps, raw,
                                              core);
     if (!node) {
         return fail("nss.NLH: failed to create filter");
@@ -373,6 +380,6 @@ void VS_CC nlhCreate(const VSMap* in, VSMap* out, void* userData, VSCore* core, 
 void register_nlh(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
     const char* args =
         "clip:vnode;sigma:float[]:opt;block_size:int:opt;block_step:int:opt;group_size:int:opt;"
-        "bm_range:int:opt;radius:int:opt;ps_num:int:opt;ps_range:int:opt;q:int:opt;rclip:vnode:opt;";
-    vspapi->registerFunction("NLH", args, "clip:vnode;", nlhCreate, nullptr, plugin);
+        "bm_range:int:opt;radius:int:opt;ps_num:int:opt;ps_range:int:opt;q:int:opt;rclip:vnode:opt;memory_limit_mb:int:opt;";
+    vspapi->registerFunction("NLH", args, "clip:vnode;", nss::checked_create<nlhCreate>, nullptr, plugin);
 }

@@ -1,3 +1,4 @@
+#include "nss/resources.hpp"
 #include "nss/cpu_lssc.hpp"
 #include "nss/cpu_common.hpp"
 
@@ -27,8 +28,8 @@ void lssc_cluster(const float* patches, int m, int n, int lda, int nclusters, in
         return;
     }
     const int need = lssc_cluster_work_floats(m, n, nclusters);
-    std::vector<float> scratch(static_cast<std::size_t>(need), 0.f);
-    std::vector<int> count_fallback;
+    nss::ResourceVector<float> scratch(static_cast<std::size_t>(need), 0.f);
+    nss::ResourceVector<int> count_fallback;
     int* count_out = counts;
     if (!count_out) {
         count_fallback.assign(static_cast<std::size_t>(std::max(1, nclusters)), 0);

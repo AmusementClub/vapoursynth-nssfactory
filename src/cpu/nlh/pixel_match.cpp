@@ -1,3 +1,4 @@
+#include "nss/resources.hpp"
 #include "nss/cpu_nlh.hpp"
 #include "cpu/hwy_config.hpp"
 
@@ -26,8 +27,8 @@ void PixelMatch(const float* group, int m, int n, int lda, int q, int* idx) {
     constexpr int kFixedQ = 8;
     std::array<int, kFixedM * kFixedQ> fixed_idx;
     std::array<float, kFixedM * kFixedQ> fixed_dist;
-    std::vector<int> dynamic_idx;
-    std::vector<float> dynamic_dist;
+    nss::ResourceVector<int> dynamic_idx;
+    nss::ResourceVector<float> dynamic_dist;
     int* best_idx = nullptr;
     float* best_dist = nullptr;
     if (m <= kFixedM && qq <= kFixedQ) {
@@ -49,7 +50,7 @@ void PixelMatch(const float* group, int m, int n, int lda, int q, int* idx) {
     }
 
     std::array<float, kFixedM> fixed_pair;
-    std::vector<float> dynamic_pair;
+    nss::ResourceVector<float> dynamic_pair;
     float* pair_dist = nullptr;
     if (m <= kFixedM) {
         pair_dist = fixed_pair.data();

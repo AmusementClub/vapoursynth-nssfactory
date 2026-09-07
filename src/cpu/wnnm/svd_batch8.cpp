@@ -1,4 +1,5 @@
 #include "cpu/wnnm/jacobi8.hpp"
+#include "cpu/wnnm/numerics.hpp"
 #include "cpu/hwy_config.hpp"
 
 #include <algorithm>
@@ -33,7 +34,7 @@ inline std::size_t SmallIndex(int row, int col, int lane) {
 }
 
 template <bool kNeedVt, class D>
-void SvdChunk(D d, int m, const float* const* A, const int* lda, float* const* U, const int* ldu,
+bool SvdChunk(D d, int m, const float* const* A, const int* lda, float* const* U, const int* ldu,
               float* const* S, float* const* Vt, const int* ldvt, int count) {
     using V = hn::Vec<D>;
     using M = hn::Mask<D>;
@@ -56,10 +57,21 @@ void SvdChunk(D d, int m, const float* const* A, const int* lda, float* const* U
     std::memset(ssoa, 0, sizeof(ssoa));
     std::memset(beta, 0, sizeof(beta));
 
+    float scales[kBatchLanes];
     for (int lane = 0; lane < count; ++lane) {
+        std::uint32_t maximum = 0;
         for (int col = 0; col < kN; ++col) {
             for (int row = 0; row < m; ++row) {
-                tall[TallIndex(row, col, lane)] = A[lane][row + col * lda[lane]];
+                const float value = A[lane][row + col * lda[lane]];
+                maximum = std::max(maximum, detail::svd_magnitude_bits(value));
+                tall[TallIndex(row, col, lane)] = value;
+            }
+        }
+        if (maximum >= 0x7f800000u) return false;
+        scales[lane] = detail::svd_input_scale(maximum);
+        if (scales[lane] != 1.f) {
+            for (int col = 0; col < kN; ++col) {
+                for (int row = 0; row < m; ++row) tall[TallIndex(row, col, lane)] *= scales[lane];
             }
         }
     }
@@ -135,6 +147,10 @@ void SvdChunk(D d, int m, const float* const* A, const int* lda, float* const* U
         }
     }
 
+    V max_norm = zero;
+    for (int col = 0; col < kN; ++col) max_norm = hn::Max(max_norm, norms[col]);
+    const V rank_floor = hn::Mul(max_norm, hn::Set(d, detail::kSvdRankFloorSquared));
+
     static constexpr int pairs[7][4][2] = {
         {{0, 1}, {2, 3}, {4, 5}, {6, 7}}, {{0, 2}, {1, 3}, {4, 6}, {5, 7}},
         {{0, 3}, {1, 2}, {4, 7}, {5, 6}}, {{0, 4}, {1, 5}, {2, 6}, {3, 7}},
@@ -142,8 +158,8 @@ void SvdChunk(D d, int m, const float* const* A, const int* lda, float* const* U
         {{0, 7}, {1, 6}, {2, 5}, {3, 4}},
     };
     M active = valid;
-    for (int sweep = 0; sweep < 8; ++sweep) {
-        V max_off = zero;
+    for (int sweep = 0; sweep < 32; ++sweep) {
+        M rotated = hn::FirstN(d, 0);
         for (int round = 0; round < 7; ++round) {
             for (int pair = 0; pair < 4; ++pair) {
                 const int p = pairs[round][pair][0];
@@ -154,15 +170,16 @@ void SvdChunk(D d, int m, const float* const* A, const int* lda, float* const* U
                 for (int row = 0; row < kN; ++row) {
                     apq = hn::MulAdd(ju[p * kN + row], ju[q * kN + row], apq);
                 }
-                max_off = hn::Max(max_off, hn::Abs(apq));
-                const V threshold = hn::Mul(hn::Set(d, 1e-14f),
-                                            hn::Add(hn::Sqrt(hn::Max(hn::Mul(app, aqq), zero)),
-                                                    hn::Set(d, 1e-20f)));
-                const M rotate = hn::And(active, hn::Gt(hn::Abs(apq), threshold));
-                const V safe_apq = hn::IfThenElse(rotate, apq, one);
-                const V zeta = hn::Div(hn::Sub(aqq, app), hn::Mul(hn::Set(d, 2.0f), safe_apq));
-                const V t = hn::Div(hn::CopySign(one, zeta),
-                                    hn::Add(hn::Abs(zeta), hn::Sqrt(hn::MulAdd(zeta, zeta, one))));
+                const V threshold = hn::Mul(hn::Set(d, detail::kJacobiCorrelationTolerance),
+                                            hn::Sqrt(hn::Max(hn::Mul(app, aqq), zero)));
+                const M rotate = hn::And(hn::And(active, hn::Gt(hn::Abs(apq), threshold)),
+                                         hn::And(hn::Gt(app, rank_floor), hn::Gt(aqq, rank_floor)));
+                rotated = hn::Or(rotated, rotate);
+                const V delta = hn::Mul(hn::Sub(aqq, app), hn::Set(d, 0.5f));
+                const V angle_scale = hn::IfThenElse(rotate, hn::Max(hn::Abs(delta), hn::Abs(apq)), one);
+                const V x = hn::Div(delta, angle_scale);
+                const V y = hn::Div(hn::IfThenElse(rotate, apq, one), angle_scale);
+                const V t = hn::Div(y, hn::Add(x, hn::CopySign(hn::Sqrt(hn::MulAdd(x, x, hn::Mul(y, y))), x)));
                 const V cs = hn::Div(one, hn::Sqrt(hn::MulAdd(t, t, one)));
                 const V sn = hn::Mul(cs, t);
                 for (int row = 0; row < kN; ++row) {
@@ -185,19 +202,20 @@ void SvdChunk(D d, int m, const float* const* A, const int* lda, float* const* U
                 }
             }
         }
-        active = hn::And(active, hn::Ge(max_off, hn::Set(d, 1e-8f)));
+        active = hn::And(active, rotated);
         if (hn::AllFalse(d, active)) {
             break;
         }
     }
 
     for (int col = 0; col < kN; ++col) {
-        const V singular = hn::Sqrt(hn::Max(norms[col], zero));
+        const V singular = hn::IfThenElse(hn::Gt(norms[col], rank_floor),
+                                             hn::Sqrt(hn::Max(norms[col], zero)), zero);
         const M nonzero = hn::And(valid, hn::Gt(singular, hn::Set(d, 1e-20f)));
         const V inv = hn::IfThenElse(nonzero, hn::Div(one, hn::IfThenElse(nonzero, singular, one)), one);
         hn::Store(singular, d, ssoa + static_cast<std::size_t>(col) * kBatchLanes);
         for (int row = 0; row < kN; ++row) {
-            hn::Store(hn::IfThenElse(nonzero, hn::Mul(ju[col * kN + row], inv), ju[col * kN + row]), d,
+            hn::Store(hn::IfThenElse(nonzero, hn::Mul(ju[col * kN + row], inv), zero), d,
                       rsoa + SmallIndex(row, col, 0));
             if constexpr (kNeedVt) {
                 hn::Store(jv[col * kN + row], d, vsoa + SmallIndex(row, col, 0));
@@ -277,7 +295,8 @@ void SvdChunk(D d, int m, const float* const* A, const int* lda, float* const* U
 
     for (int lane = 0; lane < count; ++lane) {
         for (int col = 0; col < kN; ++col) {
-            S[lane][col] = ssoa[static_cast<std::size_t>(col) * kBatchLanes + lane];
+            S[lane][col] = ssoa[static_cast<std::size_t>(col) * kBatchLanes + lane] / scales[lane];
+            if (detail::svd_magnitude_bits(S[lane][col]) >= 0x7f800000u) return false;
             for (int row = 0; row < m; ++row) {
                 U[lane][row + col * ldu[lane]] = tall[TallIndex(row, col, lane)];
             }
@@ -290,6 +309,7 @@ void SvdChunk(D d, int m, const float* const* A, const int* lda, float* const* U
             }
         }
     }
+    return true;
 }
 
 }  // namespace
@@ -303,8 +323,8 @@ int SvdEconomy8Batch(int m, const float* const* A, const int* lda, float* const*
     const int lanes = static_cast<int>(hn::Lanes(d));
     for (int begin = 0; begin < count; begin += lanes) {
         const int chunk = std::min(lanes, count - begin);
-        SvdChunk<true>(d, m, A + begin, lda + begin, U + begin, ldu + begin, S + begin, Vt + begin, ldvt + begin,
-                       chunk);
+        if (!SvdChunk<true>(d, m, A + begin, lda + begin, U + begin, ldu + begin, S + begin, Vt + begin, ldvt + begin,
+                            chunk)) return -1;
     }
     return 0;
 }
@@ -318,7 +338,7 @@ int SvdEconomy8BatchU(int m, const float* const* A, const int* lda, float* const
     const int lanes = static_cast<int>(hn::Lanes(d));
     for (int begin = 0; begin < count; begin += lanes) {
         const int chunk = std::min(lanes, count - begin);
-        SvdChunk<false>(d, m, A + begin, lda + begin, U + begin, ldu + begin, S + begin, nullptr, nullptr, chunk);
+        if (!SvdChunk<false>(d, m, A + begin, lda + begin, U + begin, ldu + begin, S + begin, nullptr, nullptr, chunk)) return -1;
     }
     return 0;
 }

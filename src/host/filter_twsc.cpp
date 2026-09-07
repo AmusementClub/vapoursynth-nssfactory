@@ -1,7 +1,9 @@
+#include "nss/resources.hpp"
 #include "nss/avx2_policy.hpp"
 #include "host/temporal.hpp"
 #include "host/batch_runner.hpp"
 #include "host/validate.hpp"
+#include "host/contribution.hpp"
 #include "nss/avx2.hpp"
 #include "nss/cpu_api.hpp"
 #include "nss/cpu_batch.hpp"
@@ -24,8 +26,9 @@
 namespace {
 
 struct TwscData {
-    VSNode* node = nullptr;
-    VSNode* rclip = nullptr;
+    std::shared_ptr<nss::ResourceBudget> budget = nss::current_budget();
+    nss::NodeRef node;
+    nss::NodeRef rclip;
     VSVideoInfo vi{};
     VSVideoInfo vi_out{};
     float sigma[3]{nss::kTwscDefaultSigma, nss::kTwscDefaultSigma, nss::kTwscDefaultSigma};
@@ -45,6 +48,8 @@ struct TwscData {
 const VSFrame* VS_CC twscGetFrame(int n, int activationReason, void* instanceData, void** frameData,
                                   VSFrameContext* frameCtx, VSCore* core, const VSAPI* vsapi) {
     auto* d = static_cast<TwscData*>(instanceData);
+    nss::ResourceScope resource_scope(d->budget);
+    nss::FrameScope frames_owned(vsapi);
     (void)frameData;
     if (activationReason == arInitial) {
         const int start = std::max(0, n - d->radius);
@@ -64,15 +69,16 @@ const VSFrame* VS_CC twscGetFrame(int n, int activationReason, void* instanceDat
     const bool fat = d->radius > 0;
     const int ntemp = 2 * d->radius + 1;
     const int t0 = d->radius;
-    std::vector<const VSFrame*> srcf(static_cast<std::size_t>(ntemp));
-    std::vector<const VSFrame*> reff(static_cast<std::size_t>(ntemp));
+    nss::ResourceVector<const VSFrame*> srcf(static_cast<std::size_t>(ntemp));
+    nss::ResourceVector<const VSFrame*> reff(static_cast<std::size_t>(ntemp));
     for (int t = 0; t < ntemp; ++t) {
         const int fn = nss::host_detail::temporal_slot_frame(n,t,d->radius,d->vi.numFrames);
-        srcf[static_cast<std::size_t>(t)] = vsapi->getFrameFilter(fn, d->node, frameCtx);
-        reff[static_cast<std::size_t>(t)] = vsapi->getFrameFilter(fn, d->rclip ? d->rclip : d->node, frameCtx);
+        srcf[static_cast<std::size_t>(t)] = frames_owned.getFrameFilter(fn, d->node, frameCtx);
+        reff[static_cast<std::size_t>(t)] = frames_owned.getFrameFilter(fn, d->rclip ? d->rclip : d->node, frameCtx);
     }
     const VSFrame* src0 = srcf[static_cast<std::size_t>(t0)];
-    VSFrame* dst = vsapi->newVideoFrame(&d->vi_out.format, d->vi_out.width, d->vi_out.height, src0, core);
+    VSFrame* dst = frames_owned.newVideoFrame(&d->vi_out.format, d->vi_out.width, d->vi_out.height, src0, core);
+    nss::stamp_contribution(dst, d->radius, n, nss::Model::TWSC, vsapi);
 
     const int block = d->block_size;
     const int group = d->group_size;
@@ -101,29 +107,29 @@ const VSFrame* VS_CC twscGetFrame(int n, int activationReason, void* instanceDat
         int sstride[3];
         float* outp[3];
         const float* srcp0[3];
-        std::vector<const float*> src_planes(static_cast<std::size_t>(nch * ntemp));
-        std::vector<const float*> ref_planes(static_cast<std::size_t>(nch * ntemp));
+        nss::ResourceVector<const float*> src_planes(static_cast<std::size_t>(nch * ntemp));
+        nss::ResourceVector<const float*> ref_planes(static_cast<std::size_t>(nch * ntemp));
         for (int plane = 0; plane < nch; ++plane) {
-            sstride[plane] = static_cast<int>(vsapi->getStride(src0, plane) / sizeof(float));
+            sstride[plane] = static_cast<int>(frames_owned.getStride(src0, plane) / sizeof(float));
             outp[plane] = reinterpret_cast<float*>(vsapi->getWritePtr(dst, plane));
             srcp0[plane] = reinterpret_cast<const float*>(vsapi->getReadPtr(src0, plane));
             for (int t = 0; t < ntemp; ++t) {
                 src_planes[static_cast<std::size_t>(plane * ntemp + t)] =
-                    reinterpret_cast<const float*>(vsapi->getReadPtr(srcf[static_cast<std::size_t>(t)], plane));
+                    frames_owned.readPlane(srcf[static_cast<std::size_t>(t)], plane, sstride[plane]);
                 ref_planes[static_cast<std::size_t>(plane * ntemp + t)] =
-                    reinterpret_cast<const float*>(vsapi->getReadPtr(reff[static_cast<std::size_t>(t)], plane));
+                    frames_owned.readPlane(reff[static_cast<std::size_t>(t)], plane, sstride[plane]);
             }
         }
         if (all_zero) {
             for (int plane = 0; plane < nch; ++plane) {
                 write_fat_identity(plane, srcp0[plane], outp[plane], sstride[plane],
-                                   static_cast<int>(vsapi->getStride(dst, plane) / sizeof(float)), pw, ph);
+                                   static_cast<int>(frames_owned.getStride(dst, plane) / sizeof(float)), pw, ph);
             }
             for (int t = 0; t < ntemp; ++t) {
-                vsapi->freeFrame(srcf[static_cast<std::size_t>(t)]);
-                vsapi->freeFrame(reff[static_cast<std::size_t>(t)]);
+                frames_owned.freeFrame(srcf[static_cast<std::size_t>(t)]);
+                frames_owned.freeFrame(reff[static_cast<std::size_t>(t)]);
             }
-            return dst;
+            return frames_owned.keep(dst);
         }
         int ch_strides[3]{sstride[0], sstride[1], sstride[2]};
         const std::size_t need = plane_sz * static_cast<std::size_t>(nch) * static_cast<std::size_t>(slices) * 4 + 64;
@@ -150,8 +156,8 @@ const VSFrame* VS_CC twscGetFrame(int n, int activationReason, void* instanceDat
         }
         int agg_strides[3]{pw, pw, pw};
         int est_strides[3]{pw, pw, pw};
-        std::vector<const float*> est_planes(static_cast<std::size_t>(nch * ntemp));
-        std::vector<const float*> noisy_planes(static_cast<std::size_t>(nch * ntemp));
+        nss::ResourceVector<const float*> est_planes(static_cast<std::size_t>(nch * ntemp));
+        nss::ResourceVector<const float*> noisy_planes(static_cast<std::size_t>(nch * ntemp));
         for (int plane = 0; plane < nch; ++plane) {
             for (int t = 0; t < ntemp; ++t) {
                 float* e = est + (static_cast<std::size_t>(plane) * static_cast<std::size_t>(slices) +
@@ -189,9 +195,9 @@ const VSFrame* VS_CC twscGetFrame(int n, int activationReason, void* instanceDat
         const bool use_lane_batch = group == 8 && m >= 8 && m <= nss::kSvdBatch8MaxM;
         const std::size_t group_storage = static_cast<std::size_t>(group) * static_cast<std::size_t>(lda);
         const int work_n = nss::twsc_pca_soft_work_floats(m, group);
-        std::vector<float> scalar_patches;
-        std::vector<float> scalar_noisy;
-        std::vector<float> scalar_work;
+        nss::ResourceVector<float> scalar_patches;
+        nss::ResourceVector<float> scalar_noisy;
+        nss::ResourceVector<float> scalar_work;
         if (!use_lane_batch) {
             scalar_patches.resize(group_storage);
             scalar_noisy.resize(group_storage);
@@ -217,7 +223,7 @@ const VSFrame* VS_CC twscGetFrame(int n, int activationReason, void* instanceDat
             const int* match_st = use_rclip ? ch_strides : est_strides;
             const float* match_cur[3] = {match_refs[0 * ntemp + t0], match_refs[1 * ntemp + t0],
                                          match_refs[2 * ntemp + t0]};
-            std::vector<nss::GroupJob> jobs;
+            nss::ResourceVector<nss::GroupJob> jobs;
             nss::host_detail::append_raster_jobs(
                 jobs, pw, ph, block, d->block_step,
                 nss::GroupKey{m, group, nch, nss::GroupAlgorithm::TWSC, false, false}, t0);
@@ -239,8 +245,8 @@ const VSFrame* VS_CC twscGetFrame(int n, int activationReason, void* instanceDat
                                          : nss::spatial_match_nch_batch(match_cur, match_st, nch, pw, ph,
                                                                          match_items.data(), count, match_storage.data(),
                                                                          nss::kWnnmMaxGroup, counts.data());
-                if (match_rc < 0) {
-                    continue;
+                if (match_rc != 0) {
+                    throw std::runtime_error("nss: matching failed for an active group");
                 }
                 if (!use_lane_batch) {
                     for (int i = 0; i < count; ++i) {
@@ -273,7 +279,7 @@ const VSFrame* VS_CC twscGetFrame(int n, int activationReason, void* instanceDat
                         }
                         if (nss::twsc_pca_soft(scalar_patches.data(), m, k, lda, sigma, scalar_work.data(), work_n,
                                                col_sigma, col_w, row_w) != 0) {
-                            continue;
+                            throw std::runtime_error("nss: numerical group processing failed");
                         }
                         for (int j = 0; j < k; ++j) {
                             const auto& mm = match_storage[static_cast<std::size_t>(i) * nss::kWnnmMaxGroup + j];
@@ -293,11 +299,11 @@ const VSFrame* VS_CC twscGetFrame(int n, int activationReason, void* instanceDat
                     }
                     continue;
                 }
-                std::vector<float> batch_patches(static_cast<std::size_t>(count) * group_storage, 0.f);
-                std::vector<float> batch_noisy(static_cast<std::size_t>(count) * group_storage, 0.f);
-                std::vector<float> batch_work(static_cast<std::size_t>(count) * static_cast<std::size_t>(work_n), 0.f);
-                std::vector<float> batch_col_sigma(static_cast<std::size_t>(count) * static_cast<std::size_t>(group), sigma);
-                std::vector<float> batch_col_w(static_cast<std::size_t>(count) * static_cast<std::size_t>(group), 1.f);
+                nss::ResourceVector<float> batch_patches(static_cast<std::size_t>(count) * group_storage, 0.f);
+                nss::ResourceVector<float> batch_noisy(static_cast<std::size_t>(count) * group_storage, 0.f);
+                nss::ResourceVector<float> batch_work(static_cast<std::size_t>(count) * static_cast<std::size_t>(work_n), 0.f);
+                nss::ResourceVector<float> batch_col_sigma(static_cast<std::size_t>(count) * static_cast<std::size_t>(group), sigma);
+                nss::ResourceVector<float> batch_col_w(static_cast<std::size_t>(count) * static_cast<std::size_t>(group), 1.f);
                 std::array<int, nss::host_detail::kGroupBatchWindow> filter_status{};
                 std::array<nss::TwscPcaBatchItem, nss::host_detail::kGroupBatchWindow> filter_items{};
                 for (int i = 0; i < count; ++i) {
@@ -331,7 +337,7 @@ const VSFrame* VS_CC twscGetFrame(int n, int activationReason, void* instanceDat
                         batch_work.data() + static_cast<std::size_t>(i) * static_cast<std::size_t>(work_n), work_n,
                         cs, cw, row_w, &filter_status[static_cast<std::size_t>(i)]};
                 }
-                (void)nss::twsc_pca_soft_batch(filter_items.data(), count);
+                if (nss::twsc_pca_soft_batch(filter_items.data(), count) != 0) throw std::runtime_error("nss: numerical group processing failed");
 
                 struct Result {
                     bool valid = false;
@@ -391,7 +397,7 @@ const VSFrame* VS_CC twscGetFrame(int n, int activationReason, void* instanceDat
             }
         }
         for (int plane = 0; plane < nch; ++plane) {
-            const int dstride = static_cast<int>(vsapi->getStride(dst, plane) / sizeof(float));
+            const int dstride = static_cast<int>(frames_owned.getStride(dst, plane) / sizeof(float));
             if(d->sigma[plane]==0.f){
                 const float* identity=src_planes[static_cast<std::size_t>(plane)*ntemp+t0];
                 if(fat)nss::host_detail::temporal_identity(outp[plane],dstride,identity,sstride[plane],pw,ph,d->radius);
@@ -421,10 +427,10 @@ const VSFrame* VS_CC twscGetFrame(int n, int activationReason, void* instanceDat
             }
         }
         for (int t = 0; t < ntemp; ++t) {
-            vsapi->freeFrame(srcf[static_cast<std::size_t>(t)]);
-            vsapi->freeFrame(reff[static_cast<std::size_t>(t)]);
+            frames_owned.freeFrame(srcf[static_cast<std::size_t>(t)]);
+            frames_owned.freeFrame(reff[static_cast<std::size_t>(t)]);
         }
-        return dst;
+        return frames_owned.keep(dst);
     }
 
     const int m = block * block;
@@ -433,8 +439,8 @@ const VSFrame* VS_CC twscGetFrame(int n, int activationReason, void* instanceDat
     for (int plane = 0; plane < d->vi.format.numPlanes; ++plane) {
         const int pw = nss::plane_width(d->vi, plane);
         const int ph = nss::plane_height(d->vi, plane);
-        const int sstride = static_cast<int>(vsapi->getStride(src0, plane) / sizeof(float));
-        const int dstride = static_cast<int>(vsapi->getStride(dst, plane) / sizeof(float));
+        const int sstride = static_cast<int>(frames_owned.getStride(src0, plane) / sizeof(float));
+        const int dstride = static_cast<int>(frames_owned.getStride(dst, plane) / sizeof(float));
         float* outp = reinterpret_cast<float*>(vsapi->getWritePtr(dst, plane));
         const float* srcp = reinterpret_cast<const float*>(vsapi->getReadPtr(src0, plane));
         if (d->sigma[plane] == 0.f) {
@@ -442,14 +448,14 @@ const VSFrame* VS_CC twscGetFrame(int n, int activationReason, void* instanceDat
             continue;
         }
 
-        std::vector<const float*> srcs(static_cast<std::size_t>(ntemp));
-        std::vector<const float*> refs(static_cast<std::size_t>(ntemp));
+        nss::ResourceVector<const float*> srcs(static_cast<std::size_t>(ntemp));
+        nss::ResourceVector<const float*> refs(static_cast<std::size_t>(ntemp));
         int strides[nss::kBmMaxRadius * 2 + 1];
         for (int t = 0; t < ntemp; ++t) {
             srcs[static_cast<std::size_t>(t)] =
-                reinterpret_cast<const float*>(vsapi->getReadPtr(srcf[static_cast<std::size_t>(t)], plane));
+                frames_owned.readPlane(srcf[static_cast<std::size_t>(t)], plane, sstride);
             refs[static_cast<std::size_t>(t)] =
-                reinterpret_cast<const float*>(vsapi->getReadPtr(reff[static_cast<std::size_t>(t)], plane));
+                frames_owned.readPlane(reff[static_cast<std::size_t>(t)], plane, sstride);
             strides[t] = sstride;
         }
 
@@ -474,8 +480,8 @@ const VSFrame* VS_CC twscGetFrame(int n, int activationReason, void* instanceDat
         cfg.ps_range = d->ps_range;
 
         const float sigma = d->sigma[plane] / 255.f;
-        std::vector<const float*> est_refs(static_cast<std::size_t>(ntemp));
-        std::vector<const float*> noisy_refs(static_cast<std::size_t>(ntemp));
+        nss::ResourceVector<const float*> est_refs(static_cast<std::size_t>(ntemp));
+        nss::ResourceVector<const float*> noisy_refs(static_cast<std::size_t>(ntemp));
         int est_strides[nss::kBmMaxRadius * 2 + 1];
         for (int t = 0; t < ntemp; ++t) {
             float* e = estp + static_cast<std::size_t>(t) * plane_sz;
@@ -491,18 +497,18 @@ const VSFrame* VS_CC twscGetFrame(int n, int activationReason, void* instanceDat
             est_strides[t] = pw;
         }
         const int niter = d->iters < 1 ? 1 : d->iters;
-        std::vector<nss::GroupJob> jobs;
+        nss::ResourceVector<nss::GroupJob> jobs;
         nss::host_detail::append_raster_jobs(
             jobs, pw, ph, block, d->block_step,
             nss::GroupKey{m, group, 1, nss::GroupAlgorithm::TWSC, false, false}, t0);
         const bool use_lane_batch = group == 8 && m >= 8 && m <= nss::kSvdBatch8MaxM;
         const std::size_t group_storage = static_cast<std::size_t>(group) * static_cast<std::size_t>(lda);
         const int work_n = nss::twsc_pca_soft_work_floats(m, group);
-        std::vector<float> scalar_patches;
-        std::vector<float> scalar_noisy;
-        std::vector<float> scalar_work;
-        std::vector<float> scalar_col_sigma;
-        std::vector<float> scalar_col_w;
+        nss::ResourceVector<float> scalar_patches;
+        nss::ResourceVector<float> scalar_noisy;
+        nss::ResourceVector<float> scalar_work;
+        nss::ResourceVector<float> scalar_col_sigma;
+        nss::ResourceVector<float> scalar_col_w;
         if (!use_lane_batch) {
             scalar_patches.resize(group_storage);
             scalar_noisy.resize(group_storage);
@@ -540,8 +546,8 @@ const VSFrame* VS_CC twscGetFrame(int n, int activationReason, void* instanceDat
                                          : nss::spatial_match_batch(match_refs[t0], match_st[t0], pw, ph,
                                                                     match_items.data(), count, match_storage.data(),
                                                                     nss::kWnnmMaxGroup, counts.data());
-                if (match_rc < 0) {
-                    continue;
+                if (match_rc != 0) {
+                    throw std::runtime_error("nss: matching failed for an active group");
                 }
                 if (!use_lane_batch) {
                     for (int i = 0; i < count; ++i) {
@@ -569,7 +575,7 @@ const VSFrame* VS_CC twscGetFrame(int n, int activationReason, void* instanceDat
                         }
                         if (nss::twsc_pca_soft(scalar_patches.data(), m, k, lda, sigma, scalar_work.data(), work_n,
                                                scalar_col_sigma.data(), scalar_col_w.data()) != 0) {
-                            continue;
+                            throw std::runtime_error("nss: numerical group processing failed");
                         }
                         for (int j = 0; j < k; ++j) {
                             const auto& mm = match_storage[static_cast<std::size_t>(i) * nss::kWnnmMaxGroup + j];
@@ -582,14 +588,14 @@ const VSFrame* VS_CC twscGetFrame(int n, int activationReason, void* instanceDat
                     }
                     continue;
                 }
-                std::vector<float> batch_patches(static_cast<std::size_t>(count) * group_storage, 0.f);
-                std::vector<float> batch_noisy;
+                nss::ResourceVector<float> batch_patches(static_cast<std::size_t>(count) * group_storage, 0.f);
+                nss::ResourceVector<float> batch_noisy;
                 if (iter > 0) {
                     batch_noisy.resize(batch_patches.size(), 0.f);
                 }
-                std::vector<float> batch_work(static_cast<std::size_t>(count) * static_cast<std::size_t>(work_n), 0.f);
-                std::vector<float> batch_col_sigma(static_cast<std::size_t>(count) * static_cast<std::size_t>(group), sigma);
-                std::vector<float> batch_col_w(static_cast<std::size_t>(count) * static_cast<std::size_t>(group), 1.f);
+                nss::ResourceVector<float> batch_work(static_cast<std::size_t>(count) * static_cast<std::size_t>(work_n), 0.f);
+                nss::ResourceVector<float> batch_col_sigma(static_cast<std::size_t>(count) * static_cast<std::size_t>(group), sigma);
+                nss::ResourceVector<float> batch_col_w(static_cast<std::size_t>(count) * static_cast<std::size_t>(group), 1.f);
                 std::array<int, nss::host_detail::kGroupBatchWindow> filter_status{};
                 std::array<nss::TwscPcaBatchItem, nss::host_detail::kGroupBatchWindow> filter_items{};
                 for (int i = 0; i < count; ++i) {
@@ -617,7 +623,7 @@ const VSFrame* VS_CC twscGetFrame(int n, int activationReason, void* instanceDat
                         batch_work.data() + static_cast<std::size_t>(i) * static_cast<std::size_t>(work_n), work_n,
                         cs, cw, nullptr, &filter_status[static_cast<std::size_t>(i)]};
                 }
-                (void)nss::twsc_pca_soft_batch(filter_items.data(), count);
+                if (nss::twsc_pca_soft_batch(filter_items.data(), count) != 0) throw std::runtime_error("nss: numerical group processing failed");
 
                 struct Result {
                     bool valid = false;
@@ -689,18 +695,18 @@ const VSFrame* VS_CC twscGetFrame(int n, int activationReason, void* instanceDat
     }
 
     for (int t = 0; t < ntemp; ++t) {
-        vsapi->freeFrame(srcf[static_cast<std::size_t>(t)]);
-        vsapi->freeFrame(reff[static_cast<std::size_t>(t)]);
+        frames_owned.freeFrame(srcf[static_cast<std::size_t>(t)]);
+        frames_owned.freeFrame(reff[static_cast<std::size_t>(t)]);
     }
-    return dst;
+    return frames_owned.keep(dst);
 }
 
 void VS_CC twscFree(void* instanceData, VSCore* core, const VSAPI* vsapi) {
     (void)core;
     auto* d = static_cast<TwscData*>(instanceData);
-    vsapi->freeNode(d->node);
+    d->node.reset();
     if (d->rclip) {
-        vsapi->freeNode(d->rclip);
+        d->rclip.reset();
     }
     delete d;
 }
@@ -714,13 +720,13 @@ void VS_CC twscCreate(const VSMap* in, VSMap* out, void* userData, VSCore* core,
         return;
     }
     auto d = std::make_unique<TwscData>();
-    d->node = vsapi->mapGetNode(in, "clip", 0, nullptr);
+    d->node = nss::get_node(vsapi, in, "clip", 0, nullptr);
     d->vi = *vsapi->getVideoInfo(d->node);
     auto fail = [&](const char* msg) {
         vsapi->mapSetError(out, msg);
-        vsapi->freeNode(d->node);
+        d->node.reset();
         if (d->rclip) {
-            vsapi->freeNode(d->rclip);
+            d->rclip.reset();
         }
     };
     if (!nss::is_const_32f(d->vi)) {
@@ -772,22 +778,23 @@ void VS_CC twscCreate(const VSMap* in, VSMap* out, void* userData, VSCore* core,
         return;
     }
     int e = 0;
-    d->rclip = vsapi->mapGetNode(in, "rclip", 0, &e);
+    d->rclip = nss::get_node(vsapi, in, "rclip", 0, &e);
     if (e) {
         d->rclip = nullptr;
     } else if (!nss::same_video(d->vi, *vsapi->getVideoInfo(d->rclip))) {
         fail("nss.TWSC: rclip must match clip");
         return;
     }
+    nss::validate_group_planes(d->vi, d->sigma, d->block_size);
     d->vi_out = d->vi;
     if (d->radius > 0) {
-        d->vi_out.height = d->vi.height * (2 * d->radius + 1) * 2;
+        d->vi_out.height = nss::checked_fat_height(d->vi.height, d->radius);
     }
     VSFilterDependency deps[2]{{d->node, d->radius == 0 ? rpStrictSpatial : rpGeneral},
                                {d->rclip, d->radius == 0 ? rpStrictSpatial : rpGeneral}};
     const int ndeps = d->rclip ? 2 : 1;
     TwscData* raw = d.get();
-    VSNode* node = vsapi->createVideoFilter2("TWSC", &raw->vi_out, twscGetFrame, twscFree, fmParallel, deps, ndeps, raw,
+    VSNode* node = vsapi->createVideoFilter2("TWSC", &raw->vi_out, nss::checked_frame<twscGetFrame>, twscFree, fmParallel, deps, ndeps, raw,
                                              core);
     if (!node) {
         fail("nss.TWSC: failed to create filter");
@@ -801,6 +808,6 @@ void register_twsc(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
     const char* args =
         "clip:vnode;sigma:float[]:opt;block_size:int:opt;block_step:int:opt;group_size:int:opt;"
         "bm_range:int:opt;radius:int:opt;ps_num:int:opt;ps_range:int:opt;"
-        "lambda1:float:opt;lambda2:float:opt;rclip:vnode:opt;iters:int:opt;delta:float:opt;";
-    vspapi->registerFunction("TWSC", args, "clip:vnode;", twscCreate, nullptr, plugin);
+        "lambda1:float:opt;lambda2:float:opt;rclip:vnode:opt;iters:int:opt;delta:float:opt;memory_limit_mb:int:opt;";
+    vspapi->registerFunction("TWSC", args, "clip:vnode;", nss::checked_create<twscCreate>, nullptr, plugin);
 }

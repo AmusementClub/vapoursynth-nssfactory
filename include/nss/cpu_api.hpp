@@ -3,6 +3,7 @@
 #pragma once
 
 #include "nss/params.hpp"
+#include "nss/checked.hpp"
 #include "nss/plane.hpp"
 
 #include <cstddef>
@@ -146,6 +147,8 @@ void unpack_patch_fixed(float* num, float* den, int stride, int x, int y,
                         const float* col, int block, int width, int height, float w, unsigned avx2_features = 0);
 
 inline int bm3d_filter_work_floats(int group, int block) {
+    if (!bm_allowed_group(group) || !bm_allowed_block(block))
+        throw std::invalid_argument("nss: unsupported BM3D workspace shape");
     return 2 * group * block * block;
 }
 
@@ -169,6 +172,10 @@ void bm3d_filter_group(float* patches, int lda, int group, int k, int block, flo
 // 8x8x8 fused path: in-register FFTW 3D DCT (bm3dcpu layout), shrink, accumulate. k in [1, 8].
 void bm3d_filter8(const float* src, int sstride, const Match* matches, int k, float sigma, bool wiener,
                   const float* ref, int rstride, float* num, float* den, int dstride, int width, int height);
+// Width-independent 8x8x8 implementation, also directly callable by tests and
+// capability probes. Uses the same effective sigma, real k and zero padding.
+void bm3d_filter8_portable(const float* src, int sstride, const Match* matches, int k, float sigma, bool wiener,
+                          const float* ref, int rstride, float* num, float* den, int dstride, int width, int height);
 
 // Load from the source image, orthonormal bm3d_filter_group, accumulate. Not the 8x8x8 FFTW path.
 // `cube` holds group*block*block floats, plus another group*block*block if wiener.
@@ -188,6 +195,7 @@ int svd_economy(int m, int n, const float* A, int lda,
                 float* work = nullptr, int work_floats = 0);
 
 inline int wnnm_shrink_work_floats(int m, int n) {
+    checked_solver_shape(m, n);
     const int sh = m * n + n + n * n + m;
     const int svd = m * n * 6 + n * n * 8 + n + 256;
     return sh + svd;

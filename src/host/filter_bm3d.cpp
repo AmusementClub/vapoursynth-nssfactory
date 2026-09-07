@@ -1,3 +1,4 @@
+#include "nss/resources.hpp"
 #include "nss/avx2_policy.hpp"
 #if NSS_BM_EXPERIMENT & 64
 #include "cpu/bm/sliding-batch.hpp"
@@ -6,6 +7,7 @@
 #include "host/temporal.hpp"
 #include "host/batch_runner.hpp"
 #include "host/validate.hpp"
+#include "host/contribution.hpp"
 #include "nss/avx2.hpp"
 #include "nss/cpu_api.hpp"
 #include "nss/cpu_common.hpp"
@@ -27,8 +29,9 @@
 namespace {
 
 struct Bm3dData {
-    VSNode* node = nullptr;
-    VSNode* ref = nullptr;
+    std::shared_ptr<nss::ResourceBudget> budget = nss::current_budget();
+    nss::NodeRef node;
+    nss::NodeRef ref;
     VSVideoInfo vi{};
     VSVideoInfo vi_out{};
     float sigma[3]{nss::kBmDefaultSigma, nss::kBmDefaultSigma, nss::kBmDefaultSigma};
@@ -85,9 +88,10 @@ void process_plane_batched(const float* const* srcs, const float* const* refs, i
     const nss::GroupKey key{block*block,group,1,nss::GroupAlgorithm::BM3D,!wiener,false};
     nss::host_detail::RasterJobs jobs(width,height,block,step,key,t0);
 #else
-    std::vector<nss::GroupJob> jobs;
-    jobs.reserve(static_cast<std::size_t>(std::max(1, ((width - block + step - 1) / step) *
-                                                        ((height - block + step - 1) / step))));
+    nss::ResourceVector<nss::GroupJob> jobs;
+    jobs.reserve(nss::checked_product({
+        (static_cast<std::size_t>(width - block) + step - 1) / step + 1,
+        (static_cast<std::size_t>(height - block) + step - 1) / step + 1}));
     const nss::GroupKey key{block * block, group, 1, nss::GroupAlgorithm::BM3D, !wiener, false};
     nss::host_detail::append_raster_jobs(jobs, width, height, block, step, key, t0);
 #endif
@@ -98,14 +102,14 @@ void process_plane_batched(const float* const* srcs, const float* const* refs, i
     const bool fused = block == 8 && group == 8 && radius == 0;
     const bool direct = radius == 0 && (block == 4 || block == 8 || block == 12 || block == 16) && !fused;
     const int area = block * block;
-    std::vector<float> direct_cube;
-    std::vector<float> direct_work;
+    nss::ResourceVector<float> direct_cube;
+    nss::ResourceVector<float> direct_work;
     if (direct) {
         direct_cube.resize(static_cast<std::size_t>(group) * static_cast<std::size_t>(area) * (wiener ? 2u : 1u), 0.f);
         direct_work.resize(static_cast<std::size_t>(nss::bm3d_filter_work_floats(group, block)), 0.f);
     }
 #if NSS_BM_REUSE
-    std::vector<float> reused_patches, reused_refs, reused_work;
+    nss::ResourceVector<float> reused_patches, reused_refs, reused_work;
 #endif
     for (std::size_t begin = 0; begin < jobs.size(); begin += nss::host_detail::kGroupBatchWindow) {
         const std::size_t end = std::min(jobs.size(), begin + nss::host_detail::kGroupBatchWindow);
@@ -131,8 +135,8 @@ void process_plane_batched(const float* const* srcs, const float* const* refs, i
                                                             nss::kBmMaxGroup, counts.data());
         // A nonzero positive code identifies an individual failed job; keep
         // the other jobs in the window and let their zero count skip itself.
-        if (match_rc < 0) {
-            continue;
+        if (match_rc != 0) {
+            throw std::runtime_error("nss: matching failed for an active group");
         }
 #if !NSS_BM_RASTER
         for (int i = 0; i < count; ++i) {
@@ -178,14 +182,14 @@ void process_plane_batched(const float* const* srcs, const float* const* refs, i
         patches.resize(static_cast<std::size_t>(count)*group*area);
         filter_work.resize(static_cast<std::size_t>(count)*work_floats);
 #else
-        std::vector<float> patches(static_cast<std::size_t>(count) * static_cast<std::size_t>(group) * area, 0.f);
-        std::vector<float> ref_patches;
+        nss::ResourceVector<float> patches(static_cast<std::size_t>(count) * static_cast<std::size_t>(group) * area, 0.f);
+        nss::ResourceVector<float> ref_patches;
 #endif
         if (wiener) {
             ref_patches.resize(patches.size(), 0.f);
         }
 #if !NSS_BM_REUSE
-        std::vector<float> filter_work(static_cast<std::size_t>(count) * static_cast<std::size_t>(work_floats), 0.f);
+        nss::ResourceVector<float> filter_work(static_cast<std::size_t>(count) * static_cast<std::size_t>(work_floats), 0.f);
 #endif
         std::array<float, nss::host_detail::kGroupBatchWindow> weights{};
         std::array<int, nss::host_detail::kGroupBatchWindow> filter_status{};
@@ -225,7 +229,7 @@ void process_plane_batched(const float* const* srcs, const float* const* refs, i
             filter_items[i].ref_keys=rkeys.data()+i*nss::kBmMaxGroup;
 #endif
         }
-        (void)nss::bm3d_filter_group_batch(filter_items.data(), count);
+        if (nss::bm3d_filter_group_batch(filter_items.data(), count) != 0) throw std::runtime_error("nss: numerical group processing failed");
 
         auto prepare = [&](const nss::GroupJob& job, Bm3dBatchResult& result) {
             const std::size_t i = static_cast<std::size_t>(job.ordinal - jobs[begin].ordinal);
@@ -285,6 +289,8 @@ void process_plane_batched(const float* const* srcs, const float* const* refs, i
 const VSFrame* VS_CC bm3dGetFrame(int n, int activationReason, void* instanceData, void** frameData,
                                   VSFrameContext* frameCtx, VSCore* core, const VSAPI* vsapi) {
     auto* d = static_cast<Bm3dData*>(instanceData);
+    nss::ResourceScope resource_scope(d->budget);
+    nss::FrameScope frames_owned(vsapi);
     (void)frameData;
     if (activationReason == arInitial) {
         const int start = std::max(0, n - d->radius);
@@ -302,24 +308,25 @@ const VSFrame* VS_CC bm3dGetFrame(int n, int activationReason, void* instanceDat
     }
 
     const bool fat = d->radius > 0;
-    const VSFrame* src0 = vsapi->getFrameFilter(n, d->node, frameCtx);
-    VSFrame* dst = vsapi->newVideoFrame(&d->vi_out.format, d->vi_out.width, d->vi_out.height, src0, core);
+    const VSFrame* src0 = frames_owned.getFrameFilter(n, d->node, frameCtx);
+    VSFrame* dst = frames_owned.newVideoFrame(&d->vi_out.format, d->vi_out.width, d->vi_out.height, src0, core);
+    nss::stamp_contribution(dst, d->radius, n, nss::Model::BM3D, vsapi);
 
     const int ntemp = 2 * d->radius + 1;
-    std::vector<const VSFrame*> srcf(static_cast<std::size_t>(ntemp));
-    std::vector<const VSFrame*> reff(static_cast<std::size_t>(ntemp));
+    nss::ResourceVector<const VSFrame*> srcf(static_cast<std::size_t>(ntemp));
+    nss::ResourceVector<const VSFrame*> reff(static_cast<std::size_t>(ntemp));
     for (int t = 0; t < ntemp; ++t) {
         const int fn = nss::host_detail::temporal_slot_frame(n,t,d->radius,d->vi.numFrames);
-        srcf[static_cast<std::size_t>(t)] = vsapi->getFrameFilter(fn, d->node, frameCtx);
-        reff[static_cast<std::size_t>(t)] = vsapi->getFrameFilter(fn, d->ref ? d->ref : d->node, frameCtx);
+        srcf[static_cast<std::size_t>(t)] = frames_owned.getFrameFilter(fn, d->node, frameCtx);
+        reff[static_cast<std::size_t>(t)] = frames_owned.getFrameFilter(fn, d->ref ? d->ref : d->node, frameCtx);
     }
     const int t0 = d->radius;
 
     for (int plane = 0; plane < d->vi.format.numPlanes; ++plane) {
         const int pw = nss::plane_width(d->vi, plane);
         const int ph = nss::plane_height(d->vi, plane);
-        const int sstride = static_cast<int>(vsapi->getStride(src0, plane) / sizeof(float));
-        const int dstride = static_cast<int>(vsapi->getStride(dst, plane) / sizeof(float));
+        const int sstride = static_cast<int>(frames_owned.getStride(src0, plane) / sizeof(float));
+        const int dstride = static_cast<int>(frames_owned.getStride(dst, plane) / sizeof(float));
         float* outp = reinterpret_cast<float*>(vsapi->getWritePtr(dst, plane));
         const float* srcp = reinterpret_cast<const float*>(vsapi->getReadPtr(src0, plane));
         if (d->sigma[plane] == 0.f) {
@@ -334,19 +341,19 @@ const VSFrame* VS_CC bm3dGetFrame(int n, int activationReason, void* instanceDat
             nss::host_detail::temporal_identity(outp, dstride, srcp, sstride, pw, ph, d->radius);
             continue;
         }
-        std::vector<const float*> srcs(static_cast<std::size_t>(ntemp));
-        std::vector<const float*> refs(static_cast<std::size_t>(ntemp));
-        std::vector<int> src_strides(static_cast<std::size_t>(ntemp));
-        std::vector<int> ref_strides(static_cast<std::size_t>(ntemp));
+        nss::ResourceVector<const float*> srcs(static_cast<std::size_t>(ntemp));
+        nss::ResourceVector<const float*> refs(static_cast<std::size_t>(ntemp));
+        nss::ResourceVector<int> src_strides(static_cast<std::size_t>(ntemp));
+        nss::ResourceVector<int> ref_strides(static_cast<std::size_t>(ntemp));
         for (int t = 0; t < ntemp; ++t) {
             srcs[static_cast<std::size_t>(t)] =
                 reinterpret_cast<const float*>(vsapi->getReadPtr(srcf[static_cast<std::size_t>(t)], plane));
             refs[static_cast<std::size_t>(t)] =
                 reinterpret_cast<const float*>(vsapi->getReadPtr(reff[static_cast<std::size_t>(t)], plane));
             src_strides[static_cast<std::size_t>(t)] =
-                static_cast<int>(vsapi->getStride(srcf[static_cast<std::size_t>(t)], plane) / sizeof(float));
+                static_cast<int>(frames_owned.getStride(srcf[static_cast<std::size_t>(t)], plane) / sizeof(float));
             ref_strides[static_cast<std::size_t>(t)] =
-                static_cast<int>(vsapi->getStride(reff[static_cast<std::size_t>(t)], plane) / sizeof(float));
+                static_cast<int>(frames_owned.getStride(reff[static_cast<std::size_t>(t)], plane) / sizeof(float));
         }
         const int slices = 2 * d->radius + 1;
         const int block = d->block_size[plane];
@@ -373,37 +380,38 @@ const VSFrame* VS_CC bm3dGetFrame(int n, int activationReason, void* instanceDat
     }
 
     for (int t = 0; t < ntemp; ++t) {
-        vsapi->freeFrame(srcf[static_cast<std::size_t>(t)]);
-        vsapi->freeFrame(reff[static_cast<std::size_t>(t)]);
+        frames_owned.freeFrame(srcf[static_cast<std::size_t>(t)]);
+        frames_owned.freeFrame(reff[static_cast<std::size_t>(t)]);
     }
-    vsapi->freeFrame(src0);
-    return dst;
+    frames_owned.freeFrame(src0);
+    return frames_owned.keep(dst);
 }
 
 void VS_CC bm3dFree(void* instanceData, VSCore* core, const VSAPI* vsapi) {
     (void)core;
     auto* d = static_cast<Bm3dData*>(instanceData);
-    vsapi->freeNode(d->node);
+    d->node.reset();
     if (d->ref) {
-        vsapi->freeNode(d->ref);
+        d->ref.reset();
     }
     delete d;
 }
 
 struct RollingPlane {
-    std::vector<float> data;
+    nss::ResourceVector<float> data;
     int width = 0;
     int height = 0;
 };
 
 struct RollingFrameStore {
-    std::vector<RollingPlane> planes;
+    nss::ResourceVector<RollingPlane> planes;
 };
 
 struct RollingChunkStore {
+    std::shared_ptr<nss::ResourceAccount> account = nss::current_account();
     int start = 0;
     int count = 0;
-    std::vector<RollingFrameStore> frames;
+    nss::ResourceVector<RollingFrameStore> frames;
 };
 
 struct RollingData {
@@ -456,6 +464,7 @@ void rolling_write_plane(float* dst, int dstride, const RollingPlane& plane) {
 bool rolling_fill_chunk(RollingData* d, RollingChunkStore& store, int start, int count, VSFrameContext* frameCtx,
                         VSCore* core, const VSAPI* vsapi) {
     (void)core;
+    nss::FrameScope frames_owned(vsapi);
     auto& bm=d->bm;
     const int r=bm.radius, ntemp=2*r+1, nframes=bm.vi.numFrames, np=bm.vi.format.numPlanes;
     store.start=start; store.count=count;
@@ -470,12 +479,12 @@ bool rolling_fill_chunk(RollingData* d, RollingChunkStore& store, int start, int
 #else
         const int slots=count;
 #endif
-        std::vector<float> sums(bm.sigma[plane] ? slots*2*size : 0,0.f);
+        nss::ResourceVector<float> sums(bm.sigma[plane] ? slots*2*size : 0,0.f);
         if(bm.sigma[plane]) {
 #if NSS_BM_SCRATCH
-            std::vector<float> fat;
+            nss::ResourceVector<float> fat;
 #else
-            std::vector<float> fat(ntemp*2*size);
+            nss::ResourceVector<float> fat(ntemp*2*size);
 #endif
 #if NSS_BM_RING
             int next_output=start;
@@ -488,17 +497,17 @@ bool rolling_fill_chunk(RollingData* d, RollingChunkStore& store, int start, int
 #endif
                                      );
             for(int center=std::max(0,start-r);center<=nss::host_detail::temporal_last(start+count-1,r,nframes);++center) {
-                std::vector<const VSFrame*> sf(ntemp),rf(ntemp);
-                std::vector<const float*> sp(ntemp),rp(ntemp);
-                std::vector<int> ss(ntemp),rs(ntemp);
+                nss::ResourceVector<const VSFrame*> sf(ntemp),rf(ntemp);
+                nss::ResourceVector<const float*> sp(ntemp),rp(ntemp);
+                nss::ResourceVector<int> ss(ntemp),rs(ntemp);
                 for(int t=0;t<ntemp;++t) {
                     int fn=nss::host_detail::temporal_slot_frame(center,t,r,nframes);
-                    sf[t]=vsapi->getFrameFilter(fn,bm.node,frameCtx);
-                    rf[t]=vsapi->getFrameFilter(fn,bm.ref ? bm.ref : bm.node,frameCtx);
+                    sf[t]=frames_owned.getFrameFilter(fn,bm.node,frameCtx);
+                    rf[t]=frames_owned.getFrameFilter(fn,bm.ref ? bm.ref : bm.node,frameCtx);
                     sp[t]=reinterpret_cast<const float*>(vsapi->getReadPtr(sf[t],plane));
                     rp[t]=reinterpret_cast<const float*>(vsapi->getReadPtr(rf[t],plane));
-                    ss[t]=static_cast<int>(vsapi->getStride(sf[t],plane)/sizeof(float));
-                    rs[t]=static_cast<int>(vsapi->getStride(rf[t],plane)/sizeof(float));
+                    ss[t]=static_cast<int>(frames_owned.getStride(sf[t],plane)/sizeof(float));
+                    rs[t]=static_cast<int>(frames_owned.getStride(rf[t],plane)/sizeof(float));
                 }
                 process_plane_batched(sp.data(),rp.data(),ntemp,r,ss.data(),rs.data(),fat.data(),w,h,w,w,
                                       bm.sigma[plane],block,group,bm.block_step[plane],bm.bm_range[plane],
@@ -521,17 +530,17 @@ bool rolling_fill_chunk(RollingData* d, RollingChunkStore& store, int start, int
                     for(std::size_t i=0;i<2*size;++i)num[i]+=contribution[i];
 #endif
                 }
-                for(int t=0;t<ntemp;++t){vsapi->freeFrame(sf[t]);vsapi->freeFrame(rf[t]);}
+                for(int t=0;t<ntemp;++t){frames_owned.freeFrame(sf[t]);frames_owned.freeFrame(rf[t]);}
 #if NSS_BM_RING
                 while(next_output<start+count && nss::host_detail::temporal_last(next_output,r,nframes)<=center){
-                    const auto* frame=vsapi->getFrameFilter(next_output,bm.node,frameCtx);
+                    const auto* frame=frames_owned.getFrameFilter(next_output,bm.node,frameCtx);
                     const float* src=reinterpret_cast<const float*>(vsapi->getReadPtr(frame,plane));
-                    int stride=static_cast<int>(vsapi->getStride(frame,plane)/sizeof(float));
+                    int stride=static_cast<int>(frames_owned.getStride(frame,plane)/sizeof(float));
                     auto& output=store.frames[next_output-start].planes[plane];
                     output.width=w;output.height=h;output.data.resize(size);
                     float* num=sums.data()+((next_output-start)%slots)*2*size;
                     nss::aggregate_finish(output.data.data(),num,num+size,src,w,h,w,w,stride);
-                    std::fill_n(num,2*size,0.f);vsapi->freeFrame(frame);++next_output;
+                    std::fill_n(num,2*size,0.f);frames_owned.freeFrame(frame);++next_output;
                 }
 #endif
             }
@@ -540,16 +549,16 @@ bool rolling_fill_chunk(RollingData* d, RollingChunkStore& store, int start, int
         if(bm.sigma[plane])continue;
 #endif
         for(int i=0;i<count;++i) {
-            const VSFrame* frame=vsapi->getFrameFilter(start+i,bm.node,frameCtx);
+            const VSFrame* frame=frames_owned.getFrameFilter(start+i,bm.node,frameCtx);
             const float* src=reinterpret_cast<const float*>(vsapi->getReadPtr(frame,plane));
-            int stride=static_cast<int>(vsapi->getStride(frame,plane)/sizeof(float));
+            int stride=static_cast<int>(frames_owned.getStride(frame,plane)/sizeof(float));
             auto& output=store.frames[i].planes[plane];
             output.width=w;output.height=h;output.data.resize(size);
             if(bm.sigma[plane]) {
                 const float* num=sums.data()+i*2*size;
                 nss::aggregate_finish(output.data.data(),num,num+size,src,w,h,w,w,stride);
             } else rolling_store_plane(output,src,w,h,stride);
-            vsapi->freeFrame(frame);
+            frames_owned.freeFrame(frame);
         }
     }
     return true;
@@ -558,6 +567,8 @@ bool rolling_fill_chunk(RollingData* d, RollingChunkStore& store, int start, int
 const VSFrame* VS_CC rollingGetFrame(int n, int activationReason, void* instanceData, void** frameData,
                                      VSFrameContext* frameCtx, VSCore* core, const VSAPI* vsapi) {
     auto* d = static_cast<RollingData*>(instanceData);
+    nss::ResourceScope resource_scope(d->bm.budget);
+    nss::FrameScope frames_owned(vsapi);
     (void)frameData;
     const int chunk = d->rolling_chunk;
     const int start = rolling_chunk_start(n, chunk);
@@ -581,9 +592,10 @@ const VSFrame* VS_CC rollingGetFrame(int n, int activationReason, void* instance
         return nullptr;
     }
 
-    const VSFrame* srcn = vsapi->getFrameFilter(n, d->bm.node, frameCtx);
-    VSFrame* dst = vsapi->newVideoFrame(&d->bm.vi.format, d->bm.vi.width, d->bm.vi.height, srcn, core);
-    vsapi->freeFrame(srcn);
+    const VSFrame* srcn = frames_owned.getFrameFilter(n, d->bm.node, frameCtx);
+    VSFrame* dst = frames_owned.newVideoFrame(&d->bm.vi.format, d->bm.vi.width, d->bm.vi.height, srcn, core);
+    nss::stamp_contribution(dst, 0, n, nss::Model::BM3D, vsapi);
+    frames_owned.freeFrame(srcn);
 
     std::shared_ptr<const RollingChunkStore> result;
     {
@@ -603,12 +615,16 @@ const VSFrame* VS_CC rollingGetFrame(int n, int activationReason, void* instance
             }
         }
         if (!result) {
-            auto computed = std::make_shared<RollingChunkStore>();
+            auto chunk_account = nss::make_resource_account(nss::ResourceKind::Inflight);
+            nss::ResourceScope chunk_scope(d->bm.budget, chunk_account);
+            auto computed = std::allocate_shared<RollingChunkStore>(nss::ResourceAllocator<RollingChunkStore>{});
             rolling_fill_chunk(d, *computed, start, count, frameCtx, core, vsapi);
             std::lock_guard<std::mutex> guard(d->cache_mu);
             d->cache.push_front(computed);
+            if (computed->account) computed->account->retag(nss::ResourceKind::Cached);
             result = std::move(computed);
             while (static_cast<int>(d->cache.size()) > d->cache_limit) {
+                if (d->cache.back()->account) d->cache.back()->account->retag(nss::ResourceKind::Pinned);
                 d->cache.pop_back();
             }
         }
@@ -616,19 +632,19 @@ const VSFrame* VS_CC rollingGetFrame(int n, int activationReason, void* instance
 
     const RollingFrameStore& local = result->frames[static_cast<std::size_t>(n - result->start)];
     for (int plane = 0; plane < d->bm.vi.format.numPlanes; ++plane) {
-        const int dstride = static_cast<int>(vsapi->getStride(dst, plane) / sizeof(float));
+        const int dstride = static_cast<int>(frames_owned.getStride(dst, plane) / sizeof(float));
         float* outp = reinterpret_cast<float*>(vsapi->getWritePtr(dst, plane));
         rolling_write_plane(outp, dstride, local.planes[static_cast<std::size_t>(plane)]);
     }
-    return dst;
+    return frames_owned.keep(dst);
 }
 
 void VS_CC rollingFree(void* instanceData, VSCore* core, const VSAPI* vsapi) {
     (void)core;
     auto* d = static_cast<RollingData*>(instanceData);
-    vsapi->freeNode(d->bm.node);
+    d->bm.node.reset();
     if (d->bm.ref) {
-        vsapi->freeNode(d->bm.ref);
+        d->bm.ref.reset();
     }
     delete d;
 }
@@ -636,13 +652,13 @@ void VS_CC rollingFree(void* instanceData, VSCore* core, const VSAPI* vsapi) {
 }  // namespace
 
 const char* fill_bm3d_data(Bm3dData& d, const VSMap* in, const VSAPI* vsapi) {
-    d.node = vsapi->mapGetNode(in, "clip", 0, nullptr);
+    d.node = nss::get_node(vsapi, in, "clip", 0, nullptr);
     d.vi = *vsapi->getVideoInfo(d.node);
     if (!nss::is_const_32f(d.vi)) {
         return "nss.BM3D: constant Gray/YUV/RGB 32-bit float required";
     }
     int e = 0;
-    d.ref = vsapi->mapGetNode(in, "ref", 0, &e);
+    d.ref = nss::get_node(vsapi, in, "ref", 0, &e);
     if (e) {
         d.ref = nullptr;
     } else if (!nss::same_video(d.vi, *vsapi->getVideoInfo(d.ref))) {
@@ -655,8 +671,7 @@ const char* fill_bm3d_data(Bm3dData& d, const VSMap* in, const VSAPI* vsapi) {
             return "nss.BM3D: sigma must be finite and non-negative";
         }
         if (d.sigma[i] != 0.f) {
-            d.sigma[i] *= (1.f / 255.f);
-            d.sigma[i] *= 0.75f;
+            d.sigma[i] = nss::NoiseProfile::bm3d_effective(d.sigma[i]);
         }
     }
     nss::map_inherit_int(vsapi, in, "block_size", d.block_size, np, nss::kBmBlock);
@@ -716,11 +731,11 @@ const char* fill_bm3d_data(Bm3dData& d, const VSMap* in, const VSAPI* vsapi) {
 
 void release_bm3d_nodes(Bm3dData& d, const VSAPI* vsapi) {
     if (d.node) {
-        vsapi->freeNode(d.node);
+        d.node.reset();
         d.node = nullptr;
     }
     if (d.ref) {
-        vsapi->freeNode(d.ref);
+        d.ref.reset();
         d.ref = nullptr;
     }
 }
@@ -761,11 +776,12 @@ VSNode* create_rolling_bm3d(const VSMap* in, VSCore* core, const VSAPI* vsapi, V
     if (d->cache_limit < 1 || d->cache_limit > 64) {
         return fail("nss.BM3D: rolling_cache_limit must be in [1, 64]");
     }
+    d->bm.ws.set_serial();
     d->bm.vi_out = d->bm.vi;
     VSFilterDependency deps[2]{{d->bm.node, rpGeneral}, {d->bm.ref, rpGeneral}};
     const int ndeps = d->bm.ref ? 2 : 1;
     RollingData* raw = d.get();
-    VSNode* node = vsapi->createVideoFilter2("BM3D", &raw->bm.vi_out, rollingGetFrame, rollingFree, fmParallel, deps,
+    VSNode* node = vsapi->createVideoFilter2("BM3D", &raw->bm.vi_out, nss::checked_frame<rollingGetFrame>, rollingFree, fmParallel, deps,
                                             ndeps, raw, core);
     if (!node) {
         return fail("nss.BM3D: failed to create rolling filter");
@@ -787,13 +803,13 @@ VSNode* nss_create_bm3d(const VSMap* in, VSCore* core, const VSAPI* vsapi, VSMap
     }
     d->vi_out = d->vi;
     if (d->radius > 0) {
-        d->vi_out.height = d->vi.height * (2 * d->radius + 1) * 2;
+        d->vi_out.height = nss::checked_fat_height(d->vi.height, d->radius);
     }
     VSFilterDependency deps[2]{{d->node, d->radius == 0 ? rpStrictSpatial : rpGeneral},
                                {d->ref, d->radius == 0 ? rpStrictSpatial : rpGeneral}};
     const int ndeps = d->ref ? 2 : 1;
     Bm3dData* raw = d.get();
-    VSNode* node = vsapi->createVideoFilter2("BM3D", &raw->vi_out, bm3dGetFrame, bm3dFree, fmParallel, deps, ndeps, raw,
+    VSNode* node = vsapi->createVideoFilter2("BM3D", &raw->vi_out, nss::checked_frame<bm3dGetFrame>, bm3dFree, fmParallel, deps, ndeps, raw,
                                             core);
     if (!node) {
         vsapi->mapSetError(err, "nss.BM3D: failed to create filter");
@@ -844,6 +860,6 @@ void register_bm3d(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
     const char* args =
         "clip:vnode;ref:vnode:opt;sigma:float[]:opt;block_size:int[]:opt;group_size:int[]:opt;"
         "block_step:int[]:opt;bm_range:int[]:opt;radius:int:opt;ps_num:int[]:opt;ps_range:int[]:opt;"
-        "temporal_mode:data:opt;rolling_chunk:int:opt;rolling_cache_chunks:int:opt;rolling_cache_limit:int:opt;";
-    vspapi->registerFunction("BM3D", args, "clip:vnode;", bm3dCreate, nullptr, plugin);
+        "temporal_mode:data:opt;rolling_chunk:int:opt;rolling_cache_chunks:int:opt;rolling_cache_limit:int:opt;memory_limit_mb:int:opt;";
+    vspapi->registerFunction("BM3D", args, "clip:vnode;", nss::checked_create<bm3dCreate>, nullptr, plugin);
 }

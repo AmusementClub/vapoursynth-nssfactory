@@ -38,8 +38,9 @@ def main() -> int:
     )
 
     def fill_fat(n: int, f: vs.VideoFrame) -> vs.VideoFrame:
-        del n
         out = f.copy()
+        out.props.update(_NSSFatVersion=2, _NSSFatRadius=radius, _NSSFatCenter=n,
+                         _NSSFatLayout=1, _NSSModel=1, _NSSModelVersion=2, _NSSNoiseProfile=1)
         for plane in range(3):
             values = np.asarray(out[plane])
             for t in range(slices):

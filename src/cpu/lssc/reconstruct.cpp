@@ -1,3 +1,4 @@
+#include "nss/resources.hpp"
 #include "nss/cpu_api.hpp"
 #include "nss/cpu_common.hpp"
 #include "nss/cpu_lssc.hpp"
@@ -28,8 +29,8 @@ void LsscGroupSoft(float* A, int atoms, int n, int lda_a, float lambda) {
     const int N = static_cast<int>(hn::Lanes(d));
     float nrm2_s[512];
     float scale_s[512];
-    std::vector<float> nrm2_v;
-    std::vector<float> scale_v;
+    nss::ResourceVector<float> nrm2_v;
+    nss::ResourceVector<float> scale_v;
     float* nrm2 = nrm2_s;
     float* scale = scale_s;
     if (atoms > 512) {
@@ -84,8 +85,8 @@ static bool LsscUpdateGroupSoft(float* A, const float* G, int atoms, int n, floa
     const int N = static_cast<int>(hn::Lanes(d));
     float nrm2_s[512];
     float scale_s[512];
-    std::vector<float> nrm2_v;
-    std::vector<float> scale_v;
+    nss::ResourceVector<float> nrm2_v;
+    nss::ResourceVector<float> scale_v;
     float* nrm2 = nrm2_s;
     float* scale = scale_s;
     if (atoms > 512) {
@@ -155,7 +156,7 @@ static void LsscReconstructImpl(float* patches, int m, int n, int lda, const flo
         return;
     }
     const int need = lssc_reconstruct_prepared_work_floats(m, n, atoms);
-    std::vector<float> store;
+    nss::ResourceVector<float> store;
     float* buf = work;
     if (!buf || work_floats < need) {
         store.assign(static_cast<std::size_t>(need), 0.f);
@@ -249,7 +250,7 @@ void LsscReconstruct(float* patches, int m, int n, int lda, const float* D, int 
         return;
     }
     const int need = lssc_reconstruct_work_floats(m, n, atoms);
-    std::vector<float> store;
+    nss::ResourceVector<float> store;
     float* buf = work;
     if (!buf || work_floats < need) {
         store.assign(static_cast<std::size_t>(need), 0.f);

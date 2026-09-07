@@ -1,8 +1,10 @@
+#include "nss/resources.hpp"
 #include "nss/avx2_policy.hpp"
 #include "host/filters.hpp"
 #include "host/temporal.hpp"
 #include "host/batch_runner.hpp"
 #include "host/validate.hpp"
+#include "host/contribution.hpp"
 #include "nss/avx2.hpp"
 #include "nss/cpu_api.hpp"
 #include "nss/cpu_batch.hpp"
@@ -24,8 +26,9 @@
 namespace {
 
 struct McwnnmData {
-    VSNode* node = nullptr;
-    VSNode* rclip = nullptr;
+    std::shared_ptr<nss::ResourceBudget> budget = nss::current_budget();
+    nss::NodeRef node;
+    nss::NodeRef rclip;
     VSVideoInfo vi{};
     VSVideoInfo vi_out{};
     float sigma[3]{nss::kMcwnnmDefaultSigma, nss::kMcwnnmDefaultSigma, nss::kMcwnnmDefaultSigma};
@@ -49,6 +52,8 @@ struct McwnnmData {
 const VSFrame* VS_CC mcwnnmGetFrame(int n, int activationReason, void* instanceData, void** frameData,
                                     VSFrameContext* frameCtx, VSCore* core, const VSAPI* vsapi) {
     auto* d = static_cast<McwnnmData*>(instanceData);
+    nss::ResourceScope resource_scope(d->budget);
+    nss::FrameScope frames_owned(vsapi);
     (void)frameData;
     if (activationReason == arInitial) {
         const int start = std::max(0, n - d->radius);
@@ -68,15 +73,16 @@ const VSFrame* VS_CC mcwnnmGetFrame(int n, int activationReason, void* instanceD
     const bool fat = d->radius > 0;
     const int ntemp = 2 * d->radius + 1;
     const int t0 = d->radius;
-    std::vector<const VSFrame*> srcf(static_cast<std::size_t>(ntemp));
-    std::vector<const VSFrame*> reff(static_cast<std::size_t>(ntemp));
+    nss::ResourceVector<const VSFrame*> srcf(static_cast<std::size_t>(ntemp));
+    nss::ResourceVector<const VSFrame*> reff(static_cast<std::size_t>(ntemp));
     for (int t = 0; t < ntemp; ++t) {
         const int fn = nss::host_detail::temporal_slot_frame(n,t,d->radius,d->vi.numFrames);
-        srcf[static_cast<std::size_t>(t)] = vsapi->getFrameFilter(fn, d->node, frameCtx);
-        reff[static_cast<std::size_t>(t)] = vsapi->getFrameFilter(fn, d->rclip ? d->rclip : d->node, frameCtx);
+        srcf[static_cast<std::size_t>(t)] = frames_owned.getFrameFilter(fn, d->node, frameCtx);
+        reff[static_cast<std::size_t>(t)] = frames_owned.getFrameFilter(fn, d->rclip ? d->rclip : d->node, frameCtx);
     }
     const VSFrame* src0 = srcf[static_cast<std::size_t>(t0)];
-    VSFrame* dst = vsapi->newVideoFrame(&d->vi_out.format, d->vi_out.width, d->vi_out.height, src0, core);
+    VSFrame* dst = frames_owned.newVideoFrame(&d->vi_out.format, d->vi_out.width, d->vi_out.height, src0, core);
+    nss::stamp_contribution(dst, d->radius, n, nss::Model::MCWNNM, vsapi);
 
     const int block = d->block_size;
     const int nch = 3;
@@ -93,8 +99,8 @@ const VSFrame* VS_CC mcwnnmGetFrame(int n, int activationReason, void* instanceD
 
     if (all_zero) {
         for (int plane = 0; plane < nch; ++plane) {
-            const int sstride = static_cast<int>(vsapi->getStride(src0, plane) / sizeof(float));
-            const int dstride = static_cast<int>(vsapi->getStride(dst, plane) / sizeof(float));
+            const int sstride = static_cast<int>(frames_owned.getStride(src0, plane) / sizeof(float));
+            const int dstride = static_cast<int>(frames_owned.getStride(dst, plane) / sizeof(float));
             float* outp = reinterpret_cast<float*>(vsapi->getWritePtr(dst, plane));
             const float* srcp = reinterpret_cast<const float*>(vsapi->getReadPtr(src0, plane));
             if (!fat) {
@@ -106,24 +112,22 @@ const VSFrame* VS_CC mcwnnmGetFrame(int n, int activationReason, void* instanceD
             }
         }
         for (int t = 0; t < ntemp; ++t) {
-            vsapi->freeFrame(srcf[static_cast<std::size_t>(t)]);
-            vsapi->freeFrame(reff[static_cast<std::size_t>(t)]);
+            frames_owned.freeFrame(srcf[static_cast<std::size_t>(t)]);
+            frames_owned.freeFrame(reff[static_cast<std::size_t>(t)]);
         }
-        return dst;
+        return frames_owned.keep(dst);
     }
 
     int sstride[3];
     float* outp[3];
-    std::vector<const float*> src_planes(static_cast<std::size_t>(nch * ntemp));
-    std::vector<const float*> ref_planes(static_cast<std::size_t>(nch * ntemp));
+    nss::ResourceVector<const float*> src_planes(static_cast<std::size_t>(nch * ntemp));
+    nss::ResourceVector<const float*> ref_planes(static_cast<std::size_t>(nch * ntemp));
     for (int plane = 0; plane < nch; ++plane) {
-        sstride[plane] = static_cast<int>(vsapi->getStride(src0, plane) / sizeof(float));
+        sstride[plane] = static_cast<int>(frames_owned.getStride(src0, plane) / sizeof(float));
         outp[plane] = reinterpret_cast<float*>(vsapi->getWritePtr(dst, plane));
         for (int t = 0; t < ntemp; ++t) {
-            src_planes[static_cast<std::size_t>(plane * ntemp + t)] = reinterpret_cast<const float*>(
-                vsapi->getReadPtr(srcf[static_cast<std::size_t>(t)], plane));
-            ref_planes[static_cast<std::size_t>(plane * ntemp + t)] = reinterpret_cast<const float*>(
-                vsapi->getReadPtr(reff[static_cast<std::size_t>(t)], plane));
+            src_planes[static_cast<std::size_t>(plane * ntemp + t)] = frames_owned.readPlane(srcf[static_cast<std::size_t>(t)], plane, sstride[plane]);
+            ref_planes[static_cast<std::size_t>(plane * ntemp + t)] = frames_owned.readPlane(reff[static_cast<std::size_t>(t)], plane, sstride[plane]);
         }
     }
     int ch_strides[3]{sstride[0], sstride[1], sstride[2]};
@@ -149,7 +153,7 @@ const VSFrame* VS_CC mcwnnmGetFrame(int n, int activationReason, void* instanceD
 
     int agg_strides[3]{pw, pw, pw};
     int est_strides[3]{pw, pw, pw};
-    std::vector<const float*> est_planes(static_cast<std::size_t>(nch * ntemp));
+    nss::ResourceVector<const float*> est_planes(static_cast<std::size_t>(nch * ntemp));
     for (int plane = 0; plane < nch; ++plane) {
         for (int t = 0; t < ntemp; ++t) {
             float* e = est + (static_cast<std::size_t>(plane) * static_cast<std::size_t>(slices) +
@@ -169,7 +173,7 @@ const VSFrame* VS_CC mcwnnmGetFrame(int n, int activationReason, void* instanceD
     }
 
     const int niter = d->iters < 1 ? 1 : d->iters;
-    std::vector<nss::GroupJob> jobs;
+    nss::ResourceVector<nss::GroupJob> jobs;
     nss::host_detail::append_raster_jobs(
         jobs, pw, ph, block, d->block_step,
         nss::GroupKey{m, group, nch, nss::GroupAlgorithm::MCWNNM, false, d->residual != 0}, t0);
@@ -209,16 +213,16 @@ const VSFrame* VS_CC mcwnnmGetFrame(int n, int activationReason, void* instanceD
                                      : nss::spatial_match_nch_batch(match_cur, match_st, nch, pw, ph, match_items.data(),
                                                                      count, match_storage.data(), nss::kWnnmMaxGroup,
                                                                      counts.data());
-            if (match_rc < 0) {
-                continue;
+            if (match_rc != 0) {
+                throw std::runtime_error("nss: matching failed for an active group");
             }
             for (int i = 0; i < count; ++i) {
                 jobs[begin + static_cast<std::size_t>(i)].key.k = counts[static_cast<std::size_t>(i)];
             }
             const std::size_t group_storage = static_cast<std::size_t>(group) * static_cast<std::size_t>(lda);
             const int filter_work_floats = nss::mcwnnm_filter_work_floats(m, group);
-            std::vector<float> batch_patches(static_cast<std::size_t>(count) * group_storage, 0.f);
-            std::vector<float> batch_work(static_cast<std::size_t>(count) * static_cast<std::size_t>(filter_work_floats), 0.f);
+            nss::ResourceVector<float> batch_patches(static_cast<std::size_t>(count) * group_storage, 0.f);
+            nss::ResourceVector<float> batch_work(static_cast<std::size_t>(count) * static_cast<std::size_t>(filter_work_floats), 0.f);
             std::array<float, nss::host_detail::kGroupBatchWindow> weights{};
             std::array<int, nss::host_detail::kGroupBatchWindow> filter_status{};
             std::array<nss::McwnnmFilterBatchItem, nss::host_detail::kGroupBatchWindow> filter_items{};
@@ -242,7 +246,7 @@ const VSFrame* VS_CC mcwnnmGetFrame(int n, int activationReason, void* instanceD
                     filter_work_floats, &filter_status[static_cast<std::size_t>(i)],
                     NSS_AVX2_DEFAULTS && block == 8 && group == 8 && d->radius == 0 && nch == 3};
             }
-            (void)nss::mcwnnm_filter_group_batch(filter_items.data(), count);
+            if (nss::mcwnnm_filter_group_batch(filter_items.data(), count) != 0) throw std::runtime_error("nss: numerical group processing failed");
 
             struct Result {
                 bool valid = false;
@@ -303,7 +307,7 @@ const VSFrame* VS_CC mcwnnmGetFrame(int n, int activationReason, void* instanceD
     }
 
     for (int plane = 0; plane < nch; ++plane) {
-        const int dstride = static_cast<int>(vsapi->getStride(dst, plane) / sizeof(float));
+        const int dstride = static_cast<int>(frames_owned.getStride(dst, plane) / sizeof(float));
         if(d->sigma[plane]==0.f){
             const float* identity=src_planes[static_cast<std::size_t>(plane)*ntemp+t0];
             if(fat)nss::host_detail::temporal_identity(outp[plane],dstride,identity,sstride[plane],pw,ph,d->radius);
@@ -334,18 +338,18 @@ const VSFrame* VS_CC mcwnnmGetFrame(int n, int activationReason, void* instanceD
     }
 
     for (int t = 0; t < ntemp; ++t) {
-        vsapi->freeFrame(srcf[static_cast<std::size_t>(t)]);
-        vsapi->freeFrame(reff[static_cast<std::size_t>(t)]);
+        frames_owned.freeFrame(srcf[static_cast<std::size_t>(t)]);
+        frames_owned.freeFrame(reff[static_cast<std::size_t>(t)]);
     }
-    return dst;
+    return frames_owned.keep(dst);
 }
 
 void VS_CC mcwnnmFree(void* instanceData, VSCore* core, const VSAPI* vsapi) {
     (void)core;
     auto* d = static_cast<McwnnmData*>(instanceData);
-    vsapi->freeNode(d->node);
+    d->node.reset();
     if (d->rclip) {
-        vsapi->freeNode(d->rclip);
+        d->rclip.reset();
     }
     delete d;
 }
@@ -358,13 +362,13 @@ static VSNode* nss_create_mcwnnm(const VSMap* in, VSCore* core, const VSAPI* vsa
         return nullptr;
     }
     auto d = std::make_unique<McwnnmData>();
-    d->node = vsapi->mapGetNode(in, "clip", 0, nullptr);
+    d->node = nss::get_node(vsapi, in, "clip", 0, nullptr);
     d->vi = *vsapi->getVideoInfo(d->node);
     auto fail = [&](const char* msg) -> VSNode* {
         vsapi->mapSetError(err, msg);
-        vsapi->freeNode(d->node);
+        d->node.reset();
         if (d->rclip) {
-            vsapi->freeNode(d->rclip);
+            d->rclip.reset();
         }
         return nullptr;
     };
@@ -417,21 +421,22 @@ static VSNode* nss_create_mcwnnm(const VSMap* in, VSCore* core, const VSAPI* vsa
         return fail("nss.MCWNNM: invalid ps_num/ps_range");
     }
     int e = 0;
-    d->rclip = vsapi->mapGetNode(in, "rclip", 0, &e);
+    d->rclip = nss::get_node(vsapi, in, "rclip", 0, &e);
     if (e) {
         d->rclip = nullptr;
     } else if (!nss::same_video(d->vi, *vsapi->getVideoInfo(d->rclip))) {
         return fail("nss.MCWNNM: rclip must match clip");
     }
+    nss::validate_group_planes(d->vi, d->sigma, d->block_size);
     d->vi_out = d->vi;
     if (d->radius > 0) {
-        d->vi_out.height = d->vi.height * (2 * d->radius + 1) * 2;
+        d->vi_out.height = nss::checked_fat_height(d->vi.height, d->radius);
     }
     VSFilterDependency deps[2]{{d->node, d->radius == 0 ? rpStrictSpatial : rpGeneral},
                                {d->rclip, d->radius == 0 ? rpStrictSpatial : rpGeneral}};
     const int ndeps = d->rclip ? 2 : 1;
     McwnnmData* raw = d.get();
-    VSNode* node = vsapi->createVideoFilter2("MCWNNM", &raw->vi_out, mcwnnmGetFrame, mcwnnmFree, fmParallel, deps, ndeps,
+    VSNode* node = vsapi->createVideoFilter2("MCWNNM", &raw->vi_out, nss::checked_frame<mcwnnmGetFrame>, mcwnnmFree, fmParallel, deps, ndeps,
                                             raw, core);
     if (!node) {
         return fail("nss.MCWNNM: failed to create filter");
@@ -453,6 +458,6 @@ void register_mcwnnm(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
         "clip:vnode;sigma:float[]:opt;block_size:int:opt;block_step:int:opt;group_size:int:opt;"
         "bm_range:int:opt;radius:int:opt;ps_num:int:opt;ps_range:int:opt;residual:int:opt;"
         "adaptive_aggregation:int:opt;rclip:vnode:opt;admm_iter:int:opt;rho:float:opt;mu:float:opt;"
-        "iters:int:opt;delta:float:opt;";
-    vspapi->registerFunction("MCWNNM", args, "clip:vnode;", mcwnnmCreate, nullptr, plugin);
+        "iters:int:opt;delta:float:opt;memory_limit_mb:int:opt;";
+    vspapi->registerFunction("MCWNNM", args, "clip:vnode;", nss::checked_create<mcwnnmCreate>, nullptr, plugin);
 }

@@ -7,4 +7,4 @@
 VSNode* nss_create_bm3d(const VSMap* in, VSCore* core, const VSAPI* vsapi, VSMap* err);
 VSNode* nss_create_wnnm(const VSMap* in, VSCore* core, const VSAPI* vsapi, VSMap* err);
 VSNode* nss_create_vaggregate(VSNode* fat, VSNode* src, int radius, const int* planes, VSCore* core,
-                              const VSAPI* vsapi, VSMap* err);
+                              const VSAPI* vsapi, VSMap* err, bool allow_legacy = false);

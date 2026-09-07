@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <utility>
 #include <vector>
+#include "nss/resources.hpp"
 
 namespace nss {
 
@@ -124,10 +125,11 @@ private:
     };
     std::uint64_t next_ordinal_;
     std::size_t window_;
-    std::vector<Item> pending_;
+    ResourceVector<Item> pending_;
 };
 
-inline void bucket_group_jobs(std::vector<GroupJob>& jobs) {
+template<class Allocator>
+inline void bucket_group_jobs(std::vector<GroupJob, Allocator>& jobs) {
     std::stable_sort(jobs.begin(), jobs.end(), [](const GroupJob& a, const GroupJob& b) {
         if (a.key == b.key) {
             return a.ordinal < b.ordinal;

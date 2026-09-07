@@ -1,3 +1,4 @@
+#include "nss/resources.hpp"
 #include "nss/cpu_batch.hpp"
 
 #include "nss/cpu_api.hpp"
@@ -8,6 +9,7 @@
 #include "nss/cpu_twsc.hpp"
 #include "cpu/bm/matcher.hpp"
 #include "cpu/wnnm/jacobi8.hpp"
+#include "cpu/finishers.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -25,15 +27,17 @@ inline void set_status(Item& item, int value) noexcept {
 }
 
 template <typename Item, typename Less>
-std::vector<int> bucket_order(const Item* items, int count, Less less) {
-    std::vector<int> order(static_cast<std::size_t>(count));
+nss::ResourceVector<int> bucket_order(const Item* items, int count, Less less) {
+    nss::ResourceVector<int> order(static_cast<std::size_t>(count));
     std::iota(order.begin(), order.end(), 0);
 #if NSS_BM_HOMOGENEOUS
     bool homogeneous=true;
     for(int i=1;i<count;++i)if(less(items[0],items[i])||less(items[i],items[0])){homogeneous=false;break;}
     if(homogeneous)return order;
 #endif
-    std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
+    // Original input indices provide a total order, so no stable-sort heap
+    // buffer is needed beyond the explicitly budgeted index vector.
+    std::sort(order.begin(), order.end(), [&](int a, int b) {
         if (less(items[a], items[b])) {
             return true;
         }
@@ -83,47 +87,8 @@ void finish_twsc_batch_item(TwscPcaBatchItem& item) {
     float* B = mean + m;
     gemm_tn_hwy(m, n, r, U, m, item.group, item.lda, B, r);
 
-    float sigmas[kSvdMaxN];
-    float thresholds[kSvdMaxN];
-    float row_values[kSvdMaxN];
-    constexpr float kEps = 1e-6f;
-    bool same = true;
-    for (int col = 0; col < n; ++col) {
-        float sigma = item.col_sigma ? item.col_sigma[col] : item.sigma;
-        if (!is_finite_bits(sigma) || sigma < 0.f) {
-            sigma = 0.f;
-        }
-        sigmas[col] = sigma;
-        if (col > 0 && sigma != sigmas[0]) {
-            same = false;
-        }
-        if (item.col_weight) {
-            item.col_weight[col] = 1.f / (sigma + kEps);
-        }
-    }
-    const float sigma0 = sigmas[0];
-    const float noise = static_cast<float>(n) * sigma0 * sigma0;
-    for (int row = 0; row < r; ++row) {
-        const float singular = S[row];
-        S[row] = std::sqrt(std::max(singular * singular - noise, 0.f));
-        const float denominator = S[row] + kEps;
-        for (int col = 0; col < n; ++col) {
-            row_values[col] = B[row + col * r];
-        }
-        if (same) {
-            soft_threshold(row_values, n, sigma0 * sigma0 / denominator);
-        } else {
-            for (int col = 0; col < n; ++col) {
-                thresholds[col] = sigmas[col] * sigmas[col] / denominator;
-            }
-            soft_threshold_var(row_values, thresholds, n);
-        }
-        for (int col = 0; col < n; ++col) {
-            B[row + col * r] = row_values[col];
-        }
-    }
-    gemm_nn_hwy(m, n, r, U, m, B, r, item.group, item.lda);
-    group_center_add(item.group, m, n, item.lda, mean);
+    detail::finish_twsc_codes(r, n, item.sigma, item.col_sigma, item.col_weight, S, B, detail::ScalarCodeRows{});
+    detail::finish_pca_reconstruction(item.group, m, n, item.lda, U, B, mean);
     scale_twsc_rows(item.group, m, n, item.lda, item.row_weight, true);
 }
 
@@ -136,41 +101,9 @@ void finish_ncsr_batch_item(NcsrFilterBatchItem& item) {
     float* mean = S + n;
     float* B = mean + m;
     gemm_tn_hwy(m, n, r, U, m, item.group, item.lda, B, r);
-    if (!(item.sigma > 0.f) || !is_finite_bits(item.sigma)) {
-        gemm_nn_hwy(m, n, r, U, m, B, r, item.group, item.lda);
-        group_center_add(item.group, m, n, item.lda, mean);
-        return;
-    }
-
-    float weights[kSvdMaxN];
-    constexpr float kEps = 1e-12f;
-    const float h = std::max(2.f * static_cast<float>(m) * item.sigma * item.sigma, kEps);
-    float weight_sum = ncsr_group_weights(item.col_dist, item.group, m, n, item.lda, h, weights);
-    if (!(weight_sum > 0.f)) {
-        std::fill(weights, weights + n, 1.f);
-        weight_sum = static_cast<float>(n);
-    }
-    const float inverse_weight = 1.f / weight_sum;
-    constexpr float kMap = 2.8284271247461903f;
-    const float sigma2 = item.sigma * item.sigma;
-    float row_tau[kSvdMaxN];
-    for (int row = 0; row < r; ++row) {
-        float beta = 0.f;
-        for (int col = 0; col < n; ++col) {
-            beta += weights[col] * B[row + col * r];
-        }
-        beta *= inverse_weight;
-        float variance = 0.f;
-        for (int col = 0; col < n; ++col) {
-            const float error = B[row + col * r] - beta;
-            variance += weights[col] * error * error;
-        }
-        const float sigma_theta = std::sqrt(variance * inverse_weight);
-        row_tau[row] = kMap * sigma2 / (sigma_theta + kEps);
-    }
-    ncsr_centralize_codes(B, r, n, r, std::fabs(item.sigma), weights, row_tau);
-    gemm_nn_hwy(m, n, r, U, m, B, r, item.group, item.lda);
-    group_center_add(item.group, m, n, item.lda, mean);
+    detail::finish_ncsr_codes(item.group, m, n, item.lda, item.sigma, item.col_dist, B,
+                              detail::ScalarCodeRows{}, ncsr_group_weights, ncsr_centralize_codes);
+    detail::finish_pca_reconstruction(item.group, m, n, item.lda, U, B, mean);
 }
 
 }  // namespace
@@ -338,7 +271,7 @@ int svd_economy_batch(SvdBatchItem* items, int count) {
 
         const int m = items[order[begin]].m;
         const int n = items[order[begin]].n;
-        std::vector<int> batch_indices;
+        nss::ResourceVector<int> batch_indices;
         batch_indices.reserve(static_cast<std::size_t>(end - begin));
         for (int pos = begin; pos < end; ++pos) {
             const int index = order[pos];
@@ -371,13 +304,13 @@ int svd_economy_batch(SvdBatchItem* items, int count) {
             }
         } else if (!batch_indices.empty()) {
             const std::size_t size = batch_indices.size();
-            std::vector<const float*> a(size);
-            std::vector<int> lda(size);
-            std::vector<float*> u(size);
-            std::vector<int> ldu(size);
-            std::vector<float*> s(size);
-            std::vector<float*> vt(size);
-            std::vector<int> ldvt(size);
+            nss::ResourceVector<const float*> a(size);
+            nss::ResourceVector<int> lda(size);
+            nss::ResourceVector<float*> u(size);
+            nss::ResourceVector<int> ldu(size);
+            nss::ResourceVector<float*> s(size);
+            nss::ResourceVector<float*> vt(size);
+            nss::ResourceVector<int> ldvt(size);
             for (std::size_t i = 0; i < size; ++i) {
                 const auto& item = items[batch_indices[i]];
                 a[i] = item.A;
@@ -450,7 +383,7 @@ int bm3d_filter_group_batch(Bm3dFilterBatchItem* items, int count) {
 #if NSS_BM_HOMOGENEOUS
     bool homogeneous=count>0;
     for(int i=0;i<count;++i){const auto& p=items[i];const auto& q=items[0];
-        if(!p.patches||!p.weight||!p.work||p.block<1||p.group<1||p.k<1||p.k>p.group||p.lda<p.block*p.block||(p.wiener&&!p.ref_patches)||p.block!=q.block||p.group!=q.group||p.wiener!=q.wiener)homogeneous=false;
+        if(!p.patches||!p.weight||!p.work||!bm_allowed_block(p.block)||!bm_allowed_group(p.group)||p.k<1||p.k>p.group||p.lda<p.block*p.block||(p.wiener&&!p.ref_patches)||p.block!=q.block||p.group!=q.group||p.wiener!=q.wiener)homogeneous=false;
     }
     if(homogeneous){bm3d_filter_homogeneous_batch(items,count);return 0;}
 #endif
@@ -473,7 +406,8 @@ int bm3d_filter_group_batch(Bm3dFilterBatchItem* items, int count) {
             set_status(item, 1);
             continue;
         }
-        if (!item.patches || !item.weight || !item.work || item.lda < item.block * item.block || item.group < 1 ||
+        if (!item.patches || !item.weight || !item.work || !bm_allowed_block(item.block) ||
+            !bm_allowed_group(item.group) || item.lda < item.block * item.block ||
             item.k < 1 || item.k > item.group || item.block < 1) {
             if (first_error == 0) {
                 first_error = index + 1;
@@ -532,32 +466,8 @@ int wnnm_shrink_batch(WnnmShrinkBatchItem* items, int count) {
         float* S = U + m * n;
         float* Vt = S + n;
         float* mean = Vt + n * n;
-        const float constant = 8.f * std::sqrt(2.0f * static_cast<float>(n)) * item.sigma * item.sigma;
-        const int k = sv_shrink(S, std::min(m, n), constant, item.residual ? 0 : 1);
-        if (item.adaptive_weight) {
-            *item.adaptive_weight = item.adaptive && k > 0 ? 1.f / static_cast<float>(k) : 1.f;
-        }
-        for (int col = 0; col < n; ++col) {
-            for (int row = 0; row < k; ++row) {
-                Vt[row + col * n] *= S[row];
-            }
-        }
-        if (item.lda == m) {
-            gemm_nn_hwy(m, n, k, U, m, Vt, n, item.group, item.lda);
-        } else {
-            for (int col = 0; col < n; ++col) {
-                for (int row = 0; row < m; ++row) {
-                    float sum = 0.f;
-                    for (int inner = 0; inner < k; ++inner) {
-                        sum += U[row + inner * m] * Vt[inner + col * n];
-                    }
-                    item.group[row + col * item.lda] = sum;
-                }
-            }
-        }
-        if (item.residual) {
-            group_center_add(item.group, m, n, item.lda, mean);
-        }
+        detail::finish_wnnm(item.group, m, n, item.lda, item.sigma, item.residual, item.adaptive,
+                            item.adaptive_weight, U, S, Vt, mean);
     };
 
     int first_error = 0;
@@ -573,7 +483,7 @@ int wnnm_shrink_batch(WnnmShrinkBatchItem* items, int count) {
             ++end;
         }
 
-        std::vector<int> batch_indices;
+        nss::ResourceVector<int> batch_indices;
         batch_indices.reserve(static_cast<std::size_t>(end - begin));
         for (int pos = begin; pos < end; ++pos) {
             const int index = order[pos];
@@ -606,13 +516,13 @@ int wnnm_shrink_batch(WnnmShrinkBatchItem* items, int count) {
             }
         } else if (!batch_indices.empty()) {
             const std::size_t size = batch_indices.size();
-            std::vector<const float*> a(size);
-            std::vector<int> lda(size);
-            std::vector<float*> u(size);
-            std::vector<int> ldu(size);
-            std::vector<float*> s(size);
-            std::vector<float*> vt(size);
-            std::vector<int> ldvt(size, 8);
+            nss::ResourceVector<const float*> a(size);
+            nss::ResourceVector<int> lda(size);
+            nss::ResourceVector<float*> u(size);
+            nss::ResourceVector<int> ldu(size);
+            nss::ResourceVector<float*> s(size);
+            nss::ResourceVector<float*> vt(size);
+            nss::ResourceVector<int> ldvt(size, 8);
             for (std::size_t pos = 0; pos < size; ++pos) {
                 auto& item = items[batch_indices[pos]];
                 float* U = item.work;
@@ -733,7 +643,7 @@ int twsc_pca_soft_batch(TwscPcaBatchItem* items, int count) {
         }
         const int m = items[order[begin]].m;
         const int n = items[order[begin]].n;
-        std::vector<int> batch_indices;
+        nss::ResourceVector<int> batch_indices;
         batch_indices.reserve(static_cast<std::size_t>(end - begin));
         for (int pos = begin; pos < end; ++pos) {
             const int index = order[pos];
@@ -773,11 +683,11 @@ int twsc_pca_soft_batch(TwscPcaBatchItem* items, int count) {
             }
         } else if (!batch_indices.empty()) {
             const std::size_t size = batch_indices.size();
-            std::vector<const float*> a(size);
-            std::vector<int> lda(size);
-            std::vector<float*> u(size);
-            std::vector<int> ldu(size);
-            std::vector<float*> s(size);
+            nss::ResourceVector<const float*> a(size);
+            nss::ResourceVector<int> lda(size);
+            nss::ResourceVector<float*> u(size);
+            nss::ResourceVector<int> ldu(size);
+            nss::ResourceVector<float*> s(size);
             for (std::size_t pos = 0; pos < size; ++pos) {
                 auto& item = items[batch_indices[pos]];
                 float* U = item.work;
@@ -858,7 +768,7 @@ int ncsr_filter_group_batch(NcsrFilterBatchItem* items, int count) {
         }
         const int m = items[order[begin]].m;
         const int n = items[order[begin]].n;
-        std::vector<int> batch_indices;
+        nss::ResourceVector<int> batch_indices;
         batch_indices.reserve(static_cast<std::size_t>(end - begin));
         for (int pos = begin; pos < end; ++pos) {
             const int index = order[pos];
@@ -900,13 +810,13 @@ int ncsr_filter_group_batch(NcsrFilterBatchItem* items, int count) {
         }
 
         const std::size_t size = batch_indices.size();
-        std::vector<const float*> a(size);
-        std::vector<int> lda(size);
-        std::vector<float*> u(size);
-        std::vector<int> ldu(size, m);
-        std::vector<float*> s(size);
-        std::vector<float*> vt(size);
-        std::vector<int> ldvt(size, n);
+        nss::ResourceVector<const float*> a(size);
+        nss::ResourceVector<int> lda(size);
+        nss::ResourceVector<float*> u(size);
+        nss::ResourceVector<int> ldu(size, m);
+        nss::ResourceVector<float*> s(size);
+        nss::ResourceVector<float*> vt(size);
+        nss::ResourceVector<int> ldvt(size, n);
         for (std::size_t pos = 0; pos < size; ++pos) {
             auto& item = items[batch_indices[pos]];
             float* U = item.work;

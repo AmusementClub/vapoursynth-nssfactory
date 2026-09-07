@@ -1,0 +1,51 @@
+{
+  "schema": "nssfactory.tolerances.v2",
+  "semantic_version": 2,
+  "tracks": {
+    "exact": "Same ISA, expression order and model; array equality is required.",
+    "numeric_equivalent": "Same model with bounded floating-point differences; independent oracle required.",
+    "model_change": "Separate calibration and clean-reference quality record; never substitutes for correctness."
+  },
+  "matching_dyadic": {
+    "candidate_identity": "exact",
+    "distance": "exact"
+  },
+  "temporal_identity": {
+    "wrong_destination_tolerance": 0,
+    "sigma_zero_max_abs": 0,
+    "weighted_impulse_max_abs": 2e-06
+  },
+  "dct": {
+    "forward_max_abs": 2e-05,
+    "roundtrip_max_abs": 0.0002,
+    "domain": "normalized deterministic test fixtures"
+  },
+  "fixed_group": {
+    "max_abs": 2e-05,
+    "relative_component": 0.0002,
+    "domain": "normalized finite fixtures; threshold ties diagnosed separately",
+    "hard_threshold_coefficient_uncertainty": 2e-05,
+    "hard_threshold_policy": "Only coefficients within the DCT forward error band may choose either adjacent mask; require valid mask weight and reconstruction. Outside the band the independent mask is mandatory."
+  },
+  "svd": {
+    "relative_reconstruction": 5e-05,
+    "relative_projection": 5e-05,
+    "spectrum_normalized_max_abs": 5e-05,
+    "effective_orthogonality_max_abs": 0.0005,
+    "effective_rank_squared_floor": 1e-14
+  },
+  "image": {
+    "report": [
+      "max_abs",
+      "rms",
+      "p99",
+      "PSNR_against_clean",
+      "SSIM_against_clean",
+      "candidate_changes",
+      "denominator_policy"
+    ],
+    "conditional_psnr_loss_db": 0.05,
+    "conditional_ssim_loss": 0.001,
+    "conditional_policy": "Only for individually diagnosed rounding or threshold cases with preserved failed arrays; not for wrong candidate or destination identity."
+  }
+}

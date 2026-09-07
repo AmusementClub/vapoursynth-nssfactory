@@ -1,5 +1,6 @@
 #include "nss/avx2_policy.hpp"
 #include "cpu/wnnm/jacobi8.hpp"
+#include "cpu/wnnm/numerics.hpp"
 #include "cpu/hwy_config.hpp"
 
 #include <algorithm>
@@ -33,6 +34,13 @@ void JacobiSvd8(const float* A, int lda, float* U, int ldu, float* S, float* Vt,
         V8[i + i * 8] = 1.f;
     }
 
+    float max_norm = 0.f;
+    for (int col = 0; col < 8; ++col) {
+        float norm = 0.f;
+        for (int row = 0; row < 8; ++row) norm += U8[row + col * 8] * U8[row + col * 8];
+        max_norm = std::max(max_norm, norm);
+    }
+    const float rank_floor = max_norm * detail::kSvdRankFloorSquared;
 #if HWY_MAX_BYTES >= 32
     {
         const hn::FixedTag<float, 8> d;
@@ -57,8 +65,8 @@ void JacobiSvd8(const float* A, int lda, float* U, int ldu, float* S, float* Vt,
             {{0, 4}, {1, 5}, {2, 6}, {3, 7}}, {{0, 5}, {1, 4}, {2, 7}, {3, 6}}, {{0, 6}, {1, 7}, {2, 4}, {3, 5}},
             {{0, 7}, {1, 6}, {2, 5}, {3, 4}},
         };
-        for (int sweep = 0; sweep < 8; ++sweep) {
-            float max_off = 0.f;
+        for (int sweep = 0; sweep < 32; ++sweep) {
+            bool rotated = false;
             for (int rnd = 0; rnd < 7; ++rnd) {
                 VW upv[4];
                 VW uqv[4];
@@ -77,16 +85,15 @@ void JacobiSvd8(const float* A, int lda, float* U, int ldu, float* S, float* Vt,
                     app[k] = nrm[p];
                     aqq[k] = nrm[q];
                     apq[k] = hsum8(hn::Mul(upv[k], uqv[k]));
-                    max_off = std::max(max_off, std::fabs(apq[k]));
                 }
                 for (int k = 0; k < 4; ++k) {
-                    if (std::fabs(apq[k]) <= 1e-14f * (std::sqrt(app[k] * aqq[k]) + 1e-20f)) {
+                    if (app[k] <= rank_floor || aqq[k] <= rank_floor || std::fabs(apq[k]) <= detail::kJacobiCorrelationTolerance * std::sqrt(app[k] * aqq[k])) {
                         continue;
                     }
                     const int p = pidx[k];
                     const int q = qidx[k];
-                    const float zeta = (aqq[k] - app[k]) / (2.f * apq[k]);
-                    const float t = std::copysign(1.f, zeta) / (std::fabs(zeta) + std::sqrt(1.f + zeta * zeta));
+                    rotated = true;
+                    const float t = detail::jacobi_tangent(app[k], aqq[k], apq[k]);
                     const float cs = 1.f / std::sqrt(1.f + t * t);
                     const float sn = cs * t;
                     const auto vcs = hn::Set(d, cs);
@@ -111,23 +118,25 @@ void JacobiSvd8(const float* A, int lda, float* U, int ldu, float* S, float* Vt,
                     nrm[j] = hsum8(hn::Mul(u[j], u[j]));
                 }
             }
-            if (max_off < 1e-8f) {
+            if (!rotated) {
                 break;
             }
         }
         for (int j = 0; j < 8; ++j) {
-            const float nrmj = std::sqrt(std::max(nrm[j], 0.f));
+            const float nrmj = nrm[j] > rank_floor ? std::sqrt(nrm[j]) : 0.f;
             S[j] = nrmj;
             if (nrmj > 1e-20f) {
                 u[j] = hn::Mul(u[j], hn::Set(d, 1.f / nrmj));
+            } else {
+                u[j] = hn::Zero(d);
             }
             hn::Store(u[j], d, U8 + j * 8);
             hn::Store(vv[j], d, V8 + j * 8);
         }
     }
 #else
-    for (int sweep = 0; sweep < 12; ++sweep) {
-        float max_off = 0.f;
+    for (int sweep = 0; sweep < 32; ++sweep) {
+        bool rotated = false;
         for (int p = 0; p < 7; ++p) {
             for (int q = p + 1; q < 8; ++q) {
                 float app = 0.f, aqq = 0.f, apq = 0.f;
@@ -138,12 +147,11 @@ void JacobiSvd8(const float* A, int lda, float* U, int ldu, float* S, float* Vt,
                     aqq += uq * uq;
                     apq += up * uq;
                 }
-                max_off = std::max(max_off, std::fabs(apq));
-                if (std::fabs(apq) <= 1e-14f * (std::sqrt(app * aqq) + 1e-20f)) {
+                if (app <= rank_floor || aqq <= rank_floor || std::fabs(apq) <= detail::kJacobiCorrelationTolerance * std::sqrt(app * aqq)) {
                     continue;
                 }
-                const float zeta = (aqq - app) / (2.f * apq);
-                const float t = std::copysign(1.f, zeta) / (std::fabs(zeta) + std::sqrt(1.f + zeta * zeta));
+                rotated = true;
+                const float t = detail::jacobi_tangent(app, aqq, apq);
                 const float cs = 1.f / std::sqrt(1.f + t * t);
                 const float sn = cs * t;
                 for (int i = 0; i < 8; ++i) {
@@ -158,7 +166,7 @@ void JacobiSvd8(const float* A, int lda, float* U, int ldu, float* S, float* Vt,
                 }
             }
         }
-        if (max_off < 1e-8f) {
+        if (!rotated) {
             break;
         }
     }
@@ -167,13 +175,15 @@ void JacobiSvd8(const float* A, int lda, float* U, int ldu, float* S, float* Vt,
         for (int i = 0; i < 8; ++i) {
             nrm += U8[i + j * 8] * U8[i + j * 8];
         }
-        nrm = std::sqrt(nrm);
+        nrm = nrm > rank_floor ? std::sqrt(nrm) : 0.f;
         S[j] = nrm;
         if (nrm > 1e-20f) {
             const float inv = 1.f / nrm;
             for (int i = 0; i < 8; ++i) {
                 U8[i + j * 8] *= inv;
             }
+        } else {
+            for (int i = 0; i < 8; ++i) U8[i + j * 8] = 0.f;
         }
     }
 #endif
@@ -340,6 +350,9 @@ int HouseholderQR(int m, int n, const float* A, int lda, float* Q, int ldq, floa
         const float norm2 = DotN(wcol, wcol, len);
         const float norm = std::sqrt(norm2);
         if (norm < 1e-20f) {
+            // A zero pivot column does not imply a zero row in later columns.
+            // With no reflector, that row passes through unchanged into R.
+            for (int j = k; j < n; ++j) R[k + j * ldr] = W[k + j * ldw];
             continue;
         }
         const float x0 = wcol[0];
@@ -351,6 +364,7 @@ int HouseholderQR(int m, int n, const float* A, int lda, float* Q, int ldq, floa
         }
         const float vtv = DotN(vcol, vcol, len);
         if (vtv < 1e-30f) {
+            for (int j = k; j < n; ++j) R[k + j * ldr] = W[k + j * ldw];
             continue;
         }
         beta[k] = 2.f / vtv;
@@ -393,7 +407,15 @@ void ApplyHouseholder(float* matrix, int ld, int ncols, const float* v, int len,
 }
 
 void GemmNN(int m, int n, int k, const float* A, int lda, const float* B, int ldb, float* C, int ldc, bool avx2_enabled) {
-    if (m < 1 || n < 1 || k < 1) {
+    if (m < 1 || n < 1 || k < 0) {
+        return;
+    }
+    // This is an overwrite product, including the empty inner dimension.
+    // Do not touch A/B or output padding when reconstruction has zero rank.
+    if (k == 0) {
+        for (int col = 0; col < n; ++col) {
+            std::fill_n(C + static_cast<std::size_t>(col) * ldc, m, 0.f);
+        }
         return;
     }
     const hn::ScalableTag<float> d;

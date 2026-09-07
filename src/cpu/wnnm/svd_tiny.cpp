@@ -1,5 +1,6 @@
 #include "nss/cpu_api.hpp"
 #include "cpu/wnnm/jacobi8.hpp"
+#include "cpu/wnnm/numerics.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -58,8 +59,15 @@ void jacobi_svd_n(int n, const float* A, int lda, float* U, int ldu, float* S, f
         V[i + i * n] = 1.f;
     }
 
+    float max_norm = 0.f;
+    for (int col = 0; col < n; ++col) {
+        float norm = 0.f;
+        for (int row = 0; row < n; ++row) norm += U[row + col * ldu] * U[row + col * ldu];
+        max_norm = std::max(max_norm, norm);
+    }
+    const float rank_floor = max_norm * detail::kSvdRankFloorSquared;
     for (int sweep = 0; sweep < 32; ++sweep) {
-        float max_off = 0.f;
+        bool rotated = false;
         for (int p = 0; p < n - 1; ++p) {
             for (int q = p + 1; q < n; ++q) {
                 float app = 0.f, aqq = 0.f, apq = 0.f;
@@ -70,12 +78,11 @@ void jacobi_svd_n(int n, const float* A, int lda, float* U, int ldu, float* S, f
                     aqq += uq * uq;
                     apq += up * uq;
                 }
-                max_off = std::max(max_off, std::fabs(apq));
-                if (std::fabs(apq) <= 1e-14f * (std::sqrt(app * aqq) + 1e-20f)) {
+                if (app <= rank_floor || aqq <= rank_floor || std::fabs(apq) <= detail::kJacobiCorrelationTolerance * std::sqrt(app * aqq)) {
                     continue;
                 }
-                const float zeta = (aqq - app) / (2.f * apq);
-                const float t = std::copysign(1.f, zeta) / (std::fabs(zeta) + std::sqrt(1.f + zeta * zeta));
+                rotated = true;
+                const float t = detail::jacobi_tangent(app, aqq, apq);
                 const float cs = 1.f / std::sqrt(1.f + t * t);
                 const float sn = cs * t;
                 for (int i = 0; i < n; ++i) {
@@ -92,7 +99,7 @@ void jacobi_svd_n(int n, const float* A, int lda, float* U, int ldu, float* S, f
                 }
             }
         }
-        if (max_off < 1e-8f) {
+        if (!rotated) {
             break;
         }
     }
@@ -102,13 +109,15 @@ void jacobi_svd_n(int n, const float* A, int lda, float* U, int ldu, float* S, f
         for (int i = 0; i < n; ++i) {
             nrm += U[i + j * ldu] * U[i + j * ldu];
         }
-        nrm = std::sqrt(nrm);
+        nrm = nrm > rank_floor ? std::sqrt(nrm) : 0.f;
         S[j] = nrm;
         if (nrm > 1e-20f) {
             const float inv = 1.f / nrm;
             for (int i = 0; i < n; ++i) {
                 U[i + j * ldu] *= inv;
             }
+        } else {
+            for (int i = 0; i < n; ++i) U[i + j * ldu] = 0.f;
         }
     }
 
@@ -172,7 +181,8 @@ int svd_mn(int m, int n, const float* A, int lda, float* U, int ldu, float* S, f
 
 int svd_economy(int m, int n, const float* A, int lda, float* U, int ldu, float* S, float* Vt, int ldvt,
                 float* work, int work_floats) {
-    if (m <= 0 || n <= 0 || m > kSvdMaxM || n > kSvdMaxN) {
+    if (m <= 0 || n <= 0 || m > kSvdMaxM || n > kSvdMaxN || !A || !U || !S || !Vt ||
+        lda < m || ldu < m || ldvt < n) {
         return -1;
     }
     int cap = work_floats;
@@ -181,6 +191,31 @@ int svd_economy(int m, int n, const float* A, int lda, float* U, int ldu, float*
         pool = tls_pool(&cap);
     }
     Bump bump{pool, 0, cap};
+    std::uint32_t maximum = 0;
+    for (int col = 0; col < n; ++col) {
+        for (int row = 0; row < m; ++row) {
+            maximum = std::max(maximum, detail::svd_magnitude_bits(A[row + col * lda]));
+        }
+    }
+    if (maximum >= 0x7f800000u) return -1;
+    const float scale = detail::svd_input_scale(maximum);
+    if (scale != 1.f) {
+        float* scaled = bump.take(m * n);
+        if (!scaled) return -1;
+        for (int col = 0; col < n; ++col) {
+            for (int row = 0; row < m; ++row) scaled[row + col * m] = A[row + col * lda] * scale;
+        }
+        A = scaled;
+        lda = m;
+    }
+    auto finish = [&](int rc) {
+        if (rc != 0) return rc;
+        for (int i = 0; i < std::min(m, n); ++i) {
+            S[i] /= scale;
+            if (detail::svd_magnitude_bits(S[i]) >= 0x7f800000u) return -1;
+        }
+        return 0;
+    };
 
     if (m < n) {
         float* AT = bump.take(n * m);
@@ -219,9 +254,9 @@ int svd_economy(int m, int n, const float* A, int lda, float* U, int ldu, float*
                 Vt[i + j * ldvt] = U2[j + i * n];
             }
         }
-        return 0;
+        return finish(0);
     }
-    return svd_mn(m, n, A, lda, U, ldu, S, Vt, ldvt, bump);
+    return finish(svd_mn(m, n, A, lda, U, ldu, S, Vt, ldvt, bump));
 }
 
 }  // namespace nss

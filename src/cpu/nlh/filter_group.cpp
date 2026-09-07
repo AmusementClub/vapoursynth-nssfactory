@@ -1,3 +1,4 @@
+#include "nss/resources.hpp"
 #include "nss/avx2_policy.hpp"
 #include "nss/cpu_nlh.hpp"
 #include "nss/params.hpp"
@@ -274,8 +275,8 @@ void NlhFilterGroup(float* patches, int m, int n, int lda, int q, float sigma, b
     const int need = idx_off + idx_f;
     float stack_y[kMaxQ * kMaxN];
     float stack_r[kMaxQ * kMaxN];
-    std::vector<float> snap_store;
-    std::vector<int> idx_store;
+    nss::ResourceVector<float> snap_store;
+    nss::ResourceVector<int> idx_store;
     float* src = nullptr;
     float* y = stack_y;
     float* rbuf = stack_r;

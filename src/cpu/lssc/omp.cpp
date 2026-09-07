@@ -1,3 +1,4 @@
+#include "nss/resources.hpp"
 #include "nss/avx2_policy.hpp"
 #include "nss/cpu_api.hpp"
 #include "nss/cpu_common.hpp"
@@ -79,12 +80,12 @@ int lssc_omp(const float* y, int m, const float* D, int atoms, int ldd, int spar
     float Ds_s[kStackM * 8];
     float G_s[8 * 8];
     float b_s[8];
-    std::vector<float> r_v;
-    std::vector<int> supp_v;
-    std::vector<char> used_v;
-    std::vector<float> Ds_v;
-    std::vector<float> G_v;
-    std::vector<float> b_v;
+    nss::ResourceVector<float> r_v;
+    nss::ResourceVector<int> supp_v;
+    nss::ResourceVector<char> used_v;
+    nss::ResourceVector<float> Ds_v;
+    nss::ResourceVector<float> G_v;
+    nss::ResourceVector<float> b_v;
     float* r = r_s;
     int* supp = supp_s;
     char* used = used_s;
@@ -114,7 +115,7 @@ int lssc_omp(const float* y, int m, const float* D, int atoms, int ldd, int spar
     }
     std::memcpy(r, y, static_cast<std::size_t>(m) * sizeof(float));
     float corr_s[kStackA];
-    std::vector<float> corr_v;
+    nss::ResourceVector<float> corr_v;
     float* corr = corr_s;
     if (atoms > kStackA) {
         corr_v.assign(static_cast<std::size_t>(atoms), 0.f);
@@ -280,16 +281,16 @@ void lssc_denoise_plane(const float* src, int width, int height, int sstride, fl
 
     const int nx = lssc_axis_count(width, block, step);
     const int ny = lssc_axis_count(height, block, step);
-    const int np = nx * ny;
+    const int np = lssc_grid_count(width, height, block, step);
     if (np < 1) {
         return;
     }
-    const int m = block * block;
+    const int m = checked_int(static_cast<std::uint64_t>(block) * block);
     const int lda = m;
     const int atoms = std::min(kLsscDefaultAtoms, np);
     const int nclusters = std::min(kLsscDefaultClusters, np);
     const int assign_f =
-        (np * static_cast<int>(sizeof(int)) + static_cast<int>(sizeof(float)) - 1) / static_cast<int>(sizeof(float));
+        (static_cast<std::uint64_t>(np) * sizeof(int) + sizeof(float) - 1) / static_cast<int>(sizeof(float));
     const int counts_f = (nclusters * static_cast<int>(sizeof(int)) + static_cast<int>(sizeof(float)) - 1) /
                          static_cast<int>(sizeof(float));
     const int offsets_f = ((nclusters + 1) * static_cast<int>(sizeof(int)) + static_cast<int>(sizeof(float)) - 1) /
@@ -299,7 +300,7 @@ void lssc_denoise_plane(const float* src, int width, int height, int sstride, fl
     const int dict_n = lssc_dict_work_floats(m, atoms, np, 1);
     const int work_need = lssc_denoise_work_floats(width, height, block, step);
 
-    std::vector<float> store;
+    nss::ResourceVector<float> store;
     float* buf = work;
     if (!buf || work_floats < work_need) {
         store.assign(static_cast<std::size_t>(work_need), 0.f);
@@ -326,10 +327,10 @@ void lssc_denoise_plane(const float* src, int width, int height, int sstride, fl
     std::memset(D, 0, static_cast<std::size_t>(m) * static_cast<std::size_t>(atoms) * sizeof(float));
 
     int idx = 0;
-    for (int by0 = 0; by0 < height - block + step; by0 += step) {
-        const int by = std::min(by0, std::max(0, height - block));
-        for (int bx0 = 0; bx0 < width - block + step; bx0 += step) {
-            const int bx = std::min(bx0, std::max(0, width - block));
+    for (std::int64_t by0 = 0; by0 < static_cast<std::int64_t>(height) - block + step; by0 += step) {
+        const int by = static_cast<int>(std::min<std::int64_t>(by0, std::max(0, height - block)));
+        for (std::int64_t bx0 = 0; bx0 < static_cast<std::int64_t>(width) - block + step; bx0 += step) {
+            const int bx = static_cast<int>(std::min<std::int64_t>(bx0, std::max(0, width - block)));
             pack_patch(patches + static_cast<std::size_t>(idx) * static_cast<std::size_t>(lda), lda, src, sstride, bx,
                        by, block, width, height);
             ++idx;
@@ -384,8 +385,8 @@ void lssc_denoise_plane(const float* src, int width, int height, int sstride, fl
     for (int j = 0; j < n; ++j) {
         const int bx0 = (j % nx) * step;
         const int by0 = (j / nx) * step;
-        const int bx = std::min(bx0, std::max(0, width - block));
-        const int by = std::min(by0, std::max(0, height - block));
+        const int bx = static_cast<int>(std::min<std::int64_t>(bx0, std::max(0, width - block)));
+        const int by = static_cast<int>(std::min<std::int64_t>(by0, std::max(0, height - block)));
         const float* col = patches + static_cast<std::size_t>(j) * static_cast<std::size_t>(lda);
         for (int i = 0; i < m; ++i) {
             const float v = col[i];

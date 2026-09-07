@@ -3,6 +3,7 @@
 #include "nss/cpu_common.hpp"
 #include "cpu/hwy_config.hpp"
 #include "cpu/wnnm/jacobi8.hpp"
+#include "cpu/finishers.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -43,9 +44,7 @@ void PcaReconstruct(float* group, int m, int n, int lda, const float* U, const f
     if (!group || !U || !B || !mean || m < 1 || n < 1 || lda < m) {
         return;
     }
-    const int r = std::min(m, n);
-    gemm_nn_hwy(m, n, r, U, m, B, r, group, lda);
-    group_center_add(group, m, n, lda, mean);
+    detail::finish_pca_reconstruction(group, m, n, lda, U, B, mean);
 }
 
 static void GatherRow(float* row, const float* B, int i, int r, int n) {
@@ -135,44 +134,15 @@ int TwscPcaSoft(float* group, int m, int n, int lda, float sigma, const float* c
         return -1;
     }
 
-    float sigj[kSvdMaxN];
-    float taus[kSvdMaxN];
-    float row[kSvdMaxN];
-    constexpr float kEps = 1e-6f;
-    bool same = true;
-    for (int j = 0; j < n; ++j) {
-        float s = sigma;
-        if (col_sigma) {
-            s = col_sigma[j];
+    struct Rows {
+        void gather(float* row, const float* codes, int i, int stride, int count) const {
+            GatherRow(row, codes, i, stride, count);
         }
-        if (!is_finite_bits(s) || s < 0.f) {
-            s = 0.f;
+        void scatter(float* codes, int i, int stride, int count, const float* row) const {
+            ScatterRow(codes, i, stride, count, row);
         }
-        sigj[j] = s;
-        if (j > 0 && s != sigj[0]) {
-            same = false;
-        }
-        if (col_w) {
-            col_w[j] = 1.f / (s + kEps);
-        }
-    }
-    const float sig0 = sigj[0];
-    const float nsig2 = static_cast<float>(n) * sig0 * sig0;
-    for (int i = 0; i < r; ++i) {
-        const float si = S[i];
-        S[i] = std::sqrt(std::max(si * si - nsig2, 0.f));
-        const float denom = S[i] + kEps;
-        GatherRow(row, B, i, r, n);
-        if (same) {
-            soft_threshold(row, n, (sig0 * sig0) / denom);
-        } else {
-            for (int j = 0; j < n; ++j) {
-                taus[j] = (sigj[j] * sigj[j]) / denom;
-            }
-            soft_threshold_var(row, taus, n);
-        }
-        ScatterRow(B, i, r, n, row);
-    }
+    };
+    detail::finish_twsc_codes(r, n, sigma, col_sigma, col_w, S, B, Rows{});
     PcaReconstruct(group, m, n, lda, U, B, mean);
     if (row_w) {
         ScaleRowsByW1(group, m, n, lda, row_w, true);

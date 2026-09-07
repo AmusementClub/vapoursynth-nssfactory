@@ -8,6 +8,8 @@ void jacobi_svd_8(const float* A, int lda, float* U, int ldu, float* S, float* V
 int householder_qr_hwy(int m, int n, const float* A, int lda, float* Q, int ldq, float* R, int ldr, float* W, float* Vh,
                        float* beta, bool form_q = true);
 void apply_householder_hwy(float* matrix, int ld, int ncols, const float* v, int len, float beta);
+// C = A B (overwrite), column-major m x n output with ldc >= m.
+// k=0 clears every active C element, preserves padding and does not access A/B.
 void gemm_nn_hwy(int m, int n, int k, const float* A, int lda, const float* B, int ldb, float* C, int ldc, bool avx2_enabled = false);
 // C = Aᵀ B. A is m×k, B is m×n, C is k×n.
 void gemm_tn_hwy(int m, int n, int k, const float* A, int lda, const float* B, int ldb, float* C, int ldc);

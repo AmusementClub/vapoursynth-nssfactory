@@ -2,6 +2,7 @@
 
 #include "nss/cpu_twsc.hpp"
 #include "nss/params.hpp"
+#include <algorithm>
 
 namespace nss {
 
@@ -10,11 +11,12 @@ inline int ncsr_filter_work_floats(int m, int n) {
 }
 
 inline int ncsr_denoise_work_floats(int width, int height, int block, int group) {
-    const int m = block < 1 ? 1 : block * block;
+    const int m = block < 1 ? 1 : checked_int(static_cast<std::uint64_t>(block) * block);
+    checked_solver_shape(m, std::max(group, 1));
     const int lda = (m + 15) & ~15;
     const int g = group < 1 ? 1 : group;
-    const int plane = (width < 1 || height < 1) ? 1 : width * height;
-    return plane * 4 + lda * g + ncsr_filter_work_floats(m, g) + 64;
+    const auto plane = (width < 1 || height < 1) ? 1ull : static_cast<std::uint64_t>(width) * height;
+    return checked_int(checked_sum(checked_mul(plane, 4), lda * g, ncsr_filter_work_floats(m, g), 64));
 }
 
 // Coding-domain NSS: β = weighted mean of code columns, B ← β + soft(B−β, τ).

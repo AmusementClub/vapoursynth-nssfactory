@@ -1,6 +1,7 @@
 #include "host/temporal.hpp"
 #include <limits>
 #include "nss/cpu_api.hpp"
+#include "nss/contracts.hpp"
 #include "nss/cpu_mcwnnm.hpp"
 #include <algorithm>
 #include <array>
@@ -44,14 +45,22 @@ void kernels(){
   double expected=oracle(v,r,b,g,sigma,wiener);float weight=0;
   bm3d_filter_group(p.data(),lda,g,k,b,sigma,wiener,ref.data(),&weight,work.data());
   near(weight,expected,1e-5,"group weight");
-  for(int i=0;i<k;++i){for(int j=0;j<area;++j)near(p[i*lda+j],v[i*area+j],3e-5,"group output");for(int j=area;j<lda;++j)require(p[i*lda+j]==999,"lda padding");}
+  for(int i=0;i<k;++i){for(int j=0;j<area;++j)near(p[i*lda+j],v[i*area+j],std::min(3e-5,2e-5+2e-4*std::abs(v[i*area+j])),"group output");for(int j=area;j<lda;++j)require(p[i*lda+j]==999,"lda padding");}
  }
- for(int k:{1,3,8})for(bool wiener:{false,true}){
-  int w=k*8,h=8;std::vector<float>s(w*h),r(w*h),num(w*h),den(w*h);std::vector<double>v(512),rr(512);Match m[8];
-  for(int g=0;g<k;++g){m[g]={g*8,0,0,0.f,static_cast<unsigned>(g)};for(int y=0;y<8;++y)for(int x=0;x<8;++x){int i=y*w+g*8+x,j=g*64+y*8+x;v[j]=s[i]=random(rng);rr[j]=r[i]=random(rng);}}
-  double weight=oracle(v,rr,8,8,.015f,wiener);
-  bm3d_filter8(s.data(),w,m,k,.015f,wiener,r.data(),w,num.data(),den.data(),w,w,h);
-  for(int g=0;g<k;++g)for(int y=0;y<8;++y)for(int x=0;x<8;++x){int i=y*w+g*8+x;near(den[i],weight,1e-5,"fused weight");near(num[i]/den[i],v[g*64+y*8+x],3e-5,"fused sigma output");}
+ for(float user_sigma:{0.f,.1f,1.f,3.f,10.f,25.f,50.f})for(int k=1;k<=8;++k)for(bool wiener:{false,true}){
+  const float sigma=nss::NoiseProfile::bm3d_effective(user_sigma);
+  int w=k*8,h=8,ss=w+3,rs=w+5,ds=w+7;
+  std::vector<float>s(ss*h,999),r(rs*h,999),num(ds*h),den(ds*h);
+  std::vector<double>v(512),rr(512);Match m[8];
+  for(int g=0;g<k;++g){m[g]={g*8,0,0,0.f,static_cast<unsigned>(g)};for(int y=0;y<8;++y)for(int x=0;x<8;++x){int j=g*64+y*8+x;v[j]=s[y*ss+g*8+x]=random(rng);rr[j]=r[y*rs+g*8+x]=random(rng);}}
+  double weight=oracle(v,rr,8,8,sigma,wiener);
+  for(auto filter:{bm3d_filter8,bm3d_filter8_portable}) {
+   std::fill(num.begin(),num.end(),999);std::fill(den.begin(),den.end(),999);
+   for(int y=0;y<h;++y){std::fill_n(num.data()+y*ds,w,0);std::fill_n(den.data()+y*ds,w,0);}
+   filter(s.data(),ss,m,k,sigma,wiener,r.data(),rs,num.data(),den.data(),ds,w,h);
+   for(int g=0;g<k;++g)for(int y=0;y<8;++y)for(int x=0;x<8;++x){int i=y*ds+g*8+x;near(den[i],weight,1e-5,"8x8x8 weight");near(num[i]/den[i],v[g*64+y*8+x],std::min(3e-5,2e-5+2e-4*std::abs(v[g*64+y*8+x])),"8x8x8 sigma output");}
+   for(int y=0;y<h;++y)for(int x=w;x<ds;++x)require(num[y*ds+x]==999 && den[y*ds+x]==999,"8x8x8 padding");
+  }
  }
 }
 void aliased_reference(){
@@ -106,4 +115,27 @@ void aggregation(){
   for(int y=0;y<h;++y){for(int x=0;x<w;++x){double expected=x?x+y:.27f;near(dst[y*ds+x],expected,2*std::numeric_limits<float>::epsilon()*std::max(1.,std::abs(expected)),"target slices/stride/fallback");}for(int x=w;x<ds;++x)require(dst[y*ds+x]==-9.f,"output padding");}
  }
 }
-int main(){try{matching();aggregation();kernels();aliased_reference();std::puts("BM3D independent contracts passed");return 0;}catch(const std::exception&e){std::fprintf(stderr,"%s\n",e.what());return 1;}}
+void threshold_neighbors() {
+ const float sigma=NoiseProfile::bm3d_effective(3.f), threshold=2.7f*sigma;
+ for(float coefficient:{threshold*.99f,std::nextafter(threshold,0.f),threshold,
+                         std::nextafter(threshold,std::numeric_limits<float>::infinity()),threshold*1.01f}) {
+  std::vector<float> input(512),work(bm3d_filter_work_floats(8,8));
+  std::vector<double> basis(512);
+  const double pi=std::acos(-1.);
+  for(int g=0;g<8;++g)for(int p=0;p<64;++p){
+   const int i=g*64+p;basis[i]=std::cos(pi*(g+.5)/8)*.5/8;
+   input[i]=static_cast<float>(.25+coefficient*basis[i]);
+  }
+  float weight=0;bm3d_filter_group(input.data(),64,8,8,8,sigma,false,nullptr,&weight,work.data());
+  double recovered=0;for(int i=0;i<512;++i)recovered+=(input[i]-.25)*basis[i];
+  const bool retained=std::abs(recovered-coefficient)<2e-5;
+  const bool removed=std::abs(recovered)<2e-5;
+  require(retained||removed,"threshold neighbor must be a valid discrete mask result");
+  if(coefficient<threshold-2e-5)require(removed,"below threshold uncertainty band");
+  if(coefficient>threshold+2e-5)require(retained,"above threshold uncertainty band");
+  near(weight,retained?.5:1.,1e-6,"threshold mask weight");
+  for(int i=0;i<512;++i)near(input[i],.25+(retained?coefficient*basis[i]:0.),2e-5,"threshold/DC reconstruction");
+  std::printf("threshold input=%.9g cutoff=%.9g recovered=%.9g retained=%d\n",coefficient,threshold,recovered,retained);
+ }
+}
+int main(){try{matching();aggregation();kernels();aliased_reference();threshold_neighbors();std::puts("BM3D independent contracts passed");return 0;}catch(const std::exception&e){std::fprintf(stderr,"%s\n",e.what());return 1;}}

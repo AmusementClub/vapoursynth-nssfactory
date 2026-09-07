@@ -99,3 +99,31 @@ sigma writes identity only in the center slice; zero total weight copies src[n].
 The shared single- and multichannel matcher fixes also affect other temporal NSS
 filters. Existing intermediates should be regenerated with the same plugin build.
 Rolling still returns normal-height output directly and remains experimental.
+
+
+### Versioned CPU contracts and memory limits
+
+Plan 01's common contracts are in [contracts/](contracts/), with numerical limits
+in [tolerances.json](contracts/tolerances.json). Fat intermediates now carry
+version, radius, center and model/profile properties. `VAggregate` rejects
+missing or conflicting identity. Its optional `allow_legacy=1` accepts wholly
+untagged contributions only when the caller guarantees the current destination
+semantics; regenerate intermediates from older incorrect temporal implementations.
+
+All filters accept `memory_limit_mb` as the last optional argument (default
+1024 MiB). A node exceeding its tracked buffer budget reports a VS error. It does
+not silently reduce group size, radius or iteration count. Frame properties
+`_NSSResourceBytes`, `_NSSResourcePeak` and `_NSSResourceLimit` expose byte
+accounting; the six categories and framework/RSS boundaries are specified in
+[failure.md](contracts/failure.md). Rolling keeps one serialized workspace per
+node, and evicted chunks remain charged while requests still hold them.
+
+The user-facing BM3D noise profile remains unchanged across backends. For old NSS
+generic configurations that previously used `sigma/255`, the migration is
+`new_sigma = old_sigma * 4/3`; the old spatial fused 8×8×8 route keeps its sigma.
+See [noise.md](contracts/noise.md) for the exact compatibility scope and the
+pinned bm3dcpu comparison. Current low-rank solvers use a documented relative
+convergence and effective-rank policy; corrected old outputs are not bitwise
+compatibility goldens. These correctness and safety changes have measured runtime
+regressions in some configurations; the accepted optimization defaults remain
+unchanged.

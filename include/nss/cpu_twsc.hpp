@@ -1,8 +1,10 @@
 #pragma once
+#include "nss/checked.hpp"
 
 namespace nss {
 
 inline int twsc_pca_soft_work_floats(int m, int n) {
+    checked_solver_shape(m, n);
     const int local = m * n + n + n * n + m + m * n;
     const int svd = m * n * 6 + n * n * 8 + n + 256;
     return local + svd;
