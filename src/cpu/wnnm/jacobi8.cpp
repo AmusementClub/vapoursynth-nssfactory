@@ -134,6 +134,59 @@ void JacobiSvd8(const float* A, int lda, float* U, int ldu, float* S, float* Vt,
             hn::Store(vv[j], d, V8 + j * 8);
         }
     }
+#elif HWY_TARGET == HWY_NEON || HWY_TARGET == HWY_NEON_WITHOUT_AES
+    const hn::CappedTag<float, 4> d4;
+    for (int sweep = 0; sweep < 32; ++sweep) {
+        bool rotated = false;
+        for (int p = 0; p < 7; ++p) {
+            for (int q = p + 1; q < 8; ++q) {
+                const auto p0 = hn::LoadU(d4, U8 + p * 8);
+                const auto p1 = hn::LoadU(d4, U8 + p * 8 + 4);
+                const auto q0 = hn::LoadU(d4, U8 + q * 8);
+                const auto q1 = hn::LoadU(d4, U8 + q * 8 + 4);
+                const float app = hn::ReduceSum(d4, hn::Add(hn::Mul(p0, p0), hn::Mul(p1, p1)));
+                const float aqq = hn::ReduceSum(d4, hn::Add(hn::Mul(q0, q0), hn::Mul(q1, q1)));
+                const float apq = hn::ReduceSum(d4, hn::Add(hn::Mul(p0, q0), hn::Mul(p1, q1)));
+                if (app <= rank_floor || aqq <= rank_floor || std::fabs(apq) <= detail::kJacobiCorrelationTolerance * std::sqrt(app * aqq)) {
+                    continue;
+                }
+                rotated = true;
+                const float t = detail::jacobi_tangent(app, aqq, apq);
+                const float cs = 1.f / std::sqrt(1.f + t * t);
+                const float sn = cs * t;
+                const auto vcs = hn::Set(d4, cs), vsn = hn::Set(d4, sn);
+                for (int i = 0; i < 8; i += 4) {
+                    const auto up = hn::LoadU(d4, U8 + i + p * 8);
+                    const auto uq = hn::LoadU(d4, U8 + i + q * 8);
+                    hn::StoreU(hn::Sub(hn::Mul(vcs, up), hn::Mul(vsn, uq)), d4, U8 + i + p * 8);
+                    hn::StoreU(hn::Add(hn::Mul(vsn, up), hn::Mul(vcs, uq)), d4, U8 + i + q * 8);
+                    const auto vp = hn::LoadU(d4, V8 + i + p * 8);
+                    const auto vq = hn::LoadU(d4, V8 + i + q * 8);
+                    hn::StoreU(hn::Sub(hn::Mul(vcs, vp), hn::Mul(vsn, vq)), d4, V8 + i + p * 8);
+                    hn::StoreU(hn::Add(hn::Mul(vsn, vp), hn::Mul(vcs, vq)), d4, V8 + i + q * 8);
+                }
+            }
+        }
+        if (!rotated) {
+            break;
+        }
+    }
+    for (int j = 0; j < 8; ++j) {
+        float nrm = 0.f;
+        for (int i = 0; i < 8; ++i) {
+            nrm += U8[i + j * 8] * U8[i + j * 8];
+        }
+        nrm = nrm > rank_floor ? std::sqrt(nrm) : 0.f;
+        S[j] = nrm;
+        if (nrm > 1e-20f) {
+            const float inv = 1.f / nrm;
+            for (int i = 0; i < 8; ++i) {
+                U8[i + j * 8] *= inv;
+            }
+        } else {
+            for (int i = 0; i < 8; ++i) U8[i + j * 8] = 0.f;
+        }
+    }
 #else
     for (int sweep = 0; sweep < 32; ++sweep) {
         bool rotated = false;

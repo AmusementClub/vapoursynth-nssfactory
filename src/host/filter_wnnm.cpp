@@ -5,7 +5,7 @@
 #include "host/batch_runner.hpp"
 #include "host/validate.hpp"
 #include "host/contribution.hpp"
-#include "nss/avx2.hpp"
+#include "nss/backend.hpp"
 #include "nss/cpu_api.hpp"
 #include "nss/params.hpp"
 #include "nss/workspace.hpp"
@@ -271,8 +271,8 @@ void VS_CC wnnmFree(void* instanceData, VSCore* core, const VSAPI* vsapi) {
 }  // namespace
 
 VSNode* nss_create_wnnm(const VSMap* in, VSCore* core, const VSAPI* vsapi, VSMap* err) {
-    if (!nss::cpu_has_avx2()) {
-        vsapi->mapSetError(err, "nss.WNNM: AVX2 is required");
+    if (!nss::cpu_backend_available()) {
+        vsapi->mapSetError(err, "nss.WNNM: no executable CPU backend (AVX2 on x86; NEON on AArch64)");
         return nullptr;
     }
     auto d = std::make_unique<WnnmData>();

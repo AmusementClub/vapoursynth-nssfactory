@@ -12,3 +12,5 @@ __pycache__/
 /docs/
 /ds/
 .DS_Store
+/.venv-paper/
+/artifacts

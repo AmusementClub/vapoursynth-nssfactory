@@ -5,7 +5,9 @@
 #include "nss/cpu_mcwnnm.hpp"
 #include "nss/cpu_ncsr.hpp"
 #include "nss/cpu_nlh.hpp"
-#include "nss/cpu_twsc.hpp"
+#include "nss/cpu_twsc_full.hpp"
+#include "nss/cpu_nlh_full.hpp"
+#include "nss/cpu_image.hpp"
 #include "nss/params.hpp"
 
 #include <algorithm>
@@ -13,6 +15,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -421,50 +424,18 @@ static double bench_wnnm_frame(Plane& src, int iters) {
 }
 
 static double bench_nlh_frame(Plane& src, int iters) {
-    const int block = nss::kNlhDefaultBlock;
-    const int group = nss::kNlhDefaultGroup;
-    const int step = nss::kNlhDefaultStep;
-    const int range = nss::kNlhDefaultRange;
-    const int q = nss::kNlhDefaultQ;
-    const int m = block * block;
-    const int lda = (m + 15) & ~15;
-    const float sigma = nss::kNlhDefaultSigma / 255.f;
-    std::vector<float> num(static_cast<std::size_t>(src.w) * src.h, 0.f);
-    std::vector<float> den(num.size(), 0.f);
-    std::vector<float> dst(static_cast<std::size_t>(src.stride) * src.h, 0.f);
-    std::vector<float> patches(static_cast<std::size_t>(lda * group));
-    std::vector<float> work(static_cast<std::size_t>(nss::nlh_filter_work_floats(m, group, q, lda)));
-    nss::Match matches[nss::kBmMaxGroup];
-    const auto t0 = clock::now();
-    for (int it = 0; it < iters; ++it) {
-        std::fill(num.begin(), num.end(), 0.f);
-        std::fill(den.begin(), den.end(), 0.f);
-        for (int by0 = 0; by0 < src.h - block + step; by0 += step) {
-            const int by = std::min(by0, src.h - block);
-            for (int bx0 = 0; bx0 < src.w - block + step; bx0 += step) {
-                const int bx = std::min(bx0, src.w - block);
-                const int k = nss::spatial_match(src.ptr(), src.stride, src.w, src.h, bx, by, block, range, group,
-                                                 matches);
-                if (k <= 0) {
-                    continue;
-                }
-                for (int i = 0; i < k; ++i) {
-                    nss::pack_patch(patches.data() + i * lda, lda, src.ptr(), src.stride, matches[i].x, matches[i].y,
-                                    block, src.w, src.h);
-                }
-                float aw = 1.f;
-                nss::nlh_filter_group(patches.data(), m, k, lda, q, sigma, false, nullptr, &aw, work.data(),
-                                      static_cast<int>(work.size()));
-                for (int i = 0; i < k; ++i) {
-                    nss::aggregate_add(num.data(), den.data(), src.w, matches[i].x, matches[i].y,
-                                       patches.data() + i * lda, block, src.w, src.h, aw);
-                }
-            }
-        }
-        nss::aggregate_finish(dst.data(), num.data(), den.data(), src.ptr(), src.w, src.h, src.stride, src.w);
+    nss::ImageSequence input(1);
+    input[0].planes[0]=nss::ImagePlane(src.w,src.h);input[0].sigma[0]=3.f/255.f;
+    for(int y=0;y<src.h;++y) for(int x=0;x<src.w;++x) input[0].planes[0].pixels[y*src.w+x]=src.ptr()[y*src.stride+x];
+    nss::NlhImageOptions options;
+    // Deliberately bounded complete-algorithm benchmark, not public defaults.
+    options.block={8,8};options.step={8,8};options.group={16,16};options.window={15,15};options.basic_iterations=2;
+    options.q={4,4};options.basic_mix=.6;options.hard_strength=1;options.wiener_iterations=2;options.wiener_sigma_scale=.08;
+    const auto t0=clock::now();
+    for(int i=0;i<iters;++i) {
+        const auto result=nss::nlh_image(input,nullptr,1,0,options);
+        volatile float sink=result.numerator[0].planes[0].pixels[0];(void)sink;
     }
-    volatile float sink = dst[static_cast<std::size_t>(src.h / 2 * src.stride + src.w / 2)];
-    (void)sink;
     return ms_since(t0);
 }
 
@@ -526,50 +497,17 @@ static double bench_mcwnnm_frame(Plane& p0, Plane& p1, Plane& p2, int iters) {
 }
 
 static double bench_twsc_frame(Plane& src, int iters) {
-    const int block = nss::kTwscDefaultBlock;
-    const int group = nss::kTwscDefaultGroup;
-    const int step = nss::kTwscDefaultStep;
-    const int range = nss::kTwscDefaultRange;
-    const int m = block * block;
-    const int lda = (m + 15) & ~15;
-    const float sigma = nss::kTwscDefaultSigma / 255.f;
-    std::vector<float> num(static_cast<std::size_t>(src.w) * src.h, 0.f);
-    std::vector<float> den(num.size(), 0.f);
-    std::vector<float> dst(static_cast<std::size_t>(src.stride) * src.h, 0.f);
-    std::vector<float> patches(static_cast<std::size_t>(lda * group));
-    std::vector<float> work(static_cast<std::size_t>(nss::twsc_pca_soft_work_floats(m, group)));
-    nss::Match matches[nss::kBmMaxGroup];
-    const auto t0 = clock::now();
-    for (int it = 0; it < iters; ++it) {
-        std::fill(num.begin(), num.end(), 0.f);
-        std::fill(den.begin(), den.end(), 0.f);
-        for (int by0 = 0; by0 < src.h - block + step; by0 += step) {
-            const int by = std::min(by0, src.h - block);
-            for (int bx0 = 0; bx0 < src.w - block + step; bx0 += step) {
-                const int bx = std::min(bx0, src.w - block);
-                const int k = nss::spatial_match(src.ptr(), src.stride, src.w, src.h, bx, by, block, range, group,
-                                                 matches);
-                if (k <= 0) {
-                    continue;
-                }
-                for (int i = 0; i < k; ++i) {
-                    nss::pack_patch(patches.data() + i * lda, lda, src.ptr(), src.stride, matches[i].x, matches[i].y,
-                                    block, src.w, src.h);
-                }
-                if (nss::twsc_pca_soft(patches.data(), m, k, lda, sigma, work.data(), static_cast<int>(work.size())) !=
-                    0) {
-                    continue;
-                }
-                for (int i = 0; i < k; ++i) {
-                    nss::aggregate_add(num.data(), den.data(), src.w, matches[i].x, matches[i].y,
-                                       patches.data() + i * lda, block, src.w, src.h, 1.f);
-                }
-            }
-        }
-        nss::aggregate_finish(dst.data(), num.data(), den.data(), src.ptr(), src.w, src.h, src.stride, src.w);
+    nss::ImageSequence input(1);
+    input[0].planes[0]=nss::ImagePlane(src.w,src.h);input[0].sigma[0]=3.f/255.f;
+    for(int y=0;y<src.h;++y) for(int x=0;x<src.w;++x) input[0].planes[0].pixels[y*src.w+x]=src.ptr()[y*src.stride+x];
+    nss::TwscImageOptions options;
+    // Deliberately bounded complete-algorithm benchmark, not public defaults.
+    options.block=8;options.step=8;options.group=8;options.window=15;options.iterations=2;
+    const auto t0=clock::now();
+    for(int i=0;i<iters;++i) {
+        const auto result=nss::twsc_image(input,nullptr,1,0,options);
+        volatile float sink=result.numerator[0].planes[0].pixels[0];(void)sink;
     }
-    volatile float sink = dst[static_cast<std::size_t>(src.h / 2 * src.stride + src.w / 2)];
-    (void)sink;
     return ms_since(t0);
 }
 
@@ -633,21 +571,11 @@ static double bench_nlh_pixel(int iters) {
 }
 
 static double bench_nlh_group(int iters) {
-    const int m = 64;
-    const int n = 16;
-    const int lda = 64;
-    const int q = 4;
-    std::vector<float> patches(static_cast<std::size_t>(lda * n), 0.1f);
-    std::vector<float> work(static_cast<std::size_t>(nss::nlh_filter_work_floats(m, n, q, lda)));
-    float aw = 1.f;
-    const auto t0 = clock::now();
-    for (int i = 0; i < iters; ++i) {
-        nss::nlh_filter_group(patches.data(), m, n, lda, q, 3.f / 255.f, false, nullptr, &aw, work.data(),
-                              static_cast<int>(work.size()));
-    }
-    volatile float sink = patches[0] + aw;
-    (void)sink;
-    return ms_since(t0);
+    std::vector<float> patches(64*16,.1f);
+    nss::NlhWorkspace work;const nss::NlhGroupOptions options{4,3./255.,false,1,2,.5};
+    const auto t0=clock::now();
+    for(int i=0;i<iters;++i) nss::nlh_filter_full(patches.data(),nullptr,64,16,64,options,nullptr,work);
+    volatile double sink=work.numerator[0];(void)sink;return ms_since(t0);
 }
 
 static double bench_mcwnnm_group(int iters) {
@@ -675,21 +603,11 @@ static double bench_mcwnnm_group(int iters) {
 }
 
 static double bench_twsc_group(int iters) {
-    const int m = 64;
-    const int n = 8;
-    const int lda = 64;
-    std::vector<float> Y(static_cast<std::size_t>(lda * n), 0.15f);
-    for (int j = 0; j < n; ++j) {
-        Y[static_cast<std::size_t>(j * lda)] += 0.01f * static_cast<float>(j);
-    }
-    std::vector<float> work(static_cast<std::size_t>(nss::twsc_pca_soft_work_floats(m, n)));
-    const auto t0 = clock::now();
-    for (int i = 0; i < iters; ++i) {
-        nss::twsc_pca_soft(Y.data(), m, n, lda, 3.f / 255.f, work.data(), static_cast<int>(work.size()));
-    }
-    volatile float sink = Y[0];
-    (void)sink;
-    return ms_since(t0);
+    std::vector<float> input(64*8),group,row_sigma(64,3.f/255.f),column_sigma(8,3.f/255.f);
+    for(int i=0;i<64*8;++i) input[i]=float(.2+.03*std::sin(i*.17));
+    nss::TwscWorkspace work;const auto t0=clock::now();
+    for(int i=0;i<iters;++i) { group=input;nss::twsc_filter_full(group.data(),64,8,64,row_sigma.data(),column_sigma.data(),nullptr,{},work); }
+    volatile float sink=group[0];(void)sink;return ms_since(t0);
 }
 
 static double bench_ncsr_group(int iters) {

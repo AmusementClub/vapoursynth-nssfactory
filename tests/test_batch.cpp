@@ -3,7 +3,8 @@
 #include "nss/cpu_mcwnnm.hpp"
 #include "nss/cpu_ncsr.hpp"
 #include "nss/cpu_nlh.hpp"
-#include "nss/cpu_twsc.hpp"
+#include "nss/cpu_twsc_full.hpp"
+#include "nss/cpu_nlh_full.hpp"
 
 #include <algorithm>
 #include <array>
@@ -82,8 +83,8 @@ bool check_svd_lane_batches() {
         int status = 0;
     };
 
-    constexpr int counts[] = {1, 2, 7, 8, 9, 15, 16, 17, 31, 32};
-    constexpr int rows[] = {8, 16, 48, 64};
+    constexpr int counts[] = {1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 32, 33};
+    constexpr int rows[] = {8, 16, 48, 64, 65, 128, 256};
     for (int m : rows) {
         for (int count : counts) {
             std::vector<Buffers> matrices(static_cast<std::size_t>(count));
@@ -178,8 +179,8 @@ bool check_wnnm_lane_batches() {
         int status = 0;
     };
 
-    constexpr int counts[] = {2, 7, 8, 9, 16, 17, 32};
-    for (int m : {16, 64}) {
+    constexpr int counts[] = {1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 32, 33};
+    for (int m : {16, 64, 65, 256}) {
         for (int residual : {0, 1}) {
             for (int count : counts) {
                 std::vector<Buffers> groups(static_cast<std::size_t>(count));
@@ -246,82 +247,77 @@ bool check_wnnm_lane_batches() {
 
 bool check_twsc_lane_batches() {
     struct Buffers {
-        int m = 0;
-        int lda = 0;
-        std::vector<float> scalar;
-        std::vector<float> batch;
-        std::vector<float> repeat;
-        std::vector<float> scalar_work;
-        std::vector<float> batch_work;
-        std::vector<float> repeat_work;
-        std::array<float, 8> col_sigma{};
-        std::array<float, 8> scalar_weight{};
-        std::array<float, 8> batch_weight{};
-        std::array<float, 8> repeat_weight{};
-        std::vector<float> row_weight;
-        int status = 0;
+        int lda=0;
+        std::vector<float> scalar,batch,repeat,rows;
+        std::array<float,8> columns{},sw{},bw{},rw{};
+        nss::TwscWorkspace scalar_work,batch_work,repeat_work;
     };
-
-    constexpr int counts[] = {2, 7, 8, 9, 16, 17, 32};
-    for (int m : {16, 64, 65}) {
-        for (int count : counts) {
-            std::vector<Buffers> groups(static_cast<std::size_t>(count));
-            std::vector<nss::TwscPcaBatchItem> items(static_cast<std::size_t>(count));
-            std::vector<nss::TwscPcaBatchItem> repeats(static_cast<std::size_t>(count));
-            for (int index = 0; index < count; ++index) {
-                auto& b = groups[static_cast<std::size_t>(index)];
-                b.m = m;
-                b.lda = m + index % 3;
-                b.scalar.assign(static_cast<std::size_t>(b.lda * 8), 0.f);
-                for (int col = 0; col < 8; ++col) {
-                    b.col_sigma[static_cast<std::size_t>(col)] = 0.008f + 0.001f * static_cast<float>((col + index) % 4);
-                    for (int row = 0; row < m; ++row) {
-                        b.scalar[static_cast<std::size_t>(row + col * b.lda)] =
-                            0.2f * std::cos(static_cast<float>((index + 1) * (row + 2) * (col + 3)) * 0.029f) +
-                            (row == col ? 0.15f : 0.f);
-                    }
-                }
-                b.batch = b.scalar;
-                b.repeat = b.scalar;
-                b.row_weight.resize(static_cast<std::size_t>(m));
-                for (int row = 0; row < m; ++row) {
-                    b.row_weight[static_cast<std::size_t>(row)] = 0.75f + 0.05f * static_cast<float>(row % 7);
-                }
-                const int work_floats = nss::twsc_pca_soft_work_floats(m, 8);
-                b.scalar_work.assign(static_cast<std::size_t>(work_floats), 0.f);
-                b.batch_work.assign(static_cast<std::size_t>(work_floats), 0.f);
-                b.repeat_work.assign(static_cast<std::size_t>(work_floats), 0.f);
-                const float* row_weight = index % 2 == 0 ? b.row_weight.data() : nullptr;
-                if (nss::twsc_pca_soft(b.scalar.data(), m, 8, b.lda, 0.01f, b.scalar_work.data(), work_floats,
-                                       b.col_sigma.data(), b.scalar_weight.data(), row_weight) != 0) {
-                    std::fprintf(stderr, "scalar TWSC fixture failed for m=%d count=%d item=%d\n", m, count, index);
-                    return false;
-                }
-                items[static_cast<std::size_t>(index)] = nss::TwscPcaBatchItem{
-                    b.batch.data(), m, 8, b.lda, 0.01f, b.batch_work.data(), work_floats, b.col_sigma.data(),
-                    b.batch_weight.data(), row_weight, &b.status};
-                repeats[static_cast<std::size_t>(index)] = nss::TwscPcaBatchItem{
-                    b.repeat.data(), m, 8, b.lda, 0.01f, b.repeat_work.data(), work_floats, b.col_sigma.data(),
-                    b.repeat_weight.data(), row_weight, nullptr};
+    const nss::TwscSolverOptions options{};
+    for (int m : {16,64,192}) for (int count : {1,3,16,17,33}) {
+        std::vector<Buffers> buffers(count);
+        std::vector<nss::TwscFullBatchItem> items(count),repeats(count);
+        for (int k=0;k<count;++k) {
+            auto& b=buffers[k];b.lda=m+3;b.scalar.assign(b.lda*8,-987);b.rows.resize(m);
+            for(int i=0;i<m;++i) b.rows[i]=.01f+float(i%3)*.02f;
+            for(int j=0;j<8;++j) {
+                b.columns[j]=.01f+.002f*j;
+                for(int i=0;i<m;++i) b.scalar[i+j*b.lda]=float(.2*std::sin((k+1)*(i+2)*(j+3)*.029));
             }
-            if (nss::twsc_pca_soft_batch(items.data(), count) != 0 ||
-                nss::twsc_pca_soft_batch(repeats.data(), count) != 0) {
-                std::fprintf(stderr, "lane TWSC batch failed for m=%d count=%d\n", m, count);
+            b.batch=b.scalar;b.repeat=b.scalar;
+            nss::twsc_filter_full(b.scalar.data(),m,8,b.lda,b.rows.data(),b.columns.data(),b.sw.data(),options,b.scalar_work);
+            items[k]={b.batch.data(),m,8,b.lda,b.rows.data(),b.columns.data(),b.bw.data(),&options,&b.batch_work,nullptr};
+            repeats[k]={b.repeat.data(),m,8,b.lda,b.rows.data(),b.columns.data(),b.rw.data(),&options,&b.repeat_work,nullptr};
+        }
+        nss::twsc_filter_full_batch(items.data(),count);
+        nss::twsc_filter_full_batch(repeats.data(),count);
+        for(std::size_t index=0;index<buffers.size();++index) {
+            const auto& b=buffers[index];
+            if(!compare_array(b.scalar.data(),b.batch.data(),b.scalar.size(),2e-4f) || b.batch!=b.repeat || b.sw!=b.bw || b.bw!=b.rw) {
+                std::fprintf(stderr,"full TWSC batch mismatch m=%d count=%d item=%zu\n",m,count,index);
+                for(int k=0;k<8;++k) std::fprintf(stderr,"s%d scalar=%.12g batch=%.12g\n",k,b.scalar_work.singular[k],b.batch_work.singular[k]);
                 return false;
             }
-            for (int index = 0; index < count; ++index) {
-                const auto& b = groups[static_cast<std::size_t>(index)];
-                if (b.status != 1 || !compare_array(b.scalar.data(), b.batch.data(), b.scalar.size(), 3e-3f) ||
-                    !compare_array(b.scalar_weight.data(), b.batch_weight.data(), 8, 3e-5f)) {
-                    std::fprintf(stderr, "lane TWSC mismatch for m=%d count=%d item=%d\n", m, count, index);
-                    return false;
+        }
+    }
+    return true;
+}
+
+bool check_twsc_large_batches() {
+    const nss::TwscSolverOptions options{};
+    for (const auto [m,n] : {std::pair{1,64}, {49,70}, {192,90}, {81,140}, {768,256}}) {
+        const int count = n == 256 ? 3 : 17;
+        std::vector<nss::TwscWorkspace> scalar(count),batch(count),single(count);
+        std::vector<std::vector<float>> values(count),outputs(count),again(count),row(count),col(count);
+        std::vector<nss::TwscFullBatchItem> items(count),repeats(count);
+        for (int k=0;k<count;++k) {
+            values[k].resize(m*n); row[k].assign(m,.04f);col[k].assign(n,.04f);
+            for (int j=0;j<n;++j) for(int i=0;i<m;++i)
+                values[k][i+j*m]=k==0 ? .3f : float(.2+.09*std::sin((i+1)*(j+3)*(k+1)*.071));
+            outputs[k]=values[k];again[k]=values[k];
+            nss::twsc_filter_full(values[k].data(),m,n,m,row[k].data(),col[k].data(),nullptr,options,scalar[k]);
+            items[k]={outputs[k].data(),m,n,m,row[k].data(),col[k].data(),nullptr,&options,&batch[k],nullptr};
+            repeats[k]={again[k].data(),m,n,m,row[k].data(),col[k].data(),nullptr,&options,&single[k],nullptr};
+        }
+        for(int start=0;start<count;start+=16) {
+            const int size=std::min(16,count-start);
+            std::array<nss::TwscWorkspace*,16> prepared{};
+            for(int k=0;k<size;++k) {
+                auto& item=items[start+k];
+                nss::twsc_prepare_group(item.group,m,n,m,*item.work);prepared[k]=item.work;
+            }
+            nss::twsc_svd64_batch(prepared.data(),m,n,size);
+            for(int k=0;k<size;++k) {
+                const auto& got=*prepared[k];const auto& expected=scalar[start+k];
+                if(!nss::twsc_valid_svd(got.input.data(),m,n,m,got) || got.dictionary!=expected.dictionary || got.vt!=expected.vt) {
+                    std::fprintf(stderr,"large TWSC decomposition mismatch %dx%d group %d\\n",m,n,start+k);return false;
                 }
-                if (std::memcmp(b.batch.data(), b.repeat.data(), b.batch.size() * sizeof(float)) != 0 ||
-                    std::memcmp(b.batch_weight.data(), b.repeat_weight.data(), 8 * sizeof(float)) != 0) {
-                    std::fprintf(stderr, "lane TWSC is not deterministic for m=%d count=%d item=%d\n", m, count,
-                                 index);
-                    return false;
-                }
+            }
+        }
+        nss::twsc_filter_full_batch(items.data(),count);
+        for(int k=0;k<count;++k) nss::twsc_filter_full_batch(&repeats[k],1);
+        for(int k=0;k<count;++k) {
+            if(values[k]!=outputs[k] || outputs[k]!=again[k]) {
+                std::fprintf(stderr,"large TWSC lane mismatch %dx%d group %d\n",m,n,k);return false;
             }
         }
     }
@@ -342,8 +338,8 @@ bool check_ncsr_lane_batches() {
         int status = 0;
     };
 
-    constexpr int counts[] = {2, 7, 8, 9, 16, 17, 32};
-    for (int m : {16, 64}) {
+    constexpr int counts[] = {1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 32, 33};
+    for (int m : {16, 64, 65, 256}) {
         for (int count : counts) {
             std::vector<Buffers> groups(static_cast<std::size_t>(count));
             std::vector<nss::NcsrFilterBatchItem> items(static_cast<std::size_t>(count));
@@ -601,26 +597,6 @@ bool check_filter_batches() {
         }
     }
 
-    {
-        const int m = 16, n = 4, lda = 20;
-        const int work_n = nss::twsc_pca_soft_work_floats(m, n);
-        const float col_sigma[4] = {0.02f, 0.03f, 0.025f, 0.04f};
-        const float row_w[16] = {1.f, 1.f, 0.9f, 0.8f, 1.1f, 1.f, 0.7f, 1.f,
-                                 1.f, 0.9f, 1.f, 1.1f, 0.8f, 1.f, 1.f, 0.95f};
-        std::vector<float> scalar(static_cast<std::size_t>(lda * n));
-        fill_random(scalar);
-        std::vector<float> batch = scalar;
-        std::vector<float> sw(static_cast<std::size_t>(work_n));
-        std::vector<float> bw(static_cast<std::size_t>(work_n));
-        std::array<float, 4> swgt{}, bwgt{};
-        nss::twsc_pca_soft(scalar.data(), m, n, lda, 0.02f, sw.data(), work_n, col_sigma, swgt.data(), row_w);
-        nss::TwscPcaBatchItem item{batch.data(), m, n, lda, 0.02f, bw.data(), work_n, col_sigma, bwgt.data(), row_w};
-        if (nss::twsc_pca_soft_batch(&item, 1) != 0 || !compare_array(scalar.data(), batch.data(), scalar.size(), 2e-4f) ||
-            !compare_array(swgt.data(), bwgt.data(), swgt.size(), 2e-4f)) {
-            std::fprintf(stderr, "TWSC scalar/batch mismatch\n");
-            return false;
-        }
-    }
 
     {
         const int m = 16, n = 4, lda = 20;
@@ -640,22 +616,16 @@ bool check_filter_batches() {
     }
 
     {
-        const int m = 16, n = 4, lda = 20, q = 4;
-        const int work_n = nss::nlh_filter_work_floats(m, n, q, lda);
-        std::vector<float> scalar(static_cast<std::size_t>(lda * n));
-        std::vector<float> ref(static_cast<std::size_t>(lda * n));
-        fill_random(scalar);
-        fill_random(ref);
-        std::vector<float> batch = scalar;
-        std::vector<float> sw(static_cast<std::size_t>(work_n));
-        std::vector<float> bw(static_cast<std::size_t>(work_n));
-        float sweight = 1.f, bweight = 1.f;
-        nss::nlh_filter_group(scalar.data(), m, n, lda, q, 0.025f, true, ref.data(), &sweight, sw.data(), work_n);
-        nss::NlhFilterBatchItem item{batch.data(), m, n, lda, q, 0.025f, true, ref.data(), &bweight, bw.data(), work_n};
-        if (nss::nlh_filter_group_batch(&item, 1) != 0 || !compare_array(scalar.data(), batch.data(), scalar.size(), 2e-4f) ||
-            !close_float(sweight, bweight, 2e-4f)) {
-            std::fprintf(stderr, "NLH scalar/batch mismatch\n");
-            return false;
+        const int m=16,n=4,lda=20;
+        std::vector<float> input(lda*n),reference(lda*n);
+        fill_random(input);fill_random(reference);
+        nss::NlhWorkspace scalar,batch;
+        const nss::NlhGroupOptions options{4,.025,true,1,2,.5};
+        nss::nlh_filter_full(input.data(),reference.data(),m,n,lda,options,nullptr,scalar);
+        nss::NlhFullBatchItem item{input.data(),reference.data(),m,n,lda,&options,nullptr,&batch};
+        nss::nlh_filter_full_batch(&item,1);
+        if(scalar.numerator!=batch.numerator || scalar.denominator!=batch.denominator) {
+            std::fprintf(stderr,"full NLH batch mismatch\n");return false;
         }
     }
     return true;
@@ -718,7 +688,7 @@ int main() {
     if (!check_twsc_lane_batches()) {
         return 1;
     }
-    if (!check_ncsr_lane_batches()) {
+    if (!check_twsc_large_batches() || !check_ncsr_lane_batches()) {
         return 1;
     }
     if (!check_filter_batches()) {

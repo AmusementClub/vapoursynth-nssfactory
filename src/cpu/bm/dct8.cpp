@@ -108,7 +108,7 @@ static const float* DctMatrix(int n) {
     }
 }
 
-#if HWY_MAX_BYTES >= 32
+#if HWY_MAX_BYTES >= 16
 // Lanes(d) independent 8-point orthonormal DCT-II / IDCT-III on registers.
 #if NSS_BM_EXPERIMENT & 8
 template <bool kForward, class D>
@@ -326,6 +326,8 @@ static void Dct8Packed(D d, float* x, float* y, bool inverse) {
     }
 }
 
+#endif
+#if HWY_MAX_BYTES >= 32
 using D8 = hn::FixedTag<float, 8>;
 using V8 = hn::Vec<D8>;
 
@@ -636,6 +638,16 @@ static void DctLines(float* base, int n, int line_stride, int sample_stride, int
                 x[i * L + lane] = 0.f;
             }
         }
+#if HWY_TARGET == HWY_NEON || HWY_TARGET == HWY_NEON_WITHOUT_AES
+        if (n == 8) {
+            Dct8Packed(d, x, y, inverse);
+            for (int outb = 0; outb < n; ++outb) {
+                for (int lane = 0; lane < lanes; ++lane)
+                    base[(v0 + lane) * line_stride + outb * sample_stride] = y[outb * L + lane];
+            }
+            continue;
+        }
+#endif
 #if HWY_MAX_BYTES >= 32
         if (n == 8) {
             Dct8Packed(d, x, y, inverse);

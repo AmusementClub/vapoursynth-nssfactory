@@ -10,9 +10,9 @@ INTEGER_ARGS = {
     "BM3D": "block_size group_size block_step bm_range radius ps_num ps_range rolling_chunk rolling_cache_chunks rolling_cache_limit",
     "WNNM": "block_size block_step group_size bm_range radius ps_num ps_range residual adaptive_aggregation",
     "MCWNNM": "block_size block_step group_size bm_range radius ps_num ps_range residual adaptive_aggregation admm_iter iters",
-    "TWSC": "block_size block_step group_size bm_range radius ps_num ps_range iters",
+    "TWSC": "block_size block_step group_size bm_range radius ps_num ps_range iters search_window estimate_sigma admm_iter",
     "NCSR": "block_size block_step group_size bm_range radius ps_num ps_range iters",
-    "NLH": "block_size block_step group_size bm_range radius ps_num ps_range q",
+    "NLH": "block_size block_step group_size bm_range radius ps_num ps_range q search_window basic_iters wiener_iters",
     "LSSC": "block_size block_step radius",
     "NLM": "d a s wmode",
     "VAggregate": "radius planes",
@@ -21,8 +21,8 @@ INTEGER_ARGS = {name: keys + " memory_limit_mb" for name, keys in INTEGER_ARGS.i
 INTEGER_ARGS["VAggregate"] += " allow_legacy"
 FLOAT_ARGS = {
     "BM3D": "sigma", "WNNM": "sigma", "MCWNNM": "sigma rho mu delta",
-    "TWSC": "sigma lambda1 lambda2 delta", "NCSR": "sigma delta",
-    "NLH": "sigma", "LSSC": "sigma", "NLM": "h wref",
+    "TWSC": "sigma lambda2 delta rho mu tol", "NCSR": "sigma delta",
+    "NLH": "sigma lambda_basic hard_strength wiener_sigma_scale", "LSSC": "sigma", "NLM": "h wref",
 }
 
 

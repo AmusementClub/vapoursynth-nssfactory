@@ -1,0 +1,10 @@
+{
+  "fp64_direct": {},
+  "mixed_tn": {"precision": 1, "correlation": 1, "match_precision": 1},
+  "mixed_nn": {"precision": 1, "correlation": 3, "match_precision": 1},
+  "mixed_sme": {"precision": 1, "correlation": 7, "match_precision": 1},
+  "fast105": {"precision": 1, "correlation": 7, "match_precision": 1, "epsilon_scale": 1.05},
+  "match2": {"precision": 1, "correlation": 7, "match_precision": 1, "threshold_multiplier": 2.0},
+  "learn1": {"precision": 1, "correlation": 7, "match_precision": 1, "image_passes": 1, "learning_samples": 2048, "learning_iterations": 96, "learning_lambda": 1.0},
+  "learn1_match2": {"precision": 1, "correlation": 7, "match_precision": 1, "image_passes": 1, "learning_samples": 2048, "learning_iterations": 96, "learning_lambda": 1.0, "threshold_multiplier": 2.0}
+}

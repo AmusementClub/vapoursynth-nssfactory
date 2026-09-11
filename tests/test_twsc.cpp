@@ -1,198 +1,63 @@
-#include "nss/cpu_twsc.hpp"
-
+#include "nss/cpu_twsc_full.hpp"
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <limits>
-#include <random>
+#include <stdexcept>
 #include <vector>
 
-static int fail(const char* msg) {
-    std::fprintf(stderr, "%s\n", msg);
-    return 1;
-}
-
-static double frobenius(const float* a, int m, int n, int lda) {
-    double s = 0.0;
-    for (int j = 0; j < n; ++j) {
-        for (int i = 0; i < m; ++i) {
-            const double v = a[i + j * lda];
-            s += v * v;
-        }
-    }
-    return s;
-}
-
-static int check_group(int m, int n, int lda, std::mt19937& rng) {
-    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
-    std::vector<float> Y(static_cast<std::size_t>(lda * n));
-    for (int j = 0; j < n; ++j) {
-        for (int i = 0; i < m; ++i) {
-            Y[static_cast<std::size_t>(i + j * lda)] = dist(rng);
-        }
-    }
-    const std::vector<float> orig = Y;
-    const int work_n = nss::twsc_pca_soft_work_floats(m, n);
-    std::vector<float> work(static_cast<std::size_t>(work_n));
-
-    if (nss::twsc_pca_soft(Y.data(), m, n, lda, 0.f, work.data(), work_n) != 0) {
-        return fail("twsc_pca_soft sigma=0 failed");
-    }
-    double rnorm = 0.0;
-    double anorm = 0.0;
-    for (int j = 0; j < n; ++j) {
-        for (int i = 0; i < m; ++i) {
-            const double a = orig[static_cast<std::size_t>(i + j * lda)];
-            const double d = static_cast<double>(Y[static_cast<std::size_t>(i + j * lda)]) - a;
-            rnorm += d * d;
-            anorm += a * a;
-        }
-    }
-    rnorm = std::sqrt(rnorm);
-    anorm = std::sqrt(anorm);
-    const double rel = rnorm / (anorm + 1e-12);
-    std::printf("twsc identity m=%d n=%d lda=%d rel=%.6g\n", m, n, lda, rel);
-    if (!(rel < 5e-4)) {
-        return fail("sigma=0 should be approximately identity");
-    }
-
-    Y = orig;
-    if (nss::twsc_pca_soft(Y.data(), m, n, lda, 0.35f, work.data(), work_n) != 0) {
-        return fail("twsc_pca_soft sigma>0 failed");
-    }
-    const double e0 = frobenius(orig.data(), m, n, lda);
-    const double e1 = frobenius(Y.data(), m, n, lda);
-    std::printf("twsc energy m=%d n=%d lda=%d e0=%.6g e1=%.6g\n", m, n, lda, e0, e1);
-    if (!(e1 < e0)) {
-        return fail("sigma>0 should shrink energy");
-    }
-    for (int j = 0; j < n; ++j) {
-        for (int i = 0; i < m; ++i) {
-            if (!std::isfinite(Y[static_cast<std::size_t>(i + j * lda)])) {
-                return fail("twsc non-finite");
-            }
-        }
-    }
-    return 0;
-}
-
+static void require(bool yes, const char* message) { if (!yes) throw std::runtime_error(message); }
 int main() {
-    std::mt19937 rng(20260830);
-    if (check_group(16, 4, 16, rng) != 0) {
-        return 1;
-    }
-    if (check_group(64, 8, 80, rng) != 0) {
-        return 1;
-    }
-    {
-        std::vector<float> a(64 * 8);
-        std::vector<float> b = a;
-        std::mt19937 rng2(7);
-        std::uniform_real_distribution<float> dist2(-1.f, 1.f);
-        for (float& v : a) {
-            v = dist2(rng2);
+    try {
+        // Analytic independent optimum for a diagonal dictionary, including a
+        // zero spectral direction. This is the FULL objective's 1/2 factor.
+        constexpr int m = 6, n = 4, r = 4;
+        double d[m*r]{}, s[r]{1.1, 2, 0, 4}, y[m*n], precision[m]{2,3,4,5,6,7};
+        float sigma[n]{.3f,.4f,.5f,.6f};
+        for (int i=0;i<r;++i) d[i+i*m]=1;
+        for (int j=0;j<n;++j) for (int i=0;i<m;++i) y[i+j*m]=.2*std::sin(.3*(1+i+7*j));
+        double output[m*n]; nss::TwscWorkspace w;
+        auto status=nss::twsc_solve(y,d,s,m,n,r,precision,sigma,{1000,2,1.01,1e-10},output,w);
+        require(status.converged,"diagonal objective must converge");
+        require(status.sylvester_residual<=1e-10,"Sylvester residual");
+        for (int j=0;j<n;++j) for (int i=0;i<m;++i) {
+            const double expected=i<r && s[i]>0 ? std::copysign(std::max(std::abs(y[i+j*m])-double(sigma[j])/(2*precision[i]*s[i]),0.0),y[i+j*m]):0;
+            require(std::abs(output[i+j*m]-expected)<2e-7,"full weighted objective mismatch");
         }
-        b = a;
-        const int wn = nss::twsc_pca_soft_work_floats(64, 8);
-        std::vector<float> work(static_cast<std::size_t>(wn));
-        float sig_lo[8];
-        float sig_hi[8];
-        float wlo[8];
-        float whi[8];
-        for (int i = 0; i < 8; ++i) {
-            sig_lo[i] = 0.05f;
-            sig_hi[i] = 0.4f;
-        }
-        if (nss::twsc_pca_soft(a.data(), 64, 8, 64, 0.05f, work.data(), wn, sig_lo, wlo) != 0) {
-            return fail("twsc col_sigma lo");
-        }
-        if (nss::twsc_pca_soft(b.data(), 64, 8, 64, 0.05f, work.data(), wn, sig_hi, whi) != 0) {
-            return fail("twsc col_sigma hi");
-        }
-        double d = 0.0;
-        for (int i = 0; i < 64 * 8; ++i) {
-            d += std::fabs(static_cast<double>(a[static_cast<std::size_t>(i)] - b[static_cast<std::size_t>(i)]));
-        }
-        std::printf("twsc lambda/col_sigma L1=%.6g wlo=%.6g whi=%.6g\n", d, static_cast<double>(wlo[0]),
-                    static_cast<double>(whi[0]));
-        if (!(d > 1e-4)) {
-            return fail("different col_sigma must change the estimate");
-        }
-        if (!(whi[0] < wlo[0])) {
-            return fail("W2 = 1/sigma_col should drop as sigma_col grows");
-        }
-    }
-    {
-        std::vector<float> a(32 * 4, 0.f);
-        std::mt19937 rng3(3);
-        std::uniform_real_distribution<float> dist3(-1.f, 1.f);
-        for (float& v : a) {
-            v = dist3(rng3);
-        }
-        std::vector<float> b = a;
-        const int wn = nss::twsc_pca_soft_work_floats(32, 4);
-        std::vector<float> work(static_cast<std::size_t>(wn));
-        float row_w[32];
-        for (int i = 0; i < 32; ++i) {
-            row_w[i] = (i < 16) ? 1.f : 0.25f;
-        }
-        if (nss::twsc_pca_soft(a.data(), 32, 4, 32, 0.2f, work.data(), wn) != 0) {
-            return fail("twsc no W1");
-        }
-        if (nss::twsc_pca_soft(b.data(), 32, 4, 32, 0.2f, work.data(), wn, nullptr, nullptr, row_w) != 0) {
-            return fail("twsc W1");
-        }
-        double d = 0.0;
-        for (int i = 0; i < 32 * 4; ++i) {
-            d += std::fabs(static_cast<double>(a[static_cast<std::size_t>(i)] - b[static_cast<std::size_t>(i)]));
-        }
-        std::printf("twsc W1 L1=%.6g\n", d);
-        if (!(d > 1e-4)) {
-            return fail("row_w W1 must change the estimate");
-        }
-    }
-    {
-        constexpr int m = 16;
-        constexpr int n = 4;
-        std::vector<float> input(m * n);
-        std::mt19937 rng4(11);
-        std::uniform_real_distribution<float> dist4(-1.f, 1.f);
-        for (float& v : input) {
-            v = dist4(rng4);
-        }
-        const int wn = nss::twsc_pca_soft_work_floats(m, n);
-        std::vector<float> work(static_cast<std::size_t>(wn));
-        const float bad_values[] = {
-            std::numeric_limits<float>::quiet_NaN(),
-            -std::numeric_limits<float>::quiet_NaN(),
-            std::numeric_limits<float>::infinity(),
-            -std::numeric_limits<float>::infinity(),
-        };
-        for (float bad : bad_values) {
-            std::vector<float> got = input;
-            std::vector<float> want = input;
-            if (nss::twsc_pca_soft(got.data(), m, n, m, bad, work.data(), wn) != 0 ||
-                nss::twsc_pca_soft(want.data(), m, n, m, 0.f, work.data(), wn) != 0) {
-                return fail("twsc non-finite sigma call failed");
-            }
-            if (got != want) {
-                return fail("twsc non-finite sigma was not clamped to zero");
-            }
-        }
-
-        float bad_sigma[n] = {bad_values[0], bad_values[1], bad_values[2], bad_values[3]};
-        float zero_sigma[n]{};
-        float got_w[n]{};
-        float want_w[n]{};
-        std::vector<float> got = input;
-        std::vector<float> want = input;
-        if (nss::twsc_pca_soft(got.data(), m, n, m, 0.f, work.data(), wn, bad_sigma, got_w) != 0 ||
-            nss::twsc_pca_soft(want.data(), m, n, m, 0.f, work.data(), wn, zero_sigma, want_w) != 0) {
-            return fail("twsc non-finite col_sigma call failed");
-        }
-        if (got != want || !std::equal(std::begin(got_w), std::end(got_w), std::begin(want_w))) {
-            return fail("twsc non-finite col_sigma was not clamped to zero");
-        }
-    }
-    std::printf("test_twsc ok\n");
-    return 0;
+        // A finite cap is not a convergence claim.
+        status=nss::twsc_solve(y,d,s,m,n,r,precision,sigma,{1,.5,1.1,1e-12},output,w);
+        require(status.iterations==1 && !status.converged,"finite ADMM cap status");
+        // Constant group centering has rank zero; restore each row exactly.
+        constexpr int rows=48, columns=8, lda=53;
+        std::vector<float> group(lda*columns,-987), row_sigma(rows,.01f), col_sigma(columns,.01f), weights(columns);
+        for (int j=0;j<columns;++j) for (int i=0;i<rows;++i) group[i+j*lda]=float(i)/128;
+        const auto original=group;
+        status=nss::twsc_filter_full(group.data(),rows,columns,lda,row_sigma.data(),col_sigma.data(),weights.data(),{},w);
+        require(group==original,"rank-zero reconstruction and padding");
+        require(status.converged && status.iterations==1,"rank-zero status");
+        nss::TwscSolverOptions invalid_options{0,.5,1.1,1e-6};
+        nss::TwscFullBatchItem invalid_batch{group.data(),rows,columns,lda,row_sigma.data(),col_sigma.data(),weights.data(),&invalid_options,&w,nullptr};
+        bool invalid_rejected=false;
+        try { nss::twsc_filter_full_batch(&invalid_batch,1); }
+        catch (const std::invalid_argument&) { invalid_rejected=true; }
+        require(invalid_rejected,"invalid ADMM parameters cannot bypass checks at rank zero");
+        // Shared source limits remain independent of the large TWSC lane.
+        std::vector<float> a(49*70);
+        for (int j=0;j<70;++j) for (int i=0;i<49;++i) a[i+j*49]=float(std::sin((i+1)*.13)*std::cos((j+1)*.17));
+        bool fallback=false;
+        require(nss::twsc_svd(a.data(),49,70,49,w,fallback),"wide SVD");
+        require(!nss::twsc_svd(a.data(),49,257,49,w,fallback),"SVD upper bound");
+        col_sigma[0]=std::numeric_limits<float>::quiet_NaN();
+        bool rejected=false;
+        try { nss::twsc_filter_full(group.data(),rows,columns,lda,row_sigma.data(),col_sigma.data(),weights.data(),{},w); }
+        catch (const std::invalid_argument&) { rejected=true; }
+        require(rejected,"nonfinite column sigma must fail even at rank zero");
+        // Reusable workspaces must release every budgeted allocation.
+        auto budget=std::make_shared<nss::ResourceBudget>(1024*1024);
+        { nss::ResourceScope scope(budget); nss::TwscWorkspace owned;
+          require(nss::twsc_svd(a.data(),49,70,49,owned,fallback),"budgeted SVD"); }
+        require(budget->snapshot().owned==0,"workspace leak");
+        std::puts("test_twsc full objective, finite cap, rank-zero, wide SVD and resources ok");
+        return 0;
+    } catch (const std::exception& e) { std::fprintf(stderr,"%s\n",e.what()); return 1; }
 }

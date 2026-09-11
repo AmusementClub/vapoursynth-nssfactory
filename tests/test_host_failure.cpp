@@ -165,11 +165,13 @@ int main() {
     for (bool rolling : {false, true}) {
         if (!run(0, false, 1<<24, false, 0, rolling)) return 1;
         const int allocations = new_calls;
+        if (allocations <= 0) { std::fputs("allocation injection did not observe any allocations\n", stderr); return 1; }
         for (int position = 1; position <= allocations; ++position) {
             if (!run(0, false, 1<<24, true, position, rolling)) {
                 std::fprintf(stderr, "operator-new point %d rolling=%d leaked or escaped\n", position, rolling);
                 return 1;
             }
+            if (new_calls < position) { std::fputs("requested allocation failure point was not reached\n", stderr); return 1; }
             ++injected;
         }
     }

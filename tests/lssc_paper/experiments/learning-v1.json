@@ -1,0 +1,18 @@
+{
+  "fp64_direct": {},
+  "mixed_ssd": {"precision": 1, "correlation": 1, "match_precision": 1},
+  "learn075_512_48": {"precision": 1, "correlation": 1, "match_precision": 1, "image_passes": 1, "learning_samples": 512, "learning_iterations": 48},
+  "learn1_2048_96": {"precision": 1, "correlation": 1, "match_precision": 1, "image_passes": 1, "learning_samples": 2048, "learning_iterations": 96, "learning_lambda": 1.0},
+  "learn15_2048_96": {"precision": 1, "correlation": 1, "match_precision": 1, "image_passes": 1, "learning_samples": 2048, "learning_iterations": 96, "learning_lambda": 1.5},
+  "learn2_2048_96": {"precision": 1, "correlation": 1, "match_precision": 1, "image_passes": 1, "learning_samples": 2048, "learning_iterations": 96, "learning_lambda": 2.0},
+  "learn1_2048_192": {"precision": 1, "correlation": 1, "match_precision": 1, "image_passes": 1, "learning_samples": 2048, "learning_iterations": 192, "learning_lambda": 1.0},
+  "learn15_2048_192": {"precision": 1, "correlation": 1, "match_precision": 1, "image_passes": 1, "learning_samples": 2048, "learning_iterations": 192, "learning_lambda": 1.5},
+  "group15_128_96": {"precision": 1, "correlation": 1, "match_precision": 1, "group_passes": 1, "learning_groups": 128, "learning_group_cap": 64, "learning_iterations": 96, "learning_lambda": 1.5},
+  "group2_128_96": {"precision": 1, "correlation": 1, "match_precision": 1, "group_passes": 1, "learning_groups": 128, "learning_group_cap": 64, "learning_iterations": 96, "learning_lambda": 2.0},
+  "joint15_2048_128_96": {"precision": 1, "correlation": 1, "match_precision": 1, "image_passes": 1, "group_passes": 1, "learning_samples": 2048, "learning_groups": 128, "learning_group_cap": 64, "learning_iterations": 96, "learning_lambda": 1.5},
+  "threshold05": {"precision": 1, "correlation": 1, "match_precision": 1, "threshold_multiplier": 0.5},
+  "threshold2": {"precision": 1, "correlation": 1, "match_precision": 1, "threshold_multiplier": 2.0},
+  "threshold4": {"precision": 1, "correlation": 1, "match_precision": 1, "threshold_multiplier": 4.0},
+  "epsilon095": {"precision": 1, "correlation": 1, "match_precision": 1, "epsilon_scale": 0.95},
+  "epsilon105": {"precision": 1, "correlation": 1, "match_precision": 1, "epsilon_scale": 1.05}
+}

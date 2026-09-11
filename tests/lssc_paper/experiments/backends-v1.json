@@ -1,0 +1,7 @@
+{
+  "fp64_direct": {},
+  "mixed_ssd": {"precision": 1, "correlation": 1, "match_precision": 1},
+  "neon_nn": {"precision": 1, "correlation": 3, "match_precision": 1},
+  "sme_nn": {"precision": 1, "correlation": 7, "match_precision": 1},
+  "nn_refined": {"precision": 2, "correlation": 3, "match_precision": 1}
+}

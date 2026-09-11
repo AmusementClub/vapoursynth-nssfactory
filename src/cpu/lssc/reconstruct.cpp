@@ -4,6 +4,7 @@
 #include "nss/cpu_lssc.hpp"
 #include "cpu/hwy_config.hpp"
 #include "cpu/wnnm/jacobi8.hpp"
+#include "cpu/lssc/gemm.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -166,6 +167,8 @@ static void LsscReconstructImpl(float* patches, int m, int n, int lda, const flo
     float* A = mean + n;
     float* R = A + atoms * n;
     float* G = R + m * n;
+    float* gemm_work = G + atoms * n;
+    const int gemm_work_floats = need - static_cast<int>(gemm_work - buf);
 
     const float invm = 1.f / static_cast<float>(m);
     const hn::ScalableTag<float> d;
@@ -203,7 +206,7 @@ static void LsscReconstructImpl(float* patches, int m, int n, int lda, const flo
     constexpr float kALim = 1.0e4f;
     bool exploded = false;
     for (int it = 0; it < kIters; ++it) {
-        gemm_nn_hwy(m, n, atoms, dictionary, ldd, A, atoms, R, m, avx2_gemm);
+        lssc_gemm_nn(m, n, atoms, dictionary, ldd, A, atoms, R, m, gemm_work, gemm_work_floats, avx2_gemm);
         for (int j = 0; j < n; ++j) {
             const float* yj = patches + static_cast<std::size_t>(j) * static_cast<std::size_t>(lda);
             float* rj = R + static_cast<std::size_t>(j) * static_cast<std::size_t>(m);
@@ -215,14 +218,14 @@ static void LsscReconstructImpl(float* patches, int m, int n, int lda, const flo
                 rj[i] = yj[i] - rj[i];
             }
         }
-        gemm_nn_hwy(atoms, n, m, transpose, atoms, R, m, G, atoms, avx2_gemm);
+        lssc_gemm_nn(atoms, n, m, transpose, atoms, R, m, G, atoms, gemm_work, gemm_work_floats, avx2_gemm);
         exploded = LsscUpdateGroupSoft(A, G, atoms, n, mu, lam, kALim);
         if (exploded) {
             std::memset(A, 0, static_cast<std::size_t>(atoms) * static_cast<std::size_t>(n) * sizeof(float));
             break;
         }
     }
-    gemm_nn_hwy(m, n, atoms, dictionary, ldd, A, atoms, R, m, avx2_gemm);
+    lssc_gemm_nn(m, n, atoms, dictionary, ldd, A, atoms, R, m, gemm_work, gemm_work_floats, avx2_gemm);
     const auto vlim = hn::Set(d, 8.f);
     for (int j = 0; j < n; ++j) {
         float* yj = patches + static_cast<std::size_t>(j) * static_cast<std::size_t>(lda);

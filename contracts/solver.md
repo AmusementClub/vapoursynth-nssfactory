@@ -1,7 +1,7 @@
-# Solver and finisher contract, semantic version 2
+# Shared solver contract (version 2 models; TWSC v3 / NLH v5)
 
 Matrices are column-major with explicit leading dimensions. SVD permits
-1≤m≤256 and 1≤n≤32, subject to each filter's additional restrictions. Singular
+1≤m≤256 and 1≤n≤32 in the existing shared decomposition, subject to each filter's additional restrictions. Singular
 values are descending, nonnegative, and have min(m,n) entries. U has m rows and
 Vt has n columns; padding is untouched. For m<n only the first m components are
 active. Nonfinite input or an unrepresentable rescaled spectrum returns failure.
@@ -21,10 +21,15 @@ tiny, 8-column and cross-group implementations. It intentionally bounds resolvab
 rank; it does not promise relative accuracy for components below that floor.
 
 `src/cpu/finishers.hpp` is the common source for WNNM reconstruction/shrink,
-TWSC coefficient shrink and NCSR centralization thresholds, and PCA reconstruction
+NCSR centralization thresholds, and PCA reconstruction
 plus mean restoration. Single and batch paths retain their physical layouts and
 SIMD row access. U/S-only, Q-replay and MCWNNM Gram/fallback routes are retained.
-TWSC remains the existing PCA/row-soft model, not a replacement ADMM algorithm.
+TWSC no longer uses the old PCA/row-soft finisher. Its isolated dynamic
+Householder QR/Jacobi decomposition supports up to 768 rows and 256 columns,
+with 128 bounded sweeps, FP64 fallback and explicit quality checks. The complete
+three-weight ADMM, numerical bounds, NLH transforms and formula-to-test map are
+specified in [the TWSC v3 / NLH v5 contract](twsc-nlh.md). Other filters retain the
+shared limits and model semantic version 2.
 
 WNNM uses C=8*sqrt(2*n)*sigma². With residual centering it shrinks all components;
 otherwise the leading component is retained under the existing rule. Adaptive

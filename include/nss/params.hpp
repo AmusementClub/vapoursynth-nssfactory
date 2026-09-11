@@ -33,6 +33,11 @@ inline bool bm_allowed_group(int v) {
     return v == 1 || v == 2 || v == 4 || v == 8 || v == 16 || v == 32 || v == 64;
 }
 
+// Linear NLH calibration against normalized channel sigma. The final selected
+// coefficients are shared by the kernel, image defaults and public adapter.
+inline constexpr double kNlhHardCoefficient = 2.025;
+inline constexpr double kNlhWienerSigmaScale = 0.08;
+
 inline constexpr int kWnnmMaxBlock = 16;
 inline constexpr int kWnnmMaxGroup = 32;
 inline constexpr int kWnnmDefaultBlock = 8;
@@ -64,22 +69,8 @@ inline constexpr float kMcwnnmDefaultSigma = 3.0f;
 inline constexpr int kMcwnnmDefaultIters = 2;
 inline constexpr float kMcwnnmDefaultDelta = 0.1f;
 
-inline constexpr int kTwscDefaultBlock = 8;
-inline constexpr int kTwscDefaultStep = 8;
-inline constexpr int kTwscDefaultGroup = 8;
-inline constexpr int kTwscDefaultRange = 7;
-inline constexpr float kTwscDefaultLambda1 = 0.f;
-inline constexpr float kTwscDefaultLambda2 = 3.f;
-inline constexpr float kTwscDefaultSigma = 3.0f;
-inline constexpr int kTwscDefaultIters = 2;
-inline constexpr float kTwscDefaultDelta = 0.1f;
-
-inline constexpr int kNlhDefaultBlock = 8;
-inline constexpr int kNlhDefaultStep = 8;
-inline constexpr int kNlhDefaultGroup = 16;
-inline constexpr int kNlhDefaultRange = 20;
-inline constexpr int kNlhDefaultQ = 4;
-inline constexpr float kNlhDefaultSigma = 3.0f;
+// TWSC/NLH v3 noise-dependent defaults live in cpu_image.hpp and the
+// image profile resolvers; no fixed small-group legacy preset remains.
 
 inline constexpr int kNcsrDefaultBlock = 8;
 inline constexpr int kNcsrDefaultStep = 8;

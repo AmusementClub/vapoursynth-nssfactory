@@ -1,266 +1,149 @@
+#include "cpu/lssc/mixed_omp.hpp"
+// OMP screens correlations in FP32, then refines support selection in FP64.
+// Its least-squares solve and residual retain double precision.
+// Public dictionary/coefficients and the denoise/ISTA path remain FP32.
 #include "nss/resources.hpp"
 #include "nss/avx2_policy.hpp"
 #include "nss/cpu_api.hpp"
 #include "nss/cpu_common.hpp"
 #include "nss/cpu_lssc.hpp"
 #include "cpu/wnnm/jacobi8.hpp"
-
 #include <algorithm>
 #include <cmath>
 #include <cstring>
-#include <vector>
 
 namespace nss {
 namespace {
-
-float dot(const float* a, const float* b, int n) {
-    return dot_n(a, b, n);
+static_assert(sizeof(double) == 2 * sizeof(float));
+// The API owns float scratch. memcpy accesses its object representation, so
+// storing double residuals needs neither a stronger alignment nor aliasing a
+// float object through a double lvalue. The advertised scratch bound already
+// covers 2*m floats even for sparsity=1.
+double residual_at(const float* scratch, int row) {
+    double value;
+    std::memcpy(&value, scratch + 2 * static_cast<std::size_t>(row), sizeof(value));
+    return value;
 }
-
-int chol_solve(int n, float* G, float* b) {
-    if (n < 1) {
-        return -1;
+void set_residual(float* scratch, int row, double value) {
+    std::memcpy(scratch + 2 * static_cast<std::size_t>(row), &value, sizeof(value));
+}
+double dot_precise(const float* a, const float* b, int n) {
+    double sum = 0;
+    for (int i = 0; i < n; ++i) sum = std::fma(double(a[i]), double(b[i]), sum);
+    return sum;
+}
+void solve_cholesky(int n, double* gram, double* rhs) {
+    for (int i = 0; i < n; ++i) for (int j = 0; j <= i; ++j) {
+        double value = gram[i * n + j];
+        for (int p = 0; p < j; ++p) value = std::fma(-gram[i * n + p], gram[j * n + p], value);
+        gram[i * n + j] = i == j ? std::sqrt(std::max(value, double(1e-12f))) : value / gram[j * n + j];
     }
     for (int i = 0; i < n; ++i) {
-        for (int j = 0; j <= i; ++j) {
-            float sum = G[i * n + j];
-            for (int p = 0; p < j; ++p) {
-                sum -= G[i * n + p] * G[j * n + p];
-            }
-            if (i == j) {
-                if (sum < 1e-12f) {
-                    sum = 1e-12f;
-                }
-                G[i * n + i] = std::sqrt(sum);
-            } else {
-                G[i * n + j] = sum / G[j * n + j];
-            }
-        }
-    }
-    for (int i = 0; i < n; ++i) {
-        float s = b[i];
-        for (int p = 0; p < i; ++p) {
-            s -= G[i * n + p] * b[p];
-        }
-        b[i] = s / G[i * n + i];
+        double value = rhs[i];
+        for (int p = 0; p < i; ++p) value = std::fma(-gram[i * n + p], rhs[p], value);
+        rhs[i] = value / gram[i * n + i];
     }
     for (int i = n - 1; i >= 0; --i) {
-        float s = b[i];
-        for (int p = i + 1; p < n; ++p) {
-            s -= G[p * n + i] * b[p];
-        }
-        b[i] = s / G[i * n + i];
+        double value = rhs[i];
+        for (int p = i + 1; p < n; ++p) value = std::fma(-gram[p * n + i], rhs[p], value);
+        rhs[i] = value / gram[i * n + i];
     }
-    return 0;
 }
-
-}  // namespace
-
-int lssc_omp(const float* y, int m, const float* D, int atoms, int ldd, int sparsity, float* a) {
-    if (!y || !D || !a || m < 1 || atoms < 1 || ldd < m) {
-        return 0;
-    }
-    std::memset(a, 0, static_cast<std::size_t>(atoms) * sizeof(float));
-    int kmax = sparsity;
-    if (kmax < 1) {
-        return 0;
-    }
-    if (kmax > atoms) {
-        kmax = atoms;
-    }
-    if (kmax > 8) {
-        kmax = 8;
-    }
-
-    constexpr int kStackM = 256;
-    constexpr int kStackA = 256;
-    float r_s[kStackM];
-    int supp_s[8];
-    char used_s[kStackA];
-    float Ds_s[kStackM * 8];
-    float G_s[8 * 8];
-    float b_s[8];
-    nss::ResourceVector<float> r_v;
-    nss::ResourceVector<int> supp_v;
-    nss::ResourceVector<char> used_v;
-    nss::ResourceVector<float> Ds_v;
-    nss::ResourceVector<float> G_v;
-    nss::ResourceVector<float> b_v;
-    float* r = r_s;
-    int* supp = supp_s;
-    char* used = used_s;
-    float* Ds = Ds_s;
-    float* G = G_s;
-    float* b = b_s;
-    if (m > kStackM || atoms > kStackA) {
-        r_v.resize(static_cast<std::size_t>(m));
-        supp_v.assign(static_cast<std::size_t>(kmax), -1);
-        used_v.assign(static_cast<std::size_t>(atoms), 0);
-        Ds_v.assign(static_cast<std::size_t>(m) * static_cast<std::size_t>(kmax), 0.f);
-        G_v.assign(static_cast<std::size_t>(kmax) * static_cast<std::size_t>(kmax), 0.f);
-        b_v.assign(static_cast<std::size_t>(kmax), 0.f);
-        r = r_v.data();
-        supp = supp_v.data();
-        used = used_v.data();
-        Ds = Ds_v.data();
-        G = G_v.data();
-        b = b_v.data();
-    } else {
-        std::memset(used_s, 0, static_cast<std::size_t>(atoms));
-        std::memset(Ds_s, 0, static_cast<std::size_t>(m) * static_cast<std::size_t>(kmax) * sizeof(float));
-        std::memset(G_s, 0, static_cast<std::size_t>(kmax) * static_cast<std::size_t>(kmax) * sizeof(float));
-        for (int i = 0; i < kmax; ++i) {
-            supp_s[i] = -1;
-        }
-    }
-    std::memcpy(r, y, static_cast<std::size_t>(m) * sizeof(float));
-    float corr_s[kStackA];
-    nss::ResourceVector<float> corr_v;
-    float* corr = corr_s;
-    if (atoms > kStackA) {
-        corr_v.assign(static_cast<std::size_t>(atoms), 0.f);
-        corr = corr_v.data();
-    }
-
-    int ksel = 0;
-    for (int t = 0; t < kmax; ++t) {
-        gemm_tn_hwy(m, 1, atoms, D, ldd, r, m, corr, atoms);
-        int best = -1;
-        float best_abs = 0.f;
-        for (int j = 0; j < atoms; ++j) {
-            if (used[static_cast<std::size_t>(j)]) {
-                continue;
-            }
-            const float ac = std::fabs(corr[static_cast<std::size_t>(j)]);
-            if (ac > best_abs) {
-                best_abs = ac;
-                best = j;
-            }
-        }
-        if (best < 0 || best_abs < 1e-12f) {
-            break;
-        }
-        used[static_cast<std::size_t>(best)] = 1;
-        supp[static_cast<std::size_t>(ksel)] = best;
-        const float* db = D + static_cast<std::size_t>(best) * static_cast<std::size_t>(ldd);
-        std::memcpy(Ds + static_cast<std::size_t>(ksel) * static_cast<std::size_t>(m), db,
-                    static_cast<std::size_t>(m) * sizeof(float));
-        ++ksel;
-
-        for (int p = 0; p < ksel; ++p) {
-            const float* dp = Ds + static_cast<std::size_t>(p) * static_cast<std::size_t>(m);
-            for (int q = p; q < ksel; ++q) {
-                const float* dq = Ds + static_cast<std::size_t>(q) * static_cast<std::size_t>(m);
-                const float g = dot(dp, dq, m);
-                G[p * ksel + q] = g;
-                G[q * ksel + p] = g;
-            }
-            b[static_cast<std::size_t>(p)] = dot(dp, y, m);
-        }
-        if (chol_solve(ksel, G, b) != 0) {
-            --ksel;
-            used[static_cast<std::size_t>(best)] = 0;
-            break;
-        }
-        std::memset(a, 0, static_cast<std::size_t>(atoms) * sizeof(float));
-        for (int p = 0; p < ksel; ++p) {
-            a[supp[static_cast<std::size_t>(p)]] = b[static_cast<std::size_t>(p)];
-        }
-        std::memcpy(r, y, static_cast<std::size_t>(m) * sizeof(float));
-        for (int p = 0; p < ksel; ++p) {
-            axpy_n(r, Ds + static_cast<std::size_t>(p) * static_cast<std::size_t>(m), -b[static_cast<std::size_t>(p)],
-                   m);
-        }
-        const float rn = dot_n(r, r, m);
-        if (rn < 1e-12f) {
-            break;
-        }
-    }
-    return ksel;
 }
 
 int lssc_omp_workspace(const float* y, int m, const float* D, int atoms, int ldd, int sparsity, float* a,
                        float* work, int work_floats) {
-    if (!y || !D || !a || m < 1 || atoms < 1 || ldd < m) {
-        return 0;
-    }
-    // Preserve lssc_omp's contract: non-positive sparsity clears the output
-    // and performs no selection, even when the caller does not provide work.
-    std::memset(a, 0, static_cast<std::size_t>(atoms) * sizeof(float));
-    if (sparsity < 1) {
-        return 0;
-    }
-    if (!work || work_floats < lssc_omp_work_floats(m, atoms, sparsity)) {
-        return 0;
-    }
-    const int kmax = std::min(8, std::min(atoms, sparsity));
-    const int support_f = (kmax * static_cast<int>(sizeof(int)) + static_cast<int>(sizeof(float)) - 1) /
-                          static_cast<int>(sizeof(float));
-    float* r = work;
-    int* supp = reinterpret_cast<int*>(r + m);
-    char* used = reinterpret_cast<char*>(r + m + support_f);
-    float* Ds = r + m + support_f + atoms;
-    float* G = Ds + static_cast<std::size_t>(m) * static_cast<std::size_t>(kmax);
-    float* b = G + static_cast<std::size_t>(kmax) * static_cast<std::size_t>(kmax);
-    float* corr = b + kmax;
-    std::memset(used, 0, static_cast<std::size_t>(atoms));
-    std::memset(Ds, 0, static_cast<std::size_t>(m) * static_cast<std::size_t>(kmax) * sizeof(float));
-    std::memset(G, 0, static_cast<std::size_t>(kmax) * static_cast<std::size_t>(kmax) * sizeof(float));
-    std::memset(b, 0, static_cast<std::size_t>(kmax) * sizeof(float));
-    std::memcpy(r, y, static_cast<std::size_t>(m) * sizeof(float));
-    int ksel = 0;
-    for (int t = 0; t < kmax; ++t) {
-        gemm_tn_hwy(m, 1, atoms, D, ldd, r, m, corr, atoms);
+    if (!y || !D || !a || m < 1 || atoms < 1 || ldd < m) return 0;
+    std::fill_n(a, atoms, 0.f);
+    if (sparsity < 1 || !work || work_floats < lssc_omp_work_floats(m, atoms, sparsity)) return 0;
+    const int kmax = std::min({8, atoms, sparsity});
+    auto* used = reinterpret_cast<unsigned char*>(work + 2 * static_cast<std::size_t>(m));
+    std::memset(used, 0, atoms);
+    int support[8]{};
+    double gram[64]{}, rhs[8]{};
+    for (int row = 0; row < m; ++row) set_residual(work, row, y[row]);
+    detail::MixedOmpSearch mixed_search(D, m, atoms, ldd);
+    int count = 0;
+    for (int iteration = 0; iteration < kmax; ++iteration) {
         int best = -1;
-        float best_abs = 0.f;
-        for (int j = 0; j < atoms; ++j) {
-            if (used[j]) {
-                continue;
+        double largest = 0;
+        if (!mixed_search.select(work, used, best, largest)) {
+            int atom = 0;
+            // Independent atoms share a residual load. Each dot retains its row
+            // order and explicit double FMA; support ties retain atom order.
+            for (; atom + 8 <= atoms; atom += 8) {
+                const float* c0 = D + static_cast<std::size_t>(atom) * ldd;
+                const float* c1 = c0 + ldd;
+                const float* c2 = c1 + ldd;
+                const float* c3 = c2 + ldd;
+                const float* c4 = c3 + ldd;
+                const float* c5 = c4 + ldd;
+                const float* c6 = c5 + ldd;
+                const float* c7 = c6 + ldd;
+                double sums[8]{};
+                for (int row = 0; row < m; ++row) {
+                    const double residual = residual_at(work, row);
+                    sums[0] = std::fma(double(c0[row]), residual, sums[0]);
+                    sums[1] = std::fma(double(c1[row]), residual, sums[1]);
+                    sums[2] = std::fma(double(c2[row]), residual, sums[2]);
+                    sums[3] = std::fma(double(c3[row]), residual, sums[3]);
+                    sums[4] = std::fma(double(c4[row]), residual, sums[4]);
+                    sums[5] = std::fma(double(c5[row]), residual, sums[5]);
+                    sums[6] = std::fma(double(c6[row]), residual, sums[6]);
+                    sums[7] = std::fma(double(c7[row]), residual, sums[7]);
+                }
+                for (int lane = 0; lane < 8; ++lane) {
+                    if (used[atom + lane]) continue;
+                    const double magnitude = std::abs(sums[lane]);
+                    if (magnitude > largest) { largest = magnitude; best = atom + lane; }
+                }
             }
-            const float ac = std::fabs(corr[j]);
-            if (ac > best_abs) {
-                best_abs = ac;
-                best = j;
+            for (; atom < atoms; ++atom) {
+                if (used[atom]) continue;
+                const float* column = D + static_cast<std::size_t>(atom) * ldd;
+                double correlation = 0;
+                for (int row = 0; row < m; ++row)
+                    correlation = std::fma(double(column[row]), residual_at(work, row), correlation);
+                const double magnitude = std::abs(correlation);
+                if (magnitude > largest) { largest = magnitude; best = atom; }
             }
         }
-        if (best < 0 || best_abs < 1e-12f) {
-            break;
-        }
+        if (best < 0 || largest < double(1e-12f)) break;
         used[best] = 1;
-        supp[ksel] = best;
-        const float* db = D + static_cast<std::size_t>(best) * static_cast<std::size_t>(ldd);
-        std::memcpy(Ds + static_cast<std::size_t>(ksel) * static_cast<std::size_t>(m), db,
-                    static_cast<std::size_t>(m) * sizeof(float));
-        ++ksel;
-        for (int p = 0; p < ksel; ++p) {
-            const float* dp = Ds + static_cast<std::size_t>(p) * static_cast<std::size_t>(m);
-            for (int q = p; q < ksel; ++q) {
-                const float* dq = Ds + static_cast<std::size_t>(q) * static_cast<std::size_t>(m);
-                const float g = dot(dp, dq, m);
-                G[p * ksel + q] = g;
-                G[q * ksel + p] = g;
+        support[count++] = best;
+        for (int p = 0; p < count; ++p) {
+            const float* dp = D + static_cast<std::size_t>(support[p]) * ldd;
+            for (int q = p; q < count; ++q) {
+                const double value = dot_precise(dp, D + static_cast<std::size_t>(support[q]) * ldd, m);
+                gram[p * count + q] = gram[q * count + p] = value;
             }
-            b[p] = dot(dp, y, m);
+            rhs[p] = dot_precise(dp, y, m);
         }
-        if (chol_solve(ksel, G, b) != 0) {
-            --ksel;
-            used[best] = 0;
-            break;
+        solve_cholesky(count, gram, rhs);
+        std::fill_n(a, atoms, 0.f);
+        for (int p = 0; p < count; ++p) a[support[p]] = static_cast<float>(rhs[p]);
+        double norm_squared = 0;
+        for (int row = 0; row < m; ++row) {
+            double residual = y[row];
+            for (int p = 0; p < count; ++p)
+                residual = std::fma(-rhs[p], double(D[row + static_cast<std::size_t>(support[p]) * ldd]), residual);
+            set_residual(work, row, residual);
+            norm_squared = std::fma(residual, residual, norm_squared);
         }
-        std::memset(a, 0, static_cast<std::size_t>(atoms) * sizeof(float));
-        for (int p = 0; p < ksel; ++p) {
-            a[supp[p]] = b[p];
-        }
-        std::memcpy(r, y, static_cast<std::size_t>(m) * sizeof(float));
-        for (int p = 0; p < ksel; ++p) {
-            axpy_n(r, Ds + static_cast<std::size_t>(p) * static_cast<std::size_t>(m), -b[p], m);
-        }
-        const float rn = dot_n(r, r, m);
-        if (rn < 1e-12f) {
-            break;
-        }
+        if (norm_squared < double(1e-12f)) break;
     }
-    return ksel;
+    return count;
+}
+
+int lssc_omp(const float* y, int m, const float* D, int atoms, int ldd, int sparsity, float* a) {
+    if (!y || !D || !a || m < 1 || atoms < 1 || ldd < m) return 0;
+    std::fill_n(a, atoms, 0.f);
+    if (sparsity < 1) return 0;
+    const int need = lssc_omp_work_floats(m, atoms, sparsity);
+    float scratch[3008];
+    if (need <= 3008) return lssc_omp_workspace(y, m, D, atoms, ldd, sparsity, a, scratch, 3008);
+    ResourceVector<float> dynamic(need);
+    return lssc_omp_workspace(y, m, D, atoms, ldd, sparsity, a, dynamic.data(), need);
 }
 
 

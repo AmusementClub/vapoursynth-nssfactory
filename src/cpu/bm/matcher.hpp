@@ -261,7 +261,11 @@ int collect_spatial_coords(int width, int height, int bx, int by, int block, int
     if (wanted == 1) {
         return 1;
     }
+#if defined(__aarch64__) || defined(_M_ARM64)
+    SpatialSortedTopK topk(out + 1, wanted - 1);
+#else
     CandidateTopK topk(out + 1, wanted - 1);
+#endif
     std::uint32_t ordinal = 1;
     for (int y = top; y <= bottom; ++y) {
         for (int x = left; x <= right; ++x, ++ordinal) {

@@ -1,0 +1,89 @@
+{
+  "profiles": {
+    "gray-low": {
+      "block_size": [
+        8,
+        8
+      ],
+      "block_step": [
+        1,
+        1
+      ],
+      "group_size": [
+        16,
+        16
+      ],
+      "q": [
+        4,
+        4
+      ],
+      "search_window": [
+        40,
+        40
+      ],
+      "basic_iters": 4,
+      "wiener_iters": 2,
+      "lambda_basic": 0.6,
+      "hard_strength": 1.0,
+      "wiener_sigma_scale": 0.08,
+      "noise_model": "awgn"
+    },
+    "gray-high": {
+      "block_size": [
+        10,
+        10
+      ],
+      "block_step": [
+        1,
+        1
+      ],
+      "group_size": [
+        16,
+        16
+      ],
+      "q": [
+        4,
+        4
+      ],
+      "search_window": [
+        40,
+        40
+      ],
+      "basic_iters": 5,
+      "wiener_iters": 2,
+      "lambda_basic": 0.6,
+      "hard_strength": 1.0,
+      "wiener_sigma_scale": 0.08,
+      "noise_model": "awgn"
+    },
+    "rgb": {
+      "block_size": [
+        7,
+        7
+      ],
+      "block_step": [
+        1,
+        1
+      ],
+      "group_size": [
+        16,
+        16
+      ],
+      "q": [
+        4,
+        4
+      ],
+      "search_window": [
+        40,
+        40
+      ],
+      "basic_iters": 2,
+      "wiener_iters": 2,
+      "lambda_basic": 0.6,
+      "hard_strength": 1.0,
+      "wiener_sigma_scale": 0.08,
+      "noise_model": "real"
+    }
+  },
+  "scope": "Explicit old v4 settings; current outputs and temporal contributions still carry current model version."
+}

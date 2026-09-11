@@ -3,7 +3,7 @@
 #include "host/temporal.hpp"
 #include "host/validate.hpp"
 #include "host/contribution.hpp"
-#include "nss/avx2.hpp"
+#include "nss/backend.hpp"
 #include "nss/cpu_api.hpp"
 #include "nss/params.hpp"
 
@@ -112,8 +112,8 @@ VSNode* nss_create_vaggregate(VSNode* fat, VSNode* src, int radius, const int* p
 
         return nullptr;
     };
-    if (!nss::cpu_has_avx2()) {
-        return fail("nss.VAggregate: AVX2 is required");
+    if (!nss::cpu_backend_available()) {
+        return fail("nss.VAggregate: no executable CPU backend (AVX2 on x86; NEON on AArch64)");
     }
     if (!fat || !src) {
         return fail("nss.VAggregate: clip and src are required");

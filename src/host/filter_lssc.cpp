@@ -1,5 +1,5 @@
 #include "host/validate.hpp"
-#include "nss/avx2.hpp"
+#include "nss/backend.hpp"
 #include "nss/cpu_api.hpp"
 #include "nss/cpu_lssc.hpp"
 #include "nss/params.hpp"
@@ -86,8 +86,8 @@ void VS_CC lsscFree(void* instanceData, VSCore* core, const VSAPI* vsapi) {
 
 void VS_CC lsscCreate(const VSMap* in, VSMap* out, void* userData, VSCore* core, const VSAPI* vsapi) {
     (void)userData;
-    if (!nss::cpu_has_avx2()) {
-        vsapi->mapSetError(out, "nss.LSSC: AVX2 is required");
+    if (!nss::cpu_backend_available()) {
+        vsapi->mapSetError(out, "nss.LSSC: no executable CPU backend (AVX2 on x86; NEON on AArch64)");
         return;
     }
     auto d = std::make_unique<LsscData>();

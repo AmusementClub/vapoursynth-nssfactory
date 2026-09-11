@@ -1,12 +1,31 @@
 cmake_minimum_required(VERSION 3.24)
 project(nssfactory LANGUAGES CXX)
 
+set(NSS_HWY_X86 FALSE)
+set(NSS_HWY_ARM64 FALSE)
+# A single explicit macOS architecture overrides the native host architecture.
+set(NSS_TARGET_PROCESSOR "${CMAKE_SYSTEM_PROCESSOR}")
+if(CMAKE_OSX_ARCHITECTURES)
+  if(CMAKE_OSX_ARCHITECTURES MATCHES ";")
+    message(FATAL_ERROR "Build and validate each macOS architecture separately before combining binaries")
+  endif()
+  set(NSS_TARGET_PROCESSOR "${CMAKE_OSX_ARCHITECTURES}")
+endif()
+if(NSS_TARGET_PROCESSOR MATCHES "^(x86_64|amd64|AMD64|i[3-6]86)$")
+  set(NSS_HWY_X86 TRUE)
+elseif(NSS_TARGET_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
+  set(NSS_HWY_ARM64 TRUE)
+endif()
+
 # Independent port candidates; new vector paths are restricted to Highway AVX2.
 set(NSS_AVX2_EXPERIMENT "0" CACHE STRING "Additional AVX2 candidate bits; use NSS_AVX2_DEFAULTS=OFF and zero for the baseline")
 if(NOT NSS_AVX2_EXPERIMENT MATCHES "^[0-9]+$" OR NSS_AVX2_EXPERIMENT GREATER 2047)
   message(FATAL_ERROR "NSS_AVX2_EXPERIMENT must be a bitmask in 0..2047")
 endif()
-option(NSS_AVX2_DEFAULTS "Enable configuration-scoped, dual-host validated AVX2 paths" ON)
+option(NSS_AVX2_DEFAULTS "Enable configuration-scoped, dual-host validated AVX2 paths" ${NSS_HWY_X86})
+if(NSS_HWY_ARM64 AND (NSS_AVX2_DEFAULTS OR NOT NSS_AVX2_EXPERIMENT STREQUAL "0"))
+  message(FATAL_ERROR "ARM baseline requires NSS_AVX2_DEFAULTS=OFF and NSS_AVX2_EXPERIMENT=0")
+endif()
 # Only these kernels are compiled for the configuration admission policy.
 # Experimental masks are independent and bypass configuration admission.
 set(NSS_AVX2_DEFAULT_MASK 1789)
@@ -20,7 +39,7 @@ add_compile_definitions(NSS_AVX2_REQUESTED=${NSS_AVX2_EXPERIMENT}
 # Scope definitions to participating translation units so independent candidate
 # builds do not rebuild unrelated filters or alter their compiler inputs.
 foreach(entry "bm/ssd.cpp|1" "bm/spatial4.cpp|2" "bm/spatial12.cpp|4"
-              "bm/spatial16.cpp|8" "nlh/filter_group.cpp|112" "nlh/haar.cpp|32"
+              "bm/spatial16.cpp|8" "nlh/haar.cpp|32"
               "bm/dct16.cpp|128" "nlh/match16.cpp|256" "bm/pack.cpp|512"
               "wnnm/jacobi8.cpp|1024")
   string(REPLACE "|" ";" fields "${entry}")
@@ -67,12 +86,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 option(NSS_ENABLE_CUDA "Build libnss_cuda.so" OFF)
 option(NSS_ENABLE_VULKAN "Build libnss_vk.so" OFF)
 option(NSS_BM_KERNEL_LAB "Build isolated BM3D SSD/DCT microkernel experiments" OFF)
-
-set(NSS_HWY_X86 FALSE)
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64|i[3-6]86)$" OR
-   CMAKE_OSX_ARCHITECTURES MATCHES "^(x86_64|i[3-6]86)$")
-  set(NSS_HWY_X86 TRUE)
-endif()
+option(NSS_LSSC_EXPLORER "Build the isolated paper-track LSSC exploration library" OFF)
 
 # Highway's target list is shared by every CPU TU and by its diagnostic helper.
 # The mode is a configure-time choice so target differential builds compile
@@ -81,17 +95,28 @@ if(DEFINED ENV{NSS_HWY_TARGET_MODE})
   set(NSS_HWY_TARGET_MODE "$ENV{NSS_HWY_TARGET_MODE}")
 endif()
 set(NSS_HWY_TARGET_MODE "${NSS_HWY_TARGET_MODE}" CACHE STRING
-    "Highway target set: dynamic, avx2, or avx3 (defaults to NSS_HWY_TARGET_MODE env)")
+    "Highway target set: dynamic, avx2, avx3, neon, or portable-test")
 if(NOT NSS_HWY_TARGET_MODE)
   set(NSS_HWY_TARGET_MODE "dynamic" CACHE STRING
-      "Highway target set: dynamic, avx2, or avx3 (defaults to NSS_HWY_TARGET_MODE env)" FORCE)
+      "Highway target set: dynamic, avx2, avx3, neon, or portable-test" FORCE)
 endif()
-set_property(CACHE NSS_HWY_TARGET_MODE PROPERTY STRINGS dynamic avx2 avx3)
+set_property(CACHE NSS_HWY_TARGET_MODE PROPERTY STRINGS dynamic avx2 avx3 neon portable-test)
 string(TOLOWER "${NSS_HWY_TARGET_MODE}" NSS_HWY_TARGET_MODE)
-if(NOT NSS_HWY_TARGET_MODE MATCHES "^(dynamic|avx2|avx3)$")
-  message(FATAL_ERROR "NSS_HWY_TARGET_MODE must be dynamic, avx2, or avx3")
+if(NOT NSS_HWY_TARGET_MODE MATCHES "^(dynamic|avx2|avx3|neon|portable-test)$")
+  message(FATAL_ERROR "NSS_HWY_TARGET_MODE must be dynamic, avx2, avx3, neon, or portable-test")
 endif()
-if(NSS_HWY_TARGET_MODE STREQUAL "dynamic")
+if(NSS_HWY_TARGET_MODE MATCHES "^(neon|portable-test)$" AND NOT NSS_HWY_ARM64)
+  message(FATAL_ERROR "NSS_HWY_TARGET_MODE=${NSS_HWY_TARGET_MODE} requires AArch64")
+endif()
+set(NSS_HWY_EXTRA_DEFINITIONS)
+if(NSS_HWY_ARM64)
+  # Pin the first ARM route to the ordinary NEON family. In particular, SVE
+  # sizeless vector arrays and BF16 variants have not cleared this port's gate.
+  set(NSS_HWY_DISABLED_TARGETS "(HWY_ALL_SVE|HWY_NEON_BF16)")
+  if(NSS_HWY_TARGET_MODE STREQUAL "portable-test")
+    list(APPEND NSS_HWY_EXTRA_DEFINITIONS HWY_COMPILE_ONLY_EMU128=1)
+  endif()
+elseif(NSS_HWY_TARGET_MODE STREQUAL "dynamic")
   # Minimum x86 dispatch policy: AVX2 plus AVX3/AVX3_ZEN4 where available.
   set(NSS_HWY_DISABLED_TARGETS "(HWY_SSE2|HWY_SSSE3|HWY_SSE4|HWY_AVX3_DL|HWY_AVX3_SPR|HWY_AVX10_2)")
 elseif(NSS_HWY_TARGET_MODE STREQUAL "avx2")
@@ -109,6 +134,23 @@ endif()
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 include(cmake/Highway.cmake)
+if(NSS_HWY_TARGET_MODE STREQUAL "portable-test")
+  # Highway disables EMU128 on affected compilers (including GCC 13). Fail
+  # during configuration instead of silently building a different oracle.
+  include(CheckCXXSourceCompiles)
+  set(CMAKE_REQUIRED_INCLUDES "${highway_SOURCE_DIR}")
+  set(CMAKE_REQUIRED_DEFINITIONS -DHWY_COMPILE_ONLY_EMU128=1)
+  check_cxx_source_compiles("#include <hwy/detect_targets.h>
+    #if HWY_TARGETS != HWY_EMU128
+    #error EMU128 is unavailable for this compiler
+    #endif
+    int main() { return 0; }" NSS_HAS_EMU128)
+  unset(CMAKE_REQUIRED_INCLUDES)
+  unset(CMAKE_REQUIRED_DEFINITIONS)
+  if(NOT NSS_HAS_EMU128)
+    message(FATAL_ERROR "portable-test requires a Highway-supported EMU128 compiler; use Clang instead of overriding Highway's compiler blocklist")
+  endif()
+endif()
 find_package(VapourSynth)
 
 set(NSS_GIT_DESCRIBE "" CACHE STRING "Revision recorded in plugin and benchmark metadata")
@@ -126,9 +168,11 @@ if(NOT NSS_GIT_DESCRIBE)
 endif()
 
 set(NSS_CPU_SOURCES
+  src/cpu/backend.cpp
   src/cpu/batch.cpp
   src/cpu/nlm/nlm.cpp
   src/cpu/bm/ssd.cpp
+  src/cpu/bm/match_joint.cpp
   src/cpu/bm/spatial4.cpp
   src/cpu/bm/spatial12.cpp
   src/cpu/bm/spatial16.cpp
@@ -153,12 +197,38 @@ file(GLOB NSS_CPU_SECOND_WAVE CONFIGURE_DEPENDS
   src/cpu/ncsr/*.cpp
   src/cpu/lssc/*.cpp
 )
+list(FILTER NSS_CPU_SECOND_WAVE EXCLUDE REGEX "/lssc/gemm_sme\\.cpp$")
+option(NSS_ENABLE_LSSC_SME "Build the optional LSSC SME matrix leaf when supported" ON)
+set(NSS_HAVE_LSSC_SME 0)
+if(NSS_ENABLE_LSSC_SME AND APPLE AND NSS_HWY_ARM64 AND
+   CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND NOT NSS_HWY_TARGET_MODE STREQUAL "portable-test")
+  include(CheckCXXSourceCompiles)
+  include(CMakePushCheckState)
+  cmake_push_check_state(RESET)
+  set(CMAKE_REQUIRED_FLAGS "-march=armv8.6-a+sme")
+  check_cxx_source_compiles("#include <arm_sme.h>
+    #include <arm_sve.h>
+    extern \"C\" __arm_new(\"za\") __arm_locally_streaming
+    void probe() { svzero_za(); }
+    int main() { return 0; }" NSS_COMPILER_HAS_LSSC_SME)
+  cmake_pop_check_state()
+  if(NSS_COMPILER_HAS_LSSC_SME)
+    set(NSS_HAVE_LSSC_SME 1)
+    list(APPEND NSS_CPU_SECOND_WAVE src/cpu/lssc/gemm_sme.cpp)
+    set_source_files_properties(src/cpu/lssc/gemm_sme.cpp PROPERTIES
+      COMPILE_OPTIONS "-O3;-march=armv8.6-a+sme")
+  endif()
+endif()
+message(STATUS "NSSFactory: optional LSSC SME leaf compiled=${NSS_HAVE_LSSC_SME}")
 list(APPEND NSS_CPU_SOURCES ${NSS_CPU_SECOND_WAVE})
 list(APPEND NSS_CPU_SOURCES src/cpu/nlm/distance_horizontal.cpp)
 list(APPEND NSS_CPU_SOURCES src/cpu/wnnm/svd_batch8_u_compat.cpp)
 
 add_library(nss_svd_qreplay STATIC src/cpu/wnnm/svd_batch8_qreplay.cpp)
 add_library(nss_cpu STATIC ${NSS_CPU_SOURCES})
+option(NSS_ALIGNMENT_GENERIC "Use general TWSC/NLH math and distance controls for same-model validation" OFF)
+target_compile_definitions(nss_cpu PRIVATE NSS_ALIGNMENT_GENERIC=$<BOOL:${NSS_ALIGNMENT_GENERIC}>)
+target_compile_definitions(nss_cpu PRIVATE NSS_HAVE_LSSC_SME=${NSS_HAVE_LSSC_SME})
 if(NSS_BM_KERNEL_LAB)
   target_compile_definitions(nss_cpu PRIVATE NSS_BM_KERNEL_LAB=1)
   # Internal campaign selectors affect only the experimental translation unit.
@@ -204,6 +274,9 @@ target_compile_options(nss_cpu PRIVATE ${NSS_CPU_ISA_OPTIONS})
 # silently bringing back pre-AVX2 dispatch targets.
 target_compile_definitions(nss_cpu PUBLIC "HWY_DISABLED_TARGETS=${NSS_HWY_DISABLED_TARGETS}")
 target_compile_definitions(nss_svd_qreplay PRIVATE "HWY_DISABLED_TARGETS=${NSS_HWY_DISABLED_TARGETS}")
+target_compile_definitions(nss_cpu PUBLIC ${NSS_HWY_EXTRA_DEFINITIONS}
+  "NSS_HWY_TARGET_MODE_STRING=\"${NSS_HWY_TARGET_MODE}\"")
+target_compile_definitions(nss_svd_qreplay PRIVATE ${NSS_HWY_EXTRA_DEFINITIONS})
 set(NSS_HOT_COMPILE_OPTIONS -O3 -ffast-math)
 list(APPEND NSS_HOT_COMPILE_OPTIONS ${NSS_CPU_ISA_OPTIONS})
 # Keep IEEE NaN/Inf classification enabled while allowing errno-free hardware
@@ -211,6 +284,9 @@ list(APPEND NSS_HOT_COMPILE_OPTIONS ${NSS_CPU_ISA_OPTIONS})
 # or enable floating-point traps; both options avoid the largest costs of the
 # default strict mode without implying -ffinite-math-only.
 set(NSS_SAFE_COMPILE_OPTIONS -O3 -fno-math-errno -fno-trapping-math)
+set_source_files_properties(src/cpu/bm/match_joint.cpp src/cpu/common/gemm_precise.cpp
+  src/cpu/twsc/linalg.cpp src/cpu/twsc/svd_batch.cpp
+  PROPERTIES COMPILE_OPTIONS "-O3;-fno-fast-math;-ffp-contract=off")
 list(APPEND NSS_SAFE_COMPILE_OPTIONS ${NSS_CPU_ISA_OPTIONS})
 set_source_files_properties(
   src/cpu/nlm/nlm.cpp
@@ -231,7 +307,6 @@ set_source_files_properties(
   src/cpu/twsc/encode.cpp
   src/cpu/nlh/haar.cpp
   src/cpu/nlh/pixel_match.cpp
-  src/cpu/nlh/filter_group.cpp
   src/cpu/mcwnnm/match_nch.cpp
   PROPERTIES COMPILE_OPTIONS "${NSS_HOT_COMPILE_OPTIONS}"
 )
@@ -272,6 +347,7 @@ if(VapourSynth_FOUND)
   add_library(nss SHARED
     src/host/plugin.cpp
     src/host/validate.cpp
+    src/host/full_image.cpp
     ${NSS_HOST_FILTERS}
   )
   set_target_properties(nss PROPERTIES

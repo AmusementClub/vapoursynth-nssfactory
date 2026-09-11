@@ -1,7 +1,7 @@
 #include "nss/resources.hpp"
 #include "host/validate.hpp"
 #include "host/temporal.hpp"
-#include "nss/avx2.hpp"
+#include "nss/backend.hpp"
 #include "nss/cpu_api.hpp"
 #include "nss/params.hpp"
 #include "nss/workspace.hpp"
@@ -489,8 +489,8 @@ void VS_CC nlmFree(void* instanceData, VSCore* core, const VSAPI* vsapi) {
 
 void VS_CC nlmCreate(const VSMap* in, VSMap* out, void* userData, VSCore* core, const VSAPI* vsapi) {
     (void)userData;
-    if (!nss::cpu_has_avx2()) {
-        vsapi->mapSetError(out, "nss.NLM: AVX2 is required");
+    if (!nss::cpu_backend_available()) {
+        vsapi->mapSetError(out, "nss.NLM: no executable CPU backend (AVX2 on x86; NEON on AArch64)");
         return;
     }
     auto d = std::make_unique<NlmData>();

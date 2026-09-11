@@ -8,7 +8,7 @@
 #include "host/batch_runner.hpp"
 #include "host/validate.hpp"
 #include "host/contribution.hpp"
-#include "nss/avx2.hpp"
+#include "nss/backend.hpp"
 #include "nss/cpu_api.hpp"
 #include "nss/cpu_common.hpp"
 #include "nss/params.hpp"
@@ -741,8 +741,8 @@ void release_bm3d_nodes(Bm3dData& d, const VSAPI* vsapi) {
 }
 
 VSNode* create_rolling_bm3d(const VSMap* in, VSCore* core, const VSAPI* vsapi, VSMap* err) {
-    if (!nss::cpu_has_avx2()) {
-        vsapi->mapSetError(err, "nss.BM3D: AVX2 is required");
+    if (!nss::cpu_backend_available()) {
+        vsapi->mapSetError(err, "nss.BM3D: no executable CPU backend (AVX2 on x86; NEON on AArch64)");
         return nullptr;
     }
     auto d = std::make_unique<RollingData>();
@@ -791,8 +791,8 @@ VSNode* create_rolling_bm3d(const VSMap* in, VSCore* core, const VSAPI* vsapi, V
 }
 
 VSNode* nss_create_bm3d(const VSMap* in, VSCore* core, const VSAPI* vsapi, VSMap* err) {
-    if (!nss::cpu_has_avx2()) {
-        vsapi->mapSetError(err, "nss.BM3D: AVX2 is required");
+    if (!nss::cpu_backend_available()) {
+        vsapi->mapSetError(err, "nss.BM3D: no executable CPU backend (AVX2 on x86; NEON on AArch64)");
         return nullptr;
     }
     auto d = std::make_unique<Bm3dData>();

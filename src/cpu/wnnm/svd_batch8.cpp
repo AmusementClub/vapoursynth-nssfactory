@@ -22,7 +22,11 @@ namespace hn = hwy::HWY_NAMESPACE;
 
 namespace {
 
+#if HWY_TARGET == HWY_NEON || HWY_TARGET == HWY_NEON_WITHOUT_AES
+constexpr int kBatchLanes = 4;
+#else
 constexpr int kBatchLanes = 16;
+#endif
 constexpr int kN = 8;
 
 inline std::size_t TallIndex(int row, int col, int lane) {
@@ -45,9 +49,9 @@ bool SvdChunk(D d, int m, const float* const* A, const int* lda, float* const* U
     alignas(64) float vsoa[kN * kN * kBatchLanes];
     alignas(64) float ssoa[kN * kBatchLanes];
     alignas(64) float beta[kN * kBatchLanes];
-    // Default 64x8 / 16-lane chunks overwrite every tall and reflector element
-    // during pack + QR. Partial chunks still need the sentinels so unused
-    // lanes and rows below m stay finite under the valid-lane mask.
+    // Full 64x8 chunks only read elements written by pack + QR. Partial chunks
+    // initialize the inactive rows/lanes as finite sentinels. The private
+    // storage width is four matrices on NEON and sixteen on the wider targets.
     const bool packed_hot = (count == kBatchLanes && m == kSvdBatch8MaxM);
     if (!packed_hot) {
         std::memset(tall, 0, sizeof(tall));

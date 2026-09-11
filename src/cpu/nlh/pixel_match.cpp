@@ -107,8 +107,7 @@ void PixelMatch(const float* group, int m, int n, int lda, int q, int* idx) {
     const int N = static_cast<int>(hn::Lanes(d));
     using V = hn::Vec<hn::ScalableTag<float>>;
     constexpr int kSelM = 64;
-    auto ssd_upper = [&](int r) {
-        int s0 = r + 1;
+    auto ssd_from = [&](int r, int s0) {
         for (; s0 + 4 * N <= m; s0 += 4 * N) {
             V acc0 = hn::Zero(d);
             V acc1 = hn::Zero(d);
@@ -151,13 +150,60 @@ void PixelMatch(const float* group, int m, int n, int lda, int q, int* idx) {
         }
     };
 
-    if (m <= kSelM && qq > 1) {
+    auto select_row = [&](float* distances, int r) {
+        const auto inf = hn::Set(d, kInf);
+        distances[r] = kInf;
+        for (int slot = 1; slot < qq; ++slot) {
+            auto vmin = inf;
+            int j = 0;
+            for (; j + N <= m; j += N)
+                vmin = hn::Min(vmin, hn::LoadU(d, distances + j));
+            float best_d = hn::ReduceMin(d, vmin);
+            for (; j < m; ++j) best_d = std::min(best_d, distances[j]);
+            const auto vbest = hn::Set(d, best_d);
+            int best_s = m;
+            j = 0;
+            for (; j + N <= m; j += N) {
+                const auto eq = hn::Eq(hn::LoadU(d, distances + j), vbest);
+                if (!hn::AllFalse(d, eq)) {
+                    best_s = j + static_cast<int>(hn::FindFirstTrue(d, eq));
+                    break;
+                }
+            }
+            for (; j < m && best_s == m; ++j)
+                if (distances[j] == best_d) best_s = j;
+            if (!(best_d < kInf) || best_s < 0 || best_s >= m) break;
+            best_idx[r * qq + slot] = best_s;
+            best_dist[r * qq + slot] = best_d;
+            distances[best_s] = kInf;
+        }
+    };
+
+    // Repeating SSDs needs sufficient vector throughput. The measured policy
+    // admits AVX3 and the tested group range; narrower targets retain the
+    // upper-triangle method below.
+    if (HWY_TARGET == HWY_AVX3 && m > kSelM && m <= kFixedM && n >= 8 && n <= 64 && qq <= 16 && qq > 1) {
+        // A whole row permits SIMD selection without a quadratic scratch
+        // matrix. SSD arithmetic is repeated for the symmetric row, keeping
+        // the same column/FMA order; changing the difference sign is exact.
+        for (int r = 0; r < m; ++r) {
+            ssd_from(r, 0);
+            bool bounded = true;
+            for (int s = 0; s < m; ++s) bounded &= pair_dist[s] < kInf;
+            if (bounded) select_row(pair_dist, r);
+            else {
+                // The insertion path also defines finite sentinel ties and
+                // exceptional-distance behavior; do not broaden that contract.
+                for (int s = 0; s < m; ++s) if (s != r) insert(r, s, pair_dist[s]);
+            }
+        }
+    } else if (m <= kSelM && qq > 1) {
         // Keep the column-major upper-triangle SSD; defer top-q so each row
         // selects from a dense distance row instead of updating two heaps
         // per pair. Ties keep the lowest index, matching better().
         std::array<float, kSelM * kSelM> dist{};
         for (int r = 0; r < m; ++r) {
-            ssd_upper(r);
+            ssd_from(r, r + 1);
             dist[static_cast<std::size_t>(r) * static_cast<std::size_t>(m) + static_cast<std::size_t>(r)] = 0.f;
             for (int s = r + 1; s < m; ++s) {
                 const float value = pair_dist[s];
@@ -166,7 +212,6 @@ void PixelMatch(const float* group, int m, int n, int lda, int q, int* idx) {
             }
         }
         std::array<float, kSelM> tmp{};
-        const auto inf = hn::Set(d, kInf);
         for (int r = 0; r < m; ++r) {
             float* row = dist.data() + static_cast<std::size_t>(r) * static_cast<std::size_t>(m);
             int i = 0;
@@ -176,47 +221,13 @@ void PixelMatch(const float* group, int m, int n, int lda, int q, int* idx) {
             for (; i < m; ++i) {
                 tmp[static_cast<std::size_t>(i)] = row[i];
             }
-            tmp[static_cast<std::size_t>(r)] = kInf;
-            for (int slot = 1; slot < qq; ++slot) {
-                auto vmin = inf;
-                int j = 0;
-                for (; j + N <= m; j += N) {
-                    vmin = hn::Min(vmin, hn::LoadU(d, tmp.data() + j));
-                }
-                float best_d = hn::ReduceMin(d, vmin);
-                for (; j < m; ++j) {
-                    best_d = std::min(best_d, tmp[static_cast<std::size_t>(j)]);
-                }
-                const auto vbest = hn::Set(d, best_d);
-                int best_s = m;
-                j = 0;
-                for (; j + N <= m; j += N) {
-                    const auto eq = hn::Eq(hn::LoadU(d, tmp.data() + j), vbest);
-                    if (hn::AllFalse(d, eq)) {
-                        continue;
-                    }
-                    const int lane = static_cast<int>(hn::FindFirstTrue(d, eq));
-                    best_s = j + lane;
-                    break;
-                }
-                for (; j < m && best_s == m; ++j) {
-                    if (tmp[static_cast<std::size_t>(j)] == best_d) {
-                        best_s = j;
-                    }
-                }
-                if (!(best_d < kInf) || best_s < 0 || best_s >= m) {
-                    break;
-                }
-                best_idx[r * qq + slot] = best_s;
-                best_dist[r * qq + slot] = best_d;
-                tmp[static_cast<std::size_t>(best_s)] = kInf;
-            }
+            select_row(tmp.data(), r);
         }
     } else {
     // Compute only the upper triangle. Every distance is inserted into both
     // rows, so symmetric pairs cannot diverge through rounding or ties.
     for (int r = 0; r < m; ++r) {
-        ssd_upper(r);
+        ssd_from(r, r + 1);
         for (int s = r + 1; s < m; ++s) {
             insert(r, s, pair_dist[s]);
             insert(s, r, pair_dist[s]);

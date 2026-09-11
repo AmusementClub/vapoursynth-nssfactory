@@ -3,6 +3,7 @@
 #include "nss/cpu_common.hpp"
 #include "cpu/hwy_config.hpp"
 #include "cpu/wnnm/jacobi8.hpp"
+#include "cpu/mcwnnm/gram_guard.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -151,6 +152,9 @@ static int GramShrink8(const float* input, int m, float constant, int start_k, f
         singular[k] = std::sqrt(eig_s[k]);
     }
     const float uncertainty = 2e-5f * std::max({eig_s[0], constant, 1e-20f});
+    if (!detail::gram_spectrum_is_psd8(eig_u, eig_s, eig_v, uncertainty)) {
+        return -1;
+    }
     for (int k = std::clamp(start_k, 0, kN); k < kN; ++k) {
         if (std::fabs(eig_s[k] - constant) <= uncertainty) {
             return -1;

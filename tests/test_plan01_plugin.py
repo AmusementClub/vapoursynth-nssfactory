@@ -143,7 +143,7 @@ def main():
             for n in (4, 0, 2, 1):
                 fat_frame = raw.get_frame(n)
                 for key, value in dict(_NSSFatVersion=2, _NSSFatCenter=n, _NSSFatRadius=2,
-                                       _NSSFatLayout=1, _NSSModel=model, _NSSModelVersion=2).items():
+                                       _NSSFatLayout=1, _NSSModel=model, _NSSModelVersion=5 if name=='NLH' else 3 if name=='TWSC' else 2).items():
                     if fat_frame.props[key] != value:
                         raise AssertionError((name, key, value, fat_frame.props[key]))
                 actual, _ = evaluate(output, n)

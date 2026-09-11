@@ -48,7 +48,9 @@ inline int lssc_omp_work_floats(int m, int atoms, int sparsity) {
     const std::uint64_t kk = std::max<std::uint64_t>(1, std::min<std::uint64_t>(8, std::min<std::uint64_t>(aa, sparsity < 1 ? 1 : sparsity)));
     const int support_f = (kk * static_cast<int>(sizeof(int)) + static_cast<int>(sizeof(float)) - 1) /
                           static_cast<int>(sizeof(float));
-    // r, support, used, selected dictionary, Gram, rhs, correlations.
+    // Retain the conservative legacy bound for callers and frame accounting.
+    // Stable OMP stores a double residual in 2*m float slots plus an atoms-byte
+    // used mask; even sparsity=1 reserves at least that much storage here.
     return checked_int(checked_sum(mm, support_f, aa, mm * kk, kk * kk, kk, aa, 32));
 }
 int lssc_omp_workspace(const float* y, int m, const float* D, int atoms, int ldd, int sparsity, float* a,
@@ -104,12 +106,18 @@ inline int lssc_prepare_work_floats(int m, int atoms) {
 int lssc_prepare_context(const float* D, int m, int atoms, int ldd, float* work, int work_floats,
                          LsscPreparedContext* context);
 
+// Optional matrix-kernel capability, independent of the Highway vector target.
+bool lssc_sme_compiled() noexcept;
+bool lssc_sme_available() noexcept;
+int lssc_gemm_pack_work_floats(int m, int n, int atoms) noexcept;
+
 inline int lssc_reconstruct_prepared_work_floats(int m, int n, int atoms) {
     const std::uint64_t mm = m < 1 ? 1 : m;
     const std::uint64_t nn = n < 1 ? 1 : n;
     const std::uint64_t aa = atoms < 1 ? 1 : atoms;
-    // mean[n] + A[atoms*n] + R[m*n] + G[atoms*n]
-    return checked_int(checked_sum(nn, aa * nn, mm * nn, aa * nn, 16));
+    // mean[n] + A[atoms*n] + R[m*n] + G[atoms*n] + optional bounded GEMM pack.
+    const int pack = lssc_gemm_pack_work_floats(static_cast<int>(mm), static_cast<int>(nn), static_cast<int>(aa));
+    return checked_int(checked_sum(nn, aa * nn, mm * nn, aa * nn, pack, 16));
 }
 
 inline int lssc_reconstruct_work_floats(int m, int n, int atoms) {

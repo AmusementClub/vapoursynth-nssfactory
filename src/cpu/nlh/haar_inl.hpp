@@ -8,8 +8,8 @@ static inline void Haar1dN(const float* in, float* out, int n) {
         out[0] = in[0];
         return;
     }
-    float a[16];
-    float b[16];
+    float a[64];
+    float b[64];
     for (int i = 0; i < n; ++i) {
         a[i] = in[i];
     }
@@ -35,8 +35,8 @@ static inline void IHaar1dN(const float* in, float* out, int n) {
         out[0] = in[0];
         return;
     }
-    float a[16];
-    float b[16];
+    float a[64];
+    float b[64];
     for (int i = 0; i < n; ++i) {
         a[i] = in[i];
     }
@@ -321,6 +321,84 @@ static void Haar2d_4x16(float* mat, bool inverse, bool avx2_enabled = true) {
     Haar2dFast(mat, 4, 16, inverse, avx2_enabled);
 }
 
+// The matrix is column-major. A vector contains independent pixel rows, so
+// every lane follows the original 1D butterfly order without gathering a row
+// into a temporary line. Only the active low-frequency prefix is rewritten at
+// each level; the previously produced detail coefficients remain untouched.
+template<int Q>
+static void HaarRowsTogether(float* mat, int n, bool inverse) {
+    const hn::CappedTag<float, Q> d;
+    const int lanes = static_cast<int>(hn::Lanes(d));
+    const auto scale = hn::Set(d, kHaarInvSqrt2);
+    alignas(64) float scratch[Q * 64];
+    if (!inverse) {
+        for (int len = n; len >= 2; len /= 2) {
+            const int half = len / 2;
+            for (int j = 0; j < half; ++j) {
+                for (int r = 0; r < Q; r += lanes) {
+                    const auto a = hn::LoadU(d, mat + (2 * j) * Q + r);
+                    const auto b = hn::LoadU(d, mat + (2 * j + 1) * Q + r);
+                    hn::StoreU(hn::Mul(hn::Add(a, b), scale), d, scratch + j * Q + r);
+                    hn::StoreU(hn::Mul(hn::Sub(a, b), scale), d, scratch + (half + j) * Q + r);
+                }
+            }
+            std::memcpy(mat, scratch, std::size_t(len * Q) * sizeof(float));
+        }
+    } else {
+        for (int len = 2; len <= n; len *= 2) {
+            const int half = len / 2;
+            for (int j = 0; j < half; ++j) {
+                for (int r = 0; r < Q; r += lanes) {
+                    const auto a = hn::LoadU(d, mat + j * Q + r);
+                    const auto b = hn::LoadU(d, mat + (half + j) * Q + r);
+                    hn::StoreU(hn::Mul(hn::Add(a, b), scale), d, scratch + (2 * j) * Q + r);
+                    hn::StoreU(hn::Mul(hn::Sub(a, b), scale), d, scratch + (2 * j + 1) * Q + r);
+                }
+            }
+            std::memcpy(mat, scratch, std::size_t(len * Q) * sizeof(float));
+        }
+    }
+}
+
+#if HWY_TARGET == HWY_AVX3
+// Each lane owns an independent column. Gather/scatter only changes the
+// traversal; each column keeps the scalar butterfly and rounding order.
+template<int Q>
+static void HaarColsTogether(float* mat, int n, bool inverse) {
+    const hn::CappedTag<float, 8> d;
+    const hn::RebindToSigned<decltype(d)> di;
+    const int lanes = static_cast<int>(hn::Lanes(d));
+    const auto offsets = hn::Mul(hn::Iota(di, 0), hn::Set(di, Q));
+    const auto scale = hn::Set(d, kHaarInvSqrt2);
+    for (int c = 0; c < n; c += lanes) {
+        hn::Vec<decltype(d)> values[Q], scratch[Q];
+        for (int r = 0; r < Q; ++r)
+            values[r] = hn::GatherIndex(d, mat + c * Q, hn::Add(offsets, hn::Set(di, r)));
+        if (!inverse) {
+            for (int len = Q; len >= 2; len /= 2) {
+                const int half = len / 2;
+                for (int r = 0; r < half; ++r) {
+                    scratch[r] = hn::Mul(hn::Add(values[2 * r], values[2 * r + 1]), scale);
+                    scratch[half + r] = hn::Mul(hn::Sub(values[2 * r], values[2 * r + 1]), scale);
+                }
+                for (int r = 0; r < len; ++r) values[r] = scratch[r];
+            }
+        } else {
+            for (int len = 2; len <= Q; len *= 2) {
+                const int half = len / 2;
+                for (int r = 0; r < half; ++r) {
+                    scratch[2 * r] = hn::Mul(hn::Add(values[r], values[half + r]), scale);
+                    scratch[2 * r + 1] = hn::Mul(hn::Sub(values[r], values[half + r]), scale);
+                }
+                for (int r = 0; r < len; ++r) values[r] = scratch[r];
+            }
+        }
+        for (int r = 0; r < Q; ++r)
+            hn::ScatterIndex(values[r], d, mat + c * Q, hn::Add(offsets, hn::Set(di, r)));
+    }
+}
+#endif
+
 static void Haar2dFast(float* mat, int q, int n, bool inverse, bool avx2_enabled) {
 #if HWY_TARGET == HWY_AVX2 && (NSS_AVX2_EXPERIMENT & 32)
     if (avx2_enabled && q == 4 && n == 16) {
@@ -329,6 +407,10 @@ static void Haar2dFast(float* mat, int q, int n, bool inverse, bool avx2_enabled
     }
 #endif
     auto cols = [&]() {
+#if HWY_TARGET == HWY_AVX3
+        if (q == 8 && n >= 8 && (n & 7) == 0) { HaarColsTogether<8>(mat, n, inverse); return; }
+        if (q == 16 && n >= 8 && (n & 7) == 0) { HaarColsTogether<16>(mat, n, inverse); return; }
+#endif
         if (q == 4) {
             HaarColsQ4(mat, n, inverse);
             return;
@@ -347,7 +429,13 @@ static void Haar2dFast(float* mat, int q, int n, bool inverse, bool avx2_enabled
         }
     };
     auto rows = [&]() {
-        float tmp[16];
+        if (q == 8) { HaarRowsTogether<8>(mat, n, inverse); return; }
+        if (q == 16) { HaarRowsTogether<16>(mat, n, inverse); return; }
+        if (q == 4 && n >= 32) { HaarRowsTogether<4>(mat, n, inverse); return; }
+#if HWY_TARGET == HWY_AVX3
+        if (q == 2 && n >= 8) { HaarRowsTogether<2>(mat, n, inverse); return; }
+#endif
+        float tmp[64];
         for (int r = 0; r < q; ++r) {
             for (int c = 0; c < n; ++c) {
                 tmp[c] = mat[r + c * q];

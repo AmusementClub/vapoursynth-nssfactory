@@ -88,7 +88,7 @@ int main() {
         catch (const std::exception&) { rejected = true; }
         if (!rejected) return 1;
     }
-    for (auto sizing : {nss::wnnm_shrink_work_floats, nss::twsc_pca_soft_work_floats,
+    for (auto sizing : {nss::wnnm_shrink_work_floats, nss::pca_work_floats,
                         nss::mcwnnm_filter_work_floats, nss::bm3d_filter_work_floats}) {
         bool rejected = false;
         try { (void)sizing(2147483647,2147483647); } catch (const std::exception&) { rejected = true; }

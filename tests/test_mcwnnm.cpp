@@ -2,6 +2,8 @@
 #include "nss/cpu_common.hpp"
 #include "nss/cpu_mcwnnm.hpp"
 #include "nss/params.hpp"
+#include "../src/cpu/mcwnnm/gram_guard.hpp"
+#include "../src/cpu/wnnm/jacobi8.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -15,6 +17,35 @@ static int fail(const char* msg) {
 }
 
 int main() {
+    // A negative eigenvalue has a positive SVD magnitude. Check the actual
+    // factor-sign guard with rotated symmetric matrices at three scales.
+    for (float scale : {1e-5f, 1.f, 1e5f}) {
+        for (bool negative : {false, true}) {
+            float matrix[64]{}, u[64], singular[8], vt[64], v[64];
+            for (int col = 0; col < 8; ++col) {
+                for (int row = 0; row < 8; ++row) {
+                    double value = 0;
+                    for (int k = 0; k < 8; ++k) {
+                        const double factor = std::sqrt(k == 0 ? 1. / 8 : 2. / 8);
+                        const double qr = factor * std::cos(3.14159265358979323846 * (row + .5) * k / 8);
+                        const double qc = factor * std::cos(3.14159265358979323846 * (col + .5) * k / 8);
+                        const double eigenvalue = k == 7 && negative ? -.25 : 8. - k;
+                        value += qr * eigenvalue * qc;
+                    }
+                    matrix[row + col * 8] = static_cast<float>(value * scale);
+                }
+            }
+            nss::jacobi_svd_8(matrix, 8, u, 8, singular, vt, 8, v);
+            for (float s : singular) if (!(s >= 0.f)) return fail("SVD magnitude must be nonnegative");
+            if (nss::detail::gram_spectrum_is_psd8(u, singular, v, 2e-5f * singular[0]) == negative) {
+                return fail("Gram factor sign did not distinguish PSD from negative spectrum");
+            }
+            u[0] = std::numeric_limits<float>::quiet_NaN();
+            if (nss::detail::gram_spectrum_is_psd8(u, singular, v, 0.f)) {
+                return fail("Gram factor sign must reject nonfinite factors");
+            }
+        }
+    }
     constexpr int nch = 3;
     constexpr int block = 4;
     constexpr int n = 4;

@@ -34,6 +34,15 @@
     "effective_orthogonality_max_abs": 0.0005,
     "effective_rank_squared_floor": 1e-14
   },
+  "twsc_full": {
+    "model_semantic_version": 3,
+    "sylvester_relative_residual": 1e-10,
+    "near_diagonal_gram_ratio": 1e-12,
+    "near_diagonal_residual_policy": "Conservative upper bound against the full Gram; not a directly measured residual.",
+    "positive_noise_inverse_floor_normalized": 1e-06,
+    "svd_relative_correlation": 1e-06,
+    "admm_iteration_cap_policy": "Normal finite-iteration output with explicit unconverged status; numerical failures are errors."
+  },
   "image": {
     "report": [
       "max_abs",

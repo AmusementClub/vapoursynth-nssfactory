@@ -2,9 +2,13 @@
 
 A work-in-progress VapourSynth factory for classical NSS (non-local self-similarity) denoisers — NLM, BM3D, WNNM, MCWNNM, TWSC, NLH, NCSR, LSSC — honoring the pre-AI era of these algorithms.
 
-CPU plugin `libnss.so`, namespace `nss`. Linux x86-64, AVX2 minimum. Constant Gray / YUV / RGB 32-bit float clips only.
+CPU plugin `libnss.so` / `libnss.dylib`, namespace `nss`. Linux x86-64 (AVX2 minimum), plus native AArch64/arm64 NEON builds in the recorded release matrix. Constant Gray / YUV / RGB 32-bit float clips only.
 
-This project is WIP. ARM NEON, CUDA, and Vulkan support may be added later.
+This project is WIP. Qualified NEON preview packages pass the Plan02 release gates on Ubuntu 24.04 / GCC 15 / AArch64 and macOS 27 / M4 Max / arm64 with VapourSynth R75. See the [release report](PLAN02_RELEASE_20260907.md) for compatibility, measured speedups and conditional floating-point differences. CUDA and Vulkan are future routes.
+
+The current source additionally uses mixed-precision LSSC OMP by default: FP32 correlation screening, ordered FP64 refinement, and the existing FP64 solve/residual. The measured configuration-specific gains and regressions were accepted for integration; see the [integration record](PLAN02_MIXED_INTEGRATION_20260908.md). The existing preview packages and release-performance tables describe the frozen r3 source, before this change.
+
+On supported Apple ARM builds, LSSC reconstruction also selects an SME matrix leaf for eligible long products. Packing, transpose and ordinary SIMD fallback use Highway; only the 27-line FP32 ZA outer-product leaf uses Arm ACLE intrinsics. The measured M4 Max gains, numerical/resource checks and fallback coverage are recorded in [LSSC SME integration](LSSC_SME_INTEGRATION_20260908.md). `Backend()` keeps reporting the Highway target and additionally reports `lssc_sme_compiled` / `lssc_sme_available`; availability does not mean every shape uses SME. Configure with `-DNSS_ENABLE_LSSC_SME=OFF` for the Highway-only control. The existing r3 preview packages predate this source change.
 
 ## Usage
 
@@ -17,9 +21,9 @@ core.nss.WNNM(clip clip[, float[] sigma = 3.0, int block_size = 8, int block_ste
 
 core.nss.MCWNNM(clip clip[, float[] sigma = 3.0, int block_size = 8, int block_step = 8, int group_size = 8, int bm_range = 7, int radius = 0, int ps_num = 2, int ps_range = 4, int residual = 1, int adaptive_aggregation = 0, clip rclip = None, int admm_iter = 10, float rho = 3.0, float mu = 1.001, int iters = 2, float delta = 0.1])
 
-core.nss.TWSC(clip clip[, float[] sigma = 3.0, int block_size = 8, int block_step = 8, int group_size = 8, int bm_range = 7, int radius = 0, int ps_num = 2, int ps_range = 4, float lambda1 = 0.0, float lambda2 = 3.0, clip rclip = None, int iters = 2, float delta = 0.1])
+core.nss.TWSC(clip clip[, float[] sigma = 3.0, int estimate_sigma = 0, int block_size, int block_step = 1, int group_size, int search_window = 60, int bm_range, int radius = 0, int ps_num = 2, int ps_range = 4, float lambda2 = 1.0, clip rclip = None, int iters, float delta = 0.0, int admm_iter = 10, float rho = 0.5, float mu = 1.1, float tol = 1e-6, int memory_limit_mb])
 
-core.nss.NLH(clip clip[, float[] sigma = 3.0, int block_size = 8, int block_step = 8, int group_size = 16, int bm_range = 20, int radius = 0, int ps_num = 2, int ps_range = 4, int q = 4, clip rclip = None])
+core.nss.NLH(clip clip[, float[] sigma, string noise_model = "auto", int[] block_size, int[] block_step, int[] group_size, int[] search_window, int bm_range, int radius = 0, int ps_num = 2, int ps_range = 4, int[] q, clip rclip = None, int basic_iters, float lambda_basic, float hard_strength, int wiener_iters, float wiener_sigma_scale, int memory_limit_mb])
 
 core.nss.NCSR(clip clip[, float[] sigma = 3.0, int block_size = 8, int block_step = 8, int group_size = 8, int bm_range = 7, int radius = 0, int ps_num = 2, int ps_range = 4, clip rclip = None, int iters = 2, float delta = 0.1])
 
@@ -40,7 +44,31 @@ their weighted intermediate directly when `radius > 0`.
 BM3D accepts `block_size` values 1, 2, 4, 8, 12, 16, and 32. The 12-point path is intended for
 high-noise DCT profiles; 8 remains the general-purpose default.
 
-NLM currently supports `wmode=0` (Welsch) only. TWSC rejects `lambda1 != 0`.
+NLM currently supports `wmode=0` (Welsch) only.
+
+TWSC uses model semantic version 3 and NLH version 5. They replace their earlier
+simplified algorithms. TWSC implements the complete three-weight ADMM objective
+with the selected author preprocessing. NLH uses iterative Basic, repeated Wiener
+gains and full pixel aggregation, with a calibrated **linear** Basic threshold
+`k_h * hard_strength * sigma_channel`. Sigma remains an 8-bit noise standard
+deviation. Omitted NLH fields select the measured Gray-low, Gray-high or real-noise
+preset; explicit fields override only that field. The former `hard_tau` parameter
+and its quadratic threshold rule are removed. These choices change outputs and
+cost. There is no legacy runtime mode; TWSC also rejects `lambda1`, including zero.
+See [TWSC/NLH formulas, defaults, limits and migration](contracts/twsc-nlh.md).
+The [NLH defaults and optimization report](NLH_DEFAULTS_OPTIMIZATION_20260909.md)
+records the joint parameter search, quality tradeoffs, admitted SIMD shapes and
+separate parameter/kernel measurements. The earlier
+[linear-NLH calibration report](docs/nlh-linear-calibration-20260908.md) records the
+v4 BM3D response reference; v5 retains sigma units while changing preset coefficients.
+The earlier [alignment evidence report](docs/twsc-nlh-alignment-20260908.md) separates
+independent numerical checks, quality changes and same-model timings.
+TWSC chooses block/group/iterations from active-channel noise RMS; NLH estimates
+noise when `sigma` is omitted. Explicit `sigma=0` preserves that input plane.
+TWSC's [performance report](docs/twsc-speed-20260909.md) records the AVX2 SVD
+validation optimization and measured `block_step` speed/quality tradeoffs.
+`bm_range=r` explicitly means `search_window=2*r+1`; supplying both is an error.
+Earlier package/performance reports describe their frozen source, not these models.
 
 ## Compilation
 
@@ -53,12 +81,32 @@ cmake --build build -j
 
 Install `libnss.so` into the VapourSynth plugin directory.
 
-Fresh builds also enable `NSS_AVX2_DEFAULTS=ON`, with configuration-scoped
+Fresh x86 builds also enable `NSS_AVX2_DEFAULTS=ON`, with configuration-scoped
 AVX2 ports validated on C4 and Ryzen 5950X. `NSS_AVX2_EXPERIMENT=0` adds no
 experimental candidates; use `-DNSS_AVX2_DEFAULTS=OFF -DNSS_AVX2_EXPERIMENT=0`
 to retain the AVX2 reference routes. See the [AVX2 campaign report](docs/avx2-port-campaign.md)
 for dispatch limits, numerical replays, per-configuration timings and measured
 NLH fallback overhead.
+
+AArch64 builds use `-DNSS_HWY_TARGET_MODE=neon` (also the ARM
+`dynamic` target policy), with `NSS_AVX2_DEFAULTS=OFF` and experiment 0.
+SVE/SVE2 are excluded until their separate port is validated. The
+`portable-test` mode selects Highway EMU128 for diagnostic comparisons;
+it requires a supported compiler (use Clang) and is not a release mode.
+Build macOS arm64 separately and load `libnss.dylib`.
+`core.nss.Backend()` reports compiled/runtime targets and an executed dispatch
+probe; this does not certify acceleration of every kernel. See the
+[Plan02 release report and validation scope](PLAN02_RELEASE_20260907.md).
+For native ARM build/host verification, run `tests/arm_native_gate.py --help`.
+It defaults to GCC 15 for NEON, requires fresh build/result paths and a native
+R75 runtime, and retains source/toolchain/backend identities and failure logs.
+The extended TWSC/NLH mathematical gates require NumPy and SciPy in the test
+Python environment; these are test dependencies, not plugin dependencies.
+The gate includes guarded tail/stride fixtures and a 762-case public shape and
+1/2/4-thread matrix. On Linux GCC, add `--sanitize` for ASan/UBSan; standalone
+C++ tests also check leaks, while the external Python/VS runtime has leak
+detection disabled. Pixel captures support separate cross-build comparisons;
+this build/host gate is one component of the separate, completed release matrix. To verify the recorded r3 release evidence after this checkout advances, use `python3 tests/arm_isa_lab/validate_release.py --source-root build-plan02-release-source-r3 --out artifacts/c4a/plan02-mixed-integration-20260908/r3-release-validation.json`. The explicit source root keeps the archived package decision separate from current-source validation.
 
 Fresh builds select `NSS_BM_EXPERIMENT=2305`: AVX3 SortedTopK for b8 groups of
 at least 16, BM3D patch/work reuse, and rolling target-ring/direct-scratch
@@ -127,3 +175,7 @@ convergence and effective-rank policy; corrected old outputs are not bitwise
 compatibility goldens. These correctness and safety changes have measured runtime
 regressions in some configurations; the accepted optimization defaults remain
 unchanged.
+
+### NEON numerical compatibility
+
+Cross-compiler/EMU outputs use the conditional policy in `contracts/tolerances.json`; they are not guaranteed byte-identical. DCT/SSD near ties, iterative references and LSSC dictionary training can amplify ordinary rounding. The release report retains the actual outliers, independent replay evidence and quality guards. FP64 LSSC OMP fixes a near-null residual artifact but has a separately reported migration cost against the older FP32 implementation. The default mixed-precision search retains FP64 refinement, solve and residual updates, with the full FP64 search as its numerical fallback.

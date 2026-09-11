@@ -49,35 +49,6 @@ struct ScalarCodeRows {
     }
 };
 
-template<class Rows>
-inline void finish_twsc_codes(int r, int n, float sigma, const float* col_sigma, float* col_weight,
-                              float* S, float* B, const Rows& rows) {
-    float sigmas[kSvdMaxN], thresholds[kSvdMaxN], row[kSvdMaxN];
-    constexpr float epsilon = 1e-6f;
-    bool same = true;
-    for (int col = 0; col < n; ++col) {
-        float value = col_sigma ? col_sigma[col] : sigma;
-        if (!is_finite_bits(value) || value < 0.f) value = 0.f;
-        sigmas[col] = value;
-        if (col > 0 && value != sigmas[0]) same = false;
-        if (col_weight) col_weight[col] = 1.f / (value + epsilon);
-    }
-    const float sigma0 = sigmas[0];
-    const float noise = static_cast<float>(n) * sigma0 * sigma0;
-    for (int i = 0; i < r; ++i) {
-        const float singular = S[i];
-        S[i] = std::sqrt(std::max(singular * singular - noise, 0.f));
-        const float denominator = S[i] + epsilon;
-        rows.gather(row, B, i, r, n);
-        if (same) soft_threshold(row, n, sigma0 * sigma0 / denominator);
-        else {
-            for (int col = 0; col < n; ++col) thresholds[col] = sigmas[col] * sigmas[col] / denominator;
-            soft_threshold_var(row, thresholds, n);
-        }
-        rows.scatter(B, i, r, n, row);
-    }
-}
-
 template<class Rows, class Weights, class Centralize>
 inline void finish_ncsr_codes(float* group, int m, int n, int lda, float sigma, const float* distance,
                               float* B, const Rows& rows, const Weights& make_weights, const Centralize& centralize) {

@@ -3,7 +3,7 @@
 
 namespace nss {
 
-inline int twsc_pca_soft_work_floats(int m, int n) {
+inline int pca_work_floats(int m, int n) {
     checked_solver_shape(m, n);
     const int local = m * n + n + n * n + m + m * n;
     const int svd = m * n * 6 + n * n * 8 + n + 256;
@@ -17,11 +17,5 @@ int pca_project(float* group, int m, int n, int lda, float* U, float* S, float* 
 
 // group = U B + mean.
 void pca_reconstruct(float* group, int m, int n, int lda, const float* U, const float* B, const float* mean);
-
-// Demean, SVD, S = sqrt(max(s² − n σ0², 0)), C = soft(UᵀY, σ_j² / S).
-// col_sigma[j] is the column noise (nullptr → sigma). col_w[j] = 1/(σ_j+ε) (nullable).
-// row_w[i] is W1 on row i (nullptr → 1). Rows are scaled by W1 before PCA and unscaled after.
-int twsc_pca_soft(float* group, int m, int n, int lda, float sigma, float* work, int work_floats,
-                  const float* col_sigma = nullptr, float* col_w = nullptr, const float* row_w = nullptr);
 
 }  // namespace nss

@@ -19,6 +19,7 @@ FetchContent_MakeAvailable(highway)
 # same definition through nss_cpu below and through hwy_config.hpp.
 if(TARGET hwy_list_targets)
   target_compile_definitions(hwy_list_targets PRIVATE "HWY_DISABLED_TARGETS=${NSS_HWY_DISABLED_TARGETS}")
+  target_compile_definitions(hwy_list_targets PRIVATE ${NSS_HWY_EXTRA_DEFINITIONS})
   if(NSS_HWY_X86)
     target_compile_options(hwy_list_targets PRIVATE -mavx2 -mfma)
   endif()

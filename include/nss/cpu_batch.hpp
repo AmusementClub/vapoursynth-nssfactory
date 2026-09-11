@@ -12,6 +12,13 @@
 
 namespace nss {
 
+struct MatchBatchItem;
+// Candidate-lane Highway SSD batches for general 6/7/9 blocks; unchanged
+// same-ISA reduction order and stable Top-K. Other blocks use spatial_match.
+int spatial_match_joint(const float* ref, int stride, int width, int height,
+                        const MatchBatchItem* items, int count, Match* matches,
+                        int match_stride, int* counts);
+
 inline constexpr int kSvdBatch8MaxM = 64;
 
 // Internal CPU scheduling metadata. It is intentionally separate from the
@@ -258,22 +265,6 @@ struct McwnnmFilterBatchItem {
 
 int mcwnnm_filter_group_batch(McwnnmFilterBatchItem* items, int count);
 
-struct TwscPcaBatchItem {
-    float* group = nullptr;
-    int m = 0;
-    int n = 0;
-    int lda = 0;
-    float sigma = 0.f;
-    float* work = nullptr;
-    int work_floats = 0;
-    const float* col_sigma = nullptr;
-    float* col_weight = nullptr;
-    const float* row_weight = nullptr;
-    int* status = nullptr;
-};
-
-int twsc_pca_soft_batch(TwscPcaBatchItem* items, int count);
-
 struct NcsrFilterBatchItem {
     float* group = nullptr;
     int m = 0;
@@ -288,23 +279,6 @@ struct NcsrFilterBatchItem {
 
 int ncsr_filter_group_batch(NcsrFilterBatchItem* items, int count);
 
-struct NlhFilterBatchItem {
-    float* patches = nullptr;
-    int m = 0;
-    int n = 0;
-    int lda = 0;
-    int q = 0;
-    float sigma = 0.f;
-    bool wiener = false;
-    const float* ref_patches = nullptr;
-    float* weight = nullptr;
-    float* work = nullptr;
-    int work_floats = 0;
-    int* status = nullptr;
-    unsigned avx2_features = 0;
-};
-
-int nlh_filter_group_batch(NlhFilterBatchItem* items, int count);
 
 }  // namespace nss
 

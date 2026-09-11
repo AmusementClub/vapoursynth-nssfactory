@@ -9,11 +9,18 @@ use the shared overflow-safe temporal helpers.
 
 Every producer (BM3D, WNNM, MCWNNM, TWSC, NCSR, NLH), including sigma-zero paths,
 sets `_NSSFatVersion=2`, `_NSSFatRadius`, `_NSSFatCenter`, `_NSSFatLayout=1`,
-`_NSSModel`, `_NSSModelVersion=2`, and `_NSSNoiseProfile`. VAggregate rejects
+`_NSSModel`, `_NSSModelVersion`, and `_NSSNoiseProfile`. TWSC uses model version 3,
+NLH uses version 5, and the other models use version 2. This is separate from fat-layout
+version 2. VAggregate rejects
 missing/partial/conflicting identities and mixed models. `allow_legacy=1` permits
 only wholly untagged external synthetic contributions whose destination semantics
 the caller explicitly guarantees. It does not accept a conflicting version and
 cannot repair an old wrong-axis producer. Final outputs remove fat layout tags.
+
+TWSC version 3 and NLH version 5 perform complete synchronous intermediate rounds over the
+fixed genuine center±radius window before emitting the final center's
+contributions. See [their model contract](twsc-nlh.md) for matching guides,
+noise estimation and zero-plane behavior.
 
 Rolling consumes the same ordered destination contributions through a bounded
 ring. For C output targets, producer-center support expands by 2r and source

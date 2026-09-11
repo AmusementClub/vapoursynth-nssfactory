@@ -9,6 +9,7 @@ import hashlib
 import json
 import random
 import resource
+import platform
 import sys
 import time
 from pathlib import Path
@@ -74,9 +75,19 @@ def worker(plugin, config):
     if config.get('access') == 'random':
         random.Random(42).shuffle(order)
     fills_before_timing = source_fills
+    frame_times = [] if config.get('_frame_times') else None
+    cpu_before = paired.cpu_stat() if config.get('_cpu_environment') else None
     start = time.perf_counter()
-    outputs = [output.get_frame(n) for n in order]
+    if frame_times is None:
+        outputs = [output.get_frame(n) for n in order]
+    else:
+        outputs = []
+        for n in order:
+            frame_start = time.perf_counter()
+            outputs.append(output.get_frame(n))
+            frame_times.append((time.perf_counter() - frame_start) * 1000)
     elapsed = time.perf_counter() - start
+    cpu_after = paired.cpu_stat() if cpu_before is not None else None
     timed_source_fills = source_fills - fills_before_timing
     if timed_source_fills:
         raise RuntimeError(f"source was recomputed inside frame timing: {timed_source_fills}")
@@ -90,11 +101,20 @@ def worker(plugin, config):
         # Seven small motion frames, or two full-size spatial frames, bound the
         # temporary float64 clean/SSIM diagnostics outside the timing interval.
         np.save(config['_dump'], np.stack(arrays[:7 if w * h < 1920 * 1080 else 2]))
-    return dict(ms=elapsed * 1000 / frames, timed_first=first, timed_frames=frames,
+    result = dict(ms=elapsed * 1000 / frames, timed_first=first, timed_frames=frames,
                 source_fills_before_timing=fills_before_timing, timed_source_fills=timed_source_fills,
                 rolling_chunk=chunk, access=config.get('access', 'sequential'),
                 sha256=digest.hexdigest(), input_sha256=hashlib.sha256(payload(first).tobytes()).hexdigest(),
-                peak_rss_kib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+                peak_rss_kib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024 if platform.system() == 'Darwin' else 1))
+    if frame_times is not None:
+        result['frame_ms'] = frame_times
+    if cpu_before is not None:
+        ticks = [b - a for a, b in zip(cpu_before['cpu1'], cpu_after['cpu1'])]
+        total = sum(ticks[:8])
+        result['timed_environment'] = dict(cpu1_idle=ticks[3] / total if total else None,
+                                          cpu1_total_ticks=total,
+                                          cpu0_steal_ticks=cpu_after['cpu0'][7] - cpu_before['cpu0'][7])
+    return result
 
 
 def configs():

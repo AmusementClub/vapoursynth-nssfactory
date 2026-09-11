@@ -362,6 +362,11 @@ if [[ -r /proc/cpuinfo ]]; then
 elif command -v sysctl >/dev/null 2>&1; then
     cpu_model=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || sysctl -n hw.model 2>/dev/null || echo unknown)
 fi
+# Linux AArch64 generally has no x86-style "model name" field. Preserve an
+# honest architecture identity instead of emitting an empty model string.
+if [[ -z "$cpu_model" || "$cpu_model" == unknown ]]; then
+    cpu_model=$(uname -m)
+fi
 compiler=$(c++ --version | head -n 1)
 "$PYTHON_BIN" - "$raw_tsv" "$OUT" "$initial_ratio" "$critical_rerun" "$critical_margin" \
     "$BASELINE_REVISION" "$CANDIDATE_REVISION" "$cpu_model" "$compiler" <<'PY'

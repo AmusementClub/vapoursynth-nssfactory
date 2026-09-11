@@ -88,6 +88,7 @@ bool check(int m, int n, int rank, int exponent, int count, bool leading_zero) {
 }
 
 int main() {
+    if(nss::svd_economy_batch(nullptr,0)!=0) return 1;
     int cases=0;
     for(int n:{1,2,3,4,7,8,9,16,31,32}) {
         for(int m:{n,std::max(1,n/2),2*n,256}) {
@@ -107,6 +108,12 @@ int main() {
             if(!check(2*n,n,n-1,exponent,5,true)) return 1;
         }
     }
-    std::printf("SVD scale/rank/PCA/stride checks passed: %d fixtures plus leading-zero controls\n",cases);
+    int tail_cases=0;
+    for(int count:{2,3,4,5,7,8,15,16,17,31,32,33})
+        for(int m:{8,64,65,256}) for(int rank:{0,1,8,-1}) for(int exponent:{-32,0,32}) {
+            if(!check(m,8,rank,exponent,count,false)) return 1;
+            ++tail_cases;
+        }
+    std::printf("SVD scale/rank/PCA/stride checks passed: %d fixtures plus leading-zero controls and %d batch-tail fixtures\n",cases,tail_cases);
     return 0;
 }

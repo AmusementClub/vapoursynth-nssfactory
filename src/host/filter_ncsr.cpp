@@ -2,7 +2,7 @@
 #include "host/temporal.hpp"
 #include "host/validate.hpp"
 #include "host/contribution.hpp"
-#include "nss/avx2.hpp"
+#include "nss/backend.hpp"
 #include "nss/cpu_api.hpp"
 #include "nss/cpu_common.hpp"
 #include "nss/cpu_ncsr.hpp"
@@ -218,8 +218,8 @@ void VS_CC ncsrFree(void* instanceData, VSCore* core, const VSAPI* vsapi) {
 
 void VS_CC ncsrCreate(const VSMap* in, VSMap* out, void* userData, VSCore* core, const VSAPI* vsapi) {
     (void)userData;
-    if (!nss::cpu_has_avx2()) {
-        vsapi->mapSetError(out, "nss.NCSR: AVX2 is required");
+    if (!nss::cpu_backend_available()) {
+        vsapi->mapSetError(out, "nss.NCSR: no executable CPU backend (AVX2 on x86; NEON on AArch64)");
         return;
     }
     auto d = std::make_unique<NcsrData>();

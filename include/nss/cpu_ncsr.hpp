@@ -7,7 +7,7 @@
 namespace nss {
 
 inline int ncsr_filter_work_floats(int m, int n) {
-    return twsc_pca_soft_work_floats(m, n);
+    return pca_work_floats(m, n);
 }
 
 inline int ncsr_denoise_work_floats(int width, int height, int block, int group) {

@@ -11,7 +11,7 @@ inline void stamp_contribution(VSFrame* frame, int radius, int center, Model mod
     auto* props = api->getFramePropertiesRW(frame);
     const int profile = model == Model::BM3D ? NoiseProfile::bm3d : 0;
     contribution_set(api, props, "_NSSModel", static_cast<int>(model));
-    contribution_set(api, props, "_NSSModelVersion", kSemanticVersion);
+    contribution_set(api, props, "_NSSModelVersion", model_semantic_version(model));
     contribution_set(api, props, "_NSSNoiseProfile", profile);
     if (radius > 0) {
         contribution_set(api, props, "_NSSFatVersion", kContributionVersion);
@@ -50,7 +50,7 @@ inline ContributionLayout validate_contribution(const VSFrame* frame, int radius
     if (result.version != kContributionVersion || result.radius != radius || result.center != center ||
         result.slice_layout != kContributionNumDenSlices || result.model < 1 || result.model > 6 ||
         result.profile != (result.model == static_cast<int>(Model::BM3D) ? NoiseProfile::bm3d : 0) ||
-        contribution_property(props, "_NSSModelVersion", api) != kSemanticVersion)
+        contribution_property(props, "_NSSModelVersion", api) != model_semantic_version(static_cast<Model>(result.model)))
         throw std::invalid_argument("nss.VAggregate: incompatible contribution identity");
     return result;
 }
