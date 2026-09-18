@@ -13,7 +13,7 @@ for mask in "$@"; do
   sudo systemctl set-property --runtime system.slice AllowedCPUs=0-1
   sudo systemctl set-property --runtime user.slice AllowedCPUs=0-1
   cmake -S "$root" -B "$build" -DCMAKE_BUILD_TYPE=Release -DNSS_BM_EXPERIMENT="$mask" \
-    -DNSS_GIT_DESCRIBE="bm-correct-exp-$mask" -DNSS_ENABLE_CUDA=OFF -DNSS_ENABLE_VULKAN=OFF \
+    -DNSS_GIT_DESCRIBE="bm-correct-exp-$mask" \
     -DVapourSynth_INCLUDE_DIR="$NSS_C4_VS_PREFIX/lib/python3/dist-packages/vapoursynth/include" \
     -DFETCHCONTENT_SOURCE_DIR_HIGHWAY="$NSS_C4_HIGHWAY_SOURCE" > "$out/build.log" 2>&1
   if ! cmake --build "$build" -j2 >> "$out/build.log" 2>&1; then

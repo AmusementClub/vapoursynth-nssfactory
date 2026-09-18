@@ -35,7 +35,7 @@ inline ContributionLayout validate_contribution(const VSFrame* frame, int radius
     const auto* props = api->getFramePropertiesRO(frame);
     if (api->mapNumElements(props, "_NSSFatVersion") < 0 && allow_legacy) {
         // Only wholly untagged inputs may enter the explicit legacy adapter.
-        for (const auto* key : {"_NSSFatRadius", "_NSSFatCenter", "_NSSFatLayout", "_NSSModel", "_NSSNoiseProfile"})
+        for (const auto* key : {"_NSSFatRadius", "_NSSFatCenter", "_NSSFatLayout", "_NSSModel", "_NSSModelVersion", "_NSSNoiseProfile"})
             if (api->mapNumElements(props, key) >= 0)
                 throw std::invalid_argument("nss.VAggregate: partial contribution identity");
         return {0, radius, center, kContributionNumDenSlices, 0, 0};

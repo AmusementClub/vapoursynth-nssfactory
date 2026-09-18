@@ -87,6 +87,22 @@ void nlm_accum_ch3_core_range(float* weight, float* wdst0, float* wdst1, float* 
                               const float* s0_fwd, const float* s1_fwd, const float* s2_fwd,
                               const float* temp1_core, const float* temp2,
                               int ox, int oy, int w, int h, int stride, int y0, int y1, int temp2_base_y = 0);
+// Both maps share one explicit base row, for weight maps computed compactly
+// starting at temp_base_y (the i == 0 single-map temporal path).
+void nlm_accum_ch1_base_range(float* weight, float* wdst, float* maxw,
+                              const float* src_bwd, const float* src_fwd,
+                              const float* temp1, const float* temp2,
+                              int ox, int oy, int w, int h, int stride, int y0, int y1, int temp_base_y);
+void nlm_accum_ch2_base_range(float* weight, float* wdst0, float* wdst1, float* maxw,
+                              const float* s0_bwd, const float* s1_bwd,
+                              const float* s0_fwd, const float* s1_fwd,
+                              const float* temp1, const float* temp2,
+                              int ox, int oy, int w, int h, int stride, int y0, int y1, int temp_base_y);
+void nlm_accum_ch3_base_range(float* weight, float* wdst0, float* wdst1, float* wdst2, float* maxw,
+                              const float* s0_bwd, const float* s1_bwd, const float* s2_bwd,
+                              const float* s0_fwd, const float* s1_fwd, const float* s2_fwd,
+                              const float* temp1, const float* temp2,
+                              int ox, int oy, int w, int h, int stride, int y0, int y1, int temp_base_y);
 // Generic scalar fallback for mixed source-plane strides. `temp1_base_y` is
 // zero for a full/range map and y0 for a core-only temp1 map.
 void nlm_accum_strided(float* weight, float* wdst0, float* wdst1, float* wdst2, float* maxw,

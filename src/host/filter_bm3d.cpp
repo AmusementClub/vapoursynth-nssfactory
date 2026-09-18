@@ -116,7 +116,9 @@ void process_plane_batched(const float* const* srcs, const float* const* refs, i
         const int count = static_cast<int>(end - begin);
         std::array<nss::MatchBatchItem, nss::host_detail::kGroupBatchWindow> match_items{};
         std::array<int, nss::host_detail::kGroupBatchWindow> counts{};
-        std::array<nss::Match, nss::host_detail::kGroupBatchWindow * nss::kBmMaxGroup> match_storage{};
+        // Match storage is written [0, counts[i]) by the matcher before any
+        // read; value-initializing 160 KB per window is dead work.
+        std::array<nss::Match, nss::host_detail::kGroupBatchWindow * nss::kBmMaxGroup> match_storage;
         for (int i = 0; i < count; ++i) {
             const auto& job = jobs[begin + static_cast<std::size_t>(i)];
             match_items[static_cast<std::size_t>(i)] =
@@ -133,8 +135,8 @@ void process_plane_batched(const float* const* srcs, const float* const* refs, i
                                  : nss::spatial_match_batch(refs[t0], ref_strides[t0], width, height,
                                                             match_items.data(), count, match_storage.data(),
                                                             nss::kBmMaxGroup, counts.data());
-        // A nonzero positive code identifies an individual failed job; keep
-        // the other jobs in the window and let their zero count skip itself.
+        // Matching failures are fatal for the frame: a nonzero code identifies
+        // the first failed job in the window.
         if (match_rc != 0) {
             throw std::runtime_error("nss: matching failed for an active group");
         }

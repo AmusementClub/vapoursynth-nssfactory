@@ -94,7 +94,7 @@ void process_plane_batched(const float* const* srcs, const float* const* refs, i
         const int count = static_cast<int>(end - begin);
         std::array<nss::MatchBatchItem, nss::host_detail::kGroupBatchWindow> match_items{};
         std::array<int, nss::host_detail::kGroupBatchWindow> counts{};
-        std::array<nss::Match, nss::host_detail::kGroupBatchWindow * nss::kWnnmMaxGroup> match_storage{};
+        std::array<nss::Match, nss::host_detail::kGroupBatchWindow * nss::kWnnmMaxGroup> match_storage;
         for (int i = 0; i < count; ++i) {
             const auto& job = jobs[begin + static_cast<std::size_t>(i)];
             match_items[static_cast<std::size_t>(i)] = nss::MatchBatchItem{job.x, job.y, block, bm_range, group, nss::detail::avx2_policy(nss::detail::Avx2Algorithm::WNNM, block, group, radius, false, 0)};

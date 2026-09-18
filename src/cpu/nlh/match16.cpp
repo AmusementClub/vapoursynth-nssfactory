@@ -1,6 +1,7 @@
 #include "nss/cpu_api.hpp"
 #include "nss/cpu_batch.hpp"
 #include "nss/cpu_nlh.hpp"
+#include "cpu/batch_contract.hpp"
 #include "cpu/hwy_config.hpp"
 #include "cpu/bm/matcher.hpp"
 
@@ -257,11 +258,14 @@ int NlhSpatialMatch16Batch(const float* ref, int stride, int width, int height, 
     int first_error = 0;
     for (int i = 0; i < count; ++i) {
         const auto& item = items[i];
+        if (!detail::match_capacity_valid(16, match_stride)) {
+            counts[i] = 0;
+            detail::record_batch_failure(i, first_error);
+            continue;
+        }
         counts[i] = NlhSpatialMatch16(ref, stride, width, height, item.bx, item.by, item.block, item.bm_range,
                                       matches + static_cast<std::size_t>(i) * match_stride);
-        if (counts[i] <= 0 && first_error == 0) {
-            first_error = i + 1;
-        }
+        if (counts[i] <= 0) detail::record_batch_failure(i, first_error);
     }
     return first_error;
 }

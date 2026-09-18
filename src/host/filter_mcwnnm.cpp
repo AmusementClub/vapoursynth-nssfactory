@@ -177,6 +177,17 @@ const VSFrame* VS_CC mcwnnmGetFrame(int n, int activationReason, void* instanceD
     nss::host_detail::append_raster_jobs(
         jobs, pw, ph, block, d->block_step,
         nss::GroupKey{m, group, nch, nss::GroupAlgorithm::MCWNNM, false, d->residual != 0}, t0);
+    // Per-window batch buffers are loop-invariant in size and are fully
+    // rewritten before every read (pack fills each used patch column;
+    // mcwnnm_admm memsets Z/A and writes X/Temp/SVD outputs before reading
+    // them), so allocate once per frame instead of allocating and zeroing
+    // ~2.5 MB per 32-group window.
+    const std::size_t group_storage = static_cast<std::size_t>(group) * static_cast<std::size_t>(lda);
+    const int filter_work_floats = nss::mcwnnm_filter_work_floats(m, group);
+    nss::ResourceVector<float> batch_patches(
+        static_cast<std::size_t>(nss::host_detail::kGroupBatchWindow) * group_storage);
+    nss::ResourceVector<float> batch_work(
+        static_cast<std::size_t>(nss::host_detail::kGroupBatchWindow) * static_cast<std::size_t>(filter_work_floats));
     for (int iter = 0; iter < niter; ++iter) {
         if (iter > 0) {
             for (int plane = 0; plane < nch; ++plane) {
@@ -200,7 +211,7 @@ const VSFrame* VS_CC mcwnnmGetFrame(int n, int activationReason, void* instanceD
             const int count = static_cast<int>(end - begin);
             std::array<nss::MatchBatchItem, nss::host_detail::kGroupBatchWindow> match_items{};
             std::array<int, nss::host_detail::kGroupBatchWindow> counts{};
-            std::array<nss::Match, nss::host_detail::kGroupBatchWindow * nss::kWnnmMaxGroup> match_storage{};
+            std::array<nss::Match, nss::host_detail::kGroupBatchWindow * nss::kWnnmMaxGroup> match_storage;
             for (int i = 0; i < count; ++i) {
                 const auto& job = jobs[begin + static_cast<std::size_t>(i)];
                 match_items[static_cast<std::size_t>(i)] = nss::MatchBatchItem{job.x, job.y, block, d->bm_range, group};
@@ -219,10 +230,6 @@ const VSFrame* VS_CC mcwnnmGetFrame(int n, int activationReason, void* instanceD
             for (int i = 0; i < count; ++i) {
                 jobs[begin + static_cast<std::size_t>(i)].key.k = counts[static_cast<std::size_t>(i)];
             }
-            const std::size_t group_storage = static_cast<std::size_t>(group) * static_cast<std::size_t>(lda);
-            const int filter_work_floats = nss::mcwnnm_filter_work_floats(m, group);
-            nss::ResourceVector<float> batch_patches(static_cast<std::size_t>(count) * group_storage, 0.f);
-            nss::ResourceVector<float> batch_work(static_cast<std::size_t>(count) * static_cast<std::size_t>(filter_work_floats), 0.f);
             std::array<float, nss::host_detail::kGroupBatchWindow> weights{};
             std::array<int, nss::host_detail::kGroupBatchWindow> filter_status{};
             std::array<nss::McwnnmFilterBatchItem, nss::host_detail::kGroupBatchWindow> filter_items{};
@@ -414,8 +421,8 @@ static VSNode* nss_create_mcwnnm(const VSMap* in, VSCore* core, const VSAPI* vsa
         !nss::is_finite_bits(d->mu)) {
         return fail("nss.MCWNNM: invalid admm_iter/rho/mu (mu >= 1)");
     }
-    if (d->iters < 1 || !nss::is_finite_bits(d->delta)) {
-        return fail("nss.MCWNNM: invalid iters/delta");
+    if (d->iters < 1 || !nss::is_finite_bits(d->delta) || d->delta < 0.f || d->delta > 1.f) {
+        return fail("nss.MCWNNM: invalid iters/delta (delta must be in [0, 1])");
     }
     if (d->ps_num < 1 || d->ps_num > d->group_size || d->ps_range < 1 || d->ps_range > nss::kBmMaxRange) {
         return fail("nss.MCWNNM: invalid ps_num/ps_range");

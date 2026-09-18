@@ -219,12 +219,20 @@ void ncsr_run_groups(const float* const* refs, const int* rstrides, const float*
                                     GroupKey{m, g, 1, GroupAlgorithm::NCSR, false, false}});
         }
     }
+    // Chunk batch buffers are fully rewritten before every read (pack fills
+    // each used patch column; group_center/SVD write the work regions first),
+    // so allocate once per call instead of allocating and zeroing ~320 KB per
+    // 32-group chunk.
+    nss::ResourceVector<float> batch_patches(std::size_t{32} * static_cast<std::size_t>(g) *
+                                             static_cast<std::size_t>(lda));
+    nss::ResourceVector<float> batch_dist(std::size_t{32} * static_cast<std::size_t>(g));
+    nss::ResourceVector<float> batch_work(std::size_t{32} * static_cast<std::size_t>(shrink_n));
     for (std::size_t begin = 0; begin < jobs.size(); begin += 32) {
         const std::size_t end = std::min(jobs.size(), begin + std::size_t{32});
         const int count = static_cast<int>(end - begin);
         std::array<MatchBatchItem, 32> match_items{};
         std::array<int, 32> counts{};
-        std::array<Match, 32 * kWnnmMaxGroup> match_storage{};
+        std::array<Match, 32 * kWnnmMaxGroup> match_storage;
         for (int i = 0; i < count; ++i) {
             const auto& job = jobs[begin + static_cast<std::size_t>(i)];
             match_items[static_cast<std::size_t>(i)] = MatchBatchItem{job.x, job.y, block, cfg.bm_range, g, nss::detail::avx2_policy(nss::detail::Avx2Algorithm::NCSR, block, g, cfg.radius, false, 0)};
@@ -238,9 +246,6 @@ void ncsr_run_groups(const float* const* refs, const int* rstrides, const float*
         if (match_rc != 0) {
             throw std::runtime_error("nss: matching failed for an active group");
         }
-        nss::ResourceVector<float> batch_patches(static_cast<std::size_t>(count) * static_cast<std::size_t>(g) * lda, 0.f);
-        nss::ResourceVector<float> batch_dist(static_cast<std::size_t>(count) * static_cast<std::size_t>(g), 0.f);
-        nss::ResourceVector<float> batch_work(static_cast<std::size_t>(count) * static_cast<std::size_t>(shrink_n), 0.f);
         std::array<int, 32> filter_status{};
         std::array<NcsrFilterBatchItem, 32> filter_items{};
         for (int i = 0; i < count; ++i) {

@@ -322,7 +322,7 @@ Highway 约定：
 CUDA 特有：`.cu`、stream、pinned host、可参考 nlm-cuda / BM3DCUDA。
 Vulkan 特有：构建期 `glslangValidator`/`glslc` 出 SPIR-V；计算队列；descriptor set 在创建期搭好；validation layer 仅 Debug。
 
-CMake 默认 `NSS_ENABLE_CUDA=OFF`、`NSS_ENABLE_VULKAN=OFF`。`params.hpp` 从 Phase 0 起三边共用。
+CMake 当前默认构建 CPU 插件；CUDA/Vulkan 仍是后续阶段的设计记录，尚未作为配置开关暴露。`params.hpp` 从 Phase 0 起三边共用。
 
 ---
 
@@ -366,9 +366,7 @@ CI（Linux x86）：编译 + 单元测试。`vspipe` 对拍作为 `NSS_REF_TEST=
 ## 9. 构建
 
 ```text
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
-  -DNSS_ENABLE_CUDA=OFF \
-  -DNSS_ENABLE_VULKAN=OFF
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
 

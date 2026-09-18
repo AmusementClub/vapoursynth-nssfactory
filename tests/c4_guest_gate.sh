@@ -182,7 +182,7 @@ build_one() {
     local source=$1
     local build=$2
     local revision=$3
-    cmake -S "$source" -B "$build" -DCMAKE_BUILD_TYPE=Release -DNSS_ENABLE_CUDA=OFF -DNSS_ENABLE_VULKAN=OFF \
+    cmake -S "$source" -B "$build" -DCMAKE_BUILD_TYPE=Release \
         -DNSS_GIT_DESCRIBE="$revision"
     cmake --build "$build" -j2 --target bench_cpu
 }

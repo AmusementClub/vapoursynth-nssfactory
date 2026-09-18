@@ -26,6 +26,16 @@ add_test(NAME test_backend COMMAND test_backend)
 
 add_executable(alignment_probe alignment_probe.cpp)
 target_link_libraries(alignment_probe PRIVATE nss_cpu)
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+  add_test(NAME test_alignment_math
+           COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/run_alignment_math.py"
+                   --probe "$<TARGET_FILE:alignment_probe>"
+                   --out "${CMAKE_CURRENT_BINARY_DIR}/alignment-math")
+  set_tests_properties(test_alignment_math PROPERTIES LABELS "math;validation" SKIP_RETURN_CODE 77)
+else()
+  message(WARNING "Python3 interpreter unavailable: test_alignment_math is not registered")
+endif()
 add_library(nlh_search_bridge SHARED nlh_search_bridge.cpp)
 target_link_libraries(nlh_search_bridge PRIVATE nss_cpu)
 add_executable(nlh_haar_probe nlh_haar_probe.cpp)

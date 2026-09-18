@@ -18,6 +18,8 @@ int nlh_spatial_match16(const float* ref, int stride, int width, int height, int
 #if defined(__GNUC__) || defined(__clang__)
 __attribute__((visibility("hidden")))
 #endif
+// The block-16 fast batch writes one reference plus 15 candidates per item;
+// insufficient match_stride is rejected without entering the kernel.
 int nlh_spatial_match_batch(const float* ref, int stride, int width, int height, const MatchBatchItem* items,
                             int count, Match* matches, int match_stride, int* counts);
 

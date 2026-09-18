@@ -99,7 +99,9 @@ void TwscSvd64Batch(TwscWorkspace* const* work, int m, int n, int count) {
     ResourceVector<double> scales(lanes);
     for (int start=0; start<count; start+=lanes) {
         const int real=std::min(lanes,count-start);
-        std::fill(storage.begin(),storage.end(),0.0);
+        // qr is fully overwritten by the pack loop below; only b (lower
+        // triangle), v (off-diagonal), u, tau and singular need the zero fill.
+        std::fill(b,storage.data()+storage.size(),0.0);
         for (int lane=0; lane<lanes; ++lane) {
             auto& w=*work[start+std::min(lane,real-1)];
             double maximum=0;

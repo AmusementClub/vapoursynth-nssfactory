@@ -10,7 +10,6 @@
 #include "hwy/foreach_target.h"
 #include "hwy/highway.h"
 #include "hwy/contrib/math/fast_math-inl.h"
-#include "hwy/contrib/math/math-inl.h"
 
 HWY_BEFORE_NAMESPACE();
 namespace nss {
@@ -167,8 +166,11 @@ static inline void store_rgb(float* dst, const float* c0, const float* c1, const
 
 void DistanceLuma(float* dst, const float* center, const float* neighbor, int ox, int oy, int w, int h,
                   int stride) {
-    const int start_x = std::abs(ox);
-    const int end_x = w - std::abs(ox);
+    // |ox| >= w is rejected at filter creation; clamp here so direct CPU
+    // callers degrade to a defined, memory-safe full clamp instead of
+    // writing past the row into the next row's state.
+    const int start_x = std::min(std::abs(ox), w);
+    const int end_x = w - start_x;
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < start_x; ++x) {
             const int idx = y * stride + x;
@@ -192,8 +194,11 @@ void DistanceLuma(float* dst, const float* center, const float* neighbor, int ox
 
 void DistanceChroma(float* dst, const float* c1, const float* c2, const float* n1, const float* n2, int ox,
                     int oy, int w, int h, int stride) {
-    const int start_x = std::abs(ox);
-    const int end_x = w - std::abs(ox);
+    // |ox| >= w is rejected at filter creation; clamp here so direct CPU
+    // callers degrade to a defined, memory-safe full clamp instead of
+    // writing past the row into the next row's state.
+    const int start_x = std::min(std::abs(ox), w);
+    const int end_x = w - start_x;
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < start_x; ++x) {
             const int idx = y * stride + x;
@@ -220,8 +225,11 @@ void DistanceChroma(float* dst, const float* c1, const float* c2, const float* n
 
 void DistanceYUV(float* dst, const float* c0, const float* c1, const float* c2, const float* n0, const float* n1,
                  const float* n2, int ox, int oy, int w, int h, int stride) {
-    const int start_x = std::abs(ox);
-    const int end_x = w - std::abs(ox);
+    // |ox| >= w is rejected at filter creation; clamp here so direct CPU
+    // callers degrade to a defined, memory-safe full clamp instead of
+    // writing past the row into the next row's state.
+    const int start_x = std::min(std::abs(ox), w);
+    const int end_x = w - start_x;
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < start_x; ++x) {
             const int idx = y * stride + x;
@@ -250,8 +258,11 @@ void DistanceYUV(float* dst, const float* c0, const float* c1, const float* c2, 
 
 void DistanceRGB(float* dst, const float* c0, const float* c1, const float* c2, const float* n0, const float* n1,
                  const float* n2, int ox, int oy, int w, int h, int stride) {
-    const int start_x = std::abs(ox);
-    const int end_x = w - std::abs(ox);
+    // |ox| >= w is rejected at filter creation; clamp here so direct CPU
+    // callers degrade to a defined, memory-safe full clamp instead of
+    // writing past the row into the next row's state.
+    const int start_x = std::min(std::abs(ox), w);
+    const int end_x = w - start_x;
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < start_x; ++x) {
             const int idx = y * stride + x;
@@ -432,8 +443,11 @@ static void accum_inner(float* weight, float* wdst0, float* wdst1, float* wdst2,
                         int temp2_base_y) {
     const hn::ScalableTag<float> d;
     const int N = static_cast<int>(hn::Lanes(d));
-    const int start_x = std::abs(ox);
-    const int end_x = w - std::abs(ox);
+    // |ox| >= w is rejected at filter creation; clamp here so direct CPU
+    // callers degrade to a defined, memory-safe full clamp instead of
+    // writing past the row into the next row's state.
+    const int start_x = std::min(std::abs(ox), w);
+    const int end_x = w - start_x;
     for (int y = y0; y < y1; ++y) {
         const int out_y = y - y0;
         const int temp1_y = y - temp1_base_y;
@@ -588,6 +602,31 @@ void AccumCh3CoreRange(float* weight, float* wdst0, float* wdst1, float* wdst2, 
                        int stride, int y0, int y1, int temp2_base_y) {
     accum_inner(weight, wdst0, wdst1, wdst2, maxw, s0_bwd, s1_bwd, s2_bwd, s0_fwd, s1_fwd, s2_fwd, temp1_core, temp2,
                 ox, oy, w, h, stride, 3, y0, y1, y0, temp2_base_y);
+}
+
+// Both maps share one explicit base row: used when the weight map was computed
+// compactly starting at temp_base_y (the i == 0 single-map path).
+void AccumCh1BaseRange(float* weight, float* wdst, float* maxw, const float* src_bwd, const float* src_fwd,
+                       const float* temp1, const float* temp2, int ox, int oy, int w, int h, int stride, int y0,
+                       int y1, int temp_base_y) {
+    accum_inner(weight, wdst, nullptr, nullptr, maxw, src_bwd, nullptr, nullptr, src_fwd, nullptr, nullptr, temp1,
+                temp2, ox, oy, w, h, stride, 1, y0, y1, temp_base_y, temp_base_y);
+}
+
+void AccumCh2BaseRange(float* weight, float* wdst0, float* wdst1, float* maxw, const float* s0_bwd,
+                       const float* s1_bwd, const float* s0_fwd, const float* s1_fwd, const float* temp1,
+                       const float* temp2, int ox, int oy, int w, int h, int stride, int y0, int y1,
+                       int temp_base_y) {
+    accum_inner(weight, wdst0, wdst1, nullptr, maxw, s0_bwd, s1_bwd, nullptr, s0_fwd, s1_fwd, nullptr, temp1, temp2,
+                ox, oy, w, h, stride, 2, y0, y1, temp_base_y, temp_base_y);
+}
+
+void AccumCh3BaseRange(float* weight, float* wdst0, float* wdst1, float* wdst2, float* maxw, const float* s0_bwd,
+                       const float* s1_bwd, const float* s2_bwd, const float* s0_fwd, const float* s1_fwd,
+                       const float* s2_fwd, const float* temp1, const float* temp2, int ox, int oy, int w, int h,
+                       int stride, int y0, int y1, int temp_base_y) {
+    accum_inner(weight, wdst0, wdst1, wdst2, maxw, s0_bwd, s1_bwd, s2_bwd, s0_fwd, s1_fwd, s2_fwd, temp1, temp2,
+                ox, oy, w, h, stride, 3, y0, y1, temp_base_y, temp_base_y);
 }
 
 void FinishCh1(float* dst, const float* src, const float* weight, const float* wdst, const float* maxw, float wref,
@@ -785,6 +824,9 @@ HWY_EXPORT(AccumCh3Range);
 HWY_EXPORT(AccumCh1CoreRange);
 HWY_EXPORT(AccumCh2CoreRange);
 HWY_EXPORT(AccumCh3CoreRange);
+HWY_EXPORT(AccumCh1BaseRange);
+HWY_EXPORT(AccumCh2BaseRange);
+HWY_EXPORT(AccumCh3BaseRange);
 HWY_EXPORT(FinishCh1);
 HWY_EXPORT(FinishCh2);
 HWY_EXPORT(FinishCh3);
@@ -877,6 +919,27 @@ void nlm_accum_ch3_core_range(float* weight, float* wdst0, float* wdst1, float* 
     HWY_DYNAMIC_DISPATCH(AccumCh3CoreRange)(weight, wdst0, wdst1, wdst2, maxw, s0_bwd, s1_bwd, s2_bwd, s0_fwd,
                                             s1_fwd, s2_fwd, temp1_core, temp2, ox, oy, w, h, stride, y0, y1,
                                             temp2_base_y);
+}
+void nlm_accum_ch1_base_range(float* weight, float* wdst, float* maxw, const float* src_bwd, const float* src_fwd,
+                              const float* temp1, const float* temp2, int ox, int oy, int w, int h, int stride,
+                              int y0, int y1, int temp_base_y) {
+    HWY_DYNAMIC_DISPATCH(AccumCh1BaseRange)(weight, wdst, maxw, src_bwd, src_fwd, temp1, temp2, ox, oy, w, h,
+                                            stride, y0, y1, temp_base_y);
+}
+void nlm_accum_ch2_base_range(float* weight, float* wdst0, float* wdst1, float* maxw, const float* s0_bwd,
+                              const float* s1_bwd, const float* s0_fwd, const float* s1_fwd, const float* temp1,
+                              const float* temp2, int ox, int oy, int w, int h, int stride, int y0, int y1,
+                              int temp_base_y) {
+    HWY_DYNAMIC_DISPATCH(AccumCh2BaseRange)(weight, wdst0, wdst1, maxw, s0_bwd, s1_bwd, s0_fwd, s1_fwd, temp1,
+                                            temp2, ox, oy, w, h, stride, y0, y1, temp_base_y);
+}
+void nlm_accum_ch3_base_range(float* weight, float* wdst0, float* wdst1, float* wdst2, float* maxw,
+                              const float* s0_bwd, const float* s1_bwd, const float* s2_bwd, const float* s0_fwd,
+                              const float* s1_fwd, const float* s2_fwd, const float* temp1, const float* temp2,
+                              int ox, int oy, int w, int h, int stride, int y0, int y1, int temp_base_y) {
+    HWY_DYNAMIC_DISPATCH(AccumCh3BaseRange)(weight, wdst0, wdst1, wdst2, maxw, s0_bwd, s1_bwd, s2_bwd, s0_fwd,
+                                            s1_fwd, s2_fwd, temp1, temp2, ox, oy, w, h, stride, y0, y1,
+                                            temp_base_y);
 }
 void nlm_accum_strided(float* weight, float* wdst0, float* wdst1, float* wdst2, float* maxw,
                        const float* const* src_bwd, const int* src_bwd_strides,

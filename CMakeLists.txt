@@ -83,10 +83,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-option(NSS_ENABLE_CUDA "Build libnss_cuda.so" OFF)
-option(NSS_ENABLE_VULKAN "Build libnss_vk.so" OFF)
 option(NSS_BM_KERNEL_LAB "Build isolated BM3D SSD/DCT microkernel experiments" OFF)
 option(NSS_LSSC_EXPLORER "Build the isolated paper-track LSSC exploration library" OFF)
+option(NSS_TWSC_MIDGROUP_BATCH "Enable the FP64 G24/G32 TWSC batch path" ${NSS_HWY_X86})
+option(NSS_GEMM_MULTI_ACCUM "Enable the opt-in exact GEMM multi-accumulator candidate" OFF)
+add_compile_definitions(NSS_TWSC_MIDGROUP_BATCH=$<BOOL:${NSS_TWSC_MIDGROUP_BATCH}>
+                        NSS_GEMM_MULTI_ACCUM=$<BOOL:${NSS_GEMM_MULTI_ACCUM}>)
 
 # Highway's target list is shared by every CPU TU and by its diagnostic helper.
 # The mode is a configure-time choice so target differential builds compile
@@ -198,7 +200,7 @@ file(GLOB NSS_CPU_SECOND_WAVE CONFIGURE_DEPENDS
   src/cpu/lssc/*.cpp
 )
 list(FILTER NSS_CPU_SECOND_WAVE EXCLUDE REGEX "/lssc/gemm_sme\\.cpp$")
-option(NSS_ENABLE_LSSC_SME "Build the optional LSSC SME matrix leaf when supported" ON)
+option(NSS_ENABLE_LSSC_SME "Build the optional LSSC SME matrix leaf when supported" OFF)
 set(NSS_HAVE_LSSC_SME 0)
 if(NSS_ENABLE_LSSC_SME AND APPLE AND NSS_HWY_ARM64 AND
    CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND NOT NSS_HWY_TARGET_MODE STREQUAL "portable-test")

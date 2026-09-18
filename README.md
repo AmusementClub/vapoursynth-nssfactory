@@ -8,7 +8,7 @@ This project is WIP. Qualified NEON preview packages pass the Plan02 release gat
 
 The current source additionally uses mixed-precision LSSC OMP by default: FP32 correlation screening, ordered FP64 refinement, and the existing FP64 solve/residual. The measured configuration-specific gains and regressions were accepted for integration; see the [integration record](PLAN02_MIXED_INTEGRATION_20260908.md). The existing preview packages and release-performance tables describe the frozen r3 source, before this change.
 
-On supported Apple ARM builds, LSSC reconstruction also selects an SME matrix leaf for eligible long products. Packing, transpose and ordinary SIMD fallback use Highway; only the 27-line FP32 ZA outer-product leaf uses Arm ACLE intrinsics. The measured M4 Max gains, numerical/resource checks and fallback coverage are recorded in [LSSC SME integration](LSSC_SME_INTEGRATION_20260908.md). `Backend()` keeps reporting the Highway target and additionally reports `lssc_sme_compiled` / `lssc_sme_available`; availability does not mean every shape uses SME. Configure with `-DNSS_ENABLE_LSSC_SME=OFF` for the Highway-only control. The existing r3 preview packages predate this source change.
+On supported Apple ARM builds, LSSC reconstruction can select an opt-in SME matrix leaf for eligible long products. Packing, transpose and ordinary SIMD fallback use Highway; only the 27-line FP32 ZA outer-product leaf uses Arm ACLE intrinsics. The measured M4 Max gains, numerical/resource checks and fallback coverage are recorded in [LSSC SME integration](LSSC_SME_INTEGRATION_20260908.md). `Backend()` keeps reporting the Highway target and additionally reports `lssc_sme_compiled` / `lssc_sme_available`; availability does not mean every shape uses SME. Enable with `-DNSS_ENABLE_LSSC_SME=ON` for the isolated SME candidate; the default is the Highway-only path. The existing r3 preview packages predate this source change.
 
 ## Usage
 
@@ -108,6 +108,18 @@ C++ tests also check leaks, while the external Python/VS runtime has leak
 detection disabled. Pixel captures support separate cross-build comparisons;
 this build/host gate is one component of the separate, completed release matrix. To verify the recorded r3 release evidence after this checkout advances, use `python3 tests/arm_isa_lab/validate_release.py --source-root build-plan02-release-source-r3 --out artifacts/c4a/plan02-mixed-integration-20260908/r3-release-validation.json`. The explicit source root keeps the archived package decision separate from current-source validation.
 
+For a current source/build identity, generate a reproducibility manifest with:
+
+```sh
+python3 tests/source_manifest.py --out /tmp/nss-manifest.json --build <build-dir> \
+  --baseline-label <baseline> --candidate-label <candidate>
+```
+
+It records the
+commit, dirty status, non-ignored working-tree files, CMake identity and any
+attached plugin/input/quality/performance artifacts. A release manifest must be
+generated from the exact release source root, not from the current dirty tree.
+
 Fresh builds select `NSS_BM_EXPERIMENT=2305`: AVX3 SortedTopK for b8 groups of
 at least 16, BM3D patch/work reuse, and rolling target-ring/direct-scratch
 aggregation. The ordinary spatial b8/g8 route is largely unchanged. Existing
@@ -119,6 +131,13 @@ See [bounded C4 selection](docs/c4-selection-20260906.md) for measured algorithm
 group-size and temporal cases. Rolling remains explicitly requested through
 `temporal_mode="rolling"`; its improvements here are relative to unoptimized
 rolling, not a claim that it is faster than legacy mode.
+
+The FP64 TWSC G24/G32 batch path is enabled by default on fresh x86 builds after
+same-host complete-frame validation; use `-DNSS_TWSC_MIDGROUP_BATCH=OFF` for the
+scalar control. ARM keeps it off until a native full-frame timing gate is
+available. `-DNSS_GEMM_MULTI_ACCUM=ON` remains an opt-in exact
+float-product/FP64-accumulation GEMM candidate. A source manifest records both
+flags for each build.
 
 ## License
 

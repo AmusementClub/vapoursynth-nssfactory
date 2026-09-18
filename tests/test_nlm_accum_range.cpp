@@ -70,6 +70,21 @@ void call_core_range(int nch, float* weight, const MutPtrs& wdst, float* maxw, c
     }
 }
 
+void call_base_range(int nch, float* weight, const MutPtrs& wdst, float* maxw, const ConstPtrs& sb, const ConstPtrs& sf,
+                     const float* temp1, const float* temp2, int ox, int oy, int w, int h, int stride, int y0,
+                     int y1, int temp_base_y) {
+    if (nch == 1) {
+        nss::nlm_accum_ch1_base_range(weight, wdst[0], maxw, sb[0], sf[0], temp1, temp2, ox, oy, w, h, stride, y0,
+                                      y1, temp_base_y);
+    } else if (nch == 2) {
+        nss::nlm_accum_ch2_base_range(weight, wdst[0], wdst[1], maxw, sb[0], sb[1], sf[0], sf[1], temp1, temp2, ox,
+                                      oy, w, h, stride, y0, y1, temp_base_y);
+    } else {
+        nss::nlm_accum_ch3_base_range(weight, wdst[0], wdst[1], wdst[2], maxw, sb[0], sb[1], sb[2], sf[0], sf[1],
+                                      sf[2], temp1, temp2, ox, oy, w, h, stride, y0, y1, temp_base_y);
+    }
+}
+
 void scalar_accum(int nch, float* weight, const MutPtrs& wdst, float* maxw, const ConstPtrs& sb, const ConstPtrs& sf,
                   const float* temp1, const float* temp2, int ox, int oy, int w, int h, int stride, int y0, int y1,
                   int temp1_base_y) {
@@ -295,6 +310,45 @@ bool run_case(int nch, const Case& tc, std::mt19937& rng) {
                          expected_dst, tc.y0, nch, tc.stride)) {
         std::fprintf(stderr, "compact temp2 mismatch nch=%d w=%d h=%d ox=%d oy=%d y=[%d,%d) temp2=[%d,%d)\n", nch,
                      tc.width, tc.height, tc.ox, tc.oy, tc.y0, tc.y1, temp2_base_y, temp2_end_y);
+        return false;
+    }
+
+    // Shared-base pair (the i == 0 single-map path): one map serves as both
+    // temp1 (core rows) and temp2 (mirrored rows), compacted from base_y.
+    const int abs_oy = std::abs(tc.oy);
+    const int base_y = std::max(0, tc.y0 - abs_oy);
+    const int base_end_y = std::min(tc.height, tc.y1 + abs_oy);
+    std::vector<float> shared_expected_weight = base_weight;
+    std::vector<float> shared_expected_max = base_max;
+    Planes shared_expected_dst = base_dst;
+    MutPtrs shared_expected_dstp{shared_expected_dst[0].data() + static_cast<std::size_t>(tc.y0) * tc.stride,
+                                 shared_expected_dst[1].data() + static_cast<std::size_t>(tc.y0) * tc.stride,
+                                 shared_expected_dst[2].data() + static_cast<std::size_t>(tc.y0) * tc.stride};
+    scalar_accum(nch, shared_expected_weight.data() + static_cast<std::size_t>(tc.y0) * tc.stride,
+                 shared_expected_dstp, shared_expected_max.data() + static_cast<std::size_t>(tc.y0) * tc.stride, sbp,
+                 sfp, temp1.data(), temp1.data(), tc.ox, tc.oy, tc.width, tc.height, tc.stride, tc.y0, tc.y1, 0);
+    std::vector<float> temp_shared(static_cast<std::size_t>(base_end_y - base_y) * tc.stride);
+    for (int y = base_y; y < base_end_y; ++y) {
+        std::copy_n(temp1.data() + static_cast<std::size_t>(y) * tc.stride, tc.stride,
+                    temp_shared.data() + static_cast<std::size_t>(y - base_y) * tc.stride);
+    }
+    Compact shared_weight(core_rows, tc.stride);
+    Compact shared_max(core_rows, tc.stride);
+    std::array<Compact, 3> shared_dst{Compact(core_rows, tc.stride), Compact(core_rows, tc.stride),
+                                      Compact(core_rows, tc.stride)};
+    shared_weight.copy_rows(base_weight, tc.y0);
+    shared_max.copy_rows(base_max, tc.y0);
+    for (int c = 0; c < 3; ++c) {
+        shared_dst[c].copy_rows(base_dst[c], tc.y0);
+    }
+    MutPtrs sharedp{shared_dst[0].data(), shared_dst[1].data(), shared_dst[2].data()};
+    call_base_range(nch, shared_weight.data(), sharedp, shared_max.data(), sbp, sfp, temp_shared.data(),
+                    temp_shared.data(), tc.ox, tc.oy, tc.width, tc.height, tc.stride, tc.y0, tc.y1, base_y);
+    std::array<const Compact*, 3> shared_dst_const{&shared_dst[0], &shared_dst[1], &shared_dst[2]};
+    if (!compare_compact(shared_weight, shared_max, shared_dst_const, shared_expected_weight, shared_expected_max,
+                         shared_expected_dst, tc.y0, nch, tc.stride)) {
+        std::fprintf(stderr, "shared base mismatch nch=%d w=%d h=%d ox=%d oy=%d y=[%d,%d) base=%d\n", nch, tc.width,
+                     tc.height, tc.ox, tc.oy, tc.y0, tc.y1, base_y);
         return false;
     }
     return true;

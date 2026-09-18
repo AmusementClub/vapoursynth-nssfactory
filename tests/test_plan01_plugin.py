@@ -178,9 +178,14 @@ def main():
         reject(lambda: core.nss.VAggregate(blank, source, radius=radius).get_frame(0), "identity")
         evaluate(core.nss.VAggregate(blank, source, radius=radius, allow_legacy=1))
         for key, value in (("_NSSFatVersion", 1), ("_NSSFatCenter", 99), ("_NSSFatRadius", radius+1),
-                           ("_NSSNoiseProfile", 7), ("_NSSFatLayout", 0)):
+                           ("_NSSNoiseProfile", 7), ("_NSSFatLayout", 0), ("_NSSModel", 2),
+                           ("_NSSModelVersion", 99)):
             bad = core.std.SetFrameProp(fat, prop=key, intval=value)
             reject(lambda: core.nss.VAggregate(bad, source, radius=radius, allow_legacy=1).get_frame(0), "identity")
+        for key in ("_NSSFatRadius", "_NSSFatCenter", "_NSSFatLayout", "_NSSModel",
+                    "_NSSModelVersion", "_NSSNoiseProfile"):
+            partial = core.std.SetFrameProp(blank, prop=key, intval=1)
+            reject(lambda: core.nss.VAggregate(partial, source, radius=radius, allow_legacy=1).get_frame(0), "identity")
         rows.append(dict(test="contribution_oracle", length=length, radius=radius))
     # Rolling has its own exact oracle when sigma is zero, across motion/cuts.
     source = clip(core, width=36, height=34, frames=37)

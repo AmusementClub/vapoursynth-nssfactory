@@ -253,8 +253,8 @@ void VS_CC ncsrCreate(const VSMap* in, VSMap* out, void* userData, VSCore* core,
         fail("nss.NCSR: invalid block_size/group_size/block_step/radius");
         return;
     }
-    if (d->iters < 1 || !std::isfinite(d->delta)) {
-        fail("nss.NCSR: invalid iters/delta");
+    if (d->iters < 1 || !std::isfinite(d->delta) || d->delta < 0.f || d->delta > 1.f) {
+        fail("nss.NCSR: invalid iters/delta (delta must be in [0, 1])");
         return;
     }
     if (d->ps_num < 1 || d->ps_num > d->group_size || d->ps_range < 1 || d->ps_range > nss::kBmMaxRange) {

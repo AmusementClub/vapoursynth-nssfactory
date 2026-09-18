@@ -156,6 +156,9 @@ struct MatchBatchItem {
 
 // Results for item i are written at matches + i * match_stride and counts[i].
 // The wrappers sort work by dimensions internally, then restore caller order.
+// Each item requires match_stride >= min(item.group, kBmMaxGroup). An item
+// failing this admission check receives counts[i] = 0 and no output write;
+// the return value is the smallest failed original input index plus one.
 int spatial_match_batch(const float* ref, int stride, int width, int height, const MatchBatchItem* items, int count,
                         Match* matches, int match_stride, int* counts);
 int spatial_match_nch_batch(const float* const* refs, const int* strides, int nch, int width, int height,

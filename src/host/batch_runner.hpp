@@ -51,47 +51,6 @@ private:
     int t_, nx_, ny_;
 };
 
-// Execute one bounded raster chunk. `prepare` fills a result for a job in any
-// bucket order and returns false for a skipped/failed group. `commit` receives
-// results strictly in ordinal order, including failed results so gaps cannot
-// stall the queue.
-template <typename Result, typename Prepare, typename Commit, typename Allocator>
-bool execute_ordered_chunk(const std::vector<GroupJob, Allocator>& jobs, std::size_t begin, std::size_t end, Prepare&& prepare,
-                           Commit&& commit) {
-    if (begin >= end || end > jobs.size()) {
-        return true;
-    }
-    nss::ResourceVector<std::size_t> order;
-    order.reserve(end - begin);
-    for (std::size_t i = begin; i < end; ++i) {
-        order.push_back(i);
-    }
-    // Original input indices provide a total order, so no stable-sort heap
-    // buffer is needed beyond the explicitly budgeted index vector.
-    std::sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) {
-        if (jobs[a].key == jobs[b].key) {
-            return jobs[a].ordinal < jobs[b].ordinal;
-        }
-        return jobs[a].key < jobs[b].key;
-    });
-
-    OrderedCommitQueue<Result> queue(jobs[begin].ordinal, kGroupBatchWindow);
-    for (const std::size_t index : order) {
-        Result result{};
-        (void)prepare(jobs[index], result);
-        if (!queue.push(jobs[index].ordinal, result)) {
-            // A producer that exceeds the reorder window must make progress
-            // before retrying; a missing ordinal is a hard caller error.
-            if (queue.drain(commit) == 0 || !queue.push(jobs[index].ordinal, result)) {
-                return false;
-            }
-        }
-        queue.drain(commit);
-    }
-    queue.finish(commit);
-    return queue.complete();
-}
-
 // The host filters call this after their batch kernel has already bucketed and
 // completed every item. At that point a second key sort only creates work that
 // the ordered queue must undo, so copy and commit the prepared results in their
@@ -106,17 +65,6 @@ bool commit_prepared_chunk(const Jobs& jobs, std::size_t begin, std::size_t end,
         Result result{};
         (void)prepare(jobs[index], result);
         commit(result);
-    }
-    return true;
-}
-
-template <typename Result, typename Prepare, typename Commit, typename Allocator>
-bool execute_ordered_jobs(const std::vector<GroupJob, Allocator>& jobs, Prepare&& prepare, Commit&& commit) {
-    for (std::size_t begin = 0; begin < jobs.size(); begin += kGroupBatchWindow) {
-        const std::size_t end = std::min(jobs.size(), begin + kGroupBatchWindow);
-        if (!execute_ordered_chunk<Result>(jobs, begin, end, prepare, commit)) {
-            return false;
-        }
     }
     return true;
 }

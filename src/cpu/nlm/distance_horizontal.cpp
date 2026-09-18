@@ -20,7 +20,9 @@ static inline int clampi(int value, int lo, int hi) {
 
 static inline void distance_luma_row(float* dst, const float* center, const float* neighbor, int ox, int oy,
                                      int y, int w, int h, int stride) {
-    const int start_x = std::abs(ox);
+    // |ox| >= w is rejected at filter creation; clamp here so direct CPU
+    // callers stay memory-safe (row_scratch is exactly w floats).
+    const int start_x = std::min(std::abs(ox), w);
     const int end_x = w - start_x;
     const int neighbor_y = clampi(y + oy, 0, h - 1);
     const hn::ScalableTag<float> d;

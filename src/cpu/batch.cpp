@@ -7,6 +7,7 @@
 #include "nss/cpu_nlh.hpp"
 #include "nss/cpu_mcwnnm.hpp"
 #include "nss/cpu_twsc.hpp"
+#include "cpu/batch_contract.hpp"
 #include "cpu/bm/matcher.hpp"
 #include "cpu/wnnm/jacobi8.hpp"
 #include "cpu/finishers.hpp"
@@ -100,12 +101,15 @@ int spatial_match_batch(const float* ref, int stride, int width, int height, con
     int first_error = 0;
     for (int index : order) {
         const auto& item = items[index];
+        if (!detail::match_capacity_valid(item.group, match_stride)) {
+            counts[index] = 0;
+            detail::record_batch_failure(index, first_error);
+            continue;
+        }
         counts[index] = spatial_match(ref, stride, width, height, item.bx, item.by, item.block, item.bm_range,
                                       item.group, matches + static_cast<std::size_t>(index) * match_stride, item.avx2_features);
         if (counts[index] <= 0) {
-            if (first_error == 0) {
-                first_error = index + 1;
-            }
+            detail::record_batch_failure(index, first_error);
         }
     }
     return first_error;
@@ -131,12 +135,15 @@ int spatial_match_nch_batch(const float* const* refs, const int* strides, int nc
     int first_error = 0;
     for (int index : order) {
         const auto& item = items[index];
+        if (!detail::match_capacity_valid(item.group, match_stride)) {
+            counts[index] = 0;
+            detail::record_batch_failure(index, first_error);
+            continue;
+        }
         counts[index] = spatial_match_nch(refs, strides, nch, width, height, item.bx, item.by, item.block,
                                           item.bm_range, item.group, matches + static_cast<std::size_t>(index) * match_stride);
         if (counts[index] <= 0) {
-            if (first_error == 0) {
-                first_error = index + 1;
-            }
+            detail::record_batch_failure(index, first_error);
         }
     }
     return first_error;
@@ -163,6 +170,11 @@ int predictive_match_batch(const float* const* refs, const int* strides, int nte
     int first_error = 0;
     for (int index : order) {
         const auto& item = items[index];
+        if (!detail::match_capacity_valid(item.group, match_stride)) {
+            counts[index] = 0;
+            detail::record_batch_failure(index, first_error);
+            continue;
+        }
         SearchConfig local = cfg;
         local.block = item.block;
         local.group = item.group;
@@ -170,9 +182,7 @@ int predictive_match_batch(const float* const* refs, const int* strides, int nte
         counts[index] = predictive_match(refs, strides, ntemp, width, height, item.bx, item.by, t0, local,
                                          matches + static_cast<std::size_t>(index) * match_stride, item.avx2_features);
         if (counts[index] <= 0) {
-            if (first_error == 0) {
-                first_error = index + 1;
-            }
+            detail::record_batch_failure(index, first_error);
         }
     }
     return first_error;
@@ -199,6 +209,11 @@ int predictive_match_nch_batch(const float* const* refs, const int* strides, int
     int first_error = 0;
     for (int index : order) {
         const auto& item = items[index];
+        if (!detail::match_capacity_valid(item.group, match_stride)) {
+            counts[index] = 0;
+            detail::record_batch_failure(index, first_error);
+            continue;
+        }
         SearchConfig local = cfg;
         local.block = item.block;
         local.group = item.group;
@@ -206,9 +221,7 @@ int predictive_match_nch_batch(const float* const* refs, const int* strides, int
         counts[index] = predictive_match_nch(refs, strides, nch, ntemp, width, height, item.bx, item.by, t0, local,
                                              matches + static_cast<std::size_t>(index) * match_stride);
         if (counts[index] <= 0) {
-            if (first_error == 0) {
-                first_error = index + 1;
-            }
+            detail::record_batch_failure(index, first_error);
         }
     }
     return first_error;
@@ -252,9 +265,7 @@ int svd_economy_batch(SvdBatchItem* items, int count) {
             }
             if (svd_economy(item.m, item.n, item.A, item.lda, item.U, item.ldu, item.S, item.Vt, item.ldvt,
                             item.work, item.work_floats) != 0) {
-                if (first_error == 0) {
-                    first_error = index + 1;
-                }
+                detail::record_batch_failure(index, first_error);
             } else {
                 set_status(items[index], 1);
             }
@@ -265,9 +276,7 @@ int svd_economy_batch(SvdBatchItem* items, int count) {
             const auto& item = items[index];
             if (svd_economy(item.m, item.n, item.A, item.lda, item.U, item.ldu, item.S, item.Vt, item.ldvt,
                             item.work, item.work_floats) != 0) {
-                if (first_error == 0) {
-                    first_error = index + 1;
-                }
+                detail::record_batch_failure(index, first_error);
             } else {
                 set_status(items[index], 1);
             }
@@ -292,9 +301,15 @@ int svd_economy_batch(SvdBatchItem* items, int count) {
             }
             if (svd_economy_8_batch_hwy(m, a.data(), lda.data(), u.data(), ldu.data(), s.data(), vt.data(),
                                         ldvt.data(), static_cast<int>(size)) != 0) {
+                // A batch-level failure must not poison the whole bucket: retry
+                // each matrix through the scalar guarded path before failing it.
                 for (int index : batch_indices) {
-                    if (first_error == 0) {
-                        first_error = index + 1;
+                    const auto& item = items[index];
+                    if (svd_economy(item.m, item.n, item.A, item.lda, item.U, item.ldu, item.S, item.Vt, item.ldvt,
+                                    item.work, item.work_floats) != 0) {
+                        detail::record_batch_failure(index, first_error);
+                    } else {
+                        set_status(items[index], 1);
                     }
                 }
             } else {
@@ -306,9 +321,7 @@ int svd_economy_batch(SvdBatchItem* items, int count) {
                     if (!finite_singular_values(item.S, item.n) &&
                         svd_economy(item.m, item.n, item.A, item.lda, item.U, item.ldu, item.S, item.Vt, item.ldvt,
                                     item.work, item.work_floats) != 0) {
-                        if (first_error == 0) {
-                            first_error = index + 1;
-                        }
+                        detail::record_batch_failure(index, first_error);
                         continue;
                     }
                     set_status(item, 1);
@@ -378,15 +391,11 @@ int bm3d_filter_group_batch(Bm3dFilterBatchItem* items, int count) {
         if (!item.patches || !item.weight || !item.work || !bm_allowed_block(item.block) ||
             !bm_allowed_group(item.group) || item.lda < item.block * item.block ||
             item.k < 1 || item.k > item.group || item.block < 1) {
-            if (first_error == 0) {
-                first_error = index + 1;
-            }
+            detail::record_batch_failure(index, first_error);
             continue;
         }
         if (item.wiener && !item.ref_patches) {
-            if (first_error == 0) {
-                first_error = index + 1;
-            }
+            detail::record_batch_failure(index, first_error);
             continue;
         }
 #if NSS_BM_EXPERIMENT & 128
@@ -424,9 +433,7 @@ int wnnm_shrink_batch(WnnmShrinkBatchItem* items, int count) {
         return a.adaptive < b.adaptive;
     });
     auto fail = [&](int index, int& first_error) {
-        if (first_error == 0) {
-            first_error = index + 1;
-        }
+        detail::record_batch_failure(index, first_error);
     };
     auto finish = [](WnnmShrinkBatchItem& item) {
         const int m = item.m;
@@ -510,13 +517,26 @@ int wnnm_shrink_batch(WnnmShrinkBatchItem* items, int count) {
             }
             if (svd_economy_8_batch_qreplay_hwy(first.m, a.data(), lda.data(), u.data(), ldu.data(), s.data(),
                                                 vt.data(), ldvt.data(), static_cast<int>(size)) != 0) {
+                // A batch-level failure must not poison the whole bucket: retry
+                // each matrix through the scalar guarded path, then finish.
                 for (int index : batch_indices) {
                     auto& item = items[index];
-                    if (item.residual) {
-                        float* mean = item.work + item.m * item.n + item.n + item.n * item.n;
-                        group_center_add(item.group, item.m, item.n, item.lda, mean);
+                    float* U = item.work;
+                    float* S = U + item.m * item.n;
+                    float* Vt = S + item.n;
+                    float* mean = Vt + item.n * item.n;
+                    float* svd_work = mean + item.m;
+                    const int svd_cap = item.work_floats - (item.m * item.n + item.n + item.n * item.n + item.m);
+                    if (svd_economy(item.m, item.n, item.group, item.lda, U, item.m, S, Vt, item.n, svd_work,
+                                    svd_cap) != 0) {
+                        if (item.residual) {
+                            group_center_add(item.group, item.m, item.n, item.lda, mean);
+                        }
+                        fail(index, first_error);
+                        continue;
                     }
-                    fail(index, first_error);
+                    finish(item);
+                    set_status(item, 1);
                 }
             } else {
                 for (int index : batch_indices) {
@@ -569,17 +589,13 @@ int mcwnnm_filter_group_batch(McwnnmFilterBatchItem* items, int count) {
     for (int index : order) {
         auto& item = items[index];
         if (item.m < 1 || item.n < 1 || !item.group || !item.sigma || !item.work || item.work_floats < 1) {
-            if (first_error == 0) {
-                first_error = index + 1;
-            }
+            detail::record_batch_failure(index, first_error);
             continue;
         }
         if (mcwnnm_filter_group(item.group, item.m, item.n, item.lda, item.nch, item.sigma, item.admm_iter, item.rho,
                                 item.mu, item.residual, item.adaptive, item.adaptive_weight, item.work,
                                 item.work_floats, item.avx2_gemm) != 0) {
-            if (first_error == 0) {
-                first_error = index + 1;
-            }
+            detail::record_batch_failure(index, first_error);
             continue;
         }
         set_status(item, 1);
@@ -619,9 +635,7 @@ int ncsr_filter_group_batch(NcsrFilterBatchItem* items, int count) {
             auto& item = items[index];
             if (!item.group || !item.work || item.m < 1 || item.n < 1 || item.lda < item.m ||
                 item.work_floats < 1) {
-                if (first_error == 0) {
-                    first_error = index + 1;
-                }
+                detail::record_batch_failure(index, first_error);
                 continue;
             }
             if (n == 8 && m >= 8 && m <= kSvdBatch8MaxM &&
@@ -629,9 +643,7 @@ int ncsr_filter_group_batch(NcsrFilterBatchItem* items, int count) {
                 batch_indices.push_back(index);
             } else if (ncsr_filter_group(item.group, item.m, item.n, item.lda, item.sigma, item.col_dist, item.work,
                                          item.work_floats) != 0) {
-                if (first_error == 0) {
-                    first_error = index + 1;
-                }
+                detail::record_batch_failure(index, first_error);
             } else {
                 set_status(item, 1);
             }
@@ -642,9 +654,7 @@ int ncsr_filter_group_batch(NcsrFilterBatchItem* items, int count) {
                 auto& item = items[index];
                 if (ncsr_filter_group(item.group, item.m, item.n, item.lda, item.sigma, item.col_dist, item.work,
                                       item.work_floats) != 0) {
-                    if (first_error == 0) {
-                        first_error = index + 1;
-                    }
+                    detail::record_batch_failure(index, first_error);
                 } else {
                     set_status(item, 1);
                 }
@@ -659,24 +669,20 @@ int ncsr_filter_group_batch(NcsrFilterBatchItem* items, int count) {
         nss::ResourceVector<float*> u(size);
         nss::ResourceVector<int> ldu(size, m);
         nss::ResourceVector<float*> s(size);
-        nss::ResourceVector<float*> vt(size);
-        nss::ResourceVector<int> ldvt(size, n);
         for (std::size_t pos = 0; pos < size; ++pos) {
             auto& item = items[batch_indices[pos]];
             float* U = item.work;
             float* S = U + m * n;
             float* mean = S + n;
             float* B = mean + m;
-            float* Vt = B + m * n;
             group_center_sub(item.group, m, n, item.lda, mean);
             a[pos] = item.group;
             lda[pos] = item.lda;
             u[pos] = U;
             s[pos] = S;
-            vt[pos] = Vt;
         }
         const bool batch_ok = svd_economy_8_batch_u_compat_hwy(
-                                  m, a.data(), lda.data(), u.data(), ldu.data(), s.data(), vt.data(), ldvt.data(),
+                                  m, a.data(), lda.data(), u.data(), ldu.data(), s.data(), nullptr, nullptr,
                                   static_cast<int>(size)) == 0;
         for (int index : batch_indices) {
             auto& item = items[index];
@@ -690,9 +696,7 @@ int ncsr_filter_group_batch(NcsrFilterBatchItem* items, int count) {
             if ((!batch_ok || !finite_singular_values(S, n)) &&
                 svd_economy(m, n, item.group, item.lda, U, m, S, Vt, n, svd_work, svd_cap) != 0) {
                 group_center_add(item.group, m, n, item.lda, mean);
-                if (first_error == 0) {
-                    first_error = index + 1;
-                }
+                detail::record_batch_failure(index, first_error);
                 continue;
             }
             finish_ncsr_batch_item(item);

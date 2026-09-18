@@ -1389,10 +1389,14 @@ void bm3d_filter_direct(const float* src, int sstride, const Match* matches, int
     const int kk = std::min(k, group);
     const int area = block * block;
     const std::size_t cube_n = static_cast<std::size_t>(group) * static_cast<std::size_t>(area);
-#if NSS_BM_HOMOGENEOUS
+#if NSS_BM_EXPERIMENT & 128
+    std::memset(cube, 0, cube_n * sizeof(float));
+#elif NSS_BM_HOMOGENEOUS
     if(kk<group)std::memset(cube+static_cast<std::size_t>(kk)*area,0,(group-kk)*area*sizeof(float));
 #else
-    std::memset(cube, 0, cube_n * sizeof(float));
+    // No cube memset in the default path: Bm3dFilterGroup either runs in
+    // place with all `group` patches packed (kk == group) or copies and
+    // tail-zeros cube itself (dct8.cpp:833-842).
 #endif
     for (int g = 0; g < kk; ++g) {
         pack_patch(cube + static_cast<std::size_t>(g) * area, area, src, sstride, matches[g].x, matches[g].y, block,
@@ -1401,7 +1405,14 @@ void bm3d_filter_direct(const float* src, int sstride, const Match* matches, int
     float* refc = nullptr;
     if (wiener && ref) {
         refc = cube + cube_n;
+#if NSS_BM_EXPERIMENT & 128
         std::memset(refc, 0, cube_n * sizeof(float));
+#elif NSS_BM_HOMOGENEOUS
+        if(kk<group)std::memset(refc+static_cast<std::size_t>(kk)*area,0,(group-kk)*area*sizeof(float));
+#else
+        // No refc memset in the default path: refw is copied and tail-zeroed
+        // inside Bm3dFilterGroup (dct8.cpp:892-901).
+#endif
         for (int g = 0; g < kk; ++g) {
             pack_patch(refc + static_cast<std::size_t>(g) * area, area, ref, rstride, matches[g].x, matches[g].y, block,
                        width, height);

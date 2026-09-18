@@ -14,7 +14,7 @@ jobs:
       - name: configure
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
-            -DNSS_ENABLE_CUDA=OFF -DNSS_ENABLE_VULKAN=OFF
+            -DNSS_HWY_TARGET_MODE=dynamic
       - name: build
         run: cmake --build build -j
       - name: unit tests

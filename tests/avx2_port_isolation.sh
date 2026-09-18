@@ -10,7 +10,7 @@ for side in baseline port; do
   root=/tmp/nss-avx2-$side
   mask=0
   if [[ $side == port ]]; then mask=2047; fi
-  cmake -S "$root" -B "$root/build-avx3" -DCMAKE_BUILD_TYPE=Release -DNSS_BM_EXPERIMENT=2305 -DNSS_AVX2_DEFAULTS=OFF -DNSS_AVX2_EXPERIMENT="$mask" -DNSS_HWY_TARGET_MODE=avx3 -DNSS_GIT_DESCRIBE=avx2-port -DNSS_ENABLE_CUDA=OFF -DNSS_ENABLE_VULKAN=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DVapourSynth_INCLUDE_DIR="$NSS_C4_VS_PREFIX/lib/python3/dist-packages/vapoursynth/include" -DFETCHCONTENT_SOURCE_DIR_HIGHWAY="$NSS_C4_HIGHWAY_SOURCE" > "$out/$side-build.log" 2>&1
+  cmake -S "$root" -B "$root/build-avx3" -DCMAKE_BUILD_TYPE=Release -DNSS_BM_EXPERIMENT=2305 -DNSS_AVX2_DEFAULTS=OFF -DNSS_AVX2_EXPERIMENT="$mask" -DNSS_HWY_TARGET_MODE=avx3 -DNSS_GIT_DESCRIBE=avx2-port -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DVapourSynth_INCLUDE_DIR="$NSS_C4_VS_PREFIX/lib/python3/dist-packages/vapoursynth/include" -DFETCHCONTENT_SOURCE_DIR_HIGHWAY="$NSS_C4_HIGHWAY_SOURCE" > "$out/$side-build.log" 2>&1
   cmake --build "$root/build-avx3" -j2 >> "$out/$side-build.log" 2>&1
   cp "$root/build-avx3/libnss.so" "$out/$side.so"
   cp "$root/build-avx3/compile_commands.json" "$out/$side-compile.json"

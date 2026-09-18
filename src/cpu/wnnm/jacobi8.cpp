@@ -104,11 +104,6 @@ void JacobiSvd8(const float* A, int lda, float* U, int ldu, float* S, float* Vt,
                     const VW vq = vv[q];
                     vv[p] = hn::Sub(hn::Mul(vcs, vp), hn::Mul(vsn, vq));
                     vv[q] = hn::Add(hn::Mul(vsn, vp), hn::Mul(vcs, vq));
-                    const float css = cs * cs;
-                    const float sns = sn * sn;
-                    const float two = 2.f * cs * sn * apq[k];
-                    nrm[p] = css * app[k] + sns * aqq[k] - two;
-                    nrm[q] = sns * app[k] + css * aqq[k] + two;
                 }
                 // The closed-form norm update is susceptible to cancellation
                 // for rank-deficient groups.  Recompute from the rotated

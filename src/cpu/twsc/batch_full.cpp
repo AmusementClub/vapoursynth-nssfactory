@@ -23,7 +23,11 @@ void twsc_filter_full_batch(TwscFullBatchItem* items, int count) {
         int end = begin + 1;
         while (end < count && items[order[end]].m == m && items[order[end]].n == n) ++end;
 #if !NSS_ALIGNMENT_GENERIC
-        bool uniform = n > 32 && m >= 1 && m <= kTwscMaxRows && n <= kTwscMaxColumns;
+        // The x86 lane is enabled after complete-frame paired evidence. ARM
+        // keeps the route explicit until a native full-frame timing gate is
+        // available; either configuration retains the scalar fallback.
+        bool uniform = (n > 32 || (NSS_TWSC_MIDGROUP_BATCH && n >= 24)) &&
+                       m >= 1 && m <= kTwscMaxRows && n <= kTwscMaxColumns;
         for (int pos = begin; uniform && pos < end; ++pos) {
             const auto& item = items[order[pos]];
             for (int k = 1; k < m; ++k) uniform = uniform && item.row_sigma[k] == item.row_sigma[0];

@@ -311,7 +311,9 @@ const VSFrame* VS_CC nlmGetFrame(int n, int activationReason, void* instanceData
 
             for (int oy = -d->a; oy <= d->a; ++oy) {
                 for (int ox = -d->a; ox <= d->a; ++ox) {
-                    if (i * span * span + oy * span + ox >= 0) {
+                    // int64: oy*span overflows int for a >= 32769 (reachable
+                    // under the a < width contract with small frame heights).
+                    if (static_cast<std::int64_t>(i) * span * span + oy * span + ox >= 0) {
                         continue;
                     }
                     auto distance = [&](float* dst, const PlanePtrs& c, const PlaneStrides& cs,
@@ -349,41 +351,58 @@ const VSFrame* VS_CC nlmGetFrame(int n, int activationReason, void* instanceData
                         nss::nlm_horizontal(temp, temp_bwd, d->s, w, ext_h, stride);
                     };
                     distance_horizontal(refp, refp_strides, refp_bwd, refp_bwd_strides);
-                    nss::nlm_vertical_welsch(temp_bwd, temp, d->s, h2_inv_norm, w, ext_h, stride, buffer);
-                    auto accum_range = [&](const PlanePtrs& sb, const PlaneStrides& sbs, const PlanePtrs& sf,
-                                           const PlaneStrides& sfs, const float* t1, const float* t2, int y0, int y1,
-                                           int temp_base) {
-                        if (mixed_strides) {
-                            const auto csb = compact_ptrs(sb);
-                            const auto csf = compact_ptrs(sf);
-                            const auto cssb = compact_strides(sbs);
-                            const auto cssf = compact_strides(sfs);
-                            nss::nlm_accum_strided(weightp, wdstp[0], wdstp[1], wdstp[2], max_weightp, csb.data(),
-                                                   cssb.data(), csf.data(), cssf.data(), t1, t2, nc, ox, oy, w, ext_h,
-                                                   stride, y0, y1, temp_base);
-                            return;
-                        }
-                        if (d->channels == nss::ChannelMode::Y) {
-                            nss::nlm_accum_ch1_range(weightp, wdstp[0], max_weightp, sb[0], sf[0], t1, t2, ox, oy, w,
-                                                     ext_h, stride, y0, y1);
-                        } else if (d->channels == nss::ChannelMode::UV) {
-                            nss::nlm_accum_ch2_range(weightp, wdstp[0], wdstp[1], max_weightp, sb[1], sb[2], sf[1], sf[2],
-                                                     t1, t2, ox, oy, w, ext_h, stride, y0, y1);
-                        } else {
-                            nss::nlm_accum_ch3_range(weightp, wdstp[0], wdstp[1], wdstp[2], max_weightp, sb[0], sb[1],
-                                                     sb[2], sf[0], sf[1], sf[2], t1, t2, ox, oy, w, ext_h, stride, y0,
-                                                     y1);
-                        }
-                    };
                     if (i == 0) {
-                        accum_range(srcp_bwd, srcp_bwd_strides, srcp_bwd, srcp_bwd_strides, temp_bwd, temp_bwd,
-                                     core_local, core_local + core_height, 0);
+                        if (mixed_strides) {
+                            nss::nlm_vertical_welsch(temp_bwd, temp, d->s, h2_inv_norm, w, ext_h, stride, buffer);
+                            const auto csb = compact_ptrs(srcp_bwd);
+                            const auto csf = compact_ptrs(srcp_bwd);
+                            const auto cssb = compact_strides(srcp_bwd_strides);
+                            const auto cssf = compact_strides(srcp_bwd_strides);
+                            nss::nlm_accum_strided(weightp, wdstp[0], wdstp[1], wdstp[2], max_weightp, csb.data(),
+                                                   cssb.data(), csf.data(), cssf.data(), temp_bwd, temp_bwd, nc, ox,
+                                                   oy, w, ext_h, stride, core_local, core_local + core_height, 0);
+                        } else {
+                            // Only the core rows plus the |oy| halo are
+                            // consumed; the range pass replays the same sliding
+                            // trajectory as a full-ext pass, so values are
+                            // bit-identical with dead rows skipped.
+                            const int abs_oy = std::abs(oy);
+                            const int base_y = std::max(0, core_local - abs_oy);
+                            const int end_y = std::min(ext_h, core_local + core_height + abs_oy);
+                            nss::nlm_vertical_welsch_range(temp_bwd, temp, d->s, h2_inv_norm, w, ext_h, stride,
+                                                           base_y, end_y, buffer);
+                            if (d->channels == nss::ChannelMode::Y) {
+                                nss::nlm_accum_ch1_base_range(weightp, wdstp[0], max_weightp, srcp_bwd[0],
+                                                              srcp_bwd[0], temp_bwd, temp_bwd, ox, oy, w, ext_h,
+                                                              stride, core_local, core_local + core_height, base_y);
+                            } else if (d->channels == nss::ChannelMode::UV) {
+                                nss::nlm_accum_ch2_base_range(weightp, wdstp[0], wdstp[1], max_weightp,
+                                                              srcp_bwd[1], srcp_bwd[2], srcp_bwd[1], srcp_bwd[2],
+                                                              temp_bwd, temp_bwd, ox, oy, w, ext_h, stride,
+                                                              core_local, core_local + core_height, base_y);
+                            } else {
+                                nss::nlm_accum_ch3_base_range(weightp, wdstp[0], wdstp[1], wdstp[2], max_weightp,
+                                                              srcp_bwd[0], srcp_bwd[1], srcp_bwd[2], srcp_bwd[0],
+                                                              srcp_bwd[1], srcp_bwd[2], temp_bwd, temp_bwd, ox, oy,
+                                                              w, ext_h, stride, core_local,
+                                                              core_local + core_height, base_y);
+                            }
+                        }
                         continue;
                     }
-                    for (int yy = 0; yy < core_height; ++yy) {
-                        std::memcpy(saved_bwd + static_cast<std::size_t>(yy) * static_cast<std::size_t>(stride),
-                                    temp_bwd + static_cast<std::size_t>(core_local + yy) * static_cast<std::size_t>(stride),
-                                    static_cast<std::size_t>(stride) * sizeof(float));
+                    if (mixed_strides) {
+                        nss::nlm_vertical_welsch(temp_bwd, temp, d->s, h2_inv_norm, w, ext_h, stride, buffer);
+                        for (int yy = 0; yy < core_height; ++yy) {
+                            std::memcpy(saved_bwd + static_cast<std::size_t>(yy) * static_cast<std::size_t>(stride),
+                                        temp_bwd + static_cast<std::size_t>(core_local + yy) * static_cast<std::size_t>(stride),
+                                        static_cast<std::size_t>(stride) * sizeof(float));
+                        }
+                    } else {
+                        // Write the consumed core rows directly into saved_bwd:
+                        // same sliding trajectory as a full-ext pass, with the
+                        // dead rows and the core-row memcpy skipped.
+                        nss::nlm_vertical_welsch_range(saved_bwd, temp, d->s, h2_inv_norm, w, ext_h, stride,
+                                                       core_local, core_local + core_height, buffer);
                     }
                     distance_horizontal(refp_fwd, refp_fwd_strides, refp, refp_strides);
                     const int temp2_base_y = mixed_strides ? 0 : std::clamp(core_local - oy, 0, ext_h - 1);
@@ -515,9 +534,9 @@ void VS_CC nlmCreate(const VSMap* in, VSMap* out, void* userData, VSCore* core, 
     d->h = nss::map_float(vsapi, in, "h", nss::kNlmDefaultH);
     d->wref = nss::map_float(vsapi, in, "wref", nss::kNlmDefaultWref);
     constexpr int kMaxSafeRadius = (std::numeric_limits<int>::max() - 1) / 2;
-    if (d->d < 0 || d->d > kMaxSafeRadius || d->a <= 0 || d->s < 0 || d->a > kMaxSafeRadius || d->s > kMaxSafeRadius ||
-        !std::isfinite(d->h) || d->h <= 0.f || !std::isfinite(d->wref)) {
-        fail("nss.NLM: invalid d/a/s/h");
+    if (d->d < 0 || d->d > nss::kNlmMaxD || d->a <= 0 || d->s < 0 || d->a > kMaxSafeRadius || d->s > nss::kNlmMaxS ||
+        !std::isfinite(d->h) || d->h <= 0.f || !std::isfinite(d->wref) || d->wref <= 0.f) {
+        fail("nss.NLM: invalid d/a/s/h/wref");
         return;
     }
     const int wmode = nss::map_int(vsapi, in, "wmode", 0);
@@ -554,6 +573,24 @@ void VS_CC nlmCreate(const VSMap* in, VSMap* out, void* userData, VSCore* core, 
     if (d->channels == nss::ChannelMode::RGB && d->vi.format.colorFamily != cfRGB) {
         fail("nss.NLM: RGB requires RGB");
         return;
+    }
+    // contracts/failure.md: the factory must validate the model's legal shape.
+    // The distance/accumulation kernels index rows with |ox| (ox ∈ [-a, a])
+    // without clamping; |ox| >= plane width writes past the row into the next
+    // row's accumulation state.
+    int first_plane = 0;
+    int last_plane = 0;
+    if (d->channels == nss::ChannelMode::UV) {
+        first_plane = 1;
+        last_plane = 2;
+    } else if (d->channels != nss::ChannelMode::Y) {
+        last_plane = d->vi.format.numPlanes - 1;
+    }
+    for (int p = first_plane; p <= last_plane; ++p) {
+        if (d->a >= nss::plane_width(d->vi, p)) {
+            fail("nss.NLM: search radius a must be smaller than the processed plane width");
+            return;
+        }
     }
     err = 0;
     d->rclip = nss::get_node(vsapi, in, "rclip", 0, &err);

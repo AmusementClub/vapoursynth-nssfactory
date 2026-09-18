@@ -4,11 +4,59 @@
 #include <cstdio>
 #include <limits>
 #include <stdexcept>
+#include <random>
 #include <vector>
 
 static void require(bool yes, const char* message) { if (!yes) throw std::runtime_error(message); }
+
+static void check_mid_group_batch_shapes() {
+    constexpr int m = 40;
+    constexpr int lda = 43;
+    const nss::TwscSolverOptions options{2, .5, 1.1, 1e-6};
+    std::mt19937 rng(20260912u);
+    std::uniform_real_distribution<float> values(-.7f, .7f);
+    for (int n : {24, 32}) {
+        for (int count : {1, 2, 3, 4, 5}) {
+            struct Case {
+                std::vector<float> scalar, batched;
+                std::vector<float> row_sigma, column_sigma, weights;
+                nss::TwscWorkspace scalar_work, batch_work;
+                nss::TwscSolverStats scalar_stats{}, batch_stats{};
+            };
+            std::vector<Case> cases(static_cast<std::size_t>(count));
+            std::vector<nss::TwscFullBatchItem> items(static_cast<std::size_t>(count));
+            for (int index = 0; index < count; ++index) {
+                auto& c = cases[static_cast<std::size_t>(index)];
+                c.scalar.resize(static_cast<std::size_t>(lda * n));
+                for (float& value : c.scalar) value = values(rng);
+                c.batched = c.scalar;
+                c.row_sigma.assign(m, .02f); // admits the uniform FP64 lane
+                c.column_sigma.resize(n);
+                c.weights.resize(n);
+                for (int j = 0; j < n; ++j) {
+                    c.column_sigma[static_cast<std::size_t>(j)] = .03f + .001f * float(j % 5);
+                    c.weights[static_cast<std::size_t>(j)] = 0.f;
+                }
+                c.scalar_stats = nss::twsc_filter_full(c.scalar.data(), m, n, lda, c.row_sigma.data(),
+                                                        c.column_sigma.data(), c.weights.data(), options,
+                                                        c.scalar_work);
+                items[static_cast<std::size_t>(index)] = nss::TwscFullBatchItem{
+                    c.batched.data(), m, n, lda, c.row_sigma.data(), c.column_sigma.data(), c.weights.data(),
+                    &options, &c.batch_work, &c.batch_stats};
+            }
+            nss::twsc_filter_full_batch(items.data(), count);
+            for (const auto& c : cases) {
+                require(c.scalar.size() == c.batched.size(), "mid-group batch size");
+                for (std::size_t i = 0; i < c.scalar.size(); ++i)
+                    require(std::abs(c.scalar[i] - c.batched[i]) <= 3e-5f, "G24/G32 batch changed output");
+            }
+        }
+    }
+}
+
 int main() {
     try {
+        check_mid_group_batch_shapes();
         // Analytic independent optimum for a diagonal dictionary, including a
         // zero spectral direction. This is the FULL objective's 1/2 factor.
         constexpr int m = 6, n = 4, r = 4;

@@ -1,4 +1,5 @@
 #include "nss/cpu_batch.hpp"
+#include "cpu/batch_contract.hpp"
 #include "cpu/hwy_config.hpp"
 #include "cpu/bm/matcher.hpp"
 #include <algorithm>
@@ -124,10 +125,10 @@ int SpatialMatchJoint(const float* ref,int stride,int width,int height,const Mat
             begin=end;
         } else {
             const auto& item=items[begin];
-            counts[begin]=std::min(item.group,kBmMaxGroup)>match_stride?0:
+            counts[begin]=!detail::match_capacity_valid(item.group, match_stride)?0:
                 spatial_match(ref,stride,width,height,item.bx,item.by,item.block,item.bm_range,item.group,
                              matches+static_cast<std::size_t>(begin)*match_stride,item.avx2_features|NSS_AVX2_REQUESTED);
-            if(counts[begin]<=0 && !first_error) first_error=begin+1;
+            if(counts[begin]<=0) detail::record_batch_failure(begin, first_error);
             ++begin;
         }
     }

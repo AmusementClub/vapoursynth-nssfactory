@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <cstdint>
 #include <limits>
 #include <random>
 #include <vector>
@@ -517,6 +518,106 @@ bool check_match_batches() {
     return true;
 }
 
+bool check_batch_contracts() {
+    struct GuardedMatches {
+        nss::Match value[1]{};
+        std::uint64_t canary = 0x1122334455667788ULL;
+        std::uint8_t padding[512]{};
+    };
+    constexpr int width = 32;
+    constexpr int height = 32;
+    std::vector<float> plane(static_cast<std::size_t>(width * height), 0.f);
+
+    // Both entries are invalid only because the output leading dimension is
+    // too small. Shape bucketing visits item 1 first, but the API must report
+    // the smallest original input index and must not enter a matcher kernel.
+    const nss::MatchBatchItem items[]{{8, 8, 8, 7, 8}, {8, 8, 8, 7, 4}};
+    GuardedMatches guarded;
+    int counts[2] = {-1, -1};
+    const int rc = nss::spatial_match_batch(plane.data(), width, width, height, items, 2, guarded.value, 1, counts);
+    if (rc != 1 || counts[0] != 0 || counts[1] != 0 || guarded.canary != 0x1122334455667788ULL) {
+        std::fprintf(stderr, "matcher admission contract failed rc=%d counts=%d,%d canary=0x%llx\n", rc,
+                     counts[0], counts[1], static_cast<unsigned long long>(guarded.canary));
+        return false;
+    }
+
+    GuardedMatches nlh_guarded;
+    int nlh_count = -1;
+    const nss::MatchBatchItem nlh_item{8, 8, 8, 7, 16};
+    const int nlh_rc = nss::nlh_spatial_match_batch(plane.data(), width, width, height, &nlh_item, 1,
+                                                     nlh_guarded.value, 1, &nlh_count);
+    if (nlh_rc != 1 || nlh_count != 0 || nlh_guarded.canary != 0x1122334455667788ULL) {
+        std::fprintf(stderr, "NLH matcher admission contract failed rc=%d count=%d canary=0x%llx\n", nlh_rc,
+                     nlh_count, static_cast<unsigned long long>(nlh_guarded.canary));
+        return false;
+    }
+
+    const float* refs[] = {plane.data()};
+    const int strides[] = {width};
+    nss::SearchConfig cfg;
+    cfg.block = 8;
+    cfg.group = 8;
+    cfg.bm_range = 7;
+    const auto check_rejected = [&](const char* name, int result, const GuardedMatches& value, int count) {
+        if (result != 1 || count != 0 || value.canary != 0x1122334455667788ULL) {
+            std::fprintf(stderr, "%s admission contract failed rc=%d count=%d canary=0x%llx\n", name, result,
+                         count, static_cast<unsigned long long>(value.canary));
+            return false;
+        }
+        return true;
+    };
+    GuardedMatches nch_guarded;
+    int nch_count = -1;
+    const int nch_rc = nss::spatial_match_nch_batch(refs, strides, 1, width, height, &items[0], 1,
+                                                    nch_guarded.value, 1, &nch_count);
+    if (!check_rejected("NCH matcher", nch_rc, nch_guarded, nch_count))
+        return false;
+    GuardedMatches temporal_guarded;
+    int temporal_count = -1;
+    const int temporal_rc = nss::predictive_match_batch(refs, strides, 1, width, height, 0, cfg, &items[0], 1,
+                                                        temporal_guarded.value, 1, &temporal_count);
+    if (!check_rejected("temporal matcher", temporal_rc, temporal_guarded, temporal_count))
+        return false;
+    GuardedMatches temporal_nch_guarded;
+    int temporal_nch_count = -1;
+    const int temporal_nch_rc = nss::predictive_match_nch_batch(
+        refs, strides, 1, 1, width, height, 0, cfg, &items[0], 1, temporal_nch_guarded.value, 1,
+        &temporal_nch_count);
+    if (!check_rejected("temporal NCH matcher", temporal_nch_rc, temporal_nch_guarded, temporal_nch_count))
+        return false;
+    GuardedMatches joint_guarded;
+    int joint_count = -1;
+    const nss::MatchBatchItem joint_item{8, 8, 6, 7, 8};
+    const int joint_rc = nss::spatial_match_joint(plane.data(), width, width, height, &joint_item, 1,
+                                                  joint_guarded.value, 1, &joint_count);
+    if (!check_rejected("joint matcher", joint_rc, joint_guarded, joint_count))
+        return false;
+
+    // SVD and BM3D use different dimension buckets; failure reporting must
+    // still use the original input order.
+    nss::SvdBatchItem svd_items[2]{};
+    svd_items[0].m = 16;
+    svd_items[0].n = 8;
+    svd_items[1].m = 8;
+    svd_items[1].n = 8;
+    if (nss::svd_economy_batch(svd_items, 2) != 1) {
+        std::fprintf(stderr, "SVD first-failure index was not restored to input order\n");
+        return false;
+    }
+    nss::Bm3dFilterBatchItem bm_items[2]{};
+    bm_items[0].block = 8;
+    bm_items[0].group = 8;
+    bm_items[0].k = 1;
+    bm_items[1].block = 4;
+    bm_items[1].group = 8;
+    bm_items[1].k = 1;
+    if (nss::bm3d_filter_group_batch(bm_items, 2) != 1) {
+        std::fprintf(stderr, "BM3D first-failure index was not restored to input order\n");
+        return false;
+    }
+    return true;
+}
+
 template <typename Fill>
 std::vector<float> make_values(std::size_t n, Fill&& fill) {
     std::vector<float> values(n);
@@ -677,6 +778,9 @@ int main() {
         return 1;
     }
     if (!check_match_batches()) {
+        return 1;
+    }
+    if (!check_batch_contracts()) {
         return 1;
     }
     if (!check_svd_lane_batches()) {

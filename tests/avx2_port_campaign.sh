@@ -20,7 +20,7 @@ build() {
   local mask=$1 phase=$2
   sudo systemctl set-property --runtime system.slice AllowedCPUs=0-1
   sudo systemctl set-property --runtime user.slice AllowedCPUs=0-1
-  cmake -S "$root" -B "$root/build" -DCMAKE_BUILD_TYPE=Release -DNSS_BM_EXPERIMENT=2305 -DNSS_AVX2_DEFAULTS=OFF -DNSS_AVX2_EXPERIMENT="$mask" -DNSS_HWY_TARGET_MODE=avx2 -DNSS_GIT_DESCRIBE=avx2-port -DNSS_ENABLE_CUDA=OFF -DNSS_ENABLE_VULKAN=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DVapourSynth_INCLUDE_DIR="$NSS_C4_VS_PREFIX/lib/python3/dist-packages/vapoursynth/include" -DFETCHCONTENT_SOURCE_DIR_HIGHWAY="$NSS_C4_HIGHWAY_SOURCE" > "$phase/build.log" 2>&1
+  cmake -S "$root" -B "$root/build" -DCMAKE_BUILD_TYPE=Release -DNSS_BM_EXPERIMENT=2305 -DNSS_AVX2_DEFAULTS=OFF -DNSS_AVX2_EXPERIMENT="$mask" -DNSS_HWY_TARGET_MODE=avx2 -DNSS_GIT_DESCRIBE=avx2-port -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DVapourSynth_INCLUDE_DIR="$NSS_C4_VS_PREFIX/lib/python3/dist-packages/vapoursynth/include" -DFETCHCONTENT_SOURCE_DIR_HIGHWAY="$NSS_C4_HIGHWAY_SOURCE" > "$phase/build.log" 2>&1
   cmake --build "$root/build" -j2 >> "$phase/build.log" 2>&1
 }
 mkdir "$out/mask-0"
