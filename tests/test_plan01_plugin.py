@@ -235,6 +235,14 @@ def main():
         reject(lambda: getattr(core.nss, name)(small, **options(name)), "block_size")
     reject(lambda: core.nss.WNNM(gray, ps_num=2**31-1), "ps_num")
     reject(lambda: core.nss.NLM(gray, d=2**31-1), "invalid d/a/s/h")
+    reject(lambda: core.nss.NLM(gray, a=gray.width), "smaller than the processed plane width")
+    reject(lambda: core.nss.NLM(gray, a=gray.width + 40), "smaller than the processed plane width")
+    reject(lambda: core.nss.NLM(gray, wref=0.0), "invalid d/a/s/h/wref")
+    reject(lambda: core.nss.NLM(gray, d=257), "invalid d/a/s/h/wref")
+    reject(lambda: core.nss.NLM(gray, s=1025), "invalid d/a/s/h/wref")
+    reject(lambda: core.nss.NCSR(gray, delta=1.5), "delta must be in [0, 1]")
+    reject(lambda: core.nss.NCSR(gray, delta=-0.5), "delta must be in [0, 1]")
+    reject(lambda: core.nss.MCWNNM(rgb, delta=2.0), "delta must be in [0, 1]")
     rows.append(dict(test="failure_and_recovery", passed=True))
     report = dict(passed=True, checks=len(rows), cases=rows, peak_rss=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
                   plugin_sha256=hashlib.sha256(Path(os.environ["NSS_SO"]).read_bytes()).hexdigest(),

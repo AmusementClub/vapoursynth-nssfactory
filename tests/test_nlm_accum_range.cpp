@@ -357,7 +357,7 @@ bool run_case(int nch, const Case& tc, std::mt19937& rng) {
 }  // namespace
 
 int main() {
-    const std::array<Case, 9> cases{{
+    const std::array<Case, 12> cases{{
         {1, 1, 4, 0, 0, 0, 1},
         {2, 2, 7, -1, 1, 0, 1},
         {3, 2, 8, 2, -3, 1, 2},
@@ -367,6 +367,12 @@ int main() {
         {19, 9, 24, 0, -5, 0, 9},
         {19, 9, 24, 7, 1, 4, 5},
         {31, 3, 37, -9, 6, 1, 3},
+        // |ox| >= w is legal kernel input: the clamped full-row band is the
+        // defined degenerate case. Cover the boundary, beyond-stride, and
+        // equal-stride shapes.
+        {5, 3, 6, 5, 1, 0, 2},
+        {5, 3, 6, -7, -1, 0, 2},
+        {7, 4, 9, 9, 2, 1, 3},
     }};
     std::mt19937 rng(0x4e4c4d52u);
     for (int nch = 1; nch <= 3; ++nch) {

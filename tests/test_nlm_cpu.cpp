@@ -82,9 +82,8 @@ bool check_distance_horizontal_luma() {
             for (int radius = 0; radius <= 6; ++radius) {
                 for (const int oy : {-2, -1, 0, 1, 2}) {
                     for (const int ox : {-2, -1, 0, 1, 2}) {
-                        if (std::abs(ox) >= w) {
-                            continue;
-                        }
+                        // |ox| >= w is legal kernel input: the clamped
+                        // full-row band is the defined degenerate case.
                         std::fill(distance.begin(), distance.end(), -7.f);
                         std::fill(expected.begin(), expected.end(), -11.f);
                         std::fill(got.begin(), got.end(), -11.f);

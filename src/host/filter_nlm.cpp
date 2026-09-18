@@ -13,6 +13,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -311,9 +312,10 @@ const VSFrame* VS_CC nlmGetFrame(int n, int activationReason, void* instanceData
 
             for (int oy = -d->a; oy <= d->a; ++oy) {
                 for (int ox = -d->a; ox <= d->a; ++ox) {
-                    // int64: oy*span overflows int for a >= 32769 (reachable
-                    // under the a < width contract with small frame heights).
-                    if (static_cast<std::int64_t>(i) * span * span + oy * span + ox >= 0) {
+                    // int64 every factor: oy*span overflows int for
+                    // a >= 32769 (reachable under the a < width contract with
+                    // small frame heights), i*span*span for smaller a.
+                    if (static_cast<std::int64_t>(i) * span * span + static_cast<std::int64_t>(oy) * span + ox >= 0) {
                         continue;
                     }
                     auto distance = [&](float* dst, const PlanePtrs& c, const PlaneStrides& cs,
@@ -575,9 +577,10 @@ void VS_CC nlmCreate(const VSMap* in, VSMap* out, void* userData, VSCore* core, 
         return;
     }
     // contracts/failure.md: the factory must validate the model's legal shape.
-    // The distance/accumulation kernels index rows with |ox| (ox ∈ [-a, a])
-    // without clamping; |ox| >= plane width writes past the row into the next
-    // row's accumulation state.
+    // The distance/accumulation kernels clamp |ox| to w as defense-in-depth;
+    // rejecting a >= width here keeps the documented band semantics exact
+    // (|ox| >= plane width would otherwise write past the row into the next
+    // row's accumulation state).
     int first_plane = 0;
     int last_plane = 0;
     if (d->channels == nss::ChannelMode::UV) {
