@@ -79,6 +79,12 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
 
+The first TWSC SVD-library milestone is opt-in and experimental. Set
+`-DNSS_ENABLE_SVD_LIBRARY=ON` only with an LP64 LAPACKE/DGESDD provider; CMake
+probes the header, symbols, `lapack_int` width and column-major ABI, then builds
+the isolated `test_twsc_svd_library` target. Automatic TWSC dispatch remains
+disabled while provider threading and resource bounds are being qualified.
+
 Install `libnss.so` into the VapourSynth plugin directory.
 
 Fresh x86 builds also enable `NSS_AVX2_DEFAULTS=ON`, with configuration-scoped

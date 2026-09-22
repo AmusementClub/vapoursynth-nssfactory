@@ -67,6 +67,13 @@ target_compile_options(test_twsc_svd_validation PRIVATE -ffp-contract=off)
 target_link_libraries(test_twsc_svd_validation PRIVATE nss_cpu)
 add_test(NAME test_twsc_svd_validation COMMAND test_twsc_svd_validation)
 
+if(NSS_ENABLE_SVD_LIBRARY)
+  add_executable(test_twsc_svd_library twsc_svd_library_test.cpp)
+  target_include_directories(test_twsc_svd_library PRIVATE "${PROJECT_SOURCE_DIR}/src")
+  target_link_libraries(test_twsc_svd_library PRIVATE nss_svd_library nss_cpu)
+  add_test(NAME test_twsc_svd_library COMMAND test_twsc_svd_library)
+endif()
+
 add_executable(test_svd test_svd.cpp)
 target_link_libraries(test_svd PRIVATE nss_cpu)
 target_include_directories(test_svd PRIVATE "${PROJECT_SOURCE_DIR}/include")

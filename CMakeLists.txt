@@ -87,6 +87,9 @@ option(NSS_BM_KERNEL_LAB "Build isolated BM3D SSD/DCT microkernel experiments" O
 option(NSS_LSSC_EXPLORER "Build the isolated paper-track LSSC exploration library" OFF)
 option(NSS_TWSC_MIDGROUP_BATCH "Enable the FP64 G24/G32 TWSC batch path" ${NSS_HWY_X86})
 option(NSS_GEMM_MULTI_ACCUM "Enable the opt-in exact GEMM multi-accumulator candidate" OFF)
+option(NSS_ENABLE_SVD_LIBRARY "Build the opt-in LAPACKE DGESDD TWSC adapter" OFF)
+set(NSS_SVD_LIBRARY_PROVIDER_VERSION "unknown" CACHE STRING
+  "Provider version recorded in the optional SVD manifest")
 add_compile_definitions(NSS_TWSC_MIDGROUP_BATCH=$<BOOL:${NSS_TWSC_MIDGROUP_BATCH}>
                         NSS_GEMM_MULTI_ACCUM=$<BOOL:${NSS_GEMM_MULTI_ACCUM}>)
 
@@ -200,6 +203,7 @@ file(GLOB NSS_CPU_SECOND_WAVE CONFIGURE_DEPENDS
   src/cpu/lssc/*.cpp
 )
 list(FILTER NSS_CPU_SECOND_WAVE EXCLUDE REGEX "/lssc/gemm_sme\\.cpp$")
+list(FILTER NSS_CPU_SECOND_WAVE EXCLUDE REGEX "/twsc/svd_library\\.cpp$")
 option(NSS_ENABLE_LSSC_SME "Build the optional LSSC SME matrix leaf when supported" OFF)
 set(NSS_HAVE_LSSC_SME 0)
 if(NSS_ENABLE_LSSC_SME AND APPLE AND NSS_HWY_ARM64 AND
@@ -225,6 +229,70 @@ message(STATUS "NSSFactory: optional LSSC SME leaf compiled=${NSS_HAVE_LSSC_SME}
 list(APPEND NSS_CPU_SOURCES ${NSS_CPU_SECOND_WAVE})
 list(APPEND NSS_CPU_SOURCES src/cpu/nlm/distance_horizontal.cpp)
 list(APPEND NSS_CPU_SOURCES src/cpu/wnnm/svd_batch8_u_compat.cpp)
+
+# The LAPACKE adapter is intentionally a separate target during the first
+# milestone. The default graph never sees provider headers or symbols, and
+# unrelated nss_cpu consumers do not inherit an OpenBLAS/LAPACK link.
+if(NSS_ENABLE_SVD_LIBRARY)
+  if(NOT NSS_HWY_X86)
+    message(FATAL_ERROR "NSS_ENABLE_SVD_LIBRARY is initially supported only on x86; ARM/NEON remains provider-off")
+  endif()
+  include(CheckCXXSourceCompiles)
+  include(CMakePushCheckState)
+  find_path(NSS_SVD_LAPACKE_INCLUDE_DIR lapacke.h)
+  find_library(NSS_SVD_LAPACKE_LIBRARY NAMES lapacke liblapacke)
+  find_library(NSS_SVD_LAPACK_LIBRARY NAMES openblas lapack libopenblas)
+  find_library(NSS_SVD_BLAS_LIBRARY NAMES openblas blas libopenblas)
+  if(NOT NSS_SVD_LAPACKE_INCLUDE_DIR OR NOT NSS_SVD_LAPACKE_LIBRARY OR
+     NOT NSS_SVD_LAPACK_LIBRARY OR NOT NSS_SVD_BLAS_LIBRARY)
+    message(FATAL_ERROR
+      "NSS_ENABLE_SVD_LIBRARY=ON requires an LP64 LAPACKE provider (lapacke.h, "
+      "liblapacke, LAPACK/OpenBLAS, and BLAS/OpenBLAS libraries)")
+  endif()
+  cmake_push_check_state(RESET)
+  set(CMAKE_REQUIRED_INCLUDES "${NSS_SVD_LAPACKE_INCLUDE_DIR}")
+  set(CMAKE_REQUIRED_LIBRARIES "${NSS_SVD_LAPACKE_LIBRARY};${NSS_SVD_LAPACK_LIBRARY};${NSS_SVD_BLAS_LIBRARY}")
+  check_cxx_source_compiles([=[
+    #include <lapacke.h>
+    #include <type_traits>
+    static_assert(sizeof(lapack_int) == 4, "the SVD adapter requires LP64 lapack_int");
+    int main() {
+      double a[1] = {0}, s[1] = {0}, u[1] = {0}, vt[1] = {0}, work[1] = {0};
+      lapack_int iwork[8] = {}, info = LAPACKE_dgesdd_work(
+        LAPACK_COL_MAJOR, 'S', 1, 1, a, 1, s, u, 1, vt, 1, work, 1, iwork);
+      return static_cast<int>(info);
+    }
+  ]=] NSS_SVD_LAPACKE_ABI_OK)
+  cmake_pop_check_state()
+  if(NOT NSS_SVD_LAPACKE_ABI_OK)
+    message(FATAL_ERROR "The selected LAPACKE provider failed the LP64 DGESDD column-major ABI probe")
+  endif()
+  add_library(nss_svd_provider INTERFACE)
+  target_include_directories(nss_svd_provider INTERFACE "${NSS_SVD_LAPACKE_INCLUDE_DIR}")
+  target_link_libraries(nss_svd_provider INTERFACE
+    "${NSS_SVD_LAPACKE_LIBRARY}" "${NSS_SVD_LAPACK_LIBRARY}" "${NSS_SVD_BLAS_LIBRARY}")
+  add_library(nss_svd_library STATIC src/cpu/twsc/svd_library.cpp)
+  target_include_directories(nss_svd_library
+    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_link_libraries(nss_svd_library PRIVATE nss_svd_provider)
+  target_compile_definitions(nss_svd_library PRIVATE NSS_ENABLE_SVD_LIBRARY=1)
+  set_source_files_properties(src/cpu/twsc/svd_library.cpp PROPERTIES
+    COMPILE_OPTIONS "-O3;-fno-fast-math;-ffp-contract=off")
+
+  get_filename_component(NSS_SVD_LAPACKE_LIBRARY_REAL "${NSS_SVD_LAPACKE_LIBRARY}" REALPATH)
+  file(SHA256 "${NSS_SVD_LAPACKE_LIBRARY_REAL}" NSS_SVD_LAPACKE_LIBRARY_SHA256)
+  file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/nss-svd-library-manifest.json"
+    "{\n"
+    "  \"provider\": \"LAPACKE/DGESDD\",\n"
+    "  \"provider_version\": \"${NSS_SVD_LIBRARY_PROVIDER_VERSION}\",\n"
+    "  \"lapack_int_bytes\": 4,\n"
+    "  \"lapacke_library\": \"${NSS_SVD_LAPACKE_LIBRARY_REAL}\",\n"
+    "  \"lapacke_sha256\": \"${NSS_SVD_LAPACKE_LIBRARY_SHA256}\",\n"
+    "  \"thread_policy\": \"provider configuration must be single-threaded with locking\",\n"
+    "  \"target_isa\": \"${NSS_HWY_TARGET_MODE}\",\n"
+    "  \"automatic_dispatch\": false\n"
+    "}\n")
+endif()
 
 add_library(nss_svd_qreplay STATIC src/cpu/wnnm/svd_batch8_qreplay.cpp)
 add_library(nss_cpu STATIC ${NSS_CPU_SOURCES})

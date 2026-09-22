@@ -29,6 +29,10 @@ struct TwscSolverStats {
 struct TwscWorkspace {
     ResourceVector<float> small, input, qr32, aux32;
     ResourceVector<double> qr64, aux64;
+    // Optional provider-owned SVD storage. These remain empty in the default
+    // build and are charged through the caller's Workspace account when used.
+    ResourceVector<double> library_matrix, library_work;
+    ResourceVector<int> library_iwork;
     ResourceVector<double> centered, mean, dictionary, singular, vt, scratch;
     ResourceVector<double> atoms, gram, eigenvectors, eigenvalues, data, coefficients;
     ResourceVector<double> auxiliary, dual, previous, rhs, projected, solution;
