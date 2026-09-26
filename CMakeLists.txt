@@ -385,6 +385,13 @@ set(NSS_FINITE_HOT_COMPILE_OPTIONS ${NSS_HOT_COMPILE_OPTIONS})
 list(APPEND NSS_FINITE_HOT_COMPILE_OPTIONS -fno-finite-math-only)
 set(NSS_MATCHER_COMPILE_OPTIONS ${NSS_FINITE_HOT_COMPILE_OPTIONS})
 list(APPEND NSS_MATCHER_COMPILE_OPTIONS -fvisibility=hidden)
+# LSSC k-means step kernels compare computed distances like the matchers do;
+# keep IEEE comparison semantics (-fno-finite-math-only) while the SSD
+# arithmetic itself matches the vec.cpp HOT class bit-for-bit.
+set_source_files_properties(
+  src/cpu/lssc/cluster_ssd.cpp
+  PROPERTIES COMPILE_OPTIONS "${NSS_FINITE_HOT_COMPILE_OPTIONS}"
+)
 set_source_files_properties(
   src/cpu/nlh/match16.cpp
   PROPERTIES COMPILE_OPTIONS "${NSS_MATCHER_COMPILE_OPTIONS}"

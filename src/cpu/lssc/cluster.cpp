@@ -1,27 +1,13 @@
 #include "nss/resources.hpp"
 #include "nss/cpu_lssc.hpp"
 #include "nss/cpu_common.hpp"
+#include "cpu/lssc/cluster_ssd.hpp"
 
 #include <algorithm>
 #include <cstring>
 #include <vector>
 
 namespace nss {
-namespace {
-
-float patch_ssd(const float* a, const float* b, int m, int lda_a, int lda_b) {
-    if (lda_a == 1 && lda_b == 1) {
-        return ssd_vec(a, b, m);
-    }
-    float s = 0.f;
-    for (int i = 0; i < m; ++i) {
-        const float d = a[i * lda_a] - b[i * lda_b];
-        s += d * d;
-    }
-    return s;
-}
-
-}  // namespace
 
 void lssc_cluster(const float* patches, int m, int n, int lda, int nclusters, int* assign, int* counts) {
     if (!patches || !assign || m < 1 || n < 1 || lda < m) {
@@ -81,33 +67,15 @@ void lssc_cluster_workspace(const float* patches, int m, int n, int lda, int ncl
 
     constexpr int kIters = 8;
     for (int iter = 0; iter < kIters; ++iter) {
-        bool changed = false;
-        for (int j = 0; j < n; ++j) {
-            const float* pj = patches + static_cast<std::size_t>(j) * static_cast<std::size_t>(lda);
-            int best = 0;
-            float best_d = patch_ssd(pj, cent, m, 1, 1);
-            for (int c = 1; c < k; ++c) {
-                const float d = patch_ssd(pj, cent + static_cast<std::size_t>(c) * static_cast<std::size_t>(m), m, 1, 1);
-                if (d < best_d) {
-                    best_d = d;
-                    best = c;
-                }
-            }
-            if (iter == 0 || assign[j] != best) {
-                changed = true;
-            }
-            assign[j] = best;
-        }
+        // Batched step kernels: each per-pair SSD keeps the exact SsdVec
+        // reduction (see cluster_ssd.hpp), so assignments, the changed flag,
+        // and steal decisions are bit-identical to the reference per-pair
+        // loop; the Highway target is resolved once per step, not per pair.
+        bool changed = lssc_cluster_assign_step(patches, m, n, lda, cent, k, iter == 0 ? 1 : 0, assign) != 0;
 
         std::fill(cent, cent + static_cast<std::size_t>(k) * static_cast<std::size_t>(m), 0.f);
         std::fill(acc, acc + k, 0);
-        for (int j = 0; j < n; ++j) {
-            const int c = assign[j];
-            float* cj = cent + static_cast<std::size_t>(c) * static_cast<std::size_t>(m);
-            const float* pj = patches + static_cast<std::size_t>(j) * static_cast<std::size_t>(lda);
-            axpy_n(cj, pj, 1.f, m);
-            ++acc[static_cast<std::size_t>(c)];
-        }
+        lssc_cluster_accum_step(patches, m, n, lda, assign, cent, acc);
         for (int c = 0; c < k; ++c) {
             if (acc[c] < 1) {
                 continue;
@@ -120,21 +88,7 @@ void lssc_cluster_workspace(const float* patches, int m, int n, int lda, int ncl
             if (acc[static_cast<std::size_t>(c)] > 0) {
                 continue;
             }
-            int steal = -1;
-            float steal_d = -1.f;
-            for (int j = 0; j < n; ++j) {
-                const int oc = assign[j];
-                if (acc[oc] <= 1) {
-                    continue;
-                }
-                const float* pj = patches + static_cast<std::size_t>(j) * static_cast<std::size_t>(lda);
-                const float d =
-                    patch_ssd(pj, cent + static_cast<std::size_t>(oc) * static_cast<std::size_t>(m), m, 1, 1);
-                if (d > steal_d) {
-                    steal_d = d;
-                    steal = j;
-                }
-            }
+            int steal = lssc_cluster_farthest(patches, m, n, lda, assign, acc, cent);
             if (steal < 0) {
                 steal = c % n;
             }
