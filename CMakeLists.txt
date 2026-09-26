@@ -1,6 +1,13 @@
 cmake_minimum_required(VERSION 3.24)
 project(nssfactory LANGUAGES CXX)
 
+# Single-config generators default to Release: the hot driver TUs carry no
+# per-file -O3, so a bare `cmake -B build` must not produce an -O0 library.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+  message(STATUS "NSSFactory: CMAKE_BUILD_TYPE unset, defaulting to Release")
+endif()
+
 set(NSS_HWY_X86 FALSE)
 set(NSS_HWY_ARM64 FALSE)
 # A single explicit macOS architecture overrides the native host architecture.
@@ -194,7 +201,7 @@ set(NSS_CPU_SOURCES
   src/host/avx2.cpp
   src/host/workspace.cpp
 )
-file(GLOB NSS_CPU_SECOND_WAVE CONFIGURE_DEPENDS
+file(GLOB NSS_CPU_SECOND_WAVE CONFIGURE_DEPENDS RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}
   src/cpu/common/*.cpp
   src/cpu/mcwnnm/*.cpp
   src/cpu/twsc/*.cpp
@@ -296,6 +303,12 @@ endif()
 
 add_library(nss_svd_qreplay STATIC src/cpu/wnnm/svd_batch8_qreplay.cpp)
 add_library(nss_cpu STATIC ${NSS_CPU_SOURCES})
+# The plugin's public surface is the VapourSynth entry point only; CPU
+# kernels must not leak as interposable dynamic symbols from libnss. Static
+# archives keep these symbols usable to statically linked test executables.
+set_target_properties(nss_cpu nss_svd_qreplay PROPERTIES
+  CXX_VISIBILITY_PRESET hidden
+  VISIBILITY_INLINES_HIDDEN ON)
 option(NSS_ALIGNMENT_GENERIC "Use general TWSC/NLH math and distance controls for same-model validation" OFF)
 target_compile_definitions(nss_cpu PRIVATE NSS_ALIGNMENT_GENERIC=$<BOOL:${NSS_ALIGNMENT_GENERIC}>)
 target_compile_definitions(nss_cpu PRIVATE NSS_HAVE_LSSC_SME=${NSS_HAVE_LSSC_SME})
@@ -354,11 +367,31 @@ list(APPEND NSS_HOT_COMPILE_OPTIONS ${NSS_CPU_ISA_OPTIONS})
 # or enable floating-point traps; both options avoid the largest costs of the
 # default strict mode without implying -ffinite-math-only.
 set(NSS_SAFE_COMPILE_OPTIONS -O3 -fno-math-errno -fno-trapping-math)
-set_source_files_properties(src/cpu/bm/match_joint.cpp src/cpu/common/gemm_precise.cpp
-  src/cpu/twsc/linalg.cpp src/cpu/twsc/svd_batch.cpp src/cpu/nlh/fused.cpp
-  PROPERTIES COMPILE_OPTIONS "-O3;-fno-fast-math;-ffp-contract=off")
 list(APPEND NSS_SAFE_COMPILE_OPTIONS ${NSS_CPU_ISA_OPTIONS})
-set_source_files_properties(
+set(NSS_FINITE_HOT_COMPILE_OPTIONS ${NSS_HOT_COMPILE_OPTIONS})
+list(APPEND NSS_FINITE_HOT_COMPILE_OPTIONS -fno-finite-math-only)
+set(NSS_MATCHER_COMPILE_OPTIONS ${NSS_FINITE_HOT_COMPILE_OPTIONS})
+list(APPEND NSS_MATCHER_COMPILE_OPTIONS -fvisibility=hidden)
+set(NSS_SAFE_HIDDEN_COMPILE_OPTIONS ${NSS_SAFE_COMPILE_OPTIONS})
+list(APPEND NSS_SAFE_HIDDEN_COMPILE_OPTIONS -fvisibility=hidden)
+set(NSS_HOT_HIDDEN_COMPILE_OPTIONS ${NSS_HOT_COMPILE_OPTIONS})
+list(APPEND NSS_HOT_HIDDEN_COMPILE_OPTIONS -fvisibility=hidden)
+
+# Flag-class membership is a whitelist: every CPU translation unit belongs to
+# exactly one class below, or to NSS_DEFAULT_CPU_SOURCES (plain target-level
+# options). The validation block after the class definitions turns a missing
+# or duplicate assignment into a configure-time error, so a new globbed TU
+# can never silently land in the default class.
+set(NSS_PINNED_SOURCES
+  src/cpu/bm/match_joint.cpp
+  src/cpu/common/gemm_precise.cpp
+  src/cpu/twsc/linalg.cpp
+  src/cpu/twsc/svd_batch.cpp
+  src/cpu/nlh/fused.cpp
+)
+set_source_files_properties(${NSS_PINNED_SOURCES}
+  PROPERTIES COMPILE_OPTIONS "-O3;-fno-fast-math;-ffp-contract=off")
+set(NSS_HOT_SOURCES
   src/cpu/nlm/nlm.cpp
   src/cpu/bm/ssd.cpp
   src/cpu/common/image_ssd_row.cpp
@@ -379,47 +412,102 @@ set_source_files_properties(
   src/cpu/nlh/haar.cpp
   src/cpu/nlh/pixel_match.cpp
   src/cpu/mcwnnm/match_nch.cpp
-  PROPERTIES COMPILE_OPTIONS "${NSS_HOT_COMPILE_OPTIONS}"
 )
-set(NSS_FINITE_HOT_COMPILE_OPTIONS ${NSS_HOT_COMPILE_OPTIONS})
-list(APPEND NSS_FINITE_HOT_COMPILE_OPTIONS -fno-finite-math-only)
-set(NSS_MATCHER_COMPILE_OPTIONS ${NSS_FINITE_HOT_COMPILE_OPTIONS})
-list(APPEND NSS_MATCHER_COMPILE_OPTIONS -fvisibility=hidden)
+set_source_files_properties(${NSS_HOT_SOURCES}
+  PROPERTIES COMPILE_OPTIONS "${NSS_HOT_COMPILE_OPTIONS}")
 # LSSC k-means step kernels compare computed distances like the matchers do;
 # keep IEEE comparison semantics (-fno-finite-math-only) while the SSD
 # arithmetic itself matches the vec.cpp HOT class bit-for-bit.
-set_source_files_properties(
+set(NSS_FINITE_HOT_SOURCES
   src/cpu/lssc/cluster_ssd.cpp
-  PROPERTIES COMPILE_OPTIONS "${NSS_FINITE_HOT_COMPILE_OPTIONS}"
 )
-set_source_files_properties(
+set_source_files_properties(${NSS_FINITE_HOT_SOURCES}
+  PROPERTIES COMPILE_OPTIONS "${NSS_FINITE_HOT_COMPILE_OPTIONS}")
+set(NSS_MATCHER_SOURCES
   src/cpu/nlh/match16.cpp
-  PROPERTIES COMPILE_OPTIONS "${NSS_MATCHER_COMPILE_OPTIONS}"
-)
-set_source_files_properties(
   src/cpu/nlm/distance_horizontal.cpp
-  PROPERTIES COMPILE_OPTIONS "${NSS_MATCHER_COMPILE_OPTIONS}"
 )
-set(NSS_SAFE_HIDDEN_COMPILE_OPTIONS ${NSS_SAFE_COMPILE_OPTIONS})
-list(APPEND NSS_SAFE_HIDDEN_COMPILE_OPTIONS -fvisibility=hidden)
-set_source_files_properties(
+set_source_files_properties(${NSS_MATCHER_SOURCES}
+  PROPERTIES COMPILE_OPTIONS "${NSS_MATCHER_COMPILE_OPTIONS}")
+set(NSS_SAFE_HIDDEN_SOURCES
   src/cpu/wnnm/svd_batch8_u_compat.cpp
-  PROPERTIES COMPILE_OPTIONS "${NSS_SAFE_HIDDEN_COMPILE_OPTIONS}"
 )
-set(NSS_HOT_HIDDEN_COMPILE_OPTIONS ${NSS_HOT_COMPILE_OPTIONS})
-list(APPEND NSS_HOT_HIDDEN_COMPILE_OPTIONS -fvisibility=hidden)
-set_source_files_properties(
+set_source_files_properties(${NSS_SAFE_HIDDEN_SOURCES}
+  PROPERTIES COMPILE_OPTIONS "${NSS_SAFE_HIDDEN_COMPILE_OPTIONS}")
+set(NSS_HOT_HIDDEN_SOURCES
   src/cpu/wnnm/svd_batch8_qreplay.cpp
-  PROPERTIES COMPILE_OPTIONS "${NSS_HOT_HIDDEN_COMPILE_OPTIONS}"
 )
-set_source_files_properties(
+set_source_files_properties(${NSS_HOT_HIDDEN_SOURCES}
+  PROPERTIES COMPILE_OPTIONS "${NSS_HOT_HIDDEN_COMPILE_OPTIONS}")
+set(NSS_SAFE_SOURCES
   src/cpu/common/soft_threshold.cpp
   src/cpu/common/admm_x.cpp
   src/cpu/mcwnnm/admm.cpp
   src/cpu/ncsr/centralize.cpp
   src/cpu/lssc/reconstruct.cpp
-  PROPERTIES COMPILE_OPTIONS "${NSS_SAFE_COMPILE_OPTIONS}"
 )
+set_source_files_properties(${NSS_SAFE_SOURCES}
+  PROPERTIES COMPILE_OPTIONS "${NSS_SAFE_COMPILE_OPTIONS}")
+
+# CPU TUs deliberately built with plain target-level options (no per-file
+# flags). Keep this list explicit so the default class is a decision, not a
+# fallback.
+set(NSS_DEFAULT_CPU_SOURCES
+  src/cpu/backend.cpp
+  src/cpu/batch.cpp
+  src/cpu/bm/match.cpp
+  src/cpu/wnnm/svd_tiny.cpp
+  src/cpu/wnnm/shrink.cpp
+  src/cpu/common/image.cpp
+  src/cpu/common/pack_nch.cpp
+  src/cpu/common/sv_shrink.cpp
+  src/cpu/mcwnnm/filter_group.cpp
+  src/cpu/twsc/batch_full.cpp
+  src/cpu/twsc/full.cpp
+  src/cpu/twsc/image.cpp
+  src/cpu/twsc/math.cpp
+  src/cpu/nlh/full.cpp
+  src/cpu/nlh/image.cpp
+  src/cpu/ncsr/hq.cpp
+  src/cpu/lssc/cluster.cpp
+  src/cpu/lssc/dict.cpp
+  src/cpu/lssc/gemm.cpp
+  src/cpu/lssc/omp.cpp
+)
+
+# Whitelist validation. gemm_sme.cpp carries its own conditional options and
+# svd_batch8_qreplay.cpp builds into nss_svd_qreplay; host leaves are not CPU
+# kernels.
+set(NSS_CLASSIFIED_CPU_SOURCES
+  ${NSS_PINNED_SOURCES} ${NSS_HOT_SOURCES} ${NSS_FINITE_HOT_SOURCES}
+  ${NSS_MATCHER_SOURCES} ${NSS_SAFE_HIDDEN_SOURCES} ${NSS_HOT_HIDDEN_SOURCES}
+  ${NSS_SAFE_SOURCES})
+if(NSS_HAVE_LSSC_SME)
+  list(APPEND NSS_CLASSIFIED_CPU_SOURCES src/cpu/lssc/gemm_sme.cpp)
+endif()
+set(_nss_class_dedup ${NSS_CLASSIFIED_CPU_SOURCES})
+list(REMOVE_DUPLICATES _nss_class_dedup)
+list(LENGTH NSS_CLASSIFIED_CPU_SOURCES _nss_class_count)
+list(LENGTH _nss_class_dedup _nss_class_dedup_count)
+if(NOT _nss_class_count EQUAL _nss_class_dedup_count)
+  message(FATAL_ERROR "CPU source listed in more than one flag class")
+endif()
+set(_nss_unclassified ${NSS_CPU_SOURCES})
+list(REMOVE_ITEM _nss_unclassified
+  ${NSS_CLASSIFIED_CPU_SOURCES} ${NSS_DEFAULT_CPU_SOURCES}
+  src/host/avx2.cpp src/host/workspace.cpp)
+if(_nss_unclassified)
+  message(FATAL_ERROR "CPU sources without a flag-class assignment (add to a class or NSS_DEFAULT_CPU_SOURCES): ${_nss_unclassified}")
+endif()
+set(_nss_stale ${NSS_CLASSIFIED_CPU_SOURCES} ${NSS_DEFAULT_CPU_SOURCES})
+list(REMOVE_ITEM _nss_stale ${NSS_CPU_SOURCES} src/cpu/wnnm/svd_batch8_qreplay.cpp)
+if(_nss_stale)
+  message(FATAL_ERROR "flag-class entries not present in nss_cpu sources: ${_nss_stale}")
+endif()
+set(_nss_finite_hot_expected ${NSS_HOT_COMPILE_OPTIONS} -fno-finite-math-only)
+if(NOT "${NSS_FINITE_HOT_COMPILE_OPTIONS}" STREQUAL "${_nss_finite_hot_expected}")
+  message(FATAL_ERROR "NSS_FINITE_HOT_COMPILE_OPTIONS must be exactly NSS_HOT_COMPILE_OPTIONS plus -fno-finite-math-only")
+endif()
 if(VapourSynth_FOUND)
   file(GLOB NSS_HOST_FILTERS CONFIGURE_DEPENDS src/host/filter_*.cpp)
   add_library(nss SHARED
