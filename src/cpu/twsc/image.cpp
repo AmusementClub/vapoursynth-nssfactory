@@ -9,13 +9,9 @@ ImageContributions twsc_image(const ImageSequence& input, const ImageSequence* r
     validate(input, reference, planes, center);
     if (o.lambda2 < 0 || !std::isfinite(o.lambda2) || o.delta < 0 || o.delta > 1 || !std::isfinite(o.delta))
         throw std::invalid_argument("nss.TWSC: invalid lambda2/delta");
-    double sigma2 = 0;
-    int active = 0;
-    for (int c = 0; c < planes; ++c) if (input[center].sigma[c] > 0) { const double s = image_sigma_units(input[center], c); sigma2 += s * s; ++active; }
-    const double sigma = active ? std::sqrt(sigma2 / active) : 0;
-    const int block = o.block ? o.block : sigma <= 20 ? 7 : sigma <= 60 ? 8 : 9;
-    const int group = o.group ? o.group : sigma <= 20 ? 70 : sigma <= 40 ? 90 : sigma <= 60 ? 120 : 140;
-    const int iterations = o.iterations ? o.iterations : sigma <= 20 ? 8 : sigma <= 60 ? 12 : 14;
+    const int block = o.block;
+    const int group = o.group;
+    const int iterations = o.iterations;
     if (block < 1 || block > 16 || group < 1 || group > 256 || iterations < 1 || iterations > 64 || o.step < 1 || o.step > block)
         throw std::invalid_argument("nss.TWSC: invalid resolved block/group/step/iters");
     ImageSearch search{block, o.step, group, o.window, o.radius, o.ps_num, o.ps_range};

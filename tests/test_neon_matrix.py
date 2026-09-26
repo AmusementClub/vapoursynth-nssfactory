@@ -38,7 +38,7 @@ def cases():
         yield dict(algorithm="TWSC", block=block, group=group, radius=radius, format="RGBS")
     for fmt, channels in (("GRAYS", "Y"), ("RGBS", "RGB"), ("RGBS", "AUTO"),
                           ("YUV444PS", "YUV"), ("YUV420PS", "UV"), ("YUV420PS", "Y")):
-        for radius, wref in itertools.product((0, 1, 2), (0., 1., .5)):
+        for radius, wref in itertools.product((0, 1, 2), (.25, 1., .5)):
             yield dict(algorithm="NLM", radius=radius, format=fmt,
                        extra=dict(channels=channels, wmode=0, wref=wref, h=7., a=2, s=2), reference=True)
     for name in ("WNNM", "MCWNNM"):

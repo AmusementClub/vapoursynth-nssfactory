@@ -355,7 +355,7 @@ list(APPEND NSS_HOT_COMPILE_OPTIONS ${NSS_CPU_ISA_OPTIONS})
 # default strict mode without implying -ffinite-math-only.
 set(NSS_SAFE_COMPILE_OPTIONS -O3 -fno-math-errno -fno-trapping-math)
 set_source_files_properties(src/cpu/bm/match_joint.cpp src/cpu/common/gemm_precise.cpp
-  src/cpu/twsc/linalg.cpp src/cpu/twsc/svd_batch.cpp
+  src/cpu/twsc/linalg.cpp src/cpu/twsc/svd_batch.cpp src/cpu/nlh/fused.cpp
   PROPERTIES COMPILE_OPTIONS "-O3;-fno-fast-math;-ffp-contract=off")
 list(APPEND NSS_SAFE_COMPILE_OPTIONS ${NSS_CPU_ISA_OPTIONS})
 set_source_files_properties(

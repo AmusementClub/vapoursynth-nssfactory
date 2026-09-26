@@ -155,9 +155,9 @@ class Suite:
     def parameters(self):
         core=self.core;core.num_threads=1
         source,_=make_clip(core,vs.GRAYS,frames=1,width=16,height=16)
-        for sigma,block,group in [(3,7,70),(20,7,70),(20+1e-9,8,90),(20.01,8,90),(40,8,90),(40+1e-9,8,120),(40.01,8,120),(60,8,120),(60+1e-9,9,140),(60.01,9,140),(100,9,140)]:
+        for sigma in (3,20,20+1e-9,40,40+1e-9,60,60+1e-9,100):
             _,props=values(core.nss.TWSC(source,sigma=sigma,iters=1,block_step=7,search_window=1),0)
-            assert props['_NSSBlockSize']==block and props['_NSSGroupSize']==group,(sigma,props)
+            assert props['_NSSBlockSize']==8 and props['_NSSGroupSize']==90,(sigma,props)
         calibration=dict(lambda_basic=.6,hard_strength=1.,wiener_iters=2,wiener_sigma_scale=.08)
         a,props=values(core.nss.NLH(source,sigma=3,block_size=4,block_step=4,group_size=8,q=2,search_window=5,basic_iters=1,**calibration),0)
         b,_=values(core.nss.NLH(source,sigma=3,block_size=[4,4],block_step=[4,4],group_size=[8,8],q=[2,2],bm_range=2,basic_iters=1,**calibration),0)
@@ -184,6 +184,25 @@ class Suite:
         for name,extra in [('TWSC',dict(estimate_sigma=1,iters=1)),('NLH',dict(basic_iters=1))]:
             _,props=values(getattr(core.nss,name)(source,rclip=guide,block_size=4,block_step=4,search_window=5,**extra),0)
             np.testing.assert_allclose(props['_NSSSigma'],expected,rtol=1e-6,atol=1e-6)
+
+    def twsc_fixed_geometry(self):
+        core=self.core
+        source=core.std.BlankClip(width=16,height=16,format=vs.GRAYS,length=1,color=[.3])
+        # The default geometry is stable across sigma levels and can be checked
+        # before requesting any source frame.
+        for sigma in (3,20,20+1e-9,40,60,60+1e-9,100):
+            node=core.nss.TWSC(source,sigma=sigma,ps_num=90)
+            assert node is not None
+            try: core.nss.TWSC(source,sigma=sigma,ps_num=91)
+            except vs.Error as error: assert 'ps_num exceeds resolved group_size' in str(error),error
+            else: raise AssertionError((sigma,91,'must fail during creation'))
+        try: core.nss.TWSC(source,ps_num=91)
+        except vs.Error as error: assert 'ps_num exceeds resolved group_size' in str(error),error
+        else: raise AssertionError('default group must be validated during creation')
+        assert core.nss.TWSC(source,sigma=3,group_size=96,ps_num=96) is not None
+        try: core.nss.TWSC(source,estimate_sigma=1,ps_num=91)
+        except vs.Error as error: assert 'ps_num exceeds resolved group_size' in str(error),error
+        else: raise AssertionError('estimated sigma must use the fixed default group')
 
     def invalid(self):
         core=self.core;source,_=make_clip(core,vs.GRAYS,frames=1,width=16,height=16)
@@ -226,7 +245,8 @@ class Suite:
             np.testing.assert_array_equal(result[0],0)
 
     def run(self):
-        self.case('parameters',self.parameters);self.case('invalid_and_version',self.invalid);self.case('extended_shapes',self.extended)
+        self.case('parameters',self.parameters);self.case('twsc_fixed_geometry',self.twsc_fixed_geometry)
+        self.case('invalid_and_version',self.invalid);self.case('extended_shapes',self.extended)
         for name,radius,reference in itertools.product(('TWSC','NLH'),(0,1),(False,True)):
             label=f'oracle_{name}_r{radius}_ref{reference}'
             self.case(label,lambda name=name,radius=radius,reference=reference:self.oracle(name,radius,reference))

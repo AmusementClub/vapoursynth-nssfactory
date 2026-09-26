@@ -34,12 +34,25 @@ def worker(plugin, config):
         frames = (max(frames, chunk) + chunk - 1) // chunk * chunk
     length = first + frames + 4 * radius + 1
     w, h = config['size']
-    raw = np.fromfile(config['sample'], np.uint8).reshape(1080, 1920)
-    # Explicit nearest-neighbor sampling keeps the source dependency-free.
-    base = raw[np.arange(h) * 1080 // h][:, np.arange(w) * 1920 // w].astype(np.float32) / np.float32(255)
-    planes = 3 if algorithm == 'mcwnnm' else 1
+    sample_format = config.get('sample_format', 'gray8')
+    if sample_format == 'planar-f32':
+        planes = config['channels']
+        if planes not in (1, 3) or (algorithm == 'mcwnnm' and planes != 3) or config.get('motion'):
+            raise ValueError('saved planar inputs require supported Gray/RGB spatial geometry')
+        saved = np.fromfile(config['sample'], dtype='<f4').reshape(planes, h, w)
+        if not np.isfinite(saved).all():
+            raise ValueError('saved planar input must be finite')
+    elif sample_format == 'gray8':
+        raw = np.fromfile(config['sample'], np.uint8).reshape(1080, 1920)
+        # Explicit nearest-neighbor sampling keeps the source dependency-free.
+        base = raw[np.arange(h) * 1080 // h][:, np.arange(w) * 1920 // w].astype(np.float32) / np.float32(255)
+        planes = 3 if algorithm == 'mcwnnm' else 1
+    else:
+        raise ValueError('unknown sample_format')
     motion = config.get('motion', False)
     def payload(n):
+        if sample_format == 'planar-f32':
+            return saved
         clean = base[:, np.clip(np.arange(w) - (n % 7 - 3) * 2, 0, w - 1)] if motion else base
         rng = np.random.RandomState(42 + n if motion else 42)
         return np.stack([clean + rng.randn(h, w).astype(np.float32) * np.float32(3 / 255) for _ in range(planes)])
@@ -106,6 +119,15 @@ def worker(plugin, config):
                 rolling_chunk=chunk, access=config.get('access', 'sequential'),
                 sha256=digest.hexdigest(), input_sha256=hashlib.sha256(payload(first).tobytes()).hexdigest(),
                 peak_rss_kib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024 if platform.system() == 'Darwin' else 1))
+    if sample_format == 'planar-f32':
+        result['input_policy'] = 'saved planar float input; no resize or added noise'
+    if config.get('_resource_props'):
+        # Read existing plugin counters after timing; no instrumented kernel.
+        # A temporal aggregate's properties describe that final node.
+        result['resource_props'] = {
+            key: value for key, value in outputs[-1].props.items()
+            if key.startswith('_NSS') and isinstance(value, (int, float, list))
+        }
     if frame_times is not None:
         result['frame_ms'] = frame_times
     if cpu_before is not None:
@@ -113,6 +135,7 @@ def worker(plugin, config):
         total = sum(ticks[:8])
         result['timed_environment'] = dict(cpu1_idle=ticks[3] / total if total else None,
                                           cpu1_total_ticks=total,
+                                          cpu1_steal_ticks=cpu_after['cpu1'][7] - cpu_before['cpu1'][7],
                                           cpu0_steal_ticks=cpu_after['cpu0'][7] - cpu_before['cpu0'][7])
     return result
 

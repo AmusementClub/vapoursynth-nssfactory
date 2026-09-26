@@ -201,7 +201,7 @@ void PixelMatch(const float* group, int m, int n, int lda, int q, int* idx) {
         // Keep the column-major upper-triangle SSD; defer top-q so each row
         // selects from a dense distance row instead of updating two heaps
         // per pair. Ties keep the lowest index, matching better().
-        std::array<float, kSelM * kSelM> dist{};
+        std::array<float, kSelM * kSelM> dist;
         for (int r = 0; r < m; ++r) {
             ssd_from(r, r + 1);
             dist[static_cast<std::size_t>(r) * static_cast<std::size_t>(m) + static_cast<std::size_t>(r)] = 0.f;
@@ -211,17 +211,11 @@ void PixelMatch(const float* group, int m, int n, int lda, int q, int* idx) {
                 dist[static_cast<std::size_t>(s) * static_cast<std::size_t>(m) + static_cast<std::size_t>(r)] = value;
             }
         }
-        std::array<float, kSelM> tmp{};
+        // Each row is consumed exactly once and select_row only mutates the
+        // row it selects from, so select directly on the matrix row — no
+        // per-row copy.
         for (int r = 0; r < m; ++r) {
-            float* row = dist.data() + static_cast<std::size_t>(r) * static_cast<std::size_t>(m);
-            int i = 0;
-            for (; i + N <= m; i += N) {
-                hn::StoreU(hn::LoadU(d, row + i), d, tmp.data() + i);
-            }
-            for (; i < m; ++i) {
-                tmp[static_cast<std::size_t>(i)] = row[i];
-            }
-            select_row(tmp.data(), r);
+            select_row(dist.data() + static_cast<std::size_t>(r) * static_cast<std::size_t>(m), r);
         }
     } else {
     // Compute only the upper triangle. Every distance is inserted into both

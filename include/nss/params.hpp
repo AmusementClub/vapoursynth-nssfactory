@@ -73,8 +73,13 @@ inline constexpr float kMcwnnmDefaultSigma = 3.0f;
 inline constexpr int kMcwnnmDefaultIters = 2;
 inline constexpr float kMcwnnmDefaultDelta = 0.1f;
 
-// TWSC/NLH v3 noise-dependent defaults live in cpu_image.hpp and the
-// image profile resolvers; no fixed small-group legacy preset remains.
+// TWSC uses one stable, balanced geometry by default. Sigma controls the
+// denoising strength; callers can override these fields independently when
+// trading quality for speed.
+inline constexpr int kTwscDefaultBlock = 8;
+inline constexpr int kTwscDefaultStep = 1;
+inline constexpr int kTwscDefaultGroup = 90;
+inline constexpr int kTwscDefaultIters = 12;
 
 inline constexpr int kNcsrDefaultBlock = 8;
 inline constexpr int kNcsrDefaultStep = 8;

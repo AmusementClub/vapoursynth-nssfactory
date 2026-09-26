@@ -28,8 +28,8 @@ struct ImageSearch {
     int radius = 0, ps_num = 2, ps_range = 4;
 };
 struct TwscImageOptions {
-    int block = 0, group = 0, iterations = 0;
-    int step = 1, window = 60, radius = 0, ps_num = 2, ps_range = 4;
+    int block = kTwscDefaultBlock, group = kTwscDefaultGroup, iterations = kTwscDefaultIters;
+    int step = kTwscDefaultStep, window = 60, radius = 0, ps_num = 2, ps_range = 4;
     double lambda2 = 1, delta = 0;
     TwscSolverOptions solver;
 };

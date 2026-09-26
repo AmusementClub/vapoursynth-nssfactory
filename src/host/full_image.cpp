@@ -53,14 +53,6 @@ std::array<int, 2> stage(const VSAPI* api, const VSMap* in, const char* key, int
     }
     return result;
 }
-void resolve_twsc(const FullImageData& d, const nss::ImageFrame& frame, int* block, int* group, int* iters) {
-    double total = 0; int active = 0;
-    for (int c = 0; c < d.vi.format.numPlanes; ++c) if (frame.sigma[c] > 0) { const double s = nss::image_sigma_units(frame,c); total += s * s; ++active; }
-    const double sigma = active ? std::sqrt(total / active) : 0;
-    block[0] = d.twsc.block ? d.twsc.block : sigma <= 20 ? 7 : sigma <= 60 ? 8 : 9;
-    group[0] = d.twsc.group ? d.twsc.group : sigma <= 20 ? 70 : sigma <= 40 ? 90 : sigma <= 60 ? 120 : 140;
-    iters[0] = d.twsc.iterations ? d.twsc.iterations : sigma <= 20 ? 8 : sigma <= 60 ? 12 : 14;
-}
 void diagnostic_ints(const VSAPI* api, VSMap* props, const char* key, const int* values, int count) {
     std::int64_t data[2]{values[0], count > 1 ? values[1] : 0};
     if (api->mapSetIntArray(props, key, data, count)) throw std::bad_alloc();
@@ -134,7 +126,11 @@ const VSFrame* VS_CC fullGetFrame(int n, int activation, void* instance, void**,
         std::copy_n(nlh_options.group.data(), 2, groups);
         iterations[0] = nlh_options.basic_iterations;
         iterations[1] = nlh_options.wiener_iterations;
-    } else resolve_twsc(d, input[center], blocks, groups, iterations);
+    } else {
+        blocks[0] = d.twsc.block;
+        groups[0] = d.twsc.group;
+        iterations[0] = d.twsc.iterations;
+    }
     auto* dst = owned.newVideoFrame(&d.output.format, d.output.width, d.output.height, source[center], core);
     nss::stamp_contribution(dst, radius, n, d.model, api);
     nss::ImageContributions result;
@@ -237,15 +233,16 @@ VSNode* nss_create_full_image(const VSMap* in, VSCore* core, const VSAPI* api, V
         auto& o = d.twsc;
         d.estimate = integer(api, in, "estimate_sigma", 0, 0, 1) != 0;
         if (d.estimate && sigma_given) throw std::invalid_argument("nss.TWSC: estimate_sigma and explicit sigma are mutually exclusive");
-        o.block = integer(api, in, "block_size", 0, 1, 16);
-        o.group = integer(api, in, "group_size", 0, 1, 256);
-        o.step = integer(api, in, "block_step", 1, 1, o.block ? o.block : 16);
-        o.iterations = integer(api, in, "iters", 0, 1, 64);
+        o.block = integer(api, in, "block_size", nss::kTwscDefaultBlock, 1, 16);
+        o.group = integer(api, in, "group_size", nss::kTwscDefaultGroup, 1, 256);
+        o.step = integer(api, in, "block_step", nss::kTwscDefaultStep, 1, o.block);
+        o.iterations = integer(api, in, "iters", nss::kTwscDefaultIters, 1, 64);
         o.window = present(api, in, "bm_range") ? 2 * integer(api, in, "bm_range", 0, 1, 64) + 1 : integer(api, in, "search_window", 60, 1, 129);
         o.radius = integer(api, in, "radius", 0, 0, 16);
         o.ps_num = integer(api, in, "ps_num", 2, 1, o.group ? o.group : 256);
         o.ps_range = integer(api, in, "ps_range", 4, 1, 64);
         if (o.group == 1 && !present(api, in, "ps_num")) o.ps_num = 1;
+        if (o.ps_num > o.group) throw std::invalid_argument("nss.TWSC: ps_num exceeds resolved group_size");
         o.lambda2 = real(api, in, "lambda2", 1, 0, std::numeric_limits<float>::max());
         o.delta = real(api, in, "delta", 0, 0, 1);
         o.solver.iterations = integer(api, in, "admm_iter", 10, 1, 1000);
@@ -295,7 +292,11 @@ VSNode* nss_create_full_image(const VSMap* in, VSCore* core, const VSAPI* api, V
             nss::nlh_rgb_to_yuv(metadata, true);
         int blocks[2]{}, groups[2]{}, iterations[2]{};
         nss::NlhImageOptions nlh_options;
-        if (model == nss::Model::TWSC) resolve_twsc(d, metadata, blocks, groups, iterations);
+        if (model == nss::Model::TWSC) {
+            blocks[0] = d.twsc.block;
+            groups[0] = d.twsc.group;
+            iterations[0] = d.twsc.iterations;
+        }
         else {
             nlh_options = nss::nlh_resolve_options({&metadata, 1}, d.vi.format.numPlanes, 0, d.nlh);
             std::copy_n(nlh_options.block.data(), 2, blocks);

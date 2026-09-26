@@ -25,6 +25,10 @@ struct NlhWorkspace {
 // the host must accumulate numerator AND counts before image normalization.
 void nlh_filter_full(const float* input, const float* reference, int m, int n, int lda,
                      const NlhGroupOptions& options, const int* row_indices, NlhWorkspace& work);
+// Fused FP64 Basic/Wiener shrink over one row's q*n Haar coefficients.
+// Elementwise same-order IEEE ops; bit-identical with the scalar loop.
+void nlh_shrink_full(float* matrix, const float* reference, int q, int n, double threshold, double noise,
+                     int wiener_iterations, bool wiener);
 struct NlhFullBatchItem {
     const float* input = nullptr;
     const float* reference = nullptr;

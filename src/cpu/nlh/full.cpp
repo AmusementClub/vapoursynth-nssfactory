@@ -44,21 +44,8 @@ void nlh_filter_full(const float* input, const float* reference, int m, int n, i
         }
         nlh_haar2d(w.matrix.data(), q, n, false);
         if (o.wiener) nlh_haar2d(w.reference.data(), q, n, false);
-        for (int j = 0; j < n; ++j) for (int k = 0; k < q; ++k) {
-            const int index = k + j * q;
-            if (o.wiener) {
-                const double r = w.reference[index];
-                const double r2 = r * r;
-                // The zero-noise limit is identity, including 0/0 coefficients.
-                const double gain = noise == 0 ? 1.0 : r2 / (r2 + noise);
-                double value = w.matrix[index];
-                for (int iteration = 0; iteration < o.wiener_iterations; ++iteration) value *= gain;
-                w.matrix[index] = float(value);
-            } else if (std::abs(double(w.matrix[index])) < threshold ||
-                       (j > 0 && k >= std::max(0, q - 2))) {
-                w.matrix[index] = 0;
-            }
-        }
+        nlh_shrink_full(w.matrix.data(), o.wiener ? w.reference.data() : nullptr, q, n, threshold, noise,
+                        o.wiener_iterations, o.wiener);
         nlh_haar2d(w.matrix.data(), q, n, true);
         for (int j = 0; j < n; ++j) for (int k = 0; k < q; ++k) {
             const int destination = indices[k] + j * m;

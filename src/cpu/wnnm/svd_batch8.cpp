@@ -116,17 +116,27 @@ bool SvdChunk(D d, int m, const float* const* A, const int* lda, float* const* U
         const V b = hn::IfThenElse(usable, hn::Div(hn::Set(d, 2.0f), safe_vtv), zero);
         hn::Store(b, d, beta + static_cast<std::size_t>(k) * kBatchLanes);
 
+        // Row-major dot/update: each column keeps its own row-ascending FMA
+        // chain (bit-identical values), and interleaving the independent
+        // chains fills FMA latency instead of serializing per column.
+        V dots[kN];
         for (int col = k; col < kN; ++col) {
-            V dot = zero;
-            for (int row = k; row < m; ++row) {
-                dot = hn::MulAdd(hn::Load(d, reflectors + TallIndex(row, k, 0)),
-                                 hn::Load(d, tall + TallIndex(row, col, 0)), dot);
+            dots[col] = zero;
+        }
+        for (int row = k; row < m; ++row) {
+            const V reflector = hn::Load(d, reflectors + TallIndex(row, k, 0));
+            for (int col = k; col < kN; ++col) {
+                dots[col] = hn::MulAdd(reflector, hn::Load(d, tall + TallIndex(row, col, 0)), dots[col]);
             }
-            const V factor = hn::Mul(b, dot);
-            for (int row = k; row < m; ++row) {
+        }
+        for (int col = k; col < kN; ++col) {
+            dots[col] = hn::Mul(b, dots[col]);
+        }
+        for (int row = k; row < m; ++row) {
+            const V reflector = hn::Load(d, reflectors + TallIndex(row, k, 0));
+            for (int col = k; col < kN; ++col) {
                 const V value = hn::Load(d, tall + TallIndex(row, col, 0));
-                const V updated = hn::NegMulAdd(factor, hn::Load(d, reflectors + TallIndex(row, k, 0)), value);
-                hn::Store(updated, d, tall + TallIndex(row, col, 0));
+                hn::Store(hn::NegMulAdd(dots[col], reflector, value), d, tall + TallIndex(row, col, 0));
             }
         }
 
