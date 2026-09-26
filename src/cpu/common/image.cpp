@@ -2,6 +2,7 @@
 #include "nss/cpu_api.hpp"
 #include "nss/cpu_nlh.hpp"
 #include "cpu/bm/matcher.hpp"
+#include "cpu/common/image_ssd_row.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -47,11 +48,38 @@ int image_match(const float* const* guides, int frames, int nch, int width, int 
     if (cfg.group == 1) return 1;
     ImageTopK spatial(matches + 1, cfg.group - 1);
     const int lo = cfg.window / 2, hi = cfg.window - lo - 1;
-    for (int y = std::max(0, y0 - lo); y <= std::min(height - cfg.block, y0 + hi); ++y)
-        for (int x = std::max(0, x0 - lo); x <= std::min(width - cfg.block, x0 + hi); ++x) {
+    const int xlo = std::max(0, x0 - lo), xhi = std::min(width - cfg.block, x0 + hi);
+    const int ylo = std::max(0, y0 - lo), yhi = std::min(height - cfg.block, y0 + hi);
+#if NSS_ALIGNMENT_GENERIC
+    for (int y = ylo; y <= yhi; ++y)
+        for (int x = xlo; x <= xhi; ++x) {
             if (x == x0 && y == y0) continue;
             spatial.add(Match{x, y, t0, distance(t0, x, y), std::uint32_t(1 + y * width + x)});
         }
+#else
+    // Resolve the row kernel once per anchor. Every candidate SSD keeps the
+    // exact ssd_block reduction tree, channels accumulate in the original
+    // order (0 + ssd_c0 == ssd_c0 exactly), and insertion below follows the
+    // original row-major scan, so distances, ties, and ordinals are unchanged.
+    // cfg.window <= 129 is validated above, so count fits the row buffer.
+    const ImageSsdRowKernel ssd_row = image_ssd_row_kernel();
+    std::array<float, 129> dist_row{}, tmp_row{};
+    for (int y = ylo; y <= yhi; ++y) {
+        const int count = xhi - xlo + 1;
+        for (int c = 0; c < nch; ++c) {
+            const float* plane = guides[t0 * nch + c];
+            ssd_row(plane + y0 * width + x0, width, plane + y * width + xlo, width, cfg.block, count,
+                    c == 0 ? dist_row.data() : tmp_row.data());
+            if (c > 0) for (int i = 0; i < count; ++i) dist_row[i] += tmp_row[i];
+        }
+        for (int i = 0; i < count; ++i) {
+            const int x = xlo + i;
+            if (x == x0 && y == y0) continue;
+            if (!std::isfinite(dist_row[i])) throw std::runtime_error("nss: unrepresentable patch distance");
+            spatial.add(Match{x, y, t0, dist_row[i], std::uint32_t(1 + y * width + x)});
+        }
+    }
+#endif
     const int n = 1 + spatial.finish();
     if (cfg.radius == 0 || frames == 1) return n;
     std::array<Match, 256> seeds{}, centers{}, local{};

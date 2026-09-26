@@ -361,6 +361,7 @@ list(APPEND NSS_SAFE_COMPILE_OPTIONS ${NSS_CPU_ISA_OPTIONS})
 set_source_files_properties(
   src/cpu/nlm/nlm.cpp
   src/cpu/bm/ssd.cpp
+  src/cpu/common/image_ssd_row.cpp
   src/cpu/bm/spatial4.cpp
   src/cpu/bm/spatial12.cpp
   src/cpu/bm/spatial16.cpp
