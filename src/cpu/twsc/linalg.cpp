@@ -224,11 +224,35 @@ bool twsc_symmetric_eigen(const double* matrix, int n, double* values, double* v
     }
     for (int i = 0; i < n; ++i) values[i] = scratch[i + i * n] * norm;
     double residual = 0, denominator = 0;
-    for (int j = 0; j < n; ++j) for (int i = 0; i < n; ++i) {
-        double x = 0;
-        for (int k = 0; k < n; ++k) x += matrix[i + k * n] * vectors[k + j * n];
-        const double e = x - vectors[i + j * n] * values[j];
-        residual += e * e; denominator += matrix[i + j * n] * matrix[i + j * n];
+    for (int j = 0; j < n; ++j) {
+        int i = 0;
+        // Four independent row-dot chains fill FP latency. Each x keeps its
+        // serial k-order mul/add chain (contract=off), and residual and
+        // denominator still accumulate in i-ascending order: bit-identical.
+        for (; i + 4 <= n; i += 4) {
+            double x0 = 0, x1 = 0, x2 = 0, x3 = 0;
+            for (int k = 0; k < n; ++k) {
+                const double v = vectors[k + j * n];
+                x0 += matrix[(i + 0) + k * n] * v;
+                x1 += matrix[(i + 1) + k * n] * v;
+                x2 += matrix[(i + 2) + k * n] * v;
+                x3 += matrix[(i + 3) + k * n] * v;
+            }
+            const double e0 = x0 - vectors[(i + 0) + j * n] * values[j];
+            const double e1 = x1 - vectors[(i + 1) + j * n] * values[j];
+            const double e2 = x2 - vectors[(i + 2) + j * n] * values[j];
+            const double e3 = x3 - vectors[(i + 3) + j * n] * values[j];
+            residual += e0 * e0; denominator += matrix[(i + 0) + j * n] * matrix[(i + 0) + j * n];
+            residual += e1 * e1; denominator += matrix[(i + 1) + j * n] * matrix[(i + 1) + j * n];
+            residual += e2 * e2; denominator += matrix[(i + 2) + j * n] * matrix[(i + 2) + j * n];
+            residual += e3 * e3; denominator += matrix[(i + 3) + j * n] * matrix[(i + 3) + j * n];
+        }
+        for (; i < n; ++i) {
+            double x = 0;
+            for (int k = 0; k < n; ++k) x += matrix[i + k * n] * vectors[k + j * n];
+            const double e = x - vectors[i + j * n] * values[j];
+            residual += e * e; denominator += matrix[i + j * n] * matrix[i + j * n];
+        }
     }
     return std::isfinite(residual) && residual <= denominator * 1e-22;
 }
