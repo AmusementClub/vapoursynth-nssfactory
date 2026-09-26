@@ -168,6 +168,216 @@ int NcsrFilterGroup(float* group, int m, int n, int lda, float sigma, const floa
     return 0;
 }
 
+// --- Row-major codes batch kernels (Track A) --------------------------------
+// Brm[i*n + j] stores code row i of patch column j, so code rows are
+// contiguous. Each kernel replicates the exact per-output accumulation order
+// of the column-major composition it replaces (gemm_tn_hwy, finish_ncsr_codes
+// + NcsrCentralizeCodes + soft_threshold, gemm_nn_hwy + GroupCenterAdd); only
+// addresses and pass structure changed, never arithmetic order.
+
+void NcsrProjectRM(const float* U, const float* group, int m, int n, int lda, float* Brm) {
+    if (!U || !group || !Brm || m < 1 || n < 1 || lda < m || n > kSvdMaxN) {
+        return;
+    }
+    const int r = std::min(m, n);
+    const hn::ScalableTag<float> d;
+    const int N = static_cast<int>(hn::Lanes(d));
+    for (int j = 0; j < n; ++j) {
+        const float* bj = group + static_cast<std::size_t>(j) * static_cast<std::size_t>(lda);
+        int t = 0;
+        // Same accumulation shape as GemmTN (wnnm/jacobi8.cpp): 4-column
+        // accumulator quads, N-lane chunks, ReduceSum, then the scalar tail.
+        for (; t + 4 <= r; t += 4) {
+            auto acc0 = hn::Zero(d);
+            auto acc1 = hn::Zero(d);
+            auto acc2 = hn::Zero(d);
+            auto acc3 = hn::Zero(d);
+            const float* a0 = U + static_cast<std::size_t>(t) * static_cast<std::size_t>(m);
+            const float* a1 = U + static_cast<std::size_t>(t + 1) * static_cast<std::size_t>(m);
+            const float* a2 = U + static_cast<std::size_t>(t + 2) * static_cast<std::size_t>(m);
+            const float* a3 = U + static_cast<std::size_t>(t + 3) * static_cast<std::size_t>(m);
+            int i = 0;
+            for (; i + N <= m; i += N) {
+                const auto bv = hn::LoadU(d, bj + i);
+                acc0 = hn::MulAdd(hn::LoadU(d, a0 + i), bv, acc0);
+                acc1 = hn::MulAdd(hn::LoadU(d, a1 + i), bv, acc1);
+                acc2 = hn::MulAdd(hn::LoadU(d, a2 + i), bv, acc2);
+                acc3 = hn::MulAdd(hn::LoadU(d, a3 + i), bv, acc3);
+            }
+            float s0 = hn::ReduceSum(d, acc0);
+            float s1 = hn::ReduceSum(d, acc1);
+            float s2 = hn::ReduceSum(d, acc2);
+            float s3 = hn::ReduceSum(d, acc3);
+            for (; i < m; ++i) {
+                const float bv = bj[i];
+                s0 += a0[i] * bv;
+                s1 += a1[i] * bv;
+                s2 += a2[i] * bv;
+                s3 += a3[i] * bv;
+            }
+            Brm[static_cast<std::size_t>(t) * n + j] = s0;
+            Brm[static_cast<std::size_t>(t + 1) * n + j] = s1;
+            Brm[static_cast<std::size_t>(t + 2) * n + j] = s2;
+            Brm[static_cast<std::size_t>(t + 3) * n + j] = s3;
+        }
+        for (; t < r; ++t) {
+            // Replicates DotN (wnnm/jacobi8.cpp) for r % 4 != 0 shapes.
+            const float* a = U + static_cast<std::size_t>(t) * static_cast<std::size_t>(m);
+            auto acc0 = hn::Zero(d);
+            auto acc1 = hn::Zero(d);
+            auto acc2 = hn::Zero(d);
+            auto acc3 = hn::Zero(d);
+            int i = 0;
+            for (; i + 4 * N <= m; i += 4 * N) {
+                acc0 = hn::MulAdd(hn::LoadU(d, a + i), hn::LoadU(d, bj + i), acc0);
+                acc1 = hn::MulAdd(hn::LoadU(d, a + i + N), hn::LoadU(d, bj + i + N), acc1);
+                acc2 = hn::MulAdd(hn::LoadU(d, a + i + 2 * N), hn::LoadU(d, bj + i + 2 * N), acc2);
+                acc3 = hn::MulAdd(hn::LoadU(d, a + i + 3 * N), hn::LoadU(d, bj + i + 3 * N), acc3);
+            }
+            auto acc = hn::Add(hn::Add(acc0, acc1), hn::Add(acc2, acc3));
+            for (; i + N <= m; i += N) {
+                acc = hn::MulAdd(hn::LoadU(d, a + i), hn::LoadU(d, bj + i), acc);
+            }
+            float s = hn::ReduceSum(d, acc);
+            for (; i < m; ++i) {
+                s += a[i] * bj[i];
+            }
+            Brm[static_cast<std::size_t>(t) * n + j] = s;
+        }
+    }
+}
+
+void NcsrFinishCodesRM(float* Brm, int r, int n, float sigma, const float* col_dist, const float* group, int m,
+                       int lda) {
+    if (!Brm || r < 1 || n < 1 || r > kSvdMaxN || n > kSvdMaxN) {
+        return;
+    }
+    if (!(sigma > 0.f) || !is_finite_bits(sigma)) {
+        return;
+    }
+    // Weights exactly as finish_ncsr_codes computes them.
+    float weights[kSvdMaxN];
+    constexpr float epsilon = 1e-12f;
+    const float h = std::max(2.f * static_cast<float>(m) * sigma * sigma, epsilon);
+    const float sum0 = NcsrGroupWeights(col_dist, group, m, n, lda, h, weights);
+    float sum = sum0;
+    if (!(sum > 0.f)) {
+        std::fill_n(weights, n, 1.f);
+        sum = static_cast<float>(n);
+    }
+    // 1/sum equals NcsrCentralizeCodes' 1/wsum: the clamped weights are
+    // identical (FastExp outputs are non-negative) and the sequential column
+    // order sum is the same value.
+    const float inverse = 1.f / sum;
+    constexpr float map_constant = 2.8284271247461903f;
+    const float sigma2 = sigma * sigma;
+    const hn::ScalableTag<float> d;
+    const int N = static_cast<int>(hn::Lanes(d));
+    for (int i = 0; i < r; ++i) {
+        float* row = Brm + static_cast<std::size_t>(i) * n;
+        // finish_ncsr_codes pass: scalar column order on the original row.
+        float mean = 0.f;
+        for (int col = 0; col < n; ++col) mean += weights[col] * row[col];
+        mean *= inverse;
+        float variance = 0.f;
+        for (int col = 0; col < n; ++col) {
+            const float error = row[col] - mean;
+            variance += weights[col] * error * error;
+        }
+        const float ti_raw = map_constant * sigma2 / (std::sqrt(variance * inverse) + epsilon);
+        // NcsrCentralizeCodes pass: its own accumulation order, in place.
+        float s = 0.f;
+        int j = 0;
+        for (; j + N <= n; j += N) {
+            s += hn::ReduceSum(d, hn::Mul(hn::LoadU(d, weights + j), hn::LoadU(d, row + j)));
+        }
+        for (; j < n; ++j) {
+            s += weights[j] * row[j];
+        }
+        const float beta = s * inverse;
+        const auto vb = hn::Set(d, beta);
+        j = 0;
+        for (; j + N <= n; j += N) {
+            hn::StoreU(hn::Sub(hn::LoadU(d, row + j), vb), d, row + j);
+        }
+        for (; j < n; ++j) {
+            row[j] -= beta;
+        }
+        // Inlined soft_threshold (common/soft_threshold.cpp), same guarded tau
+        // and the same vector/scalar split for this (N, n).
+        const float t = is_finite_bits(ti_raw) && ti_raw > 0.f ? ti_raw : 0.f;
+        const auto vt = hn::Set(d, t);
+        const auto z = hn::Zero(d);
+        j = 0;
+        for (; j + N <= n; j += N) {
+            const auto v = hn::LoadU(d, row + j);
+            const auto a = hn::Abs(v);
+            const auto shrunk = hn::CopySign(hn::Sub(a, vt), v);
+            hn::StoreU(hn::IfThenElse(hn::Gt(a, vt), shrunk, z), d, row + j);
+        }
+        for (; j < n; ++j) {
+            const float v = row[j];
+            const float a = std::fabs(v);
+            row[j] = (a > t) ? std::copysign(a - t, v) : 0.f;
+        }
+        j = 0;
+        for (; j + N <= n; j += N) {
+            hn::StoreU(hn::Add(hn::LoadU(d, row + j), vb), d, row + j);
+        }
+        for (; j < n; ++j) {
+            row[j] += beta;
+        }
+    }
+}
+
+void NcsrReconstructRM(float* group, int m, int n, int lda, const float* U, const float* Brm, const float* mean) {
+    if (!group || !U || !Brm || !mean || m < 1 || n < 1 || lda < m || n > kSvdMaxN) {
+        return;
+    }
+    const int r = std::min(m, n);
+    const hn::ScalableTag<float> d;
+    const int N = static_cast<int>(hn::Lanes(d));
+    for (int j = 0; j < n; ++j) {
+        float* cj = group + static_cast<std::size_t>(j) * static_cast<std::size_t>(lda);
+        int i = 0;
+        // Per-output t-ascending FMA chain identical to GemmNN, with the
+        // GroupCenterAdd mean applied as the same single add before the store.
+        for (; i + 4 * N <= m; i += 4 * N) {
+            auto acc0 = hn::Zero(d);
+            auto acc1 = hn::Zero(d);
+            auto acc2 = hn::Zero(d);
+            auto acc3 = hn::Zero(d);
+            for (int t = 0; t < r; ++t) {
+                const float* at = U + static_cast<std::size_t>(t) * static_cast<std::size_t>(m) + i;
+                const auto bt = hn::Set(d, Brm[static_cast<std::size_t>(t) * n + j]);
+                acc0 = hn::MulAdd(hn::LoadU(d, at), bt, acc0);
+                acc1 = hn::MulAdd(hn::LoadU(d, at + N), bt, acc1);
+                acc2 = hn::MulAdd(hn::LoadU(d, at + 2 * N), bt, acc2);
+                acc3 = hn::MulAdd(hn::LoadU(d, at + 3 * N), bt, acc3);
+            }
+            hn::StoreU(hn::Add(acc0, hn::LoadU(d, mean + i)), d, cj + i);
+            hn::StoreU(hn::Add(acc1, hn::LoadU(d, mean + i + N)), d, cj + i + N);
+            hn::StoreU(hn::Add(acc2, hn::LoadU(d, mean + i + 2 * N)), d, cj + i + 2 * N);
+            hn::StoreU(hn::Add(acc3, hn::LoadU(d, mean + i + 3 * N)), d, cj + i + 3 * N);
+        }
+        for (; i + N <= m; i += N) {
+            auto acc = hn::Zero(d);
+            for (int t = 0; t < r; ++t) {
+                acc = hn::MulAdd(hn::LoadU(d, U + static_cast<std::size_t>(t) * static_cast<std::size_t>(m) + i),
+                                 hn::Set(d, Brm[static_cast<std::size_t>(t) * n + j]), acc);
+            }
+            hn::StoreU(hn::Add(acc, hn::LoadU(d, mean + i)), d, cj + i);
+        }
+        for (; i < m; ++i) {
+            float sum = 0.f;
+            for (int t = 0; t < r; ++t) {
+                sum += U[i + static_cast<std::size_t>(t) * m] * Brm[static_cast<std::size_t>(t) * n + j];
+            }
+            cj[i] = sum + mean[i];
+        }
+    }
+}
+
 }  // namespace HWY_NAMESPACE
 }  // namespace nss
 HWY_AFTER_NAMESPACE();
@@ -177,6 +387,9 @@ namespace nss {
 HWY_EXPORT(NcsrCentralizeCodes);
 HWY_EXPORT(NcsrGroupWeights);
 HWY_EXPORT(NcsrFilterGroup);
+HWY_EXPORT(NcsrProjectRM);
+HWY_EXPORT(NcsrFinishCodesRM);
+HWY_EXPORT(NcsrReconstructRM);
 
 void ncsr_centralize_codes(float* B, int r, int n, int ldb, float tau, const float* col_w, const float* row_tau) {
     HWY_DYNAMIC_DISPATCH(NcsrCentralizeCodes)(B, r, n, ldb, tau, col_w, row_tau);
@@ -189,6 +402,19 @@ float ncsr_group_weights(const float* col_dist, const float* group, int m, int n
 int ncsr_filter_group(float* group, int m, int n, int lda, float sigma, const float* col_dist, float* work,
                       int work_floats) {
     return HWY_DYNAMIC_DISPATCH(NcsrFilterGroup)(group, m, n, lda, sigma, col_dist, work, work_floats);
+}
+
+void ncsr_project_rm(const float* U, const float* group, int m, int n, int lda, float* Brm) {
+    HWY_DYNAMIC_DISPATCH(NcsrProjectRM)(U, group, m, n, lda, Brm);
+}
+
+void ncsr_finish_codes_rm(float* Brm, int r, int n, float sigma, const float* col_dist, const float* group, int m,
+                          int lda) {
+    HWY_DYNAMIC_DISPATCH(NcsrFinishCodesRM)(Brm, r, n, sigma, col_dist, group, m, lda);
+}
+
+void ncsr_reconstruct_rm(float* group, int m, int n, int lda, const float* U, const float* Brm, const float* mean) {
+    HWY_DYNAMIC_DISPATCH(NcsrReconstructRM)(group, m, n, lda, U, Brm, mean);
 }
 
 void ncsr_run_groups(const float* const* refs, const int* rstrides, const float* const* srcs, const int* sstrides,

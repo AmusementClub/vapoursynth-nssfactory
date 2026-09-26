@@ -41,6 +41,28 @@ void ncsr_run_groups(const float* const* refs, const int* rstrides, const float*
                      int ntemp, int t0, int width, int height, const SearchConfig& cfg, float sigma, float* num,
                      float* den, float* patches, float* work);
 
+// Row-major codes internals of the NCSR filter-group batch path. Brm[i*n + j]
+// holds code row i of patch column j (code rows are contiguous), transposed
+// relative to the single-group pipeline's column-major B. Bit-identical to the
+// column-major composition (gemm_tn_hwy -> finish_ncsr_codes ->
+// ncsr_centralize_codes -> gemm_nn_hwy -> group_center_add): every per-output
+// accumulation order is replicated exactly; only addressing and pass structure
+// differ. U is m x r column-major with leading dimension m; group is m x n
+// column-major with leading dimension lda; r = min(m, n) <= kSvdMaxN.
+
+// Brm = (U^T * group)^T, i.e. Brm[i*n + j] = dot(U column i, group column j).
+void ncsr_project_rm(const float* U, const float* group, int m, int n, int lda, float* Brm);
+
+// Nonlocal weights + per-row weighted centralization + per-row soft threshold,
+// fused over contiguous code rows. group/m/lda are only used when col_dist is
+// null (weights fall back to SSD against column zero of group).
+void ncsr_finish_codes_rm(float* Brm, int r, int n, float sigma, const float* col_dist, const float* group, int m,
+                          int lda);
+
+// group = U * Brm^T + mean, i.e. the PCA reconstruction with the centering
+// mean added back in the same per-element order as gemm_nn_hwy + group_center_add.
+void ncsr_reconstruct_rm(float* group, int m, int n, int lda, const float* U, const float* Brm, const float* mean);
+
 // Spatial outer loop: regularize then denoise; last output is the shrinkage.
 // work holds ncsr_denoise_work_floats floats.
 void ncsr_denoise_plane(const float* src, int width, int height, int sstride, float* dst, int dstride, int block,

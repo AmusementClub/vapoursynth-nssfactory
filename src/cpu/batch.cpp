@@ -70,10 +70,12 @@ void finish_ncsr_batch_item(NcsrFilterBatchItem& item) {
     float* S = U + m * n;
     float* mean = S + n;
     float* B = mean + m;
-    gemm_tn_hwy(m, n, r, U, m, item.group, item.lda, B, r);
-    detail::finish_ncsr_codes(item.group, m, n, item.lda, item.sigma, item.col_dist, B,
-                              detail::ScalarCodeRows{}, ncsr_group_weights, ncsr_centralize_codes);
-    detail::finish_pca_reconstruction(item.group, m, n, item.lda, U, B, mean);
+    // Row-major codes pipeline (ncsr/centralize.cpp): bit-identical to the
+    // column-major gemm_tn_hwy + finish_ncsr_codes + finish_pca_reconstruction
+    // composition it replaces, with contiguous code rows and fused passes.
+    ncsr_project_rm(U, item.group, m, n, item.lda, B);
+    ncsr_finish_codes_rm(B, r, n, item.sigma, item.col_dist, item.group, m, item.lda);
+    ncsr_reconstruct_rm(item.group, m, n, item.lda, U, B, mean);
 }
 
 }  // namespace
