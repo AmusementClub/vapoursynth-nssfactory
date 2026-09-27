@@ -183,7 +183,15 @@ int main() {
     std::fputs("phase workspace-enomem\n", stderr);
     if (!run(0, true, 1<<24, true) || acquired != 7) { std::fprintf(stderr,"original seven-reference workspace ENOMEM failed\n"); return 1; }
     std::fputs("phase limits\n", stderr);
-    if (!run(0, false, 1, true)) { std::fputs("limits: tiny-budget run failed\n", stderr); return 1; }
+    try {
+        if (!run(0, false, 1, true)) { std::fputs("limits: tiny-budget run failed\n", stderr); return 1; }
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "limits: tiny-budget run threw: %s\n", e.what());
+        return 1;
+    } catch (...) {
+        std::fputs("limits: tiny-budget run threw non-std exception\n", stderr);
+        return 1;
+    }
     std::fputs("phase limits-2\n", stderr);
     if (!run(0, false, 1<<24, false)) return 1;
     std::fputs("phase operator-new-injection\n", stderr);
