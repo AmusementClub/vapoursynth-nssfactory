@@ -42,7 +42,6 @@ jobs:
           Get-ChildItem -Recurse build -Filter *.dll | Select-Object -ExpandProperty FullName
           $dll = (Get-Item build\Release\libnss.dll).FullName
           echo "NSS_SO=$dll" >> $env:GITHUB_ENV
-          dumpbin /dependents $dll
       - name: host smoke (default parameters, all filters)
         run: python tests/smoke_defaults.py
       - name: parameter bounds probe
