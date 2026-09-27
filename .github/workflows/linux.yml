@@ -5,13 +5,26 @@ on:
   push:
   pull_request:
 
+env:
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_MAXSIZE: 2G
+  CMAKE_C_COMPILER_LAUNCHER: ccache
+  CMAKE_CXX_COMPILER_LAUNCHER: ccache
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: linux-ccache-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            linux-ccache-${{ github.ref_name }}-
+            linux-ccache-
       - name: packages
-        run: sudo apt-get update && sudo apt-get install -y cmake g++ git
+        run: sudo apt-get update && sudo apt-get install -y cmake g++ git ccache
       - name: configure
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
@@ -20,3 +33,5 @@ jobs:
         run: cmake --build build -j
       - name: unit tests
         run: ctest --test-dir build --output-on-failure
+      - name: ccache stats
+        run: ccache --show-stats

@@ -14,14 +14,23 @@ permissions:
 
 env:
   VS_HEADERS_TAG: R75
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_MAXSIZE: 2G
+  CMAKE_C_COMPILER_LAUNCHER: ccache
+  CMAKE_CXX_COMPILER_LAUNCHER: ccache
 
 jobs:
   build-linux:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: release-ccache-linux-${{ github.sha }}
+          restore-keys: release-ccache-linux-
       - name: packages
-        run: sudo apt-get update && sudo apt-get install -y cmake g++ git curl
+        run: sudo apt-get update && sudo apt-get install -y cmake g++ git curl ccache
       - name: VapourSynth API4 headers
         run: |
           curl -sL "https://github.com/vapoursynth/vapoursynth/archive/refs/tags/${VS_HEADERS_TAG}.tar.gz" \
@@ -52,6 +61,13 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: release-ccache-macos-${{ github.sha }}
+          restore-keys: release-ccache-macos-
+      - name: packages
+        run: brew install ccache
       - name: VapourSynth API4 headers
         run: |
           curl -sL "https://github.com/vapoursynth/vapoursynth/archive/refs/tags/${VS_HEADERS_TAG}.tar.gz" \
