@@ -5,8 +5,25 @@
 #include <cstring>
 #include <limits>
 #include <new>
+#if defined(_WIN32)
+#include <cerrno>
+#include <malloc.h>
+#endif
 
 namespace nss {
+
+#if defined(_WIN32) && !defined(NSS_WORKSPACE_ALLOC_ADAPTER)
+// Windows has no posix_memalign; keep the same call shape via _aligned_malloc
+// so tests/workspace_alloc_adapter.cpp's textual substitution stays portable.
+static int posix_memalign(void** out, std::size_t alignment, std::size_t bytes) {
+    void* p = _aligned_malloc(bytes, alignment);
+    if (!p) {
+        return ENOMEM;
+    }
+    *out = p;
+    return 0;
+}
+#endif
 
 void* aligned64(std::size_t bytes) {
     if (bytes == 0) {
@@ -20,7 +37,11 @@ void* aligned64(std::size_t bytes) {
 }
 
 void aligned64_free(void* p) {
+#if defined(_WIN32)
+    _aligned_free(p);
+#else
     std::free(p);
+#endif
 }
 
 Workspace::~Workspace() {

@@ -6,6 +6,9 @@
 #include <cstdlib>
 #include <limits>
 #include <new>
+#if defined(_WIN32)
+#include <malloc.h>
+#endif
 
 namespace {
 bool fail_allocation = false;
@@ -19,7 +22,12 @@ bool check(bool condition, const char* message) {
 int workspace_test_memalign(void** p, std::size_t alignment, std::size_t bytes) {
     ++allocations;
     if (fail_allocation) return ENOMEM;
+#if defined(_WIN32)
+    *p = _aligned_malloc(bytes, alignment);
+    return *p ? 0 : ENOMEM;
+#else
     return posix_memalign(p, alignment, bytes);
+#endif
 }
 
 int main() {
