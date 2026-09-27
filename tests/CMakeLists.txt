@@ -232,6 +232,13 @@ add_test(NAME test_resources COMMAND test_resources)
 
 if(VapourSynth_FOUND)
   add_executable(test_host_failure test_host_failure.cpp workspace_alloc_adapter.cpp "${PROJECT_SOURCE_DIR}/src/host/validate.cpp")
+  if(WIN32)
+    # The alloc adapter intentionally defines workspace.cpp's symbols (the
+    # interception substitute) while nss_cpu.lib carries the production copy;
+    # ELF/Mach-O never pull the archive member, lld-link does. Object files
+    # precede libraries, so MULTIPLE keeps the adapter's intercepted copy.
+    target_link_options(test_host_failure PRIVATE /FORCE:MULTIPLE)
+  endif()
   target_include_directories(test_host_failure PRIVATE "${PROJECT_SOURCE_DIR}/src" "${VapourSynth_INCLUDE_DIR}")
   target_link_libraries(test_host_failure PRIVATE nss_cpu Threads::Threads)
   if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 15)
