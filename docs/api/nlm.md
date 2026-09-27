@@ -25,7 +25,7 @@ core.nss.NLM(clip clip[, int d = 1, int a = 2, int s = 4, float h = 1.2,
 |---|---|---|---|
 | `h` | 1.2 | > 0 | Filtering strength. Larger values smooth more aggressively. This is the knob to turn first; the default is intentionally conservative (earlier calibration found `h=1.2` barely denoises strong noise — raise it with the noise level). |
 | `d` | 1 | [0, 256] | Temporal radius in frames. `d=0` is purely spatial; `d>0` pools matches from `d` neighbouring frames on each side, improving quality on static regions at a linear cost in frames searched. |
-| `a` | 2 | [1, plane width) | Search radius in pixels around the anchor. Cost grows as `(2a+1)^2`; quality saturates quickly. |
+| `a` | 2 | [1, 64] | Search radius in pixels around the anchor. Cost grows as `(2a+1)^2`; quality saturates quickly. |
 | `s` | 4 | [0, 1024] | Patch radius for the similarity comparison (patch size `2s+1`). Larger patches are more noise-robust but blur fine structure. |
 | `channels` | `"AUTO"` | Y / UV / YUV / RGB / AUTO | Which planes to process. AUTO selects by color family. |
 
@@ -59,3 +59,4 @@ Cost scales with `(2a+1)^2 * (2d+1)`; `s` has a smaller linear effect.
 - `radius`-style fat-frame output does not exist here: temporal support is the
   `d` parameter and the result stays normal-height.
 - `a` must be smaller than the processed plane width (creation-time error).
+- `d` pins `2d+1` input frames; creation rejects radii whose pinned footprint exceeds 2 GiB for the actual frame size.

@@ -31,7 +31,7 @@ core.nss.MCWNNM(clip clip[, float[] sigma = 3.0, int block_size = 8,
 | `block_step` | 8 | [1, block] | Reference-patch stride; positions scale as `1/step^2`. |
 | `group_size` | 8 | [1, 32] | Matched patches per group. |
 | `bm_range` | 7 | [1, 64] | Search window radius. |
-| `iters` | 2 | >= 1 | Outer re-estimation rounds (re-match on the current estimate). Round 2 costs ~another full pass; reduce to 1 for a ~2x speedup when quality allows. |
+| `iters` | 2 | [1, 64] | Outer re-estimation rounds (re-match on the current estimate). Round 2 costs ~another full pass; reduce to 1 for a ~2x speedup when quality allows. |
 | `radius` | 0 | [0, 16] | Temporal radius. >0 returns the weighted intermediate for `VAggregate`. |
 | `rclip` | none | clip | Reference clip guiding matching. |
 
@@ -40,7 +40,7 @@ core.nss.MCWNNM(clip clip[, float[] sigma = 3.0, int block_size = 8,
 | Parameter | Default | Range | Meaning |
 |---|---|---|---|
 | `residual` | 1 | 0 / 1 | `1` demeans patch rows (Matlab Estimation pipeline, the factory default); `0` keeps DC in the ADMM matrix (bare `MCWNNM_ADMM.m`). |
-| `admm_iter` | 10 | >= 1 | Inner ADMM iterations per group per round. The dominant per-group cost; see the solver contract before lowering. |
+| `admm_iter` | 10 | [1, 1000] | Inner ADMM iterations per group per round. The dominant per-group cost; see the solver contract before lowering. |
 | `rho` | 3.0 | > 0 | Initial ADMM penalty. |
 | `mu` | 1.001 | >= 1 | Penalty growth factor per inner iteration (near-constant by default). |
 | `delta` | 0.1 | [0, 1] | Relaxation mixing the previous estimate between outer iterations. |

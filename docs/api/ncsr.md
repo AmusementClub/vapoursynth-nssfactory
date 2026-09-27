@@ -30,7 +30,7 @@ core.nss.NCSR(clip clip[, float[] sigma = 3.0, int block_size = 8,
 | `block_step` | 8 | [1, block] | Reference-patch stride; positions scale as `1/step^2`. |
 | `group_size` | 8 | [1, 32] | Matched patches per group (columns of the PCA matrix). |
 | `bm_range` | 7 | [1, 64] | Search window radius. |
-| `iters` | 2 | >= 1 | Outer re-estimation rounds; the second round re-matches on the current estimate. ~2x cost per extra round. |
+| `iters` | 2 | [1, 64] | Outer re-estimation rounds; the second round re-matches on the current estimate. ~2x cost per extra round. |
 | `radius` | 0 | [0, 16] | Temporal radius. >0 returns the weighted intermediate for `VAggregate`. |
 | `rclip` | none | clip | Reference clip guiding matching. |
 
