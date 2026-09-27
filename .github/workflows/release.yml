@@ -1,0 +1,92 @@
+name: draft-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to create (e.g. r4); created on the default branch if missing'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  VS_HEADERS_TAG: R75
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: packages
+        run: sudo apt-get update && sudo apt-get install -y cmake g++ git curl
+      - name: VapourSynth API4 headers
+        run: |
+          curl -sL "https://github.com/vapoursynth/vapoursynth/archive/refs/tags/${VS_HEADERS_TAG}.tar.gz" \
+            | tar -xz -C /tmp
+          echo "VapourSynth_INCLUDE_DIR=/tmp/vapoursynth-${VS_HEADERS_TAG}/include" >> "$GITHUB_ENV"
+      - name: configure
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+            -DNSS_HWY_TARGET_MODE=dynamic
+      - name: build
+        run: cmake --build build -j
+      - name: unit tests
+        run: ctest --test-dir build --output-on-failure
+      - name: package
+        run: |
+          test -f build/libnss.so
+          pkg="nssfactory-${{ inputs.tag }}-linux-x86_64"
+          mkdir -p "pkg/$pkg"
+          cp build/libnss.so README.md LICENSE NOTICE "pkg/$pkg/"
+          tar -C pkg -czf "$pkg.tar.gz" "$pkg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64
+          path: nssfactory-${{ inputs.tag }}-linux-x86_64.tar.gz
+          if-no-files-found: error
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: VapourSynth API4 headers
+        run: |
+          curl -sL "https://github.com/vapoursynth/vapoursynth/archive/refs/tags/${VS_HEADERS_TAG}.tar.gz" \
+            | tar -xz -C /tmp
+          echo "VapourSynth_INCLUDE_DIR=/tmp/vapoursynth-${VS_HEADERS_TAG}/include" >> "$GITHUB_ENV"
+      - name: configure
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+            -DNSS_HWY_TARGET_MODE=neon
+      - name: build
+        run: cmake --build build -j
+      - name: unit tests
+        run: ctest --test-dir build --output-on-failure
+      - name: package
+        run: |
+          test -f build/libnss.dylib
+          pkg="nssfactory-${{ inputs.tag }}-macos-arm64"
+          mkdir -p "pkg/$pkg"
+          cp build/libnss.dylib README.md LICENSE NOTICE "pkg/$pkg/"
+          tar -C pkg -czf "$pkg.tar.gz" "$pkg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64
+          path: nssfactory-${{ inputs.tag }}-macos-arm64.tar.gz
+          if-no-files-found: error
+
+  release:
+    needs: [build-linux, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: create draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ inputs.tag }}" --draft --generate-notes \
+            dist/linux-x86_64/*.tar.gz dist/macos-arm64/*.tar.gz

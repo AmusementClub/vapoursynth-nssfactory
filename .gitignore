@@ -9,7 +9,8 @@ __pycache__/
 /artifacts/
 .omx/
 .omc/
-/docs/
+/docs/*
+!/docs/api/
 /ds/
 .DS_Store
 /.venv-paper/

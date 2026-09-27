@@ -1,0 +1,78 @@
+# nss.BM3D
+
+The reference block-matching 3D filter: similar patches are grouped into 3D
+stacks, collaboratively filtered in a transform domain (hard thresholding in
+the Basic stage, Wiener filtering in the second stage), and aggregated back.
+Fast, mature, and the quality baseline every other filter here is compared
+against.
+
+```python
+out = core.nss.BM3D(clip, sigma=25)                       # spatial default
+fine = core.nss.BM3D(clip, sigma=25, block_size=8, block_step=4, bm_range=10)
+temporal = core.nss.BM3D(clip, sigma=25, radius=2)        # see radius note below
+```
+
+## Signature
+
+```python
+core.nss.BM3D(clip clip[, clip ref, float[] sigma = 3.0, int[] block_size = 8,
+              int[] group_size = 8, int[] block_step, int[] bm_range = 7,
+              int radius = 0, int[] ps_num, int[] ps_range = 4,
+              string temporal_mode = "legacy", int rolling_chunk = 4,
+              int rolling_cache_chunks, int rolling_cache_limit = 1,
+              int memory_limit_mb])
+```
+
+Array-typed parameters take one value per plane; a single value broadcasts.
+Omitted `block_step` adapts to `min(8, block_size)` per plane; omitted
+`ps_num` adapts to `min(2, group_size)`.
+
+## Primary parameters
+
+| Parameter | Default | Range | Meaning and impact |
+|---|---|---|---|
+| `sigma` | 3.0 | >= 0 | 8-bit noise standard deviation per plane. Controls threshold/Wiener strength. Note the input is remapped through the BM3D effective-noise profile, so the response tracks the paper's expected behaviour. `sigma=0` bypasses the plane. |
+| `block_size` | 8 | {1,2,4,8,12,16,32} | Patch edge. 8 is the general default; 12 exists for high-noise DCT profiles. Larger blocks cost quadratically per patch. |
+| `block_step` | min(8, block) | [1, block] | Stride between reference patches. Halving it roughly quadruples positions (2D) — the main quality/speed trade. |
+| `group_size` | 8 | {1,2,4,8,16,32,64} | Maximum patches per 3D stack. More matches help at high noise; marginal at low noise. |
+| `bm_range` | 7 | [1, 64] | Search window radius (`window = 2*bm_range + 1`). Cost grows quadratically; motion/texture may justify a larger window. |
+| `radius` | 0 | [0, 16] | Temporal radius in frames. >0 switches output to the weighted intermediate for `VAggregate` (legacy), or a direct normal-height result with `temporal_mode="rolling"` (experimental). |
+| `ref` | none | clip | External reference clip guiding both stages' matching (paper-style two-stage usage). |
+
+## Secondary parameters
+
+| Parameter | Default | Range | Meaning |
+|---|---|---|---|
+| `ps_num` | min(2, group) | [1, group] | Predictive-search seeds kept per temporal step (only used with `radius > 0`). |
+| `ps_range` | 4 | [1, 64] | Predictive-search window radius around each seed (temporal mode). |
+| `temporal_mode` | `"legacy"` | legacy / rolling | legacy = intermediate for explicit `VAggregate`; rolling = direct normalized output with rolling state. The corrected rolling route is experimental pending its paired performance gate. |
+| `rolling_chunk` | 4 | — | Frames per rolling commit batch (rolling mode only). |
+| `rolling_cache_chunks` / `rolling_cache_limit` | — / 1 | — | Rolling-mode cache control knobs. |
+| `memory_limit_mb` | none | — | Workspace cap; fails instead of degrading. |
+
+## Algorithm and paper
+
+Dabov, Foi, Katkovnik & Egiazarian, *Image Denoising by Sparse 3D
+Transform-Domain Collaborative Filtering*, IEEE TIP 2007. Two stages (Basic
+hard-threshold, Wiener) with the standard `2.7 * sigma` hard-threshold
+calibration, DCT/block transforms as applicable, and the plugin's deterministic
+block-matching underneath. The paper's pipeline is followed; the numerics are
+pinned down (fixed reduction orders, deterministic matcher tie-breaking) so the
+same build is reproducible bit-for-bit on a given toolchain.
+
+## Defaults rationale and performance
+
+`block=8, step=8, group=8, bm_range=7, sigma=3` is the balanced point chosen
+from this repository's calibration matrix. ~59 ms per 1080p GRAYS frame
+on a single Emerald Rapids core (~17 fps) — the fastest filter here. The
+dominant cost driver is `block_step` (positions scale as `1/step^2`), then
+`bm_range` and `group_size`.
+
+## Pitfalls
+
+- With `radius > 0` in legacy mode the output is a **taller intermediate**,
+  not a viewable frame — pipe through `core.nss.VAggregate(out, clip,
+  radius=radius)` or use `temporal_mode="rolling"`.
+- `sigma` is in 8-bit units even though the clip is float32; 25 means the
+  usual "25/255" noise.
+- Array parameters are per-plane: `block_size=[8,16]` is legal on YUV.

@@ -17,8 +17,7 @@ Configure/build/test this external source with the same compiler, Highway source
 and VapourSynth runtime as its baseline. The patch adds one compilation unit
 through the existing NCSR source glob, adds a CTest self-check, and connects the
 private frame and shrinkage hooks. Never apply it over unreviewed overlapping
-production edits. The checked baseline includes a dirty worktree, so HEAD alone
-does not identify its content.
+production edits.
 
 The private environment variable `NSS_NCSR_ALIGNMENT_FLAGS` selects bits from
 `ncsr_alignment_lab.hpp`; zero/unset leaves legacy behavior. Supported experiments

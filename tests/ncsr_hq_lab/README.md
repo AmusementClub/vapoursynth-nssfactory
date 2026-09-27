@@ -69,7 +69,7 @@ LeakSanitizer is unsupported and must not be reported as a passing leak check.
 ## Reproduce complete-frame A/B
 
 Immutable source bundles, inputs, build/test logs, plugin hashes and output
-buffers live in `artifacts/ncsr-hq-optimization-20260908/`. The source bundles
+buffers live in `artifacts/ncsr-hq-optimization/`. The source bundles
 include isolated test-only VapourSynth adapters. Build those bundles separately
 to reproduce the exact measured binaries; do not apply an experimental adapter
 to the working public filter. The benchmark refuses a plugin without the HQ

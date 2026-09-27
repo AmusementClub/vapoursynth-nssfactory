@@ -1,13 +1,10 @@
-# NCSR alignment experiment contract — 2026-09-08
+# NCSR alignment experiment contract
 
 This is an isolated exploratory campaign, not a production default change or
 an implementation of every detail of the TIP 2013 author program.
 
-## Frozen baseline
+## Baseline
 
-Current HEAD c3d08d29f4c5637451b15aeaf922cb028a6c48e4 plus the existing dirty
-working tree, captured before this experiment. Source SHA256
-`d67e630f7aa1729957139d2aeb4315bc8778035f25b5aef50062306c1f499383`.
 Do not overwrite existing production edits. All C++ changes are applied to an
 external extracted source copy and retained as a reproducible patch/archive.
 

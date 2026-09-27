@@ -39,11 +39,8 @@ Sigma sweeps with one dictionary hold patch geometry fixed, not author defaults.
 This is still the fixed-dictionary stage: it cannot answer the additional cost of
 image-adaptive/grouped learning or predict a production C++ implementation.
 
-This track starts from committed source `c3d08d29f4c5637451b15aeaf922cb028a6c48e4`
-on branch `codex/lssc-paper-baseline` in a separate worktree. The existing working
-tree's uncommitted implementation work was deliberately not imported or changed.
-Earlier frozen-plugin outputs may be consumed as external comparison evidence;
-they are not claimed to be outputs of this clean commit.
+This track is developed in isolation from the production filter. Earlier
+frozen-plugin outputs may be consumed as external comparison evidence.
 
 The purpose is to establish an inspectable quality baseline before accepting
 algorithm-changing speed/quality tradeoffs. This directory is experimental test

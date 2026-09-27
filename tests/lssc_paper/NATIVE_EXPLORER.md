@@ -97,19 +97,11 @@ most 256 atoms. Patch rows are zero-padded only inside eligible multiplies (e.g.
 81 rows and entire group. The dictionary is not reduced to 256 atoms. Short
 groups and non-SME hosts do not pay the padding/splitting cost.
 
-## Reused infrastructure and provenance
+## Reused infrastructure
 
-The ordinary checkout's uncommitted work was not imported wholesale. Existing
-existing FP64 primitive files were brought into this worktree unchanged, at
-their original repository paths:
-
-- `include/nss/cpu_twsc_full.hpp`: `6bb825de28c33f64685b411b2979f8f313b8302b4a0e85285931543814422ebd`
-- `src/cpu/twsc/math.cpp`: `cffbbab7c1fff4a1ca1261566c582dab1f10e800630ceddab09809818aca73fd`
-- `src/cpu/lssc/gemm.hpp`: `f4bd096dcd5e427ec658de29e5e4b37a4044f98265c2f1e8b3f2b0b56f9a1ff4`
-- `src/cpu/lssc/gemm.cpp`: `8a1c858a7bbad280c7b2defa18126308b4e8a37839c87e989a27cfd42fe7c1d2`
-- `src/cpu/lssc/gemm_sme.cpp`: `35b8837972bb3d71f974c7fb070db9a8a281382497fedfa3f18932a5011ff4bd`
-- `tests/test_lssc_gemm.cpp`: `30dfca253692278b8a33a2e1d5bf9343705cda6fb349e851d31fd4b5197ad4bf`
-
+The native track reuses the production FP64 primitives unchanged
+(`include/nss/cpu_twsc_full.hpp`, `src/cpu/twsc/math.cpp`, `src/cpu/lssc/gemm.hpp`,
+`src/cpu/lssc/gemm.cpp`, `src/cpu/lssc/gemm_sme.cpp`, `tests/test_lssc_gemm.cpp`).
 These provide the already-written FP64 GEMM, not a new third matrix backend.
 FP32 GEMM, soft threshold, group prox, Lipschitz preparation, SSD, Top-K, checked
 arithmetic and resource accounting come from the existing committed base.

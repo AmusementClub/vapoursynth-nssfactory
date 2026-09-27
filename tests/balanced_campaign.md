@@ -1,19 +1,19 @@
 # Bounded balanced-parameter campaign
 
-`balanced_campaign.py` is an exploratory public-API screen. It leaves production defaults untouched. The frozen six-scene archive pilot is scene-disjoint within this campaign but uses images from historical campaigns; it is not a fresh external holdout. Its 128-pixel timing is not a full-frame speed claim.
+`balanced_campaign.py` is an exploratory public-API screen. It leaves production defaults untouched. The frozen six-scene archive pilot is scene-disjoint within this campaign but reuses images from earlier archives; it is not a fresh external holdout. Its 128-pixel timing is not a full-frame speed claim.
 
 Prepare once, before looking at denoised outputs:
 
 ```sh
 python3 tests/balanced_campaign.py prepare \
-  --source artifacts/paper-compare-20260908/fixtures128 \
-           artifacts/div2k-defaults-20260908/fixtures512 \
-  --out artifacts/balanced-20260919/fixtures128
+  --source /path/to/fixtures128 \
+           /path/to/fixtures512 \
+  --out artifacts/balanced/fixtures128
 ```
 
 This writes 60 cases: six scenes, sigma 5/10/25/50/75 and two deterministic new AWGN seeds. The split is search `house`/`DIV2K-0805`, validation `barbara`/`DIV2K-0822`, and sealed `peppers256`/`DIV2K-0840`. Crops never cross scenes or resize source content. Gray and genuine RGB are distinct; MCWNNM Gray cells are explicitly unsupported.
 
-On a verified single-worker C4 guest, start with sigma 25 and one seed:
+On a pinned single-CPU host, start with sigma 25 and one seed:
 
 ```sh
 taskset -c 0 python3 tests/balanced_campaign.py run \
@@ -22,7 +22,7 @@ taskset -c 0 python3 tests/balanced_campaign.py run \
   --repeats 1 --budget-seconds 1800 --twsc-timeout 120
 ```
 
-The runner evaluates 30 recipes, including current public omissions and explicit parameter alternatives. NLM candidates calibrate strength as a fraction of known sigma. BM3D `basic-final` measures both stages. NLH v4 recipes replay explicit old parameters on the current model. NCSR invokes the actual public NCSR implementation; it does not silently substitute the separate CPU HQ path.
+The runner evaluates 30 recipes, including current public omissions and explicit parameter alternatives. NLM candidates calibrate strength as a fraction of known sigma. BM3D `basic-final` measures both stages. NLH legacy recipes replay explicit legacy parameters on the current model. NCSR invokes the actual public NCSR implementation; it does not silently substitute the separate CPU HQ path.
 
 The worker holds six source frames, loops them into unique frame numbers, disables output and intermediate BM3D caches, warms up, and times only frame requests. Source fills must remain zero and warm/final static output arrays must match exactly. Output files, hashes, unclipped float PSNR/SSIM and per-plane quality, residual response, public frame properties, backend and immutable host identity accompany every successful row. Timings qualify only for the verified CPU0/CPU1 SMT topology with at least ten sibling counter ticks, at most 1% sibling activity and no steal. Very short measurements may therefore have quality evidence but unqualified timing; increase `--target-seconds`/`--max-frames` in a new output directory when needed.
 

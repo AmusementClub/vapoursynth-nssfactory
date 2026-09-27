@@ -352,17 +352,30 @@ int test_ncsr_rowmajor_bitwise() {
             for (int j = 0; j < n; ++j) distv[j] = 0.03f * static_cast<float>((j + m) % 5);
             const float* dist = with_dist ? distv.data() : nullptr;
 
-            // 1) project: strict bitwise (explicit reduction trees in both).
+            // 1) project. Both sides use explicit reduction trees, but the
+            // tree/blocking shapes only coincide per target: NEON and AVX3
+            // produce identical bits (the C4 gate is hash-exact), while x86
+            // AVX2's 8-lane blocking splits shapes like m=15 differently and
+            // the outputs drift by a few float ulp (observed <= 9.6e-7 on
+            // AVX2 GCC 13.3). Cross-target bit-equality is not guaranteed by
+            // policy, so compare with a scaled bound: 4e-6f per unit of
+            // result magnitude tolerates the ~r-ulp tree wobble while any
+            // structural error (wrong U, group or indexing) is orders of
+            // magnitude larger.
             std::vector<float> b_old(static_cast<std::size_t>(r) * n, -1e30f),
                 b_new(static_cast<std::size_t>(r) * n, -1e30f);
             nss::gemm_tn_hwy(m, n, r, U.data(), m, group0.data(), lda, b_old.data(), r);
             nss::ncsr_project_rm(U.data(), group0.data(), m, n, lda, b_new.data());
-            for (int i = 0; i < r; ++i) for (int j = 0; j < n; ++j)
-                if (!same(b_old[static_cast<std::size_t>(i) + static_cast<std::size_t>(j) * r],
-                          b_new[static_cast<std::size_t>(i) * n + j])) {
-                    std::fprintf(stderr, "ncsr project mismatch m=%d ladv=%d i=%d j=%d\n", m, ladv, i, j);
+            for (int i = 0; i < r; ++i) for (int j = 0; j < n; ++j) {
+                const float ov = b_old[static_cast<std::size_t>(i) + static_cast<std::size_t>(j) * r];
+                const float nv = b_new[static_cast<std::size_t>(i) * n + j];
+                const float tol = 4e-6f * std::max(1.0f, std::fabs(ov));
+                if (!(std::fabs(ov - nv) <= tol)) {
+                    std::fprintf(stderr, "ncsr project mismatch m=%d ladv=%d i=%d j=%d: %.9g vs %.9g\n",
+                                 m, ladv, i, j, ov, nv);
                     return 1;
                 }
+            }
 
             // 2) finish on identical project output. mean/variance feed
             // sqrt/var->ti, a scalar accumulation the old code evaluated in
@@ -399,7 +412,17 @@ int test_ncsr_rowmajor_bitwise() {
             }
 
             // 3) reconstruct on identical finished codes (old finish output,
-            // transposed view): strict bitwise (per-element serial chains).
+            // transposed view). The row-major kernel uses explicit MulAdd
+            // chains (always FMA) while the old finish path is a default-class
+            // scalar `sum += a*b` chain whose contraction is compiler/target
+            // context; on x86 AVX2 GCC 13.3 the two therefore differ by a few
+            // float ulp (observed <= 4.8e-7) even though both are policy-valid
+            // (contracts: cross-compiler outputs are not byte-identical; the
+            // C4 GCC gate is the hash-exact harness). Same style of scaled
+            // bound as the project comparison above: 4e-6f per unit of result
+            // magnitude tolerates the contraction wobble while structural
+            // errors (wrong U, codes, mean or indexing) are orders of
+            // magnitude larger.
             auto group_old = group0;
             nss::detail::finish_pca_reconstruction(group_old.data(), m, n, lda, U.data(), codes_old.data(),
                                                    meanv.data());
@@ -409,10 +432,13 @@ int test_ncsr_rowmajor_bitwise() {
                     codes_old[static_cast<std::size_t>(i) + static_cast<std::size_t>(j) * r];
             auto group_new = group0;
             nss::ncsr_reconstruct_rm(group_new.data(), m, n, lda, U.data(), codes_old_rm.data(), meanv.data());
-            if (std::memcmp(group_old.data(), group_new.data(), group_old.size() * sizeof(float)) != 0) {
-                std::fprintf(stderr, "ncsr reconstruct mismatch m=%d ladv=%d dist=%d sigma=%g\n",
-                             m, ladv, with_dist, sigma);
-                return 1;
+            for (std::size_t z = 0; z < group_old.size(); ++z) {
+                const float tol = 4e-6f * std::max(1.0f, std::fabs(group_old[z]));
+                if (!(std::fabs(group_old[z] - group_new[z]) <= tol)) {
+                    std::fprintf(stderr, "ncsr reconstruct mismatch m=%d ladv=%d dist=%d sigma=%g at %zu: %.9g vs %.9g\n",
+                                 m, ladv, with_dist, sigma, z, group_old[z], group_new[z]);
+                    return 1;
+                }
             }
         }
     }
@@ -445,6 +471,20 @@ double chain_sep_variant(const double* a, const double* b, int k) {
     return s;
 }
 
+// x86 AVX2 GCC 13.3 additionally emits *partial* contraction — observed
+// fma(a2, b2, round(p0 + p1)) for a k=3 chain — which bitwise-matches neither
+// pure variant. A mixed contraction still lies between the two pure forms
+// within ~k ulps of each, so accept got if it bitwise-matches either variant
+// or stays within 1e-12 of both (k <= 64, terms in [-1, 1]: the pure forms
+// themselves differ by far less than 1e-12, while structural errors — missed
+// or duplicated term, wrong indexing — are ~1.0).
+bool chain_accept(double got, const double* a, const double* b, int k) {
+    const double f = chain_fma_variant(a, b, k);
+    const double s = chain_sep_variant(a, b, k);
+    if (same(got, f) || same(got, s)) return true;
+    return std::fabs(got - f) <= 1e-12 && std::fabs(got - s) <= 1e-12;
+}
+
 int test_twsc_gemm_bitwise() {
     std::mt19937 rng(41);
     std::uniform_real_distribution<double> u(-1.0, 1.0);
@@ -465,7 +505,7 @@ int test_twsc_gemm_bitwise() {
             double av[64], bv[64];
             for (int l = 0; l < k; ++l) { av[l] = a[i + l * m]; bv[l] = b[l + j * k]; }
             const double got = c1[static_cast<std::size_t>(i) + j * m];
-            if (!same(got, chain_fma_variant(av, bv, k)) && !same(got, chain_sep_variant(av, bv, k))) {
+            if (!chain_accept(got, av, bv, k)) {
                 std::fprintf(stderr, "twsc_gemm_nn mismatch m=%d n=%d k=%d i=%d j=%d got=%.17g\n",
                              m, n, k, i, j, got);
                 return 1;
@@ -482,7 +522,7 @@ int test_twsc_gemm_bitwise() {
             double av[64], bv[64];
             for (int l = 0; l < m; ++l) { av[l] = a[l + i * m]; bv[l] = b[l + j * m]; }
             const double got = c1[static_cast<std::size_t>(i) + j * k];
-            if (!same(got, chain_fma_variant(av, bv, m)) && !same(got, chain_sep_variant(av, bv, m))) {
+            if (!chain_accept(got, av, bv, m)) {
                 std::fprintf(stderr, "twsc_gemm_tn mismatch m=%d n=%d k=%d i=%d j=%d got=%.17g\n",
                              m, n, k, i, j, got);
                 return 1;
