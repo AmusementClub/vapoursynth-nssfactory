@@ -78,11 +78,14 @@ VSAPI make_api() {
     return api;
 }
 bool run(int failure, bool workspace_failure, std::size_t limit, bool expect_error, int allocation_failure = 0, bool rolling = false) {
+    std::fprintf(stderr, "run: begin f=%d wf=%d lim=%zu\n", failure, (int)workspace_failure, limit);
     const auto api = make_api();
     calls = acquired = errors = 0; fail_at = failure; fail_workspace = workspace_failure;
     auto budget = std::make_shared<nss::ResourceBudget>(limit);
+    std::fputs("run: budget\n", stderr);
     {
         nss::ResourceScope creation(budget);
+        std::fputs("run: scope\n", stderr);
         RollingData roll;
         auto& data = roll.bm;
         data.vi.format = format; data.vi.width = 16; data.vi.height = 16; data.vi.numFrames = 5;
@@ -91,16 +94,19 @@ bool run(int failure, bool workspace_failure, std::size_t limit, bool expect_err
         data.block_step[0] = 8; data.bm_range[0] = 1;
         if (rolling) { data.ws.set_serial(); roll.rolling_chunk = 2; roll.cache_limit = 1; }
         new_calls = 0; new_failure = allocation_failure; count_new = true;
+        std::fputs("run: before checked_frame\n", stderr);
         const VSFrame* result = rolling
             ? nss::checked_frame<rollingGetFrame>(2, arAllFramesReady, &roll, nullptr, nullptr, nullptr, &api)
             : nss::checked_frame<bm3dGetFrame>(2, arAllFramesReady, &data, nullptr, nullptr, nullptr, &api);
         count_new = false;
+        std::fputs("run: after checked_frame\n", stderr);
         if (result) api.freeFrame(result);
         if (allocation_failure && result) {
             // std::stable_sort may safely fall back to in-place sorting.
             if (errors) return false;
         } else if (expect_error != (errors == 1) || (expect_error && result) || (!expect_error && !result)) return false;
     }
+    std::fputs("run: pre-snapshot\n", stderr);
     const auto stats = budget->snapshot();
     if (input.refs || live_outputs || stats.owned) return false;
     for (auto bytes : stats.bytes) if (bytes) return false;
