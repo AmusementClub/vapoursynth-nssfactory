@@ -5,6 +5,9 @@
 #include <cstdio>
 #include <map>
 #include <string>
+#if defined(_WIN32)
+#include <malloc.h>
+#endif
 
 namespace {
 int new_failure = 0, new_calls = 0;
@@ -152,7 +155,13 @@ bool unequal_stride_adapter() {
 }
 }
 int workspace_test_memalign(void** ptr, std::size_t alignment, std::size_t bytes) {
-    return fail_workspace ? ENOMEM : posix_memalign(ptr, alignment, bytes);
+    if (fail_workspace) return ENOMEM;
+#if defined(_WIN32)
+    *ptr = _aligned_malloc(bytes, alignment);
+    return *ptr ? 0 : ENOMEM;
+#else
+    return posix_memalign(ptr, alignment, bytes);
+#endif
 }
 int main() {
     if (!unequal_stride_adapter()) return 1;
