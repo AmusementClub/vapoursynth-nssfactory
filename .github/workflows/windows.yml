@@ -30,8 +30,7 @@ jobs:
       - name: configure
         run: |
           $vsInclude = python -c "import vapoursynth, pathlib; print(pathlib.Path(vapoursynth.__file__).parent / 'include')"
-          echo "VapourSynth_INCLUDE_DIR=$vsInclude" >> $env:GITHUB_ENV
-          cmake -S . -B build -T ClangCL -DCMAKE_BUILD_TYPE=Release -DNSS_HWY_TARGET_MODE=dynamic
+          cmake -S . -B build -T ClangCL -DCMAKE_BUILD_TYPE=Release -DNSS_HWY_TARGET_MODE=dynamic -DVapourSynth_INCLUDE_DIR="$vsInclude" 
       - name: build
         run: cmake --build build --config Release -j
       - name: unit tests
