@@ -225,7 +225,6 @@ set(NSS_CPU_SOURCES
   src/cpu/wnnm/jacobi8.cpp
   src/cpu/wnnm/shrink.cpp
   src/host/avx2.cpp
-  src/host/workspace.cpp
 )
 file(GLOB NSS_CPU_SECOND_WAVE CONFIGURE_DEPENDS RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}
   src/cpu/common/*.cpp
@@ -368,6 +367,16 @@ target_include_directories(nss_cpu
 )
 target_link_libraries(nss_svd_qreplay PUBLIC hwy)
 target_link_libraries(nss_cpu PUBLIC nss_svd_qreplay hwy)
+
+# workspace.cpp lives outside nss_cpu so tests can substitute its allocator
+# (tests/workspace_alloc_adapter.cpp) without colliding with the library copy;
+# ELF/Mach-O tolerate that overlap, lld-link does not. Only the host filter
+# layer and tests use nss::Workspace; src/cpu does not.
+find_package(Threads REQUIRED)
+add_library(nss_workspace STATIC src/host/workspace.cpp)
+target_include_directories(nss_workspace PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(nss_workspace PRIVATE Threads::Threads)
 target_compile_definitions(nss_cpu
   PUBLIC "NSS_VERSION_STRING=\"${NSS_GIT_DESCRIBE}\""
 )
@@ -531,7 +540,7 @@ endif()
 set(_nss_unclassified ${NSS_CPU_SOURCES})
 list(REMOVE_ITEM _nss_unclassified
   ${NSS_CLASSIFIED_CPU_SOURCES} ${NSS_DEFAULT_CPU_SOURCES}
-  src/host/avx2.cpp src/host/workspace.cpp)
+  src/host/avx2.cpp)
 if(_nss_unclassified)
   message(FATAL_ERROR "CPU sources without a flag-class assignment (add to a class or NSS_DEFAULT_CPU_SOURCES): ${_nss_unclassified}")
 endif()
@@ -562,7 +571,7 @@ if(VapourSynth_FOUND)
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
   )
-  target_link_libraries(nss PRIVATE nss_cpu VapourSynth::VapourSynth)
+  target_link_libraries(nss PRIVATE nss_cpu nss_workspace VapourSynth::VapourSynth)
 endif()
 
 enable_testing()
