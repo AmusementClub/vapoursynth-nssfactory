@@ -166,6 +166,31 @@ if(NSS_HWY_TARGET_MODE STREQUAL "portable-test")
 endif()
 find_package(VapourSynth)
 
+# clang-cl parses the MSVC command-line dialect and silently IGNORES GNU-style
+# flags (observed: -ffast-math/-fno-fast-math/-ffp-contract=off/-O3 dropped with
+# -Wunknown-argument), which voids the flag-class numerical contract. Forward
+# every GNU-style flag through /clang: on that driver; GNU/Clang drivers use
+# the lists unchanged. -fvisibility=hidden is dropped (default on Windows).
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+  set(NSS_CLANG_CL ON)
+else()
+  set(NSS_CLANG_CL OFF)
+endif()
+function(nss_cc_flags out)
+  if(NSS_CLANG_CL)
+    set(translated "")
+    foreach(flag ${ARGN})
+      if(NOT flag STREQUAL "-fvisibility=hidden")
+        list(APPEND translated "/clang:${flag}")
+      endif()
+    endforeach()
+    set(${out} ${translated} PARENT_SCOPE)
+  else()
+    set(${out} ${ARGN} PARENT_SCOPE)
+  endif()
+endfunction()
+nss_cc_flags(NSS_SAFE_PIN_COMPILE_OPTIONS -O3 -fno-fast-math -ffp-contract=off)
+
 set(NSS_GIT_DESCRIBE "" CACHE STRING "Revision recorded in plugin and benchmark metadata")
 if(NOT NSS_GIT_DESCRIBE)
   execute_process(
@@ -285,7 +310,7 @@ if(NSS_ENABLE_SVD_LIBRARY)
   target_link_libraries(nss_svd_library PRIVATE nss_svd_provider)
   target_compile_definitions(nss_svd_library PRIVATE NSS_ENABLE_SVD_LIBRARY=1)
   set_source_files_properties(src/cpu/twsc/svd_library.cpp PROPERTIES
-    COMPILE_OPTIONS "-O3;-fno-fast-math;-ffp-contract=off")
+    COMPILE_OPTIONS "${NSS_SAFE_PIN_COMPILE_OPTIONS}")
 
   get_filename_component(NSS_SVD_LAPACKE_LIBRARY_REAL "${NSS_SVD_LAPACKE_LIBRARY}" REALPATH)
   file(SHA256 "${NSS_SVD_LAPACKE_LIBRARY_REAL}" NSS_SVD_LAPACKE_LIBRARY_SHA256)
@@ -352,7 +377,8 @@ if(NSS_HWY_X86)
 else()
   message(STATUS "NSSFactory: building portable Highway targets for ${CMAKE_SYSTEM_PROCESSOR}")
 endif()
-target_compile_options(nss_cpu PRIVATE ${NSS_CPU_ISA_OPTIONS})
+nss_cc_flags(NSS_CPU_ISA_OPTIONS_CC ${NSS_CPU_ISA_OPTIONS})
+target_compile_options(nss_cpu PRIVATE ${NSS_CPU_ISA_OPTIONS_CC})
 # Keep the minimum supported x86 target in the build contract as well as in
 # the per-TU fallback header.  This prevents a newly added Highway TU from
 # silently bringing back pre-AVX2 dispatch targets.
@@ -378,6 +404,15 @@ list(APPEND NSS_SAFE_HIDDEN_COMPILE_OPTIONS -fvisibility=hidden)
 set(NSS_HOT_HIDDEN_COMPILE_OPTIONS ${NSS_HOT_COMPILE_OPTIONS})
 list(APPEND NSS_HOT_HIDDEN_COMPILE_OPTIONS -fvisibility=hidden)
 
+# Canonical lists stay GNU-style for the guardrails below; use sites take the
+# clang-cl-translated copies.
+nss_cc_flags(NSS_HOT_COMPILE_OPTIONS_CC ${NSS_HOT_COMPILE_OPTIONS})
+nss_cc_flags(NSS_SAFE_COMPILE_OPTIONS_CC ${NSS_SAFE_COMPILE_OPTIONS})
+nss_cc_flags(NSS_FINITE_HOT_COMPILE_OPTIONS_CC ${NSS_FINITE_HOT_COMPILE_OPTIONS})
+nss_cc_flags(NSS_MATCHER_COMPILE_OPTIONS_CC ${NSS_MATCHER_COMPILE_OPTIONS})
+nss_cc_flags(NSS_SAFE_HIDDEN_COMPILE_OPTIONS_CC ${NSS_SAFE_HIDDEN_COMPILE_OPTIONS})
+nss_cc_flags(NSS_HOT_HIDDEN_COMPILE_OPTIONS_CC ${NSS_HOT_HIDDEN_COMPILE_OPTIONS})
+
 # Flag-class membership is a whitelist: every CPU translation unit belongs to
 # exactly one class below, or to NSS_DEFAULT_CPU_SOURCES (plain target-level
 # options). The validation block after the class definitions turns a missing
@@ -391,7 +426,7 @@ set(NSS_PINNED_SOURCES
   src/cpu/nlh/fused.cpp
 )
 set_source_files_properties(${NSS_PINNED_SOURCES}
-  PROPERTIES COMPILE_OPTIONS "-O3;-fno-fast-math;-ffp-contract=off")
+  PROPERTIES COMPILE_OPTIONS "${NSS_SAFE_PIN_COMPILE_OPTIONS}")
 set(NSS_HOT_SOURCES
   src/cpu/nlm/nlm.cpp
   src/cpu/bm/ssd.cpp
@@ -415,7 +450,7 @@ set(NSS_HOT_SOURCES
   src/cpu/mcwnnm/match_nch.cpp
 )
 set_source_files_properties(${NSS_HOT_SOURCES}
-  PROPERTIES COMPILE_OPTIONS "${NSS_HOT_COMPILE_OPTIONS}")
+  PROPERTIES COMPILE_OPTIONS "${NSS_HOT_COMPILE_OPTIONS_CC}")
 # LSSC k-means step kernels compare computed distances like the matchers do;
 # keep IEEE comparison semantics (-fno-finite-math-only) while the SSD
 # arithmetic itself matches the vec.cpp HOT class bit-for-bit.
@@ -423,23 +458,23 @@ set(NSS_FINITE_HOT_SOURCES
   src/cpu/lssc/cluster_ssd.cpp
 )
 set_source_files_properties(${NSS_FINITE_HOT_SOURCES}
-  PROPERTIES COMPILE_OPTIONS "${NSS_FINITE_HOT_COMPILE_OPTIONS}")
+  PROPERTIES COMPILE_OPTIONS "${NSS_FINITE_HOT_COMPILE_OPTIONS_CC}")
 set(NSS_MATCHER_SOURCES
   src/cpu/nlh/match16.cpp
   src/cpu/nlm/distance_horizontal.cpp
 )
 set_source_files_properties(${NSS_MATCHER_SOURCES}
-  PROPERTIES COMPILE_OPTIONS "${NSS_MATCHER_COMPILE_OPTIONS}")
+  PROPERTIES COMPILE_OPTIONS "${NSS_MATCHER_COMPILE_OPTIONS_CC}")
 set(NSS_SAFE_HIDDEN_SOURCES
   src/cpu/wnnm/svd_batch8_u_compat.cpp
 )
 set_source_files_properties(${NSS_SAFE_HIDDEN_SOURCES}
-  PROPERTIES COMPILE_OPTIONS "${NSS_SAFE_HIDDEN_COMPILE_OPTIONS}")
+  PROPERTIES COMPILE_OPTIONS "${NSS_SAFE_HIDDEN_COMPILE_OPTIONS_CC}")
 set(NSS_HOT_HIDDEN_SOURCES
   src/cpu/wnnm/svd_batch8_qreplay.cpp
 )
 set_source_files_properties(${NSS_HOT_HIDDEN_SOURCES}
-  PROPERTIES COMPILE_OPTIONS "${NSS_HOT_HIDDEN_COMPILE_OPTIONS}")
+  PROPERTIES COMPILE_OPTIONS "${NSS_HOT_HIDDEN_COMPILE_OPTIONS_CC}")
 set(NSS_SAFE_SOURCES
   src/cpu/common/soft_threshold.cpp
   src/cpu/common/admm_x.cpp
@@ -448,7 +483,7 @@ set(NSS_SAFE_SOURCES
   src/cpu/lssc/reconstruct.cpp
 )
 set_source_files_properties(${NSS_SAFE_SOURCES}
-  PROPERTIES COMPILE_OPTIONS "${NSS_SAFE_COMPILE_OPTIONS}")
+  PROPERTIES COMPILE_OPTIONS "${NSS_SAFE_COMPILE_OPTIONS_CC}")
 
 # CPU TUs deliberately built with plain target-level options (no per-file
 # flags). Keep this list explicit so the default class is a decision, not a
@@ -506,7 +541,7 @@ if(_nss_stale)
   message(FATAL_ERROR "flag-class entries not present in nss_cpu sources: ${_nss_stale}")
 endif()
 set(_nss_finite_hot_expected ${NSS_HOT_COMPILE_OPTIONS} -fno-finite-math-only)
-if(NOT "${NSS_FINITE_HOT_COMPILE_OPTIONS}" STREQUAL "${_nss_finite_hot_expected}")
+if(NOT "${NSS_FINITE_HOT_COMPILE_OPTIONS_CC}" STREQUAL "${_nss_finite_hot_expected}")
   message(FATAL_ERROR "NSS_FINITE_HOT_COMPILE_OPTIONS must be exactly NSS_HOT_COMPILE_OPTIONS plus -fno-finite-math-only")
 endif()
 if(VapourSynth_FOUND)
