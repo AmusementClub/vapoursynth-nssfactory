@@ -13,7 +13,6 @@ permissions:
   contents: write
 
 env:
-  VS_HEADERS_TAG: R75
   CCACHE_DIR: ${{ github.workspace }}/.ccache
   CCACHE_MAXSIZE: 2G
   CMAKE_C_COMPILER_LAUNCHER: ccache
@@ -31,11 +30,10 @@ jobs:
           restore-keys: release-ccache-linux-
       - name: packages
         run: sudo apt-get update && sudo apt-get install -y cmake g++ git curl ccache
-      - name: VapourSynth API4 headers
+      - name: VapourSynth host (wheel bundles core DLLs and API4 headers)
         run: |
-          curl -sL "https://github.com/vapoursynth/vapoursynth/archive/refs/tags/${VS_HEADERS_TAG}.tar.gz" \
-            | tar -xz -C /tmp
-          echo "VapourSynth_INCLUDE_DIR=/tmp/vapoursynth-${VS_HEADERS_TAG}/include" >> "$GITHUB_ENV"
+          pip install vapoursynth numpy
+          echo "VapourSynth_INCLUDE_DIR=$(python3 -c "import vapoursynth, pathlib; print(pathlib.Path(vapoursynth.__file__).parent / 'include')")" >> "$GITHUB_ENV"
       - name: configure
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
@@ -44,6 +42,14 @@ jobs:
         run: cmake --build build -j
       - name: unit tests
         run: ctest --test-dir build --output-on-failure
+      - name: host smoke (default + temporal + explicit parameters)
+        run: python3 tests/smoke_defaults.py
+        env:
+          NSS_SO: ${{ github.workspace }}/build/libnss.so
+      - name: parameter bounds probe
+        run: python3 tests/test_parameter_bounds_plugin.py
+        env:
+          NSS_SO: ${{ github.workspace }}/build/libnss.so
       - name: package
         run: |
           test -f build/libnss.so
@@ -67,12 +73,10 @@ jobs:
           key: release-ccache-macos-${{ github.sha }}
           restore-keys: release-ccache-macos-
       - name: packages
-        run: brew install ccache
-      - name: VapourSynth API4 headers
         run: |
-          curl -sL "https://github.com/vapoursynth/vapoursynth/archive/refs/tags/${VS_HEADERS_TAG}.tar.gz" \
-            | tar -xz -C /tmp
-          echo "VapourSynth_INCLUDE_DIR=/tmp/vapoursynth-${VS_HEADERS_TAG}/include" >> "$GITHUB_ENV"
+          brew install ccache
+          pip3 install vapoursynth numpy
+          echo "VapourSynth_INCLUDE_DIR=$(python3 -c "import vapoursynth, pathlib; print(pathlib.Path(vapoursynth.__file__).parent / 'include')")" >> "$GITHUB_ENV"
       - name: configure
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
@@ -81,6 +85,14 @@ jobs:
         run: cmake --build build -j
       - name: unit tests
         run: ctest --test-dir build --output-on-failure
+      - name: host smoke (default + temporal + explicit parameters)
+        run: python3 tests/smoke_defaults.py
+        env:
+          NSS_SO: ${{ github.workspace }}/build/libnss.dylib
+      - name: parameter bounds probe
+        run: python3 tests/test_parameter_bounds_plugin.py
+        env:
+          NSS_SO: ${{ github.workspace }}/build/libnss.dylib
       - name: package
         run: |
           test -f build/libnss.dylib
@@ -94,8 +106,49 @@ jobs:
           path: nssfactory-${{ inputs.tag }}-macos-arm64.tar.gz
           if-no-files-found: error
 
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: release-ccache-windows-${{ github.sha }}
+          restore-keys: release-ccache-windows-
+      - name: packages
+        run: |
+          choco install ccache --no-progress
+          pip install vapoursynth numpy scipy
+      - name: configure
+        run: |
+          $vsInclude = python -c "import vapoursynth, pathlib; print(pathlib.Path(vapoursynth.__file__).parent / 'include')"
+          cmake -S . -B build -T ClangCL -DCMAKE_BUILD_TYPE=Release -DNSS_HWY_TARGET_MODE=dynamic -DVapourSynth_INCLUDE_DIR="$vsInclude"
+      - name: build
+        run: cmake --build build --config Release -j
+      - name: unit tests
+        run: ctest --test-dir build -C Release --output-on-failure
+      - name: host smoke (default + temporal + explicit parameters)
+        run: python tests/smoke_defaults.py
+        env:
+          NSS_SO: ${{ github.workspace }}\build\Release\libnss.dll
+      - name: parameter bounds probe
+        run: python tests/test_parameter_bounds_plugin.py
+        env:
+          NSS_SO: ${{ github.workspace }}\build\Release\libnss.dll
+      - name: package
+        run: |
+          $pkg = "nssfactory-${{ inputs.tag }}-windows-x86_64"
+          New-Item -ItemType Directory "pkg/$pkg" | Out-Null
+          Copy-Item build\Release\libnss.dll, README.md, LICENSE, NOTICE "pkg/$pkg/"
+          tar -C pkg -a -c -f "$pkg.zip" "$pkg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86_64
+          path: nssfactory-${{ inputs.tag }}-windows-x86_64.zip
+          if-no-files-found: error
+
   release:
-    needs: [build-linux, build-macos]
+    needs: [build-linux, build-macos, build-windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -107,4 +160,4 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release create "${{ inputs.tag }}" --draft --target "${{ github.sha }}" --generate-notes \
-            dist/linux-x86_64/*.tar.gz dist/macos-arm64/*.tar.gz
+            dist/linux-x86_64/*.tar.gz dist/macos-arm64/*.tar.gz dist/windows-x86_64/*.zip
