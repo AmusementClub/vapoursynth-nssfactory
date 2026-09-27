@@ -164,13 +164,18 @@ int workspace_test_memalign(void** ptr, std::size_t alignment, std::size_t bytes
 #endif
 }
 int main() {
+    std::fputs("phase stride-adapter\n", stderr);
     if (!unequal_stride_adapter()) return 1;
+    std::fputs("phase frame-failures\n", stderr);
     input.pixels.resize(256, .25f);
     for (int failure = 1; failure <= 8; ++failure) {
         if (!run(failure, false, 1<<24, true)) { std::fprintf(stderr,"frame failure point %d leaked or escaped\n",failure); return 1; }
     }
+    std::fputs("phase workspace-enomem\n", stderr);
     if (!run(0, true, 1<<24, true) || acquired != 7) { std::fprintf(stderr,"original seven-reference workspace ENOMEM failed\n"); return 1; }
+    std::fputs("phase limits\n", stderr);
     if (!run(0, false, 1, true) || !run(0, false, 1<<24, false)) return 1;
+    std::fputs("phase operator-new-injection\n", stderr);
     int injected = 0;
     for (bool rolling : {false, true}) {
         if (!run(0, false, 1<<24, false, 0, rolling)) return 1;
