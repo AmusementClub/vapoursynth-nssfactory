@@ -174,7 +174,9 @@ int main() {
     std::fputs("phase workspace-enomem\n", stderr);
     if (!run(0, true, 1<<24, true) || acquired != 7) { std::fprintf(stderr,"original seven-reference workspace ENOMEM failed\n"); return 1; }
     std::fputs("phase limits\n", stderr);
-    if (!run(0, false, 1, true) || !run(0, false, 1<<24, false)) return 1;
+    if (!run(0, false, 1, true)) { std::fputs("limits: tiny-budget run failed\n", stderr); return 1; }
+    std::fputs("phase limits-2\n", stderr);
+    if (!run(0, false, 1<<24, false)) return 1;
     std::fputs("phase operator-new-injection\n", stderr);
     int injected = 0;
     for (bool rolling : {false, true}) {
