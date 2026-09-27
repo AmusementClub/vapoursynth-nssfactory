@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #include "nss/cpu_twsc_full.hpp"
 #include <algorithm>
 #include <chrono>

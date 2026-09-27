@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 import collections,hashlib,json,re,subprocess,sys
 from pathlib import Path
 out=Path(sys.argv[3]);out.mkdir(exist_ok=False)

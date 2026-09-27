@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 # Google Highway, pinned release tag. Do not float to master.
 # Tag 1.4.0 — current stable as of 2026-04-23 (github.com/google/highway/releases).
 set(NSS_HIGHWAY_GIT_TAG "1.4.0")

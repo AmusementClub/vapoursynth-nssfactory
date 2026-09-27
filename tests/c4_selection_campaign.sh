@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-2.0-only
 set -euo pipefail
 source /opt/nss-c4/bin/guest_env.sh
 export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1

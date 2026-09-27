@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Private current-source LSSC stage capture and dictionary replay."""
 import argparse,hashlib,json,shlex,subprocess
 from pathlib import Path

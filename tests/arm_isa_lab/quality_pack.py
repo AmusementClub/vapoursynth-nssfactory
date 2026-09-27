@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Freeze clean/noisy image and synthetic-motion fixtures for native gates.
 
 PNG samples are interpreted as encoded RGB test values, without an inferred

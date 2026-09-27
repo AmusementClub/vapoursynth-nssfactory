@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-2.0-only
 # C4 diagnostics only. Never run concurrently with the paired wall-time gate.
 set -euo pipefail
 if [[ $# -lt 2 || $# -gt 4 ]]; then

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Recompute quality and audit paired HQ optimization evidence."""
 import argparse
 from collections import defaultdict

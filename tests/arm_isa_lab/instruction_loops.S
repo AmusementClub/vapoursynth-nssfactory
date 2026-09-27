@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 // Isolated opcode-count controls. Not an application throughput benchmark.
 .arch armv9-a+sve2
 .text

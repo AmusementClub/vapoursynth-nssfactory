@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Syntax-audit current CPU TUs as Highway SVE2_128 without editing source.
 
 This deliberately does not build/load a production SVE plugin or change its

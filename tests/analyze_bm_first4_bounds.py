@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Reassess exact first-four-row BM3D pruning on real gray8 samples.
 
 This models four threshold schedules while preserving the final stable top-8:

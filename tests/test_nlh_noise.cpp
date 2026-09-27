@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #include "nss/cpu_image.hpp"
 #include "nss/backend.hpp"
 #include "hwy/highway.h"

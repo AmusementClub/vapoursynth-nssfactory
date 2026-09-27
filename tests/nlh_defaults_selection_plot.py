@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Plot frozen selection finalists, keeping reference quality apart from cost.
 
 Reference runs can use a different warmup policy, so their PSNR/SSIM appear only

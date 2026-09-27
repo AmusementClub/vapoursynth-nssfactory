@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Compare math probes with a separately built SPAMS 2.1 executable.
 
 The external binary is a research oracle, not a linked NSSFactory dependency and

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #include <atomic>
 
 #define NSS_SVD_QREPLAY_ROW_MAJOR 1

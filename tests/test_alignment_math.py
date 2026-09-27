@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Independent FP64 references for the TWSC v3 / NLH v4 contracts.
 
 Expected values use NumPy matrices and SciPy's Schur-based Sylvester solve,

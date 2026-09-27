@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #pragma once
 
 // Batched k-means step kernels for lssc_cluster_workspace.

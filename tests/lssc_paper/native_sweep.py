@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Apply a frozen exploration policy set serially to existing hashed fixtures."""
 import argparse
 from contextlib import redirect_stdout

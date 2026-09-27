@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 // Standalone sanitizer/ABI smoke. Numerical SVD/KKT oracles live in test_native.py.
 #include "explore.hpp"
 

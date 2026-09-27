@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Native C4A frame-boundary PMU profile. Diagnostic, never a speedup gate.
 
 Uses the existing integration worker: inputs/preloading/hashing are outside

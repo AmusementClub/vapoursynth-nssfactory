@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-2.0-only
 set -Eeuo pipefail
 
 PROFILE=${NSS_PROFILE_SCRIPT:?set NSS_PROFILE_SCRIPT}

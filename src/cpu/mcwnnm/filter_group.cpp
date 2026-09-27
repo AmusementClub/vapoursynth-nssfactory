@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #include "nss/cpu_mcwnnm.hpp"
 
 #include "nss/cpu_common.hpp"

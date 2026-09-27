@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 // Native Linux capability check. No unsupported ISA is executed.
 #include <asm/hwcap.h>
 #include <cerrno>

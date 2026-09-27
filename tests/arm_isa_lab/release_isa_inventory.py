@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Static project ISA inventory; runtime selection and samples are separate evidence."""
 import argparse,hashlib,json,platform,re,subprocess
 from pathlib import Path

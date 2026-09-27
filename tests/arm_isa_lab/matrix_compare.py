@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Compare identical public fixtures without promoting triage to admission."""
 import argparse,hashlib,json,math
 from pathlib import Path

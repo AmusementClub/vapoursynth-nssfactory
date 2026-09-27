@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #include "cpu/finishers.hpp"
 #include "nss/resources.hpp"
 #include "nss/avx2_policy.hpp"

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Single-change diagnostic: current LSSC ISTA budget 16 -> 64, isolated source.
 set -Eeuo pipefail
 deadline=$((SECONDS + 10800))

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 // Linux validation-only allocator interposer. Only calls originating in NSS_SO
 // can fail; VapourSynth/Python allocations continue to use libc normally.
 #include <atomic>

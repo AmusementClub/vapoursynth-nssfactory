@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Complete the legal block/step grid around a frozen development shortlist.
 
 This is a development-only sensitivity screen. The selected structures are

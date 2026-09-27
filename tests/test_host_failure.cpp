@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 // Compile the actual BM3D callback against a counted VS provider.
 #include "../src/host/filter_bm3d.cpp"
 #include <cerrno>

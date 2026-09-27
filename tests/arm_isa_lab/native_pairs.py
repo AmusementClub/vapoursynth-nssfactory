@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Same-host native release pairs with frame latency and resource evidence.
 
 This produces measurements, not automatic numerical or release admission.

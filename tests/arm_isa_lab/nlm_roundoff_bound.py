@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Check FP32 rolling-sum roundoff and FastExp against captured NLM stages."""
 import argparse,hashlib,json
 from pathlib import Path

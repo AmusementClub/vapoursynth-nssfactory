@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Independent offline payload, repeated-output and captured-factor audit."""
 import argparse
 import hashlib

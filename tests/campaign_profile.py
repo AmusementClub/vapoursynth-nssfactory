@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Bounded C4 L1/L2 and DWARF collection at the worker's frame boundary.
 
 Wall timing is collected without perf. Counter/sample timings are diagnostics.

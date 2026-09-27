@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Plot descriptive paired-seed response at unchanged injected sigma."""
 import argparse
 import json

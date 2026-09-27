@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Independent time-index and public-sigma oracles (not legacy=rolling alone)."""
 import os
 from concurrent.futures import ThreadPoolExecutor

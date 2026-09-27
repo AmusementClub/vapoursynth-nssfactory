@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Independent FP64 NLM stages for frozen grayscale, spatial Welsch cases."""
 import argparse
 import hashlib

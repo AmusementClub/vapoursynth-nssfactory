@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Bounded current-public-API parameter screen; never an automatic default change.
 
 prepare freezes scene splits before any outputs; run uses isolated timed workers,

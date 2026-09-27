@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 // Re-included per Highway target. Layout experiments only; generated arithmetic
 // and row-then-column ordering match Dct12Batch. No overread of partial tiles.
 #if HWY_MAX_BYTES >= 32

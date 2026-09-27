@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Gate perf at the same frame-request boundary as integration wall timing."""
 import argparse
 import json

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Run the paired C4 gate for the generated DCT and NCSR FastExp round."""
 
 from __future__ import annotations

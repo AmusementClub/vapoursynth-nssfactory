@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-2.0-only
 # One-at-a-time legal parameter sweep: 1 timed frame + 1 perf record per config.
 # Requires the same guest env as run_c4_topdown_profile.sh.
 set -Eeuo pipefail

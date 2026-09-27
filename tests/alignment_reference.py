@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 """Readable independent image reference for the documented TWSC v3 / NLH v4 models.
 
 This implements the chosen mathematical contract, not the authors' closed MEX

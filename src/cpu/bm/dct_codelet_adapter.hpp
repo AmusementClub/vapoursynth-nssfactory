@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 // Included inside nss::HWY_NAMESPACE after highway.h. No include guard: foreach_target
 // re-includes the TU once per ISA. Generated codelets receive the Highway tag as d.
 #define R float

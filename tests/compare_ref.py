@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Compare nss vs nlm_ispc / bm3dcpu on PSNR and wall time."""
 
 from __future__ import annotations

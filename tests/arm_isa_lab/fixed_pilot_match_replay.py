@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Freeze pilot and matching separately for compiler-sensitive BM3D cases."""
 import argparse,hashlib,json,os,subprocess,sys
 from pathlib import Path

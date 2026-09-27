@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* Linux/glibc diagnostic only: cc -shared -fPIC -O2 c4_alloc_probe.c -o alloc.so
  * LD_PRELOAD=alloc.so python c4_bm_memory.py ...
  * Counts allocation requests process-wide, including Python and VapourSynth.

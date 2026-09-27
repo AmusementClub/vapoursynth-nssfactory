@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Frozen-tree/current-tree output identity for selected unchanged models."""
 import argparse
 import json

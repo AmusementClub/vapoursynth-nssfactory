@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Causal matcher replay for retained public-matrix numerical differences."""
 import argparse
 import hashlib

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Offline selection-policy guards, including censored cold references."""
 import unittest
 from balanced_assess import summarize, metadata

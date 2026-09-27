@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-2.0-only
 set -Eeuo pipefail
 
 # Reproduced against FFTW genfft commit 93ed4c786934aec9946f8dda4b4e3eb08f8be41c.

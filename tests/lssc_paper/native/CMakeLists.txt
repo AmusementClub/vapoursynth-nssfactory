@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 add_library(nss_lssc_explore SHARED core.cpp learning.cpp api.cpp)
 target_link_libraries(nss_lssc_explore PRIVATE nss_cpu)
 target_include_directories(nss_lssc_explore PRIVATE "${PROJECT_SOURCE_DIR}/src")

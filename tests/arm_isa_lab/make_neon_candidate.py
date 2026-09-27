@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Create one isolated ARM experiment from a frozen source directory.
 
 This does not edit the production checkout or grant performance admission.

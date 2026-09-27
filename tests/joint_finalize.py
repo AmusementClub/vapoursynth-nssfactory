@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Finalize sigma25 structural winners without repeating their completed searches."""
 import argparse
 import copy

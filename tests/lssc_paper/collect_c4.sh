@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Task-specific evidence collection; never bundles author assets or a venv.
 set -Eeuo pipefail
 

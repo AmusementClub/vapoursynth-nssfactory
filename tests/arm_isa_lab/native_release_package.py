@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Install an unchanged native plugin into an isolated prefix and test loading."""
 import argparse,hashlib,json,os,platform,shutil,subprocess,sys,tarfile
 from pathlib import Path

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Plot measured legal block/step slices with fitted strength coefficients."""
 import argparse
 import json

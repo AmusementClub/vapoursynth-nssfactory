@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Inspect a saved mixed-precision difference without retuning the algorithm."""
 import argparse
 import json

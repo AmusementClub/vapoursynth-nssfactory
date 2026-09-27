@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Replay public BM3D two-stage cases with either backend's frozen pilot.
 
 This identifies propagation from the reference image. It does not by itself

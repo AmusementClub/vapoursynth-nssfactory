@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Assess balanced campaigns by algorithm, format, noise and split without changing recipes.
 
 Reads raw paired records, preserves missing/censored baselines, and accepts

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Twelve validation-only unequal-channel RGB AWGN cases; unchanged campaign worker.
 
 Reuse the compact clean-pack already on the guest. Optional expected manifests

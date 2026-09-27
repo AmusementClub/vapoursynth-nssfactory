@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Native repeated/random/concurrent rolling requests and bounded RSS evidence."""
 import argparse,gc,hashlib,json,os,platform,random,resource,subprocess,sys,time
 from pathlib import Path

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np

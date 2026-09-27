@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Independent full-image TWSC reference for uniform explicit channel noise.
 
 NumPy/LAPACK economy SVD replaces the production QR/Jacobi implementation.

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Read-only idle core selection on a non-dedicated Linux host."""
 import argparse
 import json

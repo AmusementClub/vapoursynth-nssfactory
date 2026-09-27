@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Causal reference/matcher replay on retained against-clean outliers."""
 import argparse
 import hashlib

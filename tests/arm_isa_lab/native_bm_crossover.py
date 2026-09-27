@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Fixed-pilot replay on exact saved BM3D full-plugin performance cases."""
 import argparse,hashlib,json,os,random,subprocess,sys
 from pathlib import Path

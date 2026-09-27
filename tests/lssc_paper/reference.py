@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 """Fixed-dictionary SC -> pilot matching -> SSC research reference.
 
 This is NOT complete LSSC: no image-adaptive/grouped dictionary learning yet.

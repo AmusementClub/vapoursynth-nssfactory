@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Recompute saved-campaign provenance, hashes, quality and paired summaries.
 
 Reads original fixtures and serialized outputs independently of worker timing.

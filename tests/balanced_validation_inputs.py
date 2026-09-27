@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Prepare native256/512 held-out campaign crops from locally archived DIV2K originals.
 
 Preserves the historical NLH selection/test scene split, adds new noise, and

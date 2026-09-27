@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Materialize one isolated mixed-precision OMP hypothesis from frozen r3."""
 from pathlib import Path
 import argparse,hashlib,json,shutil

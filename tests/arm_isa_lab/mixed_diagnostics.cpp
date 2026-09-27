@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #include "nss/cpu_api.hpp"
 #include "nss/cpu_lssc.hpp"
 #include "cpu/lssc/mixed_omp.hpp"

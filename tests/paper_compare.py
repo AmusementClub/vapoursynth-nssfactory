@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Exploratory author-reference comparison; never a paper-reproduction oracle.
 
 Author software stays outside the source tree. All implementations read the same

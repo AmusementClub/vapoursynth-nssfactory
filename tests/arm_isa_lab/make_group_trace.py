@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Capture actual BM3D/NCSR batch inputs and outputs in a private plugin."""
 import argparse
 import hashlib

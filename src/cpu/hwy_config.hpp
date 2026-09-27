@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #pragma once
 
 // CMake supplies the shared mask to CPU, qreplay, host and diagnostic targets.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 // Real spatial distance streams, including initial fill, rejection and cutoff ties.
 // Diagnostic only; whole-filter paired measurements determine performance.
 #include "nss/cpu_api.hpp"

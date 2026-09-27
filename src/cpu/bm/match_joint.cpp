@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #include "nss/cpu_batch.hpp"
 #include "cpu/batch_contract.hpp"
 #include "cpu/hwy_config.hpp"

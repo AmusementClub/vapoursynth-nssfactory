@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Pinned BM3DCPU comparison; calibration, quality and performance are separate."""
 import argparse,hashlib,json,os,time
 from pathlib import Path

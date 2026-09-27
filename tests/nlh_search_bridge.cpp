@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 // Experiment-only adapter. Reuse the production image API, caching only input
 // conversion and noise estimation, which are independent of the searched knobs.
 #include "nss/cpu_image.hpp"

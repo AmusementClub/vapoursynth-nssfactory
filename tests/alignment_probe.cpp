@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 // Binary FP64 transport for independent Python/SciPy references. This utility
 // never computes an expected result with a production finisher.
 #include "nss/cpu_twsc_full.hpp"

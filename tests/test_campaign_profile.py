@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 """Offline measurement-integrity tests; no perf, VM, VS or cloud credentials."""
 import json
 import os

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Prepare unseen-image/noise-seed fixtures; external research assets stay external."""
 import argparse
 import json

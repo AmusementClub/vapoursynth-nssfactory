@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 // Experimental higher-precision OMP control calculation. The denoise/ISTA
 // implementation is appended unchanged from the frozen production source.
 #include "nss/resources.hpp"

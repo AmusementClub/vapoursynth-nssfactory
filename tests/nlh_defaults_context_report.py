@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Compare nested input contexts on identical central pixels and parameters."""
 import argparse
 import csv

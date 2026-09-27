@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #include "nss/cpu_linalg.hpp"
 #include "hq_test_target.hpp"
 #include <cmath>

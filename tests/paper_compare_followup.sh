@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Run on this campaign's isolated C4 after the main matrix finishes.
 set -Eeuo pipefail
 source /opt/nss-c4/bin/guest_env.sh

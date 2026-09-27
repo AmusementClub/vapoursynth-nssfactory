@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Write a reproducibility manifest for a source/build/candidate comparison.
 
 The manifest deliberately records dirty state and never treats a release

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Stream a frozen NLH cohort through public, warmed filter requests.
 
 Only one original/case is held at once, so 512 crops and full originals do not

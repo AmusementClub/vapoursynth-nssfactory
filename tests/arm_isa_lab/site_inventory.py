@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Inventory SIMD-sensitive sites and prove active preprocessing branches.
 
 Pragma markers are inserted into a private source copy. The actual native

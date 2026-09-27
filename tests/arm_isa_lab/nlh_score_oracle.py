@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Independent SSD oracle for actual same-input NLH matcher reversals."""
 import argparse,hashlib,itertools,json
 from pathlib import Path

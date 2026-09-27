@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Warm full-pipeline NLH timing/perf gate on an already frozen float input."""
 import argparse
 import datetime

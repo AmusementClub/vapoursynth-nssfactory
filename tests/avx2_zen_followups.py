@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Serial causal review and two-real-image corroboration on the physical AVX2 host."""
 import argparse,json,os,subprocess,sys,hashlib
 from pathlib import Path

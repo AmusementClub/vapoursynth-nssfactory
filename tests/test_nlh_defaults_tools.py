@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Contracts that guard the NLH experiment against leakage and invalid ranking."""
 import copy
 import unittest

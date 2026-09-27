@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Numerical migration probe: old generic sigma=3 versus new sigma=4.
 
 The input noise remains 3/255. This is not a same-parameter speed comparison.

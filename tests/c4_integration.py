@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """All-filter integration workloads using the bounded paired runner.
 
 Source construction and hashing are outside frame timing. Temporal fixtures

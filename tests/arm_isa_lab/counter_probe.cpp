@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #include <asm/hwcap.h>
 #include <sys/auxv.h>
 #include <cstring>

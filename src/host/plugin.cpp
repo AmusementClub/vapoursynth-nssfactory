@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #include "nss/version.hpp"
 #include "nss/backend.hpp"
 #include "nss/cpu_lssc.hpp"

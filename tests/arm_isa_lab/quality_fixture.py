@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 """Shared graph construction for frozen quality-capture and stage replay."""
 import numpy as np
 import vapoursynth as vs

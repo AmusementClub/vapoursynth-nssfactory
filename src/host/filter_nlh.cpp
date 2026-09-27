@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #include "host/full_image.hpp"
 #include "host/validate.hpp"
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Isolated Linux/Octave black-box probes of the external ICCV author binary.
 
 No reference binary, dictionary, or source is bundled. Zero learning budgets are

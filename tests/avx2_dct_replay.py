@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Fixed-match group replay of a Basic BM3D DCT threshold deviation."""
 import argparse,json,hashlib,subprocess,sys
 from pathlib import Path

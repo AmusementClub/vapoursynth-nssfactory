@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Opcode PMU controls and non-timed GEMM shape tracing on native C4A."""
 import argparse
 import csv

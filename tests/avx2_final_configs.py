@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Final permission-routing gates: explicit tested dimensions, no nine-image sweep."""
 import argparse,copy,json
 from pathlib import Path

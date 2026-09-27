@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 add_executable(test_backend test_backend.cpp)
 add_executable(test_ncsr_hq test_ncsr_hq.cpp ncsr_alignment_lab/alignment_lab.cpp)
 # Keep the frozen oracle's original CPU-library ISA/FMA compilation contract

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Offline evidence guards; no plugin, fixture pixels, or cloud access."""
 import json
 from pathlib import Path

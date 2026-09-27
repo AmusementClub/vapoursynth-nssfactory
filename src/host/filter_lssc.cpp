@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #include "host/validate.hpp"
 #include "nss/backend.hpp"
 #include "nss/cpu_api.hpp"

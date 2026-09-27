@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Offline evidence-integrity checks for the balanced campaign (no VS/cloud)."""
 import argparse
 import contextlib

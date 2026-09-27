@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 // Test-only production-primitive replay. This is diagnostic, never an oracle.
 // Dump fixed RGB spatial defaults and selectors to localize full-image errors.
 #include "nss/cpu_image.hpp"

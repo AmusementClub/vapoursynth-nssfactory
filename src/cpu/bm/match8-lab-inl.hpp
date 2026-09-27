@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 // Frozen SpatialMatch8 experiment harness. Kept out of ordinary builds.
 // Capture is untimed; replay preserves candidate order and signals fallback.
 template <int Variant, bool Replay = false, bool Capture = false>

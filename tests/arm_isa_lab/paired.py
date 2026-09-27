@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """C4A compiler/ISA diagnostic: same-host alternating full-filter pairs.
 
 No release or optimization admission is granted here. Timing and exact/triage

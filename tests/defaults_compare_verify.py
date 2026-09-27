@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Verify that delivered native PNG previews match the raw measured pixels."""
 import argparse
 import json

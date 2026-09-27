@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Exact-output diagnostic: hoist invariant validation and memoize budgets only.
 
 Single-process serial RESEARCH ADAPTER, not a production API or thread-safe

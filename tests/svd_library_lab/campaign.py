@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Bounded sequential experiment; preserves every run, including failed gates."""
 import argparse
 import hashlib

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 import argparse,json,subprocess,sys,os,shutil
 from pathlib import Path
 p=argparse.ArgumentParser()

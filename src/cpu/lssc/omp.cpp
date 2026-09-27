@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #include "cpu/lssc/mixed_omp.hpp"
 // OMP screens correlations in FP32, then refines support selection in FP64.
 // Its least-squares solve and residual retain double precision.

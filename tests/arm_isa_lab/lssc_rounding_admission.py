@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Independent DCT-seed and OMP near-tie checks for retained compiler differences."""
 import argparse,hashlib,json,math
 from pathlib import Path

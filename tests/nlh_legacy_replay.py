@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Record v4 automatic outputs and replay its explicit recipes on the new model."""
 import argparse
 import json

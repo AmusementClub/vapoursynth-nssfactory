@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #include "nss/avx2_policy.hpp"
 // Fixed-match replay around a failing pixel; serializable inputs, outputs and weights.
 #include "nss/cpu_api.hpp"

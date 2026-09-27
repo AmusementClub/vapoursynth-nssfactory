@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Bounded coordinate search of public structural controls on three sigma25 ROIs."""
 import argparse
 import hashlib

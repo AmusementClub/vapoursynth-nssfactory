@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 // Bitwise characterization gates for the 2026-09-26 optimization round.
 //
 // The C4 paired gate proves bit-identical output on its fixed production

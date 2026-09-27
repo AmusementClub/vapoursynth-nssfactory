@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 // Exact gate comparison against the original scalar arithmetic. Includes
 // padded input strides, inactive directions, malformed factors and threshold neighbors.
 #include "nss/cpu_twsc_full.hpp"

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 // Compile/disassemble only. C4A execution requires HWCAP2_SME and is not assumed.
 // This is an instruction canary, not a production ABI or streaming-mode wrapper.
 .arch armv9.2-a+sme

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #pragma once
 #include "cpu/bm/matcher.hpp"
 #include "nss/cpu_batch.hpp"

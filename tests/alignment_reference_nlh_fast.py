@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Independent vectorized full-image NLH reference (Gray/RGB spatial).
 
 Explicit Haar matrices, FP64 row distances and complete q*m scatter aggregation.

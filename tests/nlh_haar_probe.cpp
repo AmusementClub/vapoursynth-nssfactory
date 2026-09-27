@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 // Binary evidence for same-target Haar operation ordering across every shape.
 #include "nss/cpu_nlh_full.hpp"
 #include "nss/backend.hpp"

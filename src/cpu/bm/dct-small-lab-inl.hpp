@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 // Target-local experiments. Matrix/orthonormal arithmetic remains distinct
 // from the FFTW-scaled b8/g8 filter. Baseline processes all rows before columns.
 #if HWY_MAX_BYTES >= 32

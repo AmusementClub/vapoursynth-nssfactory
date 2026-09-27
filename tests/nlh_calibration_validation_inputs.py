@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """New independent noise seeds on the existing clean calibration images.
 
 This validates noise-realization stability, not unseen-image generalization.

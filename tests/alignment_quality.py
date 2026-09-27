@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Saved DIV2K/other fixture evaluation for the TWSC/NLH replacement.
 
 Native defaults run at the requested original fixture size. --crop is explicit,

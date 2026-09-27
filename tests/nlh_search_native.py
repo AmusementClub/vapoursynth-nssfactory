@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """ctypes owner for the experiment-only preparation cache (no per-image tuning)."""
 import ctypes as ct
 import numpy as np

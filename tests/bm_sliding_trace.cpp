@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 // Replay the exact 32-query host windows around an output discrepancy.
 // The first divergence is measured before filtering: direct versus prefix SSD.
 #include "nss/cpu_api.hpp"

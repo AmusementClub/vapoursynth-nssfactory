@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Real VapourSynth zero-rank WNNM oracle; requires NSS_SO.
 
 All valid spatial patches fit in each search window and in group_size. With

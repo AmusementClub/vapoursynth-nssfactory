@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Frozen, <=8 group per candidate AVX2 port screens."""
 import argparse
 import copy

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-2.0-only
 # shellcheck disable=SC2016
 set -Eeuo pipefail
 

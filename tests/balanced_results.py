@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Read-only consumer for frozen finalist phases; no selection or retuning.
 
 `plan` reads fixture metadata/configs only. `report` reads future results solely

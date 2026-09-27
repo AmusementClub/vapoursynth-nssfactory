@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Save concrete NLH hard-threshold rounding witnesses on native-stage inputs.
 
 Diagnostic only: production Haar coefficients are compared with explicit FP64

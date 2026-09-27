@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 """A noisy frame-count pilot must never become accepted timing evidence."""
 import json
 from pathlib import Path

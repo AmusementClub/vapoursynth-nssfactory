@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Paired same-model NCSR HQ optimization campaign; isolated plugin adapters only."""
 import argparse
 import hashlib

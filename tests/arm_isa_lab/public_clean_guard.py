@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Against-source guard on the exact deterministic public matrix fixtures."""
 import argparse,hashlib,json,math
 from pathlib import Path

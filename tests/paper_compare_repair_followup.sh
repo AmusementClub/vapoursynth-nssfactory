@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-2.0-only
 set -Eeuo pipefail
 deadline=$((SECONDS + 7200))
 until grep -q 'ISTA DIAGNOSTIC COMPLETE' /tmp/nss-paper-ista-followup.log; do

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #include "nss/contracts.hpp"
 #include "nss/avx2_policy.hpp"
 #if NSS_BM_EXPERIMENT & 128

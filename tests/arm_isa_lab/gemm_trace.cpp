@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 // Linux-only, explicitly preloaded diagnostic. Counts shapes at the frame
 // boundary; never use its instrumented elapsed time for performance claims.
 #include <atomic>

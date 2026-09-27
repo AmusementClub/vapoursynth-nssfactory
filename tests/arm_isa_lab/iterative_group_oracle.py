@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Independent FP64 ADMM/SVD and TWSC reconstruction for actual plugin groups."""
 import argparse
 import hashlib

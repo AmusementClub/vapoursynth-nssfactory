@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Require byte identity between cached preparation and the public filter."""
 import argparse
 import json

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Paired C4 baseline/candidate gate for the public VAggregate filter."""
 
 from __future__ import annotations

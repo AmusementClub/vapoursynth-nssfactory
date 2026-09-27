@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """GCP-only TWSC Top-down/symbol diagnostics, gated at frame requests."""
 import argparse
 import hashlib

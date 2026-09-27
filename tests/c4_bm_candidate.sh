@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-2.0-only
 set -euo pipefail
 # Explicit same-guest source, immutable baseline, and bounded candidate list.
 source /opt/nss-c4/bin/guest_env.sh

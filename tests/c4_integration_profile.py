@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Collect bounded, frame-gated Topdown L1/L2/L3 and symbols after paired runs."""
 import argparse
 import hashlib

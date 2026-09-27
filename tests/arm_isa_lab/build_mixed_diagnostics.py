@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Non-timed full-plane diagnostics linked to the actual candidate libraries."""
 from pathlib import Path
 import argparse,json,shlex,subprocess,hashlib

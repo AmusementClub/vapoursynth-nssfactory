@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #include "cpu/common/image_ssd_row.hpp"
 #include "cpu/hwy_config.hpp"
 

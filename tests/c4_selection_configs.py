@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Bounded cross-algorithm selection matrix, with an explicit per-case policy."""
 import json
 from pathlib import Path

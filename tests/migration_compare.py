@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Thin old/current migration orchestrator; all filter/quality work uses balanced_campaign.
 
 Alternates binaries in each repeat. Output equality is required only within a

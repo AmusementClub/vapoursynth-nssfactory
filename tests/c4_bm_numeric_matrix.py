@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Cache immutable baseline arrays, compare each candidate, preserve failures."""
 import argparse,hashlib,json,os,subprocess,sys
 from pathlib import Path

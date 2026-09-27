@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Audit the user's bounded per-configuration selection policy from raw pairs."""
 import argparse
 import hashlib

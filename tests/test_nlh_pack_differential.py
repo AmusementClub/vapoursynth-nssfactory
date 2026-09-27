@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 """Offline guards for semantic versus scheduling-dependent frame properties."""
 import copy
 import unittest

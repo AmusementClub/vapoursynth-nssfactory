@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 // Highway 1.4.0 has no ZA outer-product operation. Keep this ISA-specific leaf
 // separate; packing, ordinary SIMD and fallback dispatch stay in Highway.
 #include <arm_sme.h>

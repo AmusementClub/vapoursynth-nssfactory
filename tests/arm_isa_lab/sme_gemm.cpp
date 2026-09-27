@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 // Isolated ACLE SME experiment. Never linked into the production plugin.
 // A and C are column-major; B is explicitly packed row-major by the caller.
 #include <arm_sme.h>

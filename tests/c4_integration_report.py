@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Audit integrated-filter A/B records and render their comparison tables."""
 import argparse
 from collections import defaultdict

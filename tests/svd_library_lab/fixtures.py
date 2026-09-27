@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Freeze real DIV2K crops and deterministic AWGN for the experiment."""
 import hashlib
 import json

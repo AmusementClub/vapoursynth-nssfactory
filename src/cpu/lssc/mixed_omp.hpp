@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #pragma once
 
 // FP32 correlation screening with ordered FP64 candidate refinement.

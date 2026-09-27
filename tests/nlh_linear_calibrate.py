@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Calibrate global linear-NLH coefficients against default BM3D noise response.
 
 Sigma always equals the injected noise standard deviation. Each case uses two

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 """P2 diagnostic alternatives. P1 reference.py remains frozen and unchanged.
 
 The energy-gain rule is defined mathematically here, not copied from SPAMS code.

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Select official DIV2K HR members by HTTP range, and freeze textured RGB ROIs."""
 import argparse
 from concurrent.futures import ThreadPoolExecutor

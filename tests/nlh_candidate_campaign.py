@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Supported C4 profiles and alternating same-host public NLH A/B runs."""
 import argparse
 import json

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #include "group_trace.hpp"
 #include "nss/cpu_ncsr.hpp"
 #include <algorithm>

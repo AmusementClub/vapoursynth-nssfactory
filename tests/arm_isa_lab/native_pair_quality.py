@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Against-clean quality of the actual saved same-host performance outputs."""
 import argparse,hashlib,json,random
 from pathlib import Path

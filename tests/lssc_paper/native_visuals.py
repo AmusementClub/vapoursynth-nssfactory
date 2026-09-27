@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Scientific comparisons of saved numerical outputs, with provenance checks."""
 import argparse
 import json

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Full-filter fixed matcher replay of an actual retained 1080p performance case."""
 import argparse,hashlib,json,os,subprocess,sys
 from pathlib import Path

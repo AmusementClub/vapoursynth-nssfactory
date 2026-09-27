@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Causal reference crossover for two NLH calls (each call has two internal passes)."""
 import argparse
 import hashlib

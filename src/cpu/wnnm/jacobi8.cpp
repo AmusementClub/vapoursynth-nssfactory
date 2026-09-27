@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #include "nss/avx2_policy.hpp"
 #include "cpu/wnnm/jacobi8.hpp"
 #include "cpu/wnnm/numerics.hpp"

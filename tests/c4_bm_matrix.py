@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Emit the maintenance correctness matrix plus full stage coverage for changed DCTs.
 
 The original 89 configurations are retained from maintenance-20260905-a1/gate.py.

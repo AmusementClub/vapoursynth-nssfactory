@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Exact NLH guide-packing A/B gate, with one plugin loaded per process.
 
 This is a same-model differential regression gate, not an independent

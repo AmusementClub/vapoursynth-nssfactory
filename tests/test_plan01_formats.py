@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Active subsampled-plane, independent reference-stride and boundary checks."""
 import json
 import os

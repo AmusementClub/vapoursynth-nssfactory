@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Sequential build/verify/time on one host. Archive scripts before running.
 set -euo pipefail
 lane=$1

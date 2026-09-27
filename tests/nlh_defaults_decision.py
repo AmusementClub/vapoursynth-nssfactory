@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Compare frozen finalists with paired original-image bootstrap intervals.
 
 All sigma levels and both noise realizations of an original stay together in a

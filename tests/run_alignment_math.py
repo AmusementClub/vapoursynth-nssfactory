@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """CTest adapter for the independent NumPy/SciPy alignment oracle.
 
 The oracle writes a fresh run directory so repeated CTest invocations retain

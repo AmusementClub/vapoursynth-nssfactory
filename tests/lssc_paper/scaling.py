@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Bounded P1/P2 size/noise stress test; frozen math, no learning or promotion.
 
 Two persistent workers are driven serially in alternating order. Each owns its

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Rank frozen NLH evaluations without giving a larger dataset more weight.
 
 Synthetic noise levels receive equal weight within DIV2K. DIV2K and CC then

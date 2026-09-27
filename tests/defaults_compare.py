@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Default-API denoiser comparison on saved paper_compare float32 fixtures.
 
 Only sigma is supplied where the API accepts it. NLM retains h=1.2 and d=1.

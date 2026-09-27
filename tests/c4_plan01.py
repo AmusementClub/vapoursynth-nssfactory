@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Plan01 full-filter paired timing with separate first-pair clean diagnostics."""
 from pathlib import Path
 import hashlib

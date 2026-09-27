@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 // Included in a Highway target namespace; intentionally no include guard.
 #if HWY_MAX_BYTES >= 64
 template <int B>

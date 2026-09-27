@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Check public preset resolution against a frozen, explicit profile contract.
 
 The contract comes from the selected experiment profiles, independently of the

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #include "nss/ncsr_hq.hpp"
 #include "nss/ncsr_alignment_lab.hpp"
 #include "nss/resources.hpp"

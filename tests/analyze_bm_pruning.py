@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Estimate exact BM3D SSD pruning rates on deterministic gray8 samples."""
 
 from __future__ import annotations

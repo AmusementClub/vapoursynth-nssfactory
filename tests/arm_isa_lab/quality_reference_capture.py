@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Frozen BM3DCPU b8/g8 spatial reference on the existing clean/noisy pack."""
 import argparse, hashlib, json
 from pathlib import Path

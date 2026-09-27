@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Temporary dedicated C4 guest tuning; record failures for managed interrupts.
 # Call only between formal runs, as root. CPU1 stays online as an idle sibling.
 set -euo pipefail

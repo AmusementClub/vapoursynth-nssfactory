@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Model exact staged BM3D SSD pruning on deterministic gray8 samples.
 
 The pair strategy mirrors SpatialMatch8's adjacent-x scheduling.  It skips the

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Freeze image-level splits and inputs for the NLH defaults experiment.
 
 No denoiser output is consulted when selecting images, splits, crops or seeds.

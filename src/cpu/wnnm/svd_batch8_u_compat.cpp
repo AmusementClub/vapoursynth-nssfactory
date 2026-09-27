@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #include "cpu/wnnm/jacobi8.hpp"
 
 namespace nss {

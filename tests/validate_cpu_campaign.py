@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Validate the final C4 CPU Highway campaign artifact."""
 
 from __future__ import annotations

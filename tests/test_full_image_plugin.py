@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Public TWSC v3 / NLH v5 gates, including independent image references."""
 import argparse
 from concurrent.futures import ThreadPoolExecutor

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Independent frozen-SVD/whole-image checks for a saved fixed-D native control.
 
 This checks the P2 diagnostic contract, not author-MEX or full-paper equivalence.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #pragma once
 
 // Experimental only: copied into an isolated candidate by make_mixed_omp.py.

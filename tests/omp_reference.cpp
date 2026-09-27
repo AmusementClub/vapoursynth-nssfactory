@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 // OMP support selection and its least-squares residual use double precision.
 // Public dictionary/coefficients and the denoise/ISTA path remain FP32.
 #include "nss/resources.hpp"

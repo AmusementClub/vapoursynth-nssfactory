@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Same-input TWSC A/B workers, bounded real fixtures, and gated PMU requests.
 
 Persistent workers warm once, then execute only when the paired controller asks.

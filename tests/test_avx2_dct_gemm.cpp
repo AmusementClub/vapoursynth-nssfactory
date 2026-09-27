@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #include "cpu/bm/dct16.hpp"
 #include "cpu/wnnm/jacobi8.hpp"
 

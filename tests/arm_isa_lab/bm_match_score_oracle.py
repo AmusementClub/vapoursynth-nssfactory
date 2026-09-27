@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Independent double SSD checks for same-pilot BM3D matching divergences."""
 import argparse,json
 from pathlib import Path

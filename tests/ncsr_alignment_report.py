@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Audit raw NCSR alignment outputs and report paired quality/runtime changes."""
 import argparse
 import json

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Single-factor author learning-budget ladder on one preloaded input.
 
 External academic reference only. The same MEX/dictionary/window/thread settings

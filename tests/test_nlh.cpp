@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #include "nss/cpu_nlh.hpp"
 #include "nss/cpu_nlh_full.hpp"
 #include <algorithm>

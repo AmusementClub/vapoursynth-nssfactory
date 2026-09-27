@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 // Native Apple SME feasibility only. Includes B packing and per-call mode
 // transitions in timing; caller-owned allocation is outside both timed paths.
 #include "nss/backend.hpp"

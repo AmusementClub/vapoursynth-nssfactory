@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 import numpy as np
 
 from author_probe import driver, quote

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #pragma once
 
 // Row-of-candidates block SSD kernel shared by the image-level matchers

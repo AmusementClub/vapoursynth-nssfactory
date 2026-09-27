@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Static ISA inventory and sampled hot-symbol annotations; not timing proof."""
 import argparse
 import hashlib

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Measure paired-seed output response without changing injected sigma.
 
 The ratio is ||output(seed0)-output(seed1)|| / ||input(seed0)-input(seed1)||.

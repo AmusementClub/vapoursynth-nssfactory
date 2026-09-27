@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Bounded moving-crop quality check for frozen public-API recipes.
 
 Use balanced_campaign's {algorithms: {NAME: [{id, parameters, pipeline?}]}}

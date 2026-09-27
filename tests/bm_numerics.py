@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 """Numerical triage. Above-threshold output is never admitted by PSNR alone."""
 import numpy as np
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Separate bounded memory/revisit diagnostic; never a paired timing gate."""
 import argparse
 import gc

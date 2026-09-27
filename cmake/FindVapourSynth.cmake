@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 # Locate VapourSynth API4 headers (VapourSynth4.h, VSHelper4.h).
 # The plugin is loaded by the host; it does not link libvapoursynth.
 

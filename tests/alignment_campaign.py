@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Paired complete-pipeline TWSC/NLH controls and frozen-v2 migration evidence.
 
 Each worker preloads real VS source frames before timing. Startup, decoding and

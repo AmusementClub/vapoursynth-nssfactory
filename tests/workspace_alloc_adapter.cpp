@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 // Substitute only the allocator, using the production Workspace implementation.
 // This supports deterministic ENOMEM on both Mach-O and ELF linkers.
 #include <cstdlib>

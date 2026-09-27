@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Compare BM3D rolling against explicit BM3D+VAggregate."""
 
 from __future__ import annotations

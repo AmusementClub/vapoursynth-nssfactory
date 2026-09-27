@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Same-host BM3D A/B gate; initialization/PMU are outside frame timing.
 
 Seven alternating pairs, optionally extended to fifteen. Speedups are paired

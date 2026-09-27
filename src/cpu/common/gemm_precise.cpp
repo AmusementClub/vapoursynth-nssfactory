@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #include "nss/cpu_linalg.hpp"
 #include "cpu/hwy_config.hpp"
 #include <algorithm>

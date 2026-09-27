@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 // Test-only ELF interposition for the private matcher recorder's input hashes.
 #include <cstdint>
 #include <cstring>

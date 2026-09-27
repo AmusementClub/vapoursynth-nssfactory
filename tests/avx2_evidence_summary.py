@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Compact view of immutable raw campaign evidence (does not rewrite it)."""
 import argparse,json
 from pathlib import Path

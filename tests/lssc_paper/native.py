@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 """Typed adapter for the opt-in native LSSC exploration library.
 
 P1/P2 stay frozen. This module does not register a filter or contain author code.

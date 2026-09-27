@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Offline analysis of retained pixels and paired timing; no plugin execution."""
 import argparse
 import hashlib

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Real captured groups, known-spectrum controls, independent factor checks."""
 import argparse
 import hashlib

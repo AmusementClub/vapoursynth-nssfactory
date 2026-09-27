@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Localize full-NLH differences with fixed production inputs and selectors.
 
 This is a diagnostic, not the standalone independent full-model oracle. It

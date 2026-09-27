@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 // Inline shuffle network used by the DCT output sink so vector results can
 // feed stores without a separate matrix reload. Re-included for each ISA.
 static HWY_INLINE void Transpose8x8Inline(D8 d8, const V8 r[8], V8 c[8]) {

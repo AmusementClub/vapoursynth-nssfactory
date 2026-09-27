@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Stock VapourSynth/NumPy control: deliberately does not load NSS."""
 import gc
 import numpy as np

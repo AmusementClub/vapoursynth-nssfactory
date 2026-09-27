@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 import json
 import os
 from pathlib import Path

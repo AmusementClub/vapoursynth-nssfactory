@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Exercise actual n=48 library calls under concurrent VS frame requests."""
 import argparse
 import hashlib

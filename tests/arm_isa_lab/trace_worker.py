@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Count actual GEMM shapes; output pixels must equal the uninstrumented worker."""
 import argparse
 import ctypes

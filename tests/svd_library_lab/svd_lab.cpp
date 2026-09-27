@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #include "cpu/twsc/svd_lab.hpp"
 #include <algorithm>
 #include <atomic>
