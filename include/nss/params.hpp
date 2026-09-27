@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #pragma once
 
+#include <cstdint>
+
 namespace nss {
 
 inline constexpr int kNlmDefaultD = 1;
@@ -12,6 +14,13 @@ inline constexpr float kNlmDefaultWref = 1.0f;
 // bound edge-band work and int arithmetic rather than modeling intent.
 inline constexpr int kNlmMaxD = 256;
 inline constexpr int kNlmMaxS = 1024;
+// kNlmMaxA bounds the quadratic offset-pair count ((2a+1)^2/2 per frame)
+// so a pathological search radius cannot hang the host; 64 matches the
+// shared kBmMaxRange precedent. kNlmMaxPinnedFrameBytes bounds the
+// 2d+1 input frames a request pins (framework-side memory outside the
+// admission budget): 4K RGB at d=256 would otherwise pin ~100 GB.
+inline constexpr int kNlmMaxA = 64;
+inline constexpr std::int64_t kNlmMaxPinnedFrameBytes = std::int64_t{2} << 30;  // 2 GiB
 
 inline constexpr int kBmBlock = 8;
 inline constexpr int kBmGroup = 8;

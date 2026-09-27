@@ -418,12 +418,12 @@ static VSNode* nss_create_mcwnnm(const VSMap* in, VSCore* core, const VSAPI* vsa
     if (d->bm_range < 1 || d->bm_range > nss::kBmMaxRange) {
         return fail("nss.MCWNNM: bm_range must be in [1, 64]");
     }
-    if (d->admm_iter < 1 || !(d->rho > 0.f) || d->mu < 1.f || !nss::is_finite_bits(d->rho) ||
-        !nss::is_finite_bits(d->mu)) {
-        return fail("nss.MCWNNM: invalid admm_iter/rho/mu (mu >= 1)");
+    if (d->admm_iter < 1 || d->admm_iter > 1000 || !(d->rho > 0.f) || d->mu < 1.f ||
+        !nss::is_finite_bits(d->rho) || !nss::is_finite_bits(d->mu)) {
+        return fail("nss.MCWNNM: invalid admm_iter/rho/mu (admm_iter in [1, 1000], mu >= 1)");
     }
-    if (d->iters < 1 || !nss::is_finite_bits(d->delta) || d->delta < 0.f || d->delta > 1.f) {
-        return fail("nss.MCWNNM: invalid iters/delta (delta must be in [0, 1])");
+    if (d->iters < 1 || d->iters > 64 || !nss::is_finite_bits(d->delta) || d->delta < 0.f || d->delta > 1.f) {
+        return fail("nss.MCWNNM: invalid iters/delta (iters in [1, 64], delta in [0, 1])");
     }
     if (d->ps_num < 1 || d->ps_num > d->group_size || d->ps_range < 1 || d->ps_range > nss::kBmMaxRange) {
         return fail("nss.MCWNNM: invalid ps_num/ps_range");

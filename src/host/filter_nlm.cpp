@@ -536,10 +536,18 @@ void VS_CC nlmCreate(const VSMap* in, VSMap* out, void* userData, VSCore* core, 
     d->s = nss::map_int(vsapi, in, "s", nss::kNlmDefaultS);
     d->h = nss::map_float(vsapi, in, "h", nss::kNlmDefaultH);
     d->wref = nss::map_float(vsapi, in, "wref", nss::kNlmDefaultWref);
-    constexpr int kMaxSafeRadius = (std::numeric_limits<int>::max() - 1) / 2;
-    if (d->d < 0 || d->d > nss::kNlmMaxD || d->a <= 0 || d->s < 0 || d->a > kMaxSafeRadius || d->s > nss::kNlmMaxS ||
+    if (d->d < 0 || d->d > nss::kNlmMaxD || d->a <= 0 || d->s < 0 || d->a > nss::kNlmMaxA ||
+        d->s > nss::kNlmMaxS ||
         !std::isfinite(d->h) || d->h <= 0.f || !std::isfinite(d->wref) || d->wref <= 0.f) {
         fail("nss.NLM: invalid d/a/s/h/wref");
+        return;
+    }
+    // d pins 2d+1 input frames outside the admission budget; reject radii
+    // whose pinned footprint is unreasonable for the actual frame size.
+    const std::int64_t nlm_frame_bytes = static_cast<std::int64_t>(d->vi.format.bytesPerSample) * d->vi.width *
+                                         d->vi.height * d->vi.format.numPlanes;
+    if ((2LL * d->d + 1) * nlm_frame_bytes > nss::kNlmMaxPinnedFrameBytes) {
+        fail("nss.NLM: temporal radius d pins too much frame memory for this frame size");
         return;
     }
     const int wmode = nss::map_int(vsapi, in, "wmode", 0);
