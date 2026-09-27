@@ -38,11 +38,13 @@ jobs:
         run: ctest --test-dir build -C Release --output-on-failure
       - name: ccache stats
         run: ccache --show-stats
+      - name: locate plugin DLL
+        run: |
+          Get-ChildItem -Recurse build -Filter *.dll | Select-Object -ExpandProperty FullName
+          $dll = (Get-Item build\Release\libnss.dll).FullName
+          echo "NSS_SO=$dll" >> $env:GITHUB_ENV
+          dumpbin /dependents $dll
       - name: host smoke (default parameters, all filters)
         run: python tests/smoke_defaults.py
-        env:
-          NSS_SO: build\Release\libnss.dll
       - name: parameter bounds probe
         run: python tests/test_parameter_bounds_plugin.py
-        env:
-          NSS_SO: build\Release\libnss.dll
