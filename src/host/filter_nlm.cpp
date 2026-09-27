@@ -576,7 +576,7 @@ void VS_CC nlmCreate(const VSMap* in, VSMap* out, void* userData, VSCore* core, 
         fail("nss.NLM: RGB requires RGB");
         return;
     }
-    // contracts/failure.md: the factory must validate the model's legal shape.
+    // Failure contract: the factory must validate the model's legal shape.
     // The distance/accumulation kernels clamp |ox| to w as defense-in-depth;
     // rejecting a >= width here keeps the documented band semantics exact
     // (|ox| >= plane width would otherwise write past the row into the next

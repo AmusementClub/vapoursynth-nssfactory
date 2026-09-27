@@ -7,7 +7,7 @@ inline constexpr int kNlmDefaultA = 2;
 inline constexpr int kNlmDefaultS = 4;
 inline constexpr float kNlmDefaultH = 1.2f;
 inline constexpr float kNlmDefaultWref = 1.0f;
-// Legal-shape caps (contracts/failure.md): far beyond any denoise use; they
+// Legal-shape caps (failure contract): far beyond any denoise use; they
 // bound edge-band work and int arithmetic rather than modeling intent.
 inline constexpr int kNlmMaxD = 256;
 inline constexpr int kNlmMaxS = 1024;

@@ -1,0 +1,30 @@
+{
+  "schema": "nss.migration-profiles.v1",
+  "scope": "Historical NLH v2/TWSC simplified model versus current model; not implementation-equivalence evidence",
+  "profiles": [
+    {
+      "id": "public-default",
+      "algorithm": "NLH",
+      "parameters": {},
+      "attribution": "Explicit sigma only. Verified dirty-baseline archive always runs one Basic stage followed by one Wiener stage, including when rclip is absent. Current resolves iterative Basic and fixed-Basic repeated Wiener v5 presets. Both normalize API sigma by 255 with no BM3D 0.75 factor; equal sigma does not imply equal denoising response or restoration semantics."
+    },
+    {
+      "id": "common-b8-g16",
+      "algorithm": "NLH",
+      "parameters": {"block_size": 8, "block_step": 8, "group_size": 16, "bm_range": 20, "q": 4, "radius": 0},
+      "attribution": "Common public block, step, group, range, q and radius. Current broadcasts shape to both stages and retains its own rounds/calibration/all-selected-pixel aggregation. Geometry equality does not imply identical matches, work or mathematics."
+    },
+    {
+      "id": "public-default",
+      "algorithm": "TWSC",
+      "parameters": {},
+      "attribution": "Explicit sigma only. Legacy b8/step8/g8/iters2 simplified shrinkage differs from current sigma-dependent dense groups, full three-weight objective, dictionary decomposition and ADMM. Both normalize API sigma by 255 with no BM3D 0.75 factor; equal sigma does not imply equal denoising response."
+    },
+    {
+      "id": "common-b4-g24",
+      "algorithm": "TWSC",
+      "parameters": {"block_size": 4, "block_step": 4, "group_size": 24, "bm_range": 7, "iters": 2, "delta": 0.1, "lambda2": 3.0, "radius": 0},
+      "attribution": "Common legal public geometry and shared controls, including lambda2=3 and delta=.1. Their interpretation and the solver objective remain model-specific. Current retains its ADMM default10; legacy has no public admm_iter and uses a different shrinkage route."
+    }
+  ]
+}

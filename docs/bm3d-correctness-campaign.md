@@ -66,7 +66,7 @@ products. Random rolling controls span multiple chunks with cache limit one.
 
 This section records the earlier strict campaign. The user's subsequent
 per-configuration >1.02x policy and the new selected default are documented in
-[the September 6 selection report](c4-selection-20260906.md). The historical
+the September 6 selection report (maintained outside the source tree). The historical
 gate failures below remain unchanged and do not describe the new default.
 
 All experiment bits default off. No candidate passed the complete admission gate.

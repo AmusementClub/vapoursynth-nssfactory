@@ -14,3 +14,19 @@ __pycache__/
 .DS_Store
 /.venv-paper/
 /artifacts
+
+# Local agent-generated notes; never publish
+AGENTS.md
+/PROJECT_CONSOLIDATED_TIMELINE_20260927.md
+
+# Contracts and dated evidence reports live outside the source tree (kept locally)
+/contracts/
+/*_2026*.md
+/plan01-readiness.json
+/plan02-readiness.json
+/neon_bench_results.json
+/neon_environment.json
+/neon_support_matrix.csv
+/neon_kernel_coverage.csv
+/neon_kernel_sites.csv
+/tests/lssc_paper/*_2026*.md
