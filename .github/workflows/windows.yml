@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: GPL-2.0-only
+name: windows-cpu
+
+on:
+  push:
+  pull_request:
+
+env:
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_MAXSIZE: 2G
+  CMAKE_C_COMPILER_LAUNCHER: ccache
+  CMAKE_CXX_COMPILER_LAUNCHER: ccache
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: windows-ccache-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            windows-ccache-${{ github.ref_name }}-
+            windows-ccache-
+      - name: packages
+        run: |
+          choco install ccache --no-progress
+          pip install vapoursynth numpy scipy
+      - name: configure
+        run: |
+          $vsInclude = python -c "import vapoursynth, pathlib; print(pathlib.Path(vapoursynth.__file__).parent / 'include')"
+          echo "VapourSynth_INCLUDE_DIR=$vsInclude" >> $env:GITHUB_ENV
+          cmake -S . -B build -T ClangCL -DCMAKE_BUILD_TYPE=Release -DNSS_HWY_TARGET_MODE=dynamic
+      - name: build
+        run: cmake --build build --config Release -j
+      - name: unit tests
+        run: ctest --test-dir build -C Release --output-on-failure
+      - name: ccache stats
+        run: ccache --show-stats
+      - name: host smoke (default parameters, all filters)
+        run: python tests/smoke_defaults.py
+        env:
+          NSS_SO: build\Release\libnss.dll
+      - name: parameter bounds probe
+        run: python tests/test_parameter_bounds_plugin.py
+        env:
+          NSS_SO: build\Release\libnss.dll

@@ -77,6 +77,40 @@ def main():
             assert "not representable" not in str(error), str(error)
         else:
             raise AssertionError("invalid radius passed business validation")
+    # Business caps from the hang/OOM audit: representable int32 values that
+    # per-filter validation must reject (creation-time, no frame produced).
+    for name, key, value in (
+        ("MCWNNM", "iters", 65),
+        ("MCWNNM", "admm_iter", 1001),
+        ("NCSR", "iters", 65),
+    ):
+        try:
+            create(name, {key: value})
+        except vs.Error:
+            rejected += 1
+        else:
+            raise AssertionError(f"{name}.{key} accepted {value}")
+    # NLM a cap and the pinned-frame-bytes guard need wider/larger clips than
+    # the shared 32-wide source (the a>=width rule would fire first there).
+    wide = core.std.BlankClip(width=128, height=32, length=3, format=vs.RGBS)
+    big = core.std.BlankClip(width=1920, height=1080, length=3, format=vs.RGBS)
+    try:
+        core.nss.NLM(wide, a=65)
+    except vs.Error:
+        rejected += 1
+    else:
+        raise AssertionError("NLM accepted a=65 above the cap")
+    try:
+        core.nss.NLM(big, d=43)
+    except vs.Error:
+        rejected += 1
+    else:
+        raise AssertionError("NLM accepted d=43 pinning > 2 GiB of 1080p RGB frames")
+    # Boundary values at the caps remain legal.
+    core.nss.NLM(wide, a=64)
+    core.nss.NLM(big, d=42)
+    core.nss.MCWNNM(src, iters=64, admm_iter=1000)
+    core.nss.NCSR(src, iters=64)
     for name in INTEGER_ARGS:
         create(name, {})
     create("BM3D", dict(block_size=[4, 8], group_size=[4, 8], sigma=[3, 0]))
