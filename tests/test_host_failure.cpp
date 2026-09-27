@@ -86,13 +86,16 @@ bool run(int failure, bool workspace_failure, std::size_t limit, bool expect_err
     {
         nss::ResourceScope creation(budget);
         std::fputs("run: scope\n", stderr);
+        std::fputs("run: pre-rolldata\n", stderr);
         RollingData roll;
+        std::fputs("run: post-rolldata\n", stderr);
         auto& data = roll.bm;
         data.vi.format = format; data.vi.width = 16; data.vi.height = 16; data.vi.numFrames = 5;
         data.radius = 1; data.vi_out = data.vi; data.vi_out.height = 96;
         data.sigma[0] = .01f;
         data.block_step[0] = 8; data.bm_range[0] = 1;
         if (rolling) { data.ws.set_serial(); roll.rolling_chunk = 2; roll.cache_limit = 1; }
+        std::fputs("run: post-fields\n", stderr);
         new_calls = 0; new_failure = allocation_failure; count_new = true;
         std::fputs("run: before checked_frame\n", stderr);
         const VSFrame* result = rolling
