@@ -42,6 +42,7 @@ void check(bool ok, const char* what) {
     }
 }
 bool same(float a, float b) { return std::memcmp(&a, &b, sizeof(float)) == 0; }
+std::uint32_t bits_of(float v) { std::uint32_t u; std::memcpy(&u, &v, 4); return u; }
 bool same(double a, double b) { return std::memcmp(&a, &b, sizeof(double)) == 0; }
 
 enum Pattern { kRand, kTiny, kLarge, kZeros, kMixed };
@@ -72,7 +73,8 @@ int test_lssc_ssd_pair_bitwise() {
         const float got = nss::lssc_ssd_pair(a.data(), b.data(), n);
         const float ref = nss::ssd_vec(a.data(), b.data(), n);
         if (!same(got, ref)) {
-            std::fprintf(stderr, "lssc_ssd_pair mismatch n=%d pattern=%d\n", n, pattern);
+            std::fprintf(stderr, "lssc_ssd_pair mismatch n=%d pattern=%d: %.9g (0x%08x) vs %.9g (0x%08x)\n",
+                         n, pattern, got, bits_of(got), ref, bits_of(ref));
             return 1;
         }
     }
@@ -91,7 +93,8 @@ int test_lssc_ssd4_bitwise() {
         for (int r = 0; r < 4; ++r) {
             const float ref = nss::lssc_ssd_pair(a.data(), cent.data() + static_cast<std::size_t>(r) * n, n);
             if (!same(out[r], ref)) {
-                std::fprintf(stderr, "lssc_ssd4 mismatch n=%d r=%d pattern=%d\n", n, r, pattern);
+                std::fprintf(stderr, "lssc_ssd4 mismatch n=%d r=%d pattern=%d: %.9g (0x%08x) vs %.9g (0x%08x)\n",
+                             n, r, pattern, out[r], bits_of(out[r]), ref, bits_of(ref));
                 return 1;
             }
         }
