@@ -75,8 +75,9 @@ jobs:
       - name: packages
         run: |
           brew install ccache
-          pip3 install vapoursynth numpy
-          echo "VapourSynth_INCLUDE_DIR=$(python3 -c "import vapoursynth, pathlib; print(pathlib.Path(vapoursynth.__file__).parent / 'include')")" >> "$GITHUB_ENV"
+          python3 -m venv .vsenv
+          .vsenv/bin/pip install vapoursynth numpy
+          echo "VapourSynth_INCLUDE_DIR=$(.vsenv/bin/python3 -c "import vapoursynth, pathlib; print(pathlib.Path(vapoursynth.__file__).parent / 'include')")" >> "$GITHUB_ENV"
       - name: configure
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
@@ -86,11 +87,11 @@ jobs:
       - name: unit tests
         run: ctest --test-dir build --output-on-failure
       - name: host smoke (default + temporal + explicit parameters)
-        run: python3 tests/smoke_defaults.py
+        run: .vsenv/bin/python3 tests/smoke_defaults.py
         env:
           NSS_SO: ${{ github.workspace }}/build/libnss.dylib
       - name: parameter bounds probe
-        run: python3 tests/test_parameter_bounds_plugin.py
+        run: .vsenv/bin/python3 tests/test_parameter_bounds_plugin.py
         env:
           NSS_SO: ${{ github.workspace }}/build/libnss.dylib
       - name: package
