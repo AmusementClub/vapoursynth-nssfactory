@@ -224,7 +224,7 @@ add_executable(test_svd_scale test_svd_scale.cpp)
 target_link_libraries(test_svd_scale PRIVATE nss_cpu)
 add_test(NAME test_svd_scale COMMAND test_svd_scale)
 
-add_executable(test_resources test_resources.cpp "${PROJECT_SOURCE_DIR}/src/host/workspace.cpp")
+add_executable(test_resources test_resources.cpp)
 target_include_directories(test_resources PRIVATE "${PROJECT_SOURCE_DIR}/include")
 target_link_libraries(test_resources PRIVATE nss_cpu Threads::Threads)
 add_test(NAME test_resources COMMAND test_resources)
