@@ -145,6 +145,22 @@ void VAggReduce(float* dst, const float* fat, const float* src, int width, int h
 
 void VAggTarget(float* dst, const float* const* nums, const float* const* dens, const int* strides,
                        int count, const float* src, int width, int height, int dstride, int sstride) {
+    // A single contribution is common for radius-zero and boundary targets.
+    // Keep the unit-weight identity scalar so AVX2 reciprocal division cannot
+    // turn an exact numerator/denominator pair into a rounded result.
+    if (count == 1) {
+        for (int y = 0; y < height; ++y) {
+            float* o = dst + y * dstride;
+            const float* n = nums[0] + y * strides[0];
+            const float* de = dens[0] + y * strides[0];
+            const float* s = src + y * sstride;
+            for (int x = 0; x < width; ++x) {
+                const float dv = de[x];
+                o[x] = (dv == 1.0f) ? n[x] : (dv > 1e-12f ? n[x] / dv : s[x]);
+            }
+        }
+        return;
+    }
     const hn::ScalableTag<float> d;
     const int lanes = static_cast<int>(hn::Lanes(d));
     for (int y=0; y<height; ++y) {
