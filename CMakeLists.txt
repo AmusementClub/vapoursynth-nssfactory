@@ -418,12 +418,6 @@ else()
 endif()
 nss_cc_flags(NSS_CPU_ISA_OPTIONS_CC ${NSS_CPU_ISA_OPTIONS})
 target_compile_options(nss_cpu PRIVATE ${NSS_CPU_ISA_OPTIONS_CC})
-if(NSS_MSVC)
-  # Highway recommends the vector calling convention for native MSVC so
-  # non-inlined SIMD helpers pass vector arguments in registers.
-  target_compile_options(nss_cpu PRIVATE /Gv)
-  target_compile_options(nss_svd_qreplay PRIVATE /Gv)
-endif()
 # Keep the minimum supported x86 target in the build contract as well as in
 # the per-TU fallback header.  This prevents a newly added Highway TU from
 # silently bringing back pre-AVX2 dispatch targets.
