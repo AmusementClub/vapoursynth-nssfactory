@@ -116,31 +116,46 @@ jobs:
           path: .ccache
           key: release-ccache-windows-${{ github.sha }}
           restore-keys: release-ccache-windows-
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
       - name: packages
         run: |
-          choco install ccache --no-progress
+          choco install ccache llvm ninja --no-progress
           pip install vapoursynth numpy scipy
+      - name: verify clang++ target
+        shell: powershell
+        run: |
+          clang++ --version
+          $target = (clang++ -print-target-triple).Trim()
+          Write-Host "clang++ target: $target"
+          if ($target -notmatch "windows-msvc") {
+            throw "Expected an MSVC-targeted clang++, got '$target'"
+          }
       - name: configure
         run: |
           $vsInclude = python -c "import vapoursynth, pathlib; print(pathlib.Path(vapoursynth.__file__).parent / 'include')"
-          cmake -S . -B build -T ClangCL -DCMAKE_BUILD_TYPE=Release -DNSS_HWY_TARGET_MODE=dynamic -DVapourSynth_INCLUDE_DIR="$vsInclude"
+          $pythonExe = (Get-Command python).Source
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DNSS_HWY_TARGET_MODE=dynamic -DVapourSynth_INCLUDE_DIR="$vsInclude" -DPython3_EXECUTABLE="$pythonExe"
       - name: build
-        run: cmake --build build --config Release -j
+        run: cmake --build build -j
+      - name: verify Python oracle environment
+        run: python -c "import numpy, scipy; print('numpy', numpy.__version__, 'scipy', scipy.__version__)"
       - name: unit tests
-        run: ctest --test-dir build -C Release --output-on-failure
+        run: ctest --test-dir build --output-on-failure
       - name: host smoke (default + temporal + explicit parameters)
         run: python tests/smoke_defaults.py
         env:
-          NSS_SO: ${{ github.workspace }}\build\Release\libnss.dll
+          NSS_SO: ${{ github.workspace }}\build\libnss.dll
       - name: parameter bounds probe
         run: python tests/test_parameter_bounds_plugin.py
         env:
-          NSS_SO: ${{ github.workspace }}\build\Release\libnss.dll
+          NSS_SO: ${{ github.workspace }}\build\libnss.dll
       - name: package
         run: |
           $pkg = "nssfactory-${{ inputs.tag }}-windows-x86_64"
           New-Item -ItemType Directory "pkg/$pkg" | Out-Null
-          Copy-Item build\Release\libnss.dll, README.md, LICENSE, NOTICE "pkg/$pkg/"
+          Copy-Item build\libnss.dll, README.md, LICENSE, NOTICE "pkg/$pkg/"
           tar -C pkg -a -c -f "$pkg.zip" "$pkg"
       - uses: actions/upload-artifact@v4
         with:
