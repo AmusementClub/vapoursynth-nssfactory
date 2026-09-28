@@ -12,7 +12,7 @@ env:
   CMAKE_CXX_COMPILER_LAUNCHER: ccache
 
 jobs:
-  build:
+  build-clang-cl:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -50,9 +50,56 @@ jobs:
       - name: parameter bounds probe
         run: python tests/test_parameter_bounds_plugin.py
 
-  # Keep a native MSVC compatibility lane separate from the clang-cl release
-  # lane. The release artifact remains clang-cl; this job prevents the CMake
-  # MSVC flag mapping from silently regressing.
+  # Primary Windows lane: GNU-driver Clang targeting the MSVC ABI.
+  build-clang:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: windows-ccache-clang-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            windows-ccache-clang-${{ github.ref_name }}-
+            windows-ccache-clang-
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: packages
+        run: |
+          choco install ccache llvm ninja --no-progress
+          pip install vapoursynth numpy scipy
+      - name: verify clang++ target
+        shell: powershell
+        run: |
+          clang++ --version
+          $target = (clang++ -print-target-triple).Trim()
+          Write-Host "clang++ target: $target"
+          if ($target -notmatch "windows-msvc") {
+            throw "Expected an MSVC-targeted clang++, got '$target'"
+          }
+      - name: configure
+        run: |
+          $vsInclude = python -c "import vapoursynth, pathlib; print(pathlib.Path(vapoursynth.__file__).parent / 'include')"
+          $pythonExe = (Get-Command python).Source
+          cmake -S . -B build-clang -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DNSS_HWY_TARGET_MODE=dynamic -DVapourSynth_INCLUDE_DIR="$vsInclude" -DPython3_EXECUTABLE="$pythonExe"
+      - name: build
+        run: cmake --build build-clang -j
+      - name: unit tests
+        run: ctest --test-dir build-clang --output-on-failure
+      - name: locate plugin DLL
+        run: |
+          Get-ChildItem -Recurse build-clang -Filter *.dll | Select-Object -ExpandProperty FullName
+          $dll = (Get-ChildItem -Recurse build-clang -Filter libnss.dll | Select-Object -First 1).FullName
+          if (-not $dll) { throw "libnss.dll was not produced" }
+          echo "NSS_SO=$dll" >> $env:GITHUB_ENV
+      - name: host smoke (default parameters, all filters)
+        run: python tests/smoke_defaults.py
+      - name: parameter bounds probe
+        run: python tests/test_parameter_bounds_plugin.py
+
+  # Keep native MSVC and clang-cl compatibility lanes separate from the
+  # clang++ primary lane. These jobs protect the Windows ABI and flag mappings.
   build-msvc:
     runs-on: windows-latest
     steps:
