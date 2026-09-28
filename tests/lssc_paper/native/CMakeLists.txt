@@ -3,7 +3,8 @@ add_library(nss_lssc_explore SHARED core.cpp learning.cpp api.cpp)
 target_link_libraries(nss_lssc_explore PRIVATE nss_cpu)
 target_include_directories(nss_lssc_explore PRIVATE "${PROJECT_SOURCE_DIR}/src")
 # Rank/feasibility guards and FP64 accumulators must retain IEEE semantics.
-target_compile_options(nss_lssc_explore PRIVATE -O3 -fno-fast-math -ffp-contract=off)
+nss_cc_flags(NSS_LSSC_EXPLORE_FLAGS -O3 -fno-fast-math -ffp-contract=off)
+target_compile_options(nss_lssc_explore PRIVATE ${NSS_LSSC_EXPLORE_FLAGS})
 set_target_properties(nss_lssc_explore PROPERTIES CXX_VISIBILITY_PRESET hidden
                       VISIBILITY_INLINES_HIDDEN ON)
 

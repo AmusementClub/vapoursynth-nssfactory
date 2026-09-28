@@ -176,12 +176,42 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND CMAKE_CXX_COMPILER_FRONTEND_VARIANT
 else()
   set(NSS_CLANG_CL OFF)
 endif()
+if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+  set(NSS_MSVC ON)
+else()
+  set(NSS_MSVC OFF)
+endif()
 function(nss_cc_flags out)
   if(NSS_CLANG_CL)
     set(translated "")
     foreach(flag ${ARGN})
       if(NOT flag STREQUAL "-fvisibility=hidden")
         list(APPEND translated "/clang:${flag}")
+      endif()
+    endforeach()
+    set(${out} ${translated} PARENT_SCOPE)
+  elseif(NSS_MSVC)
+    # Keep native cl.exe on the same optimization/ISA contract as clang-cl.
+    # MSVC has no GNU spelling for these options; silently passing them would
+    # produce a successful but materially different build.
+    set(translated "")
+    foreach(flag ${ARGN})
+      if(flag STREQUAL "-O3")
+        list(APPEND translated "/O2")
+      elseif(flag STREQUAL "-ffast-math")
+        list(APPEND translated "/fp:fast")
+      elseif(flag STREQUAL "-fno-fast-math" OR
+             flag STREQUAL "-fno-math-errno" OR
+             flag STREQUAL "-fno-trapping-math" OR
+             flag STREQUAL "-ffp-contract=off" OR
+             flag STREQUAL "-fno-finite-math-only")
+        list(APPEND translated "/fp:precise")
+      elseif(flag STREQUAL "-mavx2" OR flag STREQUAL "-mfma")
+        if(NOT "/arch:AVX2" IN_LIST translated)
+          list(APPEND translated "/arch:AVX2")
+        endif()
+      elseif(NOT flag STREQUAL "-fvisibility=hidden")
+        message(FATAL_ERROR "Unsupported GNU compiler flag for native MSVC: ${flag}")
       endif()
     endforeach()
     set(${out} ${translated} PARENT_SCOPE)
@@ -388,6 +418,12 @@ else()
 endif()
 nss_cc_flags(NSS_CPU_ISA_OPTIONS_CC ${NSS_CPU_ISA_OPTIONS})
 target_compile_options(nss_cpu PRIVATE ${NSS_CPU_ISA_OPTIONS_CC})
+if(NSS_MSVC)
+  # Highway recommends the vector calling convention for native MSVC so
+  # non-inlined SIMD helpers pass vector arguments in registers.
+  target_compile_options(nss_cpu PRIVATE /Gv)
+  target_compile_options(nss_svd_qreplay PRIVATE /Gv)
+endif()
 # Keep the minimum supported x86 target in the build contract as well as in
 # the per-TU fallback header.  This prevents a newly added Highway TU from
 # silently bringing back pre-AVX2 dispatch targets.

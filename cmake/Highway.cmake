@@ -4,6 +4,14 @@
 set(NSS_HIGHWAY_GIT_TAG "1.4.0")
 
 include(FetchContent)
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND
+   CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+  set(NSS_HIGHWAY_CLANG_CL ON)
+elseif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+  set(NSS_HIGHWAY_MSVC ON)
+endif()
+
 FetchContent_Declare(
   highway
   GIT_REPOSITORY https://github.com/google/highway.git
@@ -22,6 +30,12 @@ if(TARGET hwy_list_targets)
   target_compile_definitions(hwy_list_targets PRIVATE "HWY_DISABLED_TARGETS=${NSS_HWY_DISABLED_TARGETS}")
   target_compile_definitions(hwy_list_targets PRIVATE ${NSS_HWY_EXTRA_DEFINITIONS})
   if(NSS_HWY_X86)
-    target_compile_options(hwy_list_targets PRIVATE -mavx2 -mfma)
+    if(NSS_HIGHWAY_CLANG_CL)
+      target_compile_options(hwy_list_targets PRIVATE /clang:-mavx2 /clang:-mfma)
+    elseif(NSS_HIGHWAY_MSVC)
+      target_compile_options(hwy_list_targets PRIVATE /arch:AVX2)
+    else()
+      target_compile_options(hwy_list_targets PRIVATE -mavx2 -mfma)
+    endif()
   endif()
 endif()

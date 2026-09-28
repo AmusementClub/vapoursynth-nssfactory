@@ -30,9 +30,12 @@ jobs:
       - name: configure
         run: |
           $vsInclude = python -c "import vapoursynth, pathlib; print(pathlib.Path(vapoursynth.__file__).parent / 'include')"
-          cmake -S . -B build -T ClangCL -DCMAKE_BUILD_TYPE=Release -DNSS_HWY_TARGET_MODE=dynamic -DVapourSynth_INCLUDE_DIR="$vsInclude" 
+          $pythonExe = (Get-Command python).Source
+          cmake -S . -B build -A x64 -T ClangCL -DCMAKE_BUILD_TYPE=Release -DNSS_HWY_TARGET_MODE=dynamic -DVapourSynth_INCLUDE_DIR="$vsInclude" -DPython3_EXECUTABLE="$pythonExe"
       - name: build
         run: cmake --build build --config Release -j
+      - name: verify Python oracle environment
+        run: python -c "import numpy, scipy; print('numpy', numpy.__version__, 'scipy', scipy.__version__)"
       - name: unit tests
         run: ctest --test-dir build -C Release --output-on-failure
       - name: ccache stats
@@ -46,3 +49,26 @@ jobs:
         run: python tests/smoke_defaults.py
       - name: parameter bounds probe
         run: python tests/test_parameter_bounds_plugin.py
+
+  # Keep a native MSVC compatibility lane separate from the clang-cl release
+  # lane. The release artifact remains clang-cl; this job prevents the CMake
+  # MSVC flag mapping from silently regressing.
+  build-msvc:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: packages
+        run: pip install vapoursynth numpy scipy
+      - name: configure
+        run: |
+          $vsInclude = python -c "import vapoursynth, pathlib; print(pathlib.Path(vapoursynth.__file__).parent / 'include')"
+          $pythonExe = (Get-Command python).Source
+          cmake -S . -B build-msvc -A x64 -DCMAKE_BUILD_TYPE=Release -DNSS_HWY_TARGET_MODE=dynamic -DVapourSynth_INCLUDE_DIR="$vsInclude" -DPython3_EXECUTABLE="$pythonExe"
+      - name: build
+        run: cmake --build build-msvc --config Release -j
+      - name: unit tests
+        run: ctest --test-dir build-msvc -C Release --output-on-failure
+      - name: host smoke
+        run: python tests/smoke_defaults.py
+        env:
+          NSS_SO: ${{ github.workspace }}\build-msvc\Release\libnss.dll
