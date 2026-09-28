@@ -12,45 +12,7 @@ env:
   CMAKE_CXX_COMPILER_LAUNCHER: ccache
 
 jobs:
-  build-clang-cl:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/cache@v4
-        with:
-          path: .ccache
-          key: windows-ccache-${{ github.ref_name }}-${{ github.sha }}
-          restore-keys: |
-            windows-ccache-${{ github.ref_name }}-
-            windows-ccache-
-      - name: packages
-        run: |
-          choco install ccache --no-progress
-          pip install vapoursynth numpy scipy
-      - name: configure
-        run: |
-          $vsInclude = python -c "import vapoursynth, pathlib; print(pathlib.Path(vapoursynth.__file__).parent / 'include')"
-          $pythonExe = (Get-Command python).Source
-          cmake -S . -B build -A x64 -T ClangCL -DCMAKE_BUILD_TYPE=Release -DNSS_HWY_TARGET_MODE=dynamic -DVapourSynth_INCLUDE_DIR="$vsInclude" -DPython3_EXECUTABLE="$pythonExe"
-      - name: build
-        run: cmake --build build --config Release -j
-      - name: verify Python oracle environment
-        run: python -c "import numpy, scipy; print('numpy', numpy.__version__, 'scipy', scipy.__version__)"
-      - name: unit tests
-        run: ctest --test-dir build -C Release --output-on-failure
-      - name: ccache stats
-        run: ccache --show-stats
-      - name: locate plugin DLL
-        run: |
-          Get-ChildItem -Recurse build -Filter *.dll | Select-Object -ExpandProperty FullName
-          $dll = (Get-Item build\Release\libnss.dll).FullName
-          echo "NSS_SO=$dll" >> $env:GITHUB_ENV
-      - name: host smoke (default parameters, all filters)
-        run: python tests/smoke_defaults.py
-      - name: parameter bounds probe
-        run: python tests/test_parameter_bounds_plugin.py
-
-  # Primary Windows lane: GNU-driver Clang targeting the MSVC ABI.
+  # Windows CI and release artifacts use GNU-driver Clang targeting the MSVC ABI.
   build-clang:
     runs-on: windows-latest
     steps:
@@ -97,25 +59,3 @@ jobs:
         run: python tests/smoke_defaults.py
       - name: parameter bounds probe
         run: python tests/test_parameter_bounds_plugin.py
-
-  # Keep native MSVC and clang-cl compatibility lanes separate from the
-  # clang++ primary lane. These jobs protect the Windows ABI and flag mappings.
-  build-msvc:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: packages
-        run: pip install vapoursynth numpy scipy
-      - name: configure
-        run: |
-          $vsInclude = python -c "import vapoursynth, pathlib; print(pathlib.Path(vapoursynth.__file__).parent / 'include')"
-          $pythonExe = (Get-Command python).Source
-          cmake -S . -B build-msvc -A x64 -DCMAKE_BUILD_TYPE=Release -DNSS_HWY_TARGET_MODE=dynamic -DVapourSynth_INCLUDE_DIR="$vsInclude" -DPython3_EXECUTABLE="$pythonExe"
-      - name: build
-        run: cmake --build build-msvc --config Release -j
-      - name: unit tests
-        run: ctest --test-dir build-msvc -C Release --output-on-failure
-      - name: host smoke
-        run: python tests/smoke_defaults.py
-        env:
-          NSS_SO: ${{ github.workspace }}\build-msvc\Release\libnss.dll
