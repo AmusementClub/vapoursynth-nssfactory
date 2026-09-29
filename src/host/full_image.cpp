@@ -236,11 +236,21 @@ VSNode* nss_create_full_image(const VSMap* in, VSCore* core, const VSAPI* api, V
         if (d.estimate && sigma_given) throw std::invalid_argument("nss.TWSC: estimate_sigma and explicit sigma are mutually exclusive");
         o.block = integer(api, in, "block_size", nss::kTwscDefaultBlock, 1, 16);
         o.group = integer(api, in, "group_size", nss::kTwscDefaultGroup, 1, 256);
-        o.step = integer(api, in, "block_step", nss::kTwscDefaultStep, 1, o.block);
+        // The default step is independently overridable, but must remain
+        // valid when a caller narrows the block without spelling a step.
+        // An explicitly supplied step still goes through the range check and
+        // is rejected when it exceeds the resolved block size.
+        const bool step_given = present(api, in, "block_step");
+        o.step = integer(api, in, "block_step",
+                         step_given ? nss::kTwscDefaultStep : std::min(nss::kTwscDefaultStep, o.block),
+                         1, o.block);
         o.iterations = integer(api, in, "iters", nss::kTwscDefaultIters, 1, 64);
         o.window = present(api, in, "bm_range") ? 2 * integer(api, in, "bm_range", 0, 1, 64) + 1 : integer(api, in, "search_window", 60, 1, 129);
         o.radius = integer(api, in, "radius", 0, 0, 16);
-        o.ps_num = integer(api, in, "ps_num", 2, 1, o.group ? o.group : 256);
+        // Validate the API bound first, then report the model-specific
+        // resolved-group violation below. Keeping these checks separate makes
+        // the documented `ps_num exceeds resolved group_size` error reachable.
+        o.ps_num = integer(api, in, "ps_num", 2, 1, 256);
         o.ps_range = integer(api, in, "ps_range", 4, 1, 64);
         if (o.group == 1 && !present(api, in, "ps_num")) o.ps_num = 1;
         if (o.ps_num > o.group) throw std::invalid_argument("nss.TWSC: ps_num exceeds resolved group_size");

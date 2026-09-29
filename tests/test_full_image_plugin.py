@@ -9,13 +9,25 @@ import json
 import os
 from pathlib import Path
 import platform
+import sys
 import traceback
 
-import numpy as np
-import vapoursynth as vs
+from gate_evidence import GateEvidence
 
-from alignment_reference import nlh_contributions, twsc_contributions, noise_estimate
-from test_alignment_math import NLH_HARD_COEFFICIENT, NLH_WIENER_SIGMA_SCALE
+try:
+    import numpy as np
+    import vapoursynth as vs
+    from alignment_reference import nlh_contributions, twsc_contributions, noise_estimate
+    from test_alignment_math import NLH_HARD_COEFFICIENT, NLH_WIENER_SIGMA_SCALE
+except ImportError as error:
+    # CTest registers this as an optional release gate when headers are
+    # available. Keep absent NumPy/VapourSynth test dependencies as an
+    # explicit skip (77), while direct callers still receive the normal import
+    # error when importing the module.
+    if __name__ == '__main__':
+        print(f'full-image plugin gate SKIP: {error}', file=sys.stderr)
+        raise SystemExit(77)
+    raise
 
 
 def make_clip(core, fmt, frames=5, width=20, height=18, seed=7, constant=None):
@@ -58,7 +70,7 @@ def kwargs(name,radius=0):
 
 class Suite:
     def __init__(self,out,plugin):
-        self.out=Path(out).resolve();self.out.mkdir(parents=True,exist_ok=False)
+        self.evidence=GateEvidence(out);self.out=self.evidence.path
         self.plugin=Path(plugin).resolve();self.core=vs.core;self.core.max_cache_size=32
         self.core.std.LoadPlugin(path=str(self.plugin));self.rows=[]
 
@@ -189,6 +201,26 @@ class Suite:
     def twsc_fixed_geometry(self):
         core=self.core
         source=core.std.BlankClip(width=16,height=16,format=vs.GRAYS,length=1,color=[.3])
+        # Omitted block_step is capped at the resolved block size. This keeps
+        # the independently overridable fields usable for every legal block.
+        noisy,_=make_clip(core,vs.GRAYS,frames=1,width=16,height=16,seed=113)
+        for block in range(1,17):
+            for noise in (dict(sigma=0),dict(sigma=3),dict(estimate_sigma=1)):
+                # Bound runtime while exercising the actual image path for
+                # every block with positive and nonconstant estimated noise.
+                options=dict(noise,block_size=block,group_size=2,iters=1,search_window=3)
+                for step,expected in (({},1),(dict(block_step=block),block)):
+                    pixels,props=values(core.nss.TWSC(noisy,**options,**step),0)
+                    assert props['_NSSBlockStep']==expected,(block,noise,props)
+                    assert np.isfinite(pixels[0]).all()
+                    if noise.get('sigma')==0:
+                        original,_=values(noisy,0)
+                        np.testing.assert_array_equal(pixels[0],original[0])
+                    else:
+                        assert props['_NSSSigma']>0 and props['_NSSGroups']>0,(block,noise,props)
+                try: core.nss.TWSC(noisy,**options,block_step=block+1)
+                except vs.Error as error: assert 'block_step outside supported range' in str(error),error
+                else: raise AssertionError((block,noise,'explicit oversized step must fail at creation'))
         # The default geometry is stable across sigma levels and can be checked
         # before requesting any source frame.
         for sigma in (3,20,20+1e-9,40,60,60+1e-9,100):
@@ -259,9 +291,8 @@ class Suite:
             self.case(label,lambda name=name,fmt=fmt,radius=radius:self.zero(name,fmt,radius))
         report=dict(passed=all(r['passed'] for r in self.rows),cases=self.rows,platform=platform.platform(),numpy=np.__version__,vapoursynth=str(vs.__version__),
                     plugin_sha256=hashlib.sha256(self.plugin.read_bytes()).hexdigest(),script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
-        (self.out/'summary.json').write_text(json.dumps(report,indent=2)+'\n')
         print(sum(r['passed'] for r in self.rows),'/',len(self.rows),'passed',flush=True)
-        return report['passed']
+        return self.evidence.finish(report)
 
 
 if __name__=='__main__':

@@ -207,19 +207,26 @@ static void LsscReconstructImpl(float* patches, int m, int n, int lda, const flo
     constexpr float kALim = 1.0e4f;
     bool exploded = false;
     for (int it = 0; it < kIters; ++it) {
-        lssc_gemm_nn(m, n, atoms, dictionary, ldd, A, atoms, R, m, gemm_work, gemm_work_floats, avx2_gemm);
-        for (int j = 0; j < n; ++j) {
-            const float* yj = patches + static_cast<std::size_t>(j) * static_cast<std::size_t>(lda);
-            float* rj = R + static_cast<std::size_t>(j) * static_cast<std::size_t>(m);
-            int i = 0;
-            for (; i + N <= m; i += N) {
-                hn::StoreU(hn::Sub(hn::LoadU(d, yj + i), hn::LoadU(d, rj + i)), d, rj + i);
+        // A starts at zero, so the first residual is the centered input.
+        // Avoid the D*0 product and the following full residual write/read.
+        if (it == 0) {
+            lssc_gemm_nn(atoms, n, m, transpose, atoms, patches, lda, G, atoms, gemm_work,
+                         gemm_work_floats, avx2_gemm);
+        } else {
+            lssc_gemm_nn(m, n, atoms, dictionary, ldd, A, atoms, R, m, gemm_work, gemm_work_floats, avx2_gemm);
+            for (int j = 0; j < n; ++j) {
+                const float* yj = patches + static_cast<std::size_t>(j) * static_cast<std::size_t>(lda);
+                float* rj = R + static_cast<std::size_t>(j) * static_cast<std::size_t>(m);
+                int i = 0;
+                for (; i + N <= m; i += N) {
+                    hn::StoreU(hn::Sub(hn::LoadU(d, yj + i), hn::LoadU(d, rj + i)), d, rj + i);
+                }
+                for (; i < m; ++i) {
+                    rj[i] = yj[i] - rj[i];
+                }
             }
-            for (; i < m; ++i) {
-                rj[i] = yj[i] - rj[i];
-            }
+            lssc_gemm_nn(atoms, n, m, transpose, atoms, R, m, G, atoms, gemm_work, gemm_work_floats, avx2_gemm);
         }
-        lssc_gemm_nn(atoms, n, m, transpose, atoms, R, m, G, atoms, gemm_work, gemm_work_floats, avx2_gemm);
         exploded = LsscUpdateGroupSoft(A, G, atoms, n, mu, lam, kALim);
         if (exploded) {
             std::memset(A, 0, static_cast<std::size_t>(atoms) * static_cast<std::size_t>(n) * sizeof(float));

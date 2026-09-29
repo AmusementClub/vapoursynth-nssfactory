@@ -209,12 +209,28 @@ bool SvdChunk(D d, int m, const float* const* A, const int* lda, float* const* U
                         jv[q * kN + row] = hn::IfThenElse(rotate, hn::MulAdd(sn, vp, hn::Mul(cs, vq)), vq);
                     }
                 }
+                // The rotation is orthogonal, so update the two squared
+                // column norms analytically. A complete recomputation after
+                // every pairing round dominated the 8-column Jacobi path;
+                // the sweep-end recomputation below retains the rank-deficient
+                // guard while removing six redundant dot-product sets.
+                const V c2 = hn::Mul(cs, cs);
+                const V s2 = hn::Mul(sn, sn);
+                const V cs2 = hn::Mul(hn::Set(d, 2.0f), hn::Mul(cs, sn));
+                const V np = hn::Max(hn::Add(hn::Sub(hn::Mul(c2, app), hn::Mul(cs2, apq)),
+                                              hn::Mul(s2, aqq)), zero);
+                const V nq = hn::Max(hn::Add(hn::Add(hn::Mul(s2, app), hn::Mul(cs2, apq)),
+                                              hn::Mul(c2, aqq)), zero);
+                norms[p] = hn::IfThenElse(rotate, np, norms[p]);
+                norms[q] = hn::IfThenElse(rotate, nq, norms[q]);
             }
-            for (int col = 0; col < kN; ++col) {
-                norms[col] = zero;
-                for (int row = 0; row < kN; ++row) {
-                    norms[col] = hn::MulAdd(ju[col * kN + row], ju[col * kN + row], norms[col]);
-                }
+        }
+        // Refresh once per sweep to absorb roundoff and preserve the
+        // rank-floor behavior for nearly deficient groups.
+        for (int col = 0; col < kN; ++col) {
+            norms[col] = zero;
+            for (int row = 0; row < kN; ++row) {
+                norms[col] = hn::MulAdd(ju[col * kN + row], ju[col * kN + row], norms[col]);
             }
         }
         active = hn::And(active, rotated);

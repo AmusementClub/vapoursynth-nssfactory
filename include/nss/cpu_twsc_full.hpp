@@ -48,7 +48,7 @@ bool twsc_svd(const float* a, int m, int n, int lda, TwscWorkspace& work, bool& 
 bool twsc_valid_svd(const float* a, int m, int n, int lda, const TwscWorkspace& work);
 // Same scalar reduction order, vectorized over independent outputs/dot products.
 bool twsc_valid_svd_lanes(const float* a, int m, int n, int lda, const TwscWorkspace& work);
-bool twsc_svd_validation_lanes_available();
+bool twsc_svd_validation_lanes_available(int columns = 0);
 bool twsc_svd_clustered(const TwscWorkspace& work);
 // Prepared finite input groups; independent FP64 lanes with scalar operation order.
 void twsc_svd64_batch(TwscWorkspace* const* work, int m, int n, int count);

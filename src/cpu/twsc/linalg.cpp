@@ -120,7 +120,8 @@ bool qr_svd(const float* a, int m, int n, int lda, TwscWorkspace& work,
 
 bool valid_svd(const float* a, int m, int n, int lda, const TwscWorkspace& w) {
 #if !NSS_ALIGNMENT_GENERIC && !defined(NSS_TWSC_SCALAR_VALIDATION)
-    if (n > 32 && std::min(m, n) >= 32 && twsc_svd_validation_lanes_available())
+    if (((n == 8 && m >= 8) || (n > 32 && std::min(m, n) >= 32)) &&
+        twsc_svd_validation_lanes_available(n))
         return twsc_valid_svd_lanes(a, m, n, lda, w);
 #endif
     const int r = std::min(m, n);

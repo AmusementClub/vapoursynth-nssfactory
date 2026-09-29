@@ -206,17 +206,26 @@ static int McwnnmAdmmGram8(float* Y, int m, int lda, int nch, const float* sigma
     float rho = rho0;
     int kept = 0;
     for (int it = 0; it < admm_iter; ++it) {
-        admm_weighted_x(X, Y, lda, Z, A, w2, m, n, rho);
+        if (it == 0) {
+            admm_weighted_x(X, Y, lda, Z, A, w2, m, n, rho);
+        }
         TempXp(Temp, X, A, m, n, 1.f / rho);
         kept = GramShrink8(Temp, m, C * (2.f / rho), 0, Z, avx2_gemm);
         if (kept < 0) {
             return -1;
         }
-        DualAdd(A, X, Z, m, n, rho);
-        rho = std::min(1e4f, mu * rho);
-        if (!(rho > 0.f) || !is_finite_bits(rho)) {
+        const float next_rho = std::min(1e4f, mu * rho);
+        if (!(next_rho > 0.f) || !is_finite_bits(next_rho)) {
             return -1;
         }
+        if (it + 1 < admm_iter) {
+            // The next X uses the just-updated dual and next penalty. Fuse
+            // it with the dual update to avoid rereading A and Z.
+            admm_dual_add_weighted_x(A, X, Y, lda, Z, w2, m, n, rho, next_rho);
+        } else {
+            DualAdd(A, X, Z, m, n, rho);
+        }
+        rho = next_rho;
     }
     CopyBack(Y, lda, Z, m, n);
     return kept;
@@ -266,7 +275,9 @@ int McwnnmAdmm(float* Y, int m, int n, int lda, int nch, const float* sigma, int
     int kept = 0;
 
     for (int it = 0; it < admm_iter; ++it) {
-        admm_weighted_x(X, Y, lda, Z, A, w2, m, n, rho);
+        if (it == 0) {
+            admm_weighted_x(X, Y, lda, Z, A, w2, m, n, rho);
+        }
         const float inv_rho = 1.f / rho;
         TempXp(Temp, X, A, m, n, inv_rho);
         if (svd_economy(m, n, Temp, m, U, m, S, Vt, n, svd_work, svd_cap) != 0) {
@@ -289,11 +300,18 @@ int McwnnmAdmm(float* Y, int m, int n, int lda, int nch, const float* sigma, int
             }
             gemm_nn_hwy(m, n, kept, U, m, Vt, n, Z, m, avx2_gemm);
         }
-        DualAdd(A, X, Z, m, n, rho);
-        rho = std::min(1e4f, mu * rho);
-        if (!(rho > 0.f) || !is_finite_bits(rho)) {
+        const float next_rho = std::min(1e4f, mu * rho);
+        if (!(next_rho > 0.f) || !is_finite_bits(next_rho)) {
             return -1;
         }
+        if (it + 1 < admm_iter) {
+            // Fuse the dual update with the next weighted-X pass so A and Z
+            // do not make a second full-memory traversal.
+            admm_dual_add_weighted_x(A, X, Y, lda, Z, w2, m, n, rho, next_rho);
+        } else {
+            DualAdd(A, X, Z, m, n, rho);
+        }
+        rho = next_rho;
     }
 
     CopyBack(Y, lda, Z, m, n);
