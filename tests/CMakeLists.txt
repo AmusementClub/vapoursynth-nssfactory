@@ -267,6 +267,13 @@ if(VapourSynth_FOUND)
     set_tests_properties(test_full_image_plugin PROPERTIES
       LABELS "plugin;release"
       SKIP_RETURN_CODE 77)
+    # Frozen public creation interface (signatures, defaults, validation text).
+    add_test(NAME test_plugin_interface
+             COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_plugin_interface.py"
+                     --plugin "$<TARGET_FILE:nss>")
+    set_tests_properties(test_plugin_interface PROPERTIES
+      LABELS "plugin"
+      SKIP_RETURN_CODE 77)
   endif()
 endif()
 
