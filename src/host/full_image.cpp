@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include "host/full_image.hpp"
-#include "host/validate.hpp"
-#include "host/temporal.hpp"
-#include "host/contribution.hpp"
+#include "frontend/validate.hpp"
+#include "frontend/temporal.hpp"
+#include "frontend/contribution.hpp"
+#include "frontend/full_image_args.hpp"
 #include "nss/backend.hpp"
 #include "nss/cpu_image.hpp"
 #include "nss/cpu_nlh_full.hpp"
@@ -13,47 +14,13 @@
 #include <string>
 
 namespace {
-struct FullImageData {
+struct FullImageData : nss::FullImageParams {
     std::shared_ptr<nss::ResourceBudget> budget = nss::current_budget();
     nss::NodeRef node, reference;
     VSVideoInfo vi{}, output{};
     nss::Model model = nss::Model::TWSC;
-    nss::TwscImageOptions twsc;
-    nss::NlhImageOptions nlh;
-    std::array<float, 3> sigma{3, 3, 3};
-    std::array<double, 3> sigma_units{3, 3, 3};
-    bool estimate = false;
     int radius() const { return model == nss::Model::TWSC ? twsc.radius : nlh.radius; }
 };
-bool present(const VSAPI* api, const VSMap* in, const char* key) { return api->mapNumElements(in, key) >= 0; }
-int integer(const VSAPI* api, const VSMap* in, const char* key, int fallback, int low, int high) {
-    if (!present(api, in, key)) return fallback;
-    if (api->mapNumElements(in, key) != 1) throw std::invalid_argument(std::string("nss: ") + key + " requires one integer");
-    const int value = nss::map_int(api, in, key, fallback);
-    if (value < low || value > high) throw std::invalid_argument(std::string("nss: ") + key + " outside supported range");
-    return value;
-}
-double real(const VSAPI* api, const VSMap* in, const char* key, double fallback, double low, double high) {
-    if (!present(api, in, key)) return fallback;
-    if (api->mapNumElements(in, key) != 1) throw std::invalid_argument(std::string("nss: ") + key + " requires one number");
-    int error = 0;
-    const double value = api->mapGetFloat(in, key, 0, &error);
-    if (error || !std::isfinite(value) || value < low || value > high) throw std::invalid_argument(std::string("nss: invalid ") + key);
-    return value;
-}
-std::array<int, 2> stage(const VSAPI* api, const VSMap* in, const char* key, int fallback, int low, int high) {
-    std::array<int, 2> result{fallback, fallback};
-    if (!present(api, in, key)) return result;
-    const int count = api->mapNumElements(in, key);
-    if (count < 1 || count > 2) throw std::invalid_argument(std::string("nss.NLH: ") + key + " must have one or two values");
-    for (int i = 0; i < 2; ++i) {
-        int error = 0;
-        const auto value = api->mapGetInt(in, key, std::min(i, count - 1), &error);
-        if (error || value < low || value > high) throw std::invalid_argument(std::string("nss.NLH: invalid ") + key);
-        result[i] = int(value);
-    }
-    return result;
-}
 void diagnostic_ints(const VSAPI* api, VSMap* props, const char* key, const int* values, int count) {
     std::int64_t data[2]{values[0], count > 1 ? values[1] : 0};
     if (api->mapSetIntArray(props, key, data, count)) throw std::bad_alloc();
@@ -214,114 +181,10 @@ VSNode* nss_create_full_image(const VSMap* in, VSCore* core, const VSAPI* api, V
     auto data = std::make_unique<FullImageData>(); auto& d = *data;
     d.model = model; d.node = nss::get_node(api, in, "clip", 0, nullptr);
     d.vi = *api->getVideoInfo(d.node);
-    if (!nss::is_const_32f(d.vi)) throw std::invalid_argument("nss: constant Gray/YUV/RGB 32-bit float required");
-    const bool sigma_given = present(api, in, "sigma");
-    if (sigma_given && (api->mapNumElements(in, "sigma") < 1 || api->mapNumElements(in, "sigma") > d.vi.format.numPlanes))
-        throw std::invalid_argument("nss: sigma must contain one value per selected input plane (last value broadcasts)");
-    nss::map_float_array(api, in, "sigma", d.sigma.data(), d.vi.format.numPlanes, 3);
-    for (int c = 0; c < d.vi.format.numPlanes; ++c) {
-        if (sigma_given) d.sigma_units[c] = api->mapGetFloat(in, "sigma", std::min(c, api->mapNumElements(in,"sigma")-1), nullptr);
-        if (d.sigma_units[c] < 0) throw std::invalid_argument("nss: sigma must be nonnegative");
-        if (d.sigma_units[c] > 0 && !(d.sigma[c] / 255.f > 0))
-            throw std::invalid_argument("nss: positive sigma is not representable after float32 normalization");
-    }
-    if (present(api, in, "rclip")) {
-        d.reference = nss::get_node(api, in, "rclip", 0, nullptr);
-        if (!nss::same_video(d.vi, *api->getVideoInfo(d.reference))) throw std::invalid_argument("nss: rclip must match clip");
-    }
-    if (present(api, in, "bm_range") && present(api, in, "search_window")) throw std::invalid_argument("nss: bm_range and search_window are mutually exclusive");
-    if (model == nss::Model::TWSC) {
-        auto& o = d.twsc;
-        d.estimate = integer(api, in, "estimate_sigma", 0, 0, 1) != 0;
-        if (d.estimate && sigma_given) throw std::invalid_argument("nss.TWSC: estimate_sigma and explicit sigma are mutually exclusive");
-        o.block = integer(api, in, "block_size", nss::kTwscDefaultBlock, 1, 16);
-        o.group = integer(api, in, "group_size", nss::kTwscDefaultGroup, 1, 256);
-        // The default step is independently overridable, but must remain
-        // valid when a caller narrows the block without spelling a step.
-        // An explicitly supplied step still goes through the range check and
-        // is rejected when it exceeds the resolved block size.
-        const bool step_given = present(api, in, "block_step");
-        o.step = integer(api, in, "block_step",
-                         step_given ? nss::kTwscDefaultStep : std::min(nss::kTwscDefaultStep, o.block),
-                         1, o.block);
-        o.iterations = integer(api, in, "iters", nss::kTwscDefaultIters, 1, 64);
-        o.window = present(api, in, "bm_range") ? 2 * integer(api, in, "bm_range", 0, 1, 64) + 1 : integer(api, in, "search_window", 60, 1, 129);
-        o.radius = integer(api, in, "radius", 0, 0, 16);
-        // Validate the API bound first, then report the model-specific
-        // resolved-group violation below. Keeping these checks separate makes
-        // the documented `ps_num exceeds resolved group_size` error reachable.
-        o.ps_num = integer(api, in, "ps_num", 2, 1, 256);
-        o.ps_range = integer(api, in, "ps_range", 4, 1, 64);
-        if (o.group == 1 && !present(api, in, "ps_num")) o.ps_num = 1;
-        if (o.ps_num > o.group) throw std::invalid_argument("nss.TWSC: ps_num exceeds resolved group_size");
-        o.lambda2 = real(api, in, "lambda2", 1, 0, std::numeric_limits<float>::max());
-        o.delta = real(api, in, "delta", 0, 0, 1);
-        o.solver.iterations = integer(api, in, "admm_iter", 10, 1, 1000);
-        o.solver.rho = real(api, in, "rho", 0.5, 0, std::numeric_limits<float>::max());
-        o.solver.mu = real(api, in, "mu", 1.1, 1, std::numeric_limits<float>::max());
-        o.solver.tolerance = real(api, in, "tol", 1e-6, 0, std::numeric_limits<float>::max());
-        if (!(o.solver.rho > 0) || !(o.solver.tolerance > 0)) throw std::invalid_argument("nss.TWSC: rho and tol must be positive");
-    } else {
-        auto& o = d.nlh;
-        d.estimate = !sigma_given;
-        std::string noise_model = "auto";
-        if (present(api, in, "noise_model")) {
-            int e = 0; const char* value = api->mapGetData(in, "noise_model", 0, &e);
-            if (e) throw std::invalid_argument("nss.NLH: invalid noise_model");
-            noise_model.assign(value, std::size_t(api->mapGetDataSize(in, "noise_model", 0, nullptr)));
-        }
-        if (noise_model != "auto" && noise_model != "awgn" && noise_model != "real") throw std::invalid_argument("nss.NLH: noise_model must be auto, awgn, or real");
-        o.real_noise = noise_model == "real" || (noise_model == "auto" && d.vi.format.colorFamily != cfGray);
-        o.block = stage(api, in, "block_size", 0, 2, 16); o.step = stage(api, in, "block_step", 0, 1, 16);
-        o.group = stage(api, in, "group_size", 0, 2, 64); o.q = stage(api, in, "q", 0, 2, 16);
-        o.window = present(api, in, "bm_range") ? std::array<int, 2>{2 * integer(api, in, "bm_range", 0, 1, 64) + 1, 2 * integer(api, in, "bm_range", 0, 1, 64) + 1} : stage(api, in, "search_window", 0, 1, 129);
-        for (int s = 0; s < 2; ++s) if ((o.group[s] & (o.group[s] - 1)) || (o.q[s] & (o.q[s] - 1)) ||
-            (o.block[s] && (o.q[s] > o.block[s] * o.block[s] || o.step[s] > o.block[s])))
-            throw std::invalid_argument("nss.NLH: invalid stage group/q/block/step combination");
-        o.radius = integer(api, in, "radius", 0, 0, 16);
-        o.ps_num = integer(api, in, "ps_num", 2, 1, std::min(o.group[0] ? o.group[0] : 64, o.group[1] ? o.group[1] : 64));
-        o.ps_range = integer(api, in, "ps_range", 4, 1, 64);
-        o.basic_iterations = integer(api, in, "basic_iters", 0, 1, 64); o.wiener_iterations = integer(api, in, "wiener_iters", 0, 1, 64);
-        o.basic_mix = real(api, in, "lambda_basic", -1, 0, 1); o.hard_strength = real(api, in, "hard_strength", -1, 0, std::numeric_limits<float>::max());
-        o.wiener_sigma_scale = real(api, in, "wiener_sigma_scale", -1, 0, std::numeric_limits<float>::max());
-    }
-    // Known geometry errors remain creation-time errors. Noise-estimated
-    // presets are resolved per frame, but their fixed bootstrap needs 8x8.
-    if (d.estimate) {
-        for (int c = 0; c < d.vi.format.numPlanes; ++c)
-            if (nss::plane_width(d.vi, c) < 8 || nss::plane_height(d.vi, c) < 8)
-                throw std::invalid_argument("nss: noise estimation block_size requires at least 8x8 per plane");
-    } else {
-        nss::ImageFrame metadata;
-        for (int c = 0; c < d.vi.format.numPlanes; ++c) {
-            metadata.planes[c].width = nss::plane_width(d.vi, c);
-            metadata.planes[c].height = nss::plane_height(d.vi, c);
-            metadata.sigma[c] = d.sigma[c] / 255.f;
-            metadata.sigma_units[c] = d.sigma_units[c];
-        }
-        if (model == nss::Model::NLH && d.vi.format.colorFamily == cfRGB)
-            nss::nlh_rgb_to_yuv(metadata, true);
-        int blocks[2]{}, groups[2]{}, iterations[2]{};
-        nss::NlhImageOptions nlh_options;
-        if (model == nss::Model::TWSC) {
-            blocks[0] = d.twsc.block;
-            groups[0] = d.twsc.group;
-            iterations[0] = d.twsc.iterations;
-        }
-        else {
-            nlh_options = nss::nlh_resolve_options({&metadata, 1}, d.vi.format.numPlanes, 0, d.nlh);
-            std::copy_n(nlh_options.block.data(), 2, blocks);
-            std::copy_n(nlh_options.group.data(), 2, groups);
-        }
-        const int stages = model == nss::Model::TWSC ? 1 : 2;
-        for (int s = 0; s < stages; ++s) {
-            const int step = model == nss::Model::TWSC ? d.twsc.step : nlh_options.step[s];
-            if (step > blocks[s]) throw std::invalid_argument("nss: block_step exceeds resolved block_size");
-            for (int c = 0; c < d.vi.format.numPlanes; ++c)
-                if (metadata.sigma[c] > 0 && (nss::plane_width(d.vi,c) < blocks[s] || nss::plane_height(d.vi,c) < blocks[s]))
-                    throw std::invalid_argument("nss: selected plane is smaller than block_size");
-        }
-    }
+    if (api->mapNumElements(in, "rclip") >= 0) d.reference = nss::get_node(api, in, "rclip", 0, nullptr);
+    static_cast<nss::FullImageParams&>(d) = nss::frontend::parse_full_image(
+        api, in, d.vi, d.reference ? api->getVideoInfo(d.reference) : nullptr, model, "nss");
+    nss::frontend::validate_full_image_geometry(d, d.vi, model, "nss");
     d.output = d.vi;
     if (d.radius()) d.output.height = nss::checked_fat_height(d.vi.height, d.radius());
     VSFilterDependency deps[2]{{d.node, d.radius() ? rpGeneral : rpStrictSpatial}, {d.reference, d.radius() ? rpGeneral : rpStrictSpatial}};

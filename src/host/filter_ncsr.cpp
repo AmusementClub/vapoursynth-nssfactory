@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include "nss/resources.hpp"
-#include "host/temporal.hpp"
-#include "host/validate.hpp"
-#include "host/contribution.hpp"
+#include "frontend/temporal.hpp"
+#include "frontend/validate.hpp"
+#include "frontend/contribution.hpp"
+#include "frontend/ncsr_args.hpp"
 #include "nss/backend.hpp"
 #include "nss/cpu_api.hpp"
 #include "nss/cpu_common.hpp"
@@ -21,22 +22,12 @@
 
 namespace {
 
-struct NcsrData {
+struct NcsrData : nss::NcsrParams {
     std::shared_ptr<nss::ResourceBudget> budget = nss::current_budget();
     nss::NodeRef node;
     nss::NodeRef rclip;
     VSVideoInfo vi{};
     VSVideoInfo vi_out{};
-    float sigma[3]{nss::kNcsrDefaultSigma, nss::kNcsrDefaultSigma, nss::kNcsrDefaultSigma};
-    int block_size = nss::kNcsrDefaultBlock;
-    int block_step = nss::kNcsrDefaultStep;
-    int group_size = nss::kNcsrDefaultGroup;
-    int bm_range = nss::kNcsrDefaultRange;
-    int radius = nss::kWnnmDefaultRadius;
-    int ps_num = nss::kWnnmDefaultPsNum;
-    int ps_range = nss::kWnnmDefaultPsRange;
-    int iters = nss::kNcsrDefaultIters;
-    float delta = nss::kNcsrDefaultDelta;
     nss::Workspace ws;
 };
 
@@ -233,39 +224,7 @@ void VS_CC ncsrCreate(const VSMap* in, VSMap* out, void* userData, VSCore* core,
             d->rclip.reset();
         }
     };
-    if (!nss::is_const_32f(d->vi)) {
-        fail("nss.NCSR: constant Gray/YUV/RGB 32-bit float required");
-        return;
-    }
-    const int np = d->vi.format.numPlanes;
-    nss::map_float_array(vsapi, in, "sigma", d->sigma, np, nss::kNcsrDefaultSigma);
-    d->block_size = nss::map_int(vsapi, in, "block_size", nss::kNcsrDefaultBlock);
-    d->block_step = nss::map_int(vsapi, in, "block_step", nss::kNcsrDefaultStep);
-    d->group_size = nss::map_int(vsapi, in, "group_size", nss::kNcsrDefaultGroup);
-    d->bm_range = nss::map_int(vsapi, in, "bm_range", nss::kNcsrDefaultRange);
-    d->radius = nss::map_int(vsapi, in, "radius", nss::kWnnmDefaultRadius);
-    d->ps_num = nss::map_int(vsapi, in, "ps_num", nss::kWnnmDefaultPsNum);
-    d->ps_range = nss::map_int(vsapi, in, "ps_range", nss::kWnnmDefaultPsRange);
-    d->iters = nss::map_int(vsapi, in, "iters", nss::kNcsrDefaultIters);
-    d->delta = nss::map_float(vsapi, in, "delta", nss::kNcsrDefaultDelta);
-    if (d->block_size < 1 || d->block_size > nss::kWnnmMaxBlock || d->group_size < 1 ||
-        d->group_size > nss::kWnnmMaxGroup || d->block_step < 1 || d->block_step > d->block_size || d->radius < 0 ||
-        d->radius > nss::kBmMaxRadius) {
-        fail("nss.NCSR: invalid block_size/group_size/block_step/radius");
-        return;
-    }
-    if (d->iters < 1 || d->iters > 64 || !std::isfinite(d->delta) || d->delta < 0.f || d->delta > 1.f) {
-        fail("nss.NCSR: invalid iters/delta (iters in [1, 64], delta in [0, 1])");
-        return;
-    }
-    if (d->ps_num < 1 || d->ps_num > d->group_size || d->ps_range < 1 || d->ps_range > nss::kBmMaxRange) {
-        fail("nss.NCSR: invalid ps_num/ps_range");
-        return;
-    }
-    if (d->bm_range < 1 || d->bm_range > nss::kBmMaxRange) {
-        fail("nss.NCSR: bm_range must be in [1, 64]");
-        return;
-    }
+    static_cast<nss::NcsrParams&>(*d) = nss::frontend::parse_ncsr(vsapi, in, d->vi, "nss");
     int e = 0;
     d->rclip = nss::get_node(vsapi, in, "rclip", 0, &e);
     if (e) {
@@ -294,9 +253,6 @@ void VS_CC ncsrCreate(const VSMap* in, VSMap* out, void* userData, VSCore* core,
 }
 
 void register_ncsr(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
-    const char* args =
-        "clip:vnode;sigma:float[]:opt;block_size:int:opt;block_step:int:opt;group_size:int:opt;"
-        "bm_range:int:opt;radius:int:opt;ps_num:int:opt;ps_range:int:opt;rclip:vnode:opt;"
-        "iters:int:opt;delta:float:opt;memory_limit_mb:int:opt;";
+    const char* args = nss::frontend::kNcsrSignature;
     vspapi->registerFunction("NCSR", args, "clip:vnode;", nss::checked_create<ncsrCreate>, nullptr, plugin);
 }

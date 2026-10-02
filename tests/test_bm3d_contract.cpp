@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-#include "host/temporal.hpp"
+#include "frontend/temporal.hpp"
 #include <limits>
 #include "nss/cpu_api.hpp"
 #include "nss/contracts.hpp"

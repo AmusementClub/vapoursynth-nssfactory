@@ -2,10 +2,11 @@
 #include "nss/resources.hpp"
 #include "nss/avx2_policy.hpp"
 #include "host/filters.hpp"
-#include "host/temporal.hpp"
+#include "frontend/temporal.hpp"
 #include "host/batch_runner.hpp"
-#include "host/validate.hpp"
-#include "host/contribution.hpp"
+#include "frontend/validate.hpp"
+#include "frontend/contribution.hpp"
+#include "frontend/wnnm_args.hpp"
 #include "nss/backend.hpp"
 #include "nss/cpu_api.hpp"
 #include "nss/params.hpp"
@@ -22,22 +23,12 @@
 
 namespace {
 
-struct WnnmData {
+struct WnnmData : nss::WnnmParams {
     std::shared_ptr<nss::ResourceBudget> budget = nss::current_budget();
     nss::NodeRef node;
     nss::NodeRef rclip;
     VSVideoInfo vi{};
     VSVideoInfo vi_out{};
-    float sigma[3]{nss::kWnnmDefaultSigma, nss::kWnnmDefaultSigma, nss::kWnnmDefaultSigma};
-    int block_size = nss::kWnnmDefaultBlock;
-    int block_step = nss::kWnnmDefaultStep;
-    int group_size = nss::kWnnmDefaultGroup;
-    int bm_range = nss::kWnnmDefaultRange;
-    int radius = nss::kWnnmDefaultRadius;
-    int ps_num = nss::kWnnmDefaultPsNum;
-    int ps_range = nss::kWnnmDefaultPsRange;
-    int residual = nss::kWnnmDefaultResidual;
-    int adaptive = nss::kWnnmDefaultAdaptive;
     nss::Workspace ws;
 };
 
@@ -287,30 +278,7 @@ VSNode* nss_create_wnnm(const VSMap* in, VSCore* core, const VSAPI* vsapi, VSMap
         }
         return nullptr;
     };
-    if (!nss::is_const_32f(d->vi)) {
-        return fail("nss.WNNM: constant Gray/YUV/RGB 32-bit float required");
-    }
-    const int np = d->vi.format.numPlanes;
-    nss::map_float_array(vsapi, in, "sigma", d->sigma, np, nss::kWnnmDefaultSigma);
-    d->block_size = nss::map_int(vsapi, in, "block_size", nss::kWnnmDefaultBlock);
-    d->block_step = nss::map_int(vsapi, in, "block_step", nss::kWnnmDefaultStep);
-    d->group_size = nss::map_int(vsapi, in, "group_size", nss::kWnnmDefaultGroup);
-    d->bm_range = nss::map_int(vsapi, in, "bm_range", nss::kWnnmDefaultRange);
-    d->radius = nss::map_int(vsapi, in, "radius", nss::kWnnmDefaultRadius);
-    d->ps_num = nss::map_int(vsapi, in, "ps_num", nss::kWnnmDefaultPsNum);
-    d->ps_range = nss::map_int(vsapi, in, "ps_range", nss::kWnnmDefaultPsRange);
-    d->residual = nss::map_int(vsapi, in, "residual", nss::kWnnmDefaultResidual);
-    d->adaptive = nss::map_int(vsapi, in, "adaptive_aggregation", nss::kWnnmDefaultAdaptive);
-    if (d->block_size < 1 || d->block_size > nss::kWnnmMaxBlock || d->group_size < 1 ||
-        d->group_size > nss::kWnnmMaxGroup || d->block_step < 1 || d->block_step > d->block_size || d->radius < 0 ||
-        d->radius > nss::kBmMaxRadius) {
-        return fail("nss.WNNM: invalid block_size/group_size/block_step/radius");
-    }
-    if (d->bm_range < 1 || d->bm_range > nss::kBmMaxRange) {
-        return fail("nss.WNNM: bm_range must be in [1, 64]");
-    }
-    if (d->ps_num < 1 || d->ps_num > d->group_size || d->ps_range < 1 || d->ps_range > nss::kBmMaxRange)
-        return fail("nss.WNNM: invalid ps_num/ps_range");
+    static_cast<nss::WnnmParams&>(*d) = nss::frontend::parse_wnnm(vsapi, in, d->vi, "nss");
     int e = 0;
     d->rclip = nss::get_node(vsapi, in, "rclip", 0, &e);
     if (e) {
@@ -345,9 +313,6 @@ void VS_CC wnnmCreate(const VSMap* in, VSMap* out, void* userData, VSCore* core,
 }
 
 void register_wnnm(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
-    const char* args =
-        "clip:vnode;sigma:float[]:opt;block_size:int:opt;block_step:int:opt;group_size:int:opt;"
-        "bm_range:int:opt;radius:int:opt;ps_num:int:opt;ps_range:int:opt;residual:int:opt;"
-        "adaptive_aggregation:int:opt;rclip:vnode:opt;memory_limit_mb:int:opt;";
+    const char* args = nss::frontend::kWnnmSignature;
     vspapi->registerFunction("WNNM", args, "clip:vnode;", nss::checked_create<wnnmCreate>, nullptr, plugin);
 }

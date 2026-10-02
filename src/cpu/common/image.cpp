@@ -173,20 +173,7 @@ void nlh_rgb_to_yuv(ImageFrame& frame, bool propagate_sigma) {
         const double r = frame.planes[0].pixels[i], g = frame.planes[1].pixels[i], b = frame.planes[2].pixels[i];
         for (int c = 0; c < 3; ++c) frame.planes[c].pixels[i] = float(a[c][0] * r + a[c][1] * g + a[c][2] * b);
     }
-    if (propagate_sigma) {
-        const auto sigma = frame.sigma;
-        const auto original_units = frame.sigma_units;
-        for (int c = 0; c < 3; ++c) {
-            double variance = 0, units_variance = 0;
-            for (int k = 0; k < 3; ++k) {
-                variance += a[c][k] * a[c][k] * double(sigma[k]) * sigma[k];
-                const double units = original_units[k] >= 0 ? original_units[k] : double(sigma[k]) * 255;
-                units_variance += a[c][k] * a[c][k] * units * units;
-            }
-            frame.sigma[c] = float(std::sqrt(variance));
-            frame.sigma_units[c] = std::sqrt(units_variance);
-        }
-    }
+    if (propagate_sigma) nlh_rgb_sigma_to_yuv(frame.sigma, frame.sigma_units);
 }
 void nlh_yuv_to_rgb(ImageFrame& frame) {
     const std::size_t n = frame.planes[0].pixels.size();

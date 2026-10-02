@@ -2,19 +2,13 @@
 #pragma once
 
 #include "nss/resources.hpp"
+#include "nss/params/twsc.hpp"
 
 namespace nss {
 
 inline constexpr int kTwscMaxRows = 768;
 inline constexpr int kTwscMaxColumns = 256;
 inline constexpr double kTwscNoiseFloor = 1e-6;
-
-struct TwscSolverOptions {
-    int iterations = 10;
-    double rho = 0.5;
-    double mu = 1.1;
-    double tolerance = 1e-6;
-};
 
 struct TwscSolverStats {
     int iterations = 0;

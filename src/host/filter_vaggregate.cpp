@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include "nss/resources.hpp"
 #include "host/filters.hpp"
-#include "host/temporal.hpp"
-#include "host/validate.hpp"
-#include "host/contribution.hpp"
+#include "frontend/temporal.hpp"
+#include "frontend/validate.hpp"
+#include "frontend/contribution.hpp"
+#include "frontend/vaggregate_args.hpp"
 #include "nss/backend.hpp"
 #include "nss/cpu_api.hpp"
 #include "nss/params.hpp"
@@ -18,14 +19,11 @@
 
 namespace {
 
-struct VAggData {
+struct VAggData : nss::VAggregateParams {
     std::shared_ptr<nss::ResourceBudget> budget = nss::current_budget();
     nss::NodeRef clip;  // fat intermediate
     nss::NodeRef src;
     VSVideoInfo vi_src{};
-    int radius = 0;
-    bool allow_legacy = false;
-    int planes[3]{1, 1, 1};
 };
 
 const VSFrame* VS_CC vaggGetFrame(int n, int activationReason, void* instanceData, void** frameData,
@@ -124,35 +122,9 @@ VSNode* nss_create_vaggregate(VSNode* fat, VSNode* src, int radius, const int* p
     d->src = std::move(src_owned);
     d->vi_src = *vsapi->getVideoInfo(src);
     const VSVideoInfo* vi_fat = vsapi->getVideoInfo(fat);
-    if (!nss::is_const_32f(d->vi_src) || !nss::is_const_32f(*vi_fat)) {
-        d->clip = nullptr;
-        d->src = nullptr;
-        return fail("nss.VAggregate: constant 32f clips required");
-    }
-    if (radius < 0 || radius > nss::kBmMaxRadius) {
-        d->clip = nullptr;
-        d->src = nullptr;
-        return fail("nss.VAggregate: radius must be in [0, 16]");
-    }
+    nss::frontend::validate_vaggregate_shape(d->vi_src, *vi_fat, radius, "nss");
     d->radius = radius;
     d->allow_legacy = allow_legacy;
-    const int expect_h = nss::checked_fat_height(d->vi_src.height, d->radius);
-    const VSVideoFormat& src_format = d->vi_src.format;
-    const VSVideoFormat& fat_format = vi_fat->format;
-    const bool same_format = src_format.colorFamily == fat_format.colorFamily &&
-                             src_format.sampleType == fat_format.sampleType &&
-                             src_format.bitsPerSample == fat_format.bitsPerSample &&
-                             src_format.bytesPerSample == fat_format.bytesPerSample &&
-                             src_format.subSamplingW == fat_format.subSamplingW &&
-                             src_format.subSamplingH == fat_format.subSamplingH &&
-                             src_format.numPlanes == fat_format.numPlanes;
-    if (!same_format || vi_fat->width != d->vi_src.width || vi_fat->height != expect_h ||
-        vi_fat->numFrames != d->vi_src.numFrames) {
-        d->clip = nullptr;
-        d->src = nullptr;
-        return fail("nss.VAggregate: clip must match src format, width, and frame count, with "
-                    "height=src.height*(2*radius+1)*2");
-    }
     for (int i = 0; i < 3; ++i) {
         d->planes[i] = planes ? (planes[i] != 0) : 1;
     }
@@ -185,33 +157,14 @@ void VS_CC vaggCreate(const VSMap* in, VSMap* out, void* userData, VSCore* core,
         }
         return;
     }
-    const int radius = nss::map_int(vsapi, in, "radius", 0);
-    const VSVideoInfo* vi_src = vsapi->getVideoInfo(src);
-    int pl[3]{1, 1, 1};
-    const int num_plane_args = vsapi->mapNumElements(in, "planes");
-    if (num_plane_args > 0) {
-        std::fill_n(pl, 3, 0);
-        for (int i = 0; i < num_plane_args; ++i) {
-            int err = 0;
-            const int plane = static_cast<int>(vsapi->mapGetInt(in, "planes", i, &err));
-            if (err || plane < 0 || plane >= vi_src->format.numPlanes || pl[plane]) {
-                vsapi->mapSetError(out, "nss.VAggregate: planes must contain unique valid plane indices");
-                fat.reset();
-                src.reset();
-                return;
-            }
-            pl[plane] = 1;
-        }
-    }
-    const int allow_legacy = nss::map_int(vsapi, in, "allow_legacy", 0);
-    if (allow_legacy != 0 && allow_legacy != 1) throw std::invalid_argument("nss.VAggregate: allow_legacy must be 0 or 1");
-    VSNode* node = nss_create_vaggregate(fat.release(), src.release(), radius, pl, core, vsapi, out, allow_legacy != 0);
+    const auto p = nss::frontend::parse_vaggregate(vsapi, in, *vsapi->getVideoInfo(src), "nss");
+    VSNode* node = nss_create_vaggregate(fat.release(), src.release(), p.radius, p.planes, core, vsapi, out, p.allow_legacy);
     if (node) {
         vsapi->mapConsumeNode(out, "clip", node, maAppend);
     }
 }
 
 void register_vaggregate(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
-    vspapi->registerFunction("VAggregate", "clip:vnode;src:vnode;radius:int:opt;planes:int[]:opt;allow_legacy:int:opt;memory_limit_mb:int:opt;", "clip:vnode;",
+    vspapi->registerFunction("VAggregate", nss::frontend::kVAggregateSignature, "clip:vnode;",
                              nss::checked_create<vaggCreate>, nullptr, plugin);
 }

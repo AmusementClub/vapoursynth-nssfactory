@@ -591,11 +591,49 @@ set(_nss_finite_hot_expected ${NSS_HOT_COMPILE_OPTIONS} -fno-finite-math-only)
 if(NOT "${NSS_FINITE_HOT_COMPILE_OPTIONS}" STREQUAL "${_nss_finite_hot_expected}")
   message(FATAL_ERROR "NSS_FINITE_HOT_COMPILE_OPTIONS must be exactly NSS_HOT_COMPILE_OPTIONS plus -fno-finite-math-only")
 endif()
+# Backend-neutral frontend: VapourSynth argument parsing, validation and
+# frame/temporal protocol helpers shared by every backend plugin. It must not
+# reach CPU kernels or CPU host code, so a GPU plugin can link it unchanged.
+file(GLOB_RECURSE NSS_FRONTEND_GUARDED CONFIGURE_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/frontend/*"
+  "${CMAKE_CURRENT_SOURCE_DIR}/include/nss/params/*")
+foreach(_nss_file IN LISTS NSS_FRONTEND_GUARDED)
+  if(_nss_file MATCHES "\\.(hpp|cpp|h)$")
+    file(STRINGS "${_nss_file}" _nss_hits
+         REGEX "#[ \t]*include[ \t]+[\"<](cpu/|host/|nss/cpu_|nss/backend\\.hpp|nss/avx2)")
+    if(_nss_hits)
+      message(FATAL_ERROR "backend-neutral frontend file includes CPU/host code: ${_nss_file}: ${_nss_hits}")
+    endif()
+  endif()
+endforeach()
+
 if(VapourSynth_FOUND)
+  add_library(nss_frontend STATIC
+    src/frontend/validate.cpp
+    src/frontend/full_image_args.cpp
+    src/frontend/bm3d_args.cpp
+    src/frontend/temporal_args.cpp
+    src/frontend/vaggregate_args.cpp
+    src/frontend/nlm_args.cpp
+    src/frontend/lssc_args.cpp
+    src/frontend/mcwnnm_args.cpp
+    src/frontend/wnnm_args.cpp
+    src/frontend/ncsr_args.cpp
+  )
+  target_include_directories(nss_frontend PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+  )
+  target_link_libraries(nss_frontend PUBLIC VapourSynth::VapourSynth)
+  set_target_properties(nss_frontend PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN ON
+  )
+
   file(GLOB NSS_HOST_FILTERS CONFIGURE_DEPENDS src/host/filter_*.cpp)
   add_library(nss SHARED
     src/host/plugin.cpp
-    src/host/validate.cpp
     src/host/full_image.cpp
     ${NSS_HOST_FILTERS}
   )
@@ -609,7 +647,7 @@ if(VapourSynth_FOUND)
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
   )
-  target_link_libraries(nss PRIVATE nss_cpu nss_workspace VapourSynth::VapourSynth)
+  target_link_libraries(nss PRIVATE nss_frontend nss_cpu nss_workspace VapourSynth::VapourSynth)
 endif()
 
 enable_testing()

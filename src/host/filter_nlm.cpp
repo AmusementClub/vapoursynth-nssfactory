@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include "nss/resources.hpp"
-#include "host/validate.hpp"
-#include "host/temporal.hpp"
+#include "frontend/validate.hpp"
+#include "frontend/temporal.hpp"
+#include "frontend/nlm_args.hpp"
 #include "nss/backend.hpp"
 #include "nss/cpu_api.hpp"
 #include "nss/params.hpp"
@@ -27,18 +28,12 @@
 
 namespace {
 
-struct NlmData {
+struct NlmData : nss::NlmParams {
     std::shared_ptr<nss::ResourceBudget> budget = nss::current_budget();
     nss::NodeRef node;
     nss::NodeRef rclip;
     const VSAPI* vsapi = nullptr;
     VSVideoInfo vi{};
-    int d = nss::kNlmDefaultD;
-    int a = nss::kNlmDefaultA;
-    int s = nss::kNlmDefaultS;
-    float h = nss::kNlmDefaultH;
-    float wref = nss::kNlmDefaultWref;
-    nss::ChannelMode channels = nss::ChannelMode::Y;
     nss::Workspace ws;
 };
 
@@ -527,84 +522,8 @@ void VS_CC nlmCreate(const VSMap* in, VSMap* out, void* userData, VSCore* core, 
             d->rclip = nullptr;
         }
     };
-    if (!nss::is_const_32f(d->vi)) {
-        fail("nss.NLM: constant Gray/YUV/RGB 32-bit float required");
-        return;
-    }
-    d->d = nss::map_int(vsapi, in, "d", nss::kNlmDefaultD);
-    d->a = nss::map_int(vsapi, in, "a", nss::kNlmDefaultA);
-    d->s = nss::map_int(vsapi, in, "s", nss::kNlmDefaultS);
-    d->h = nss::map_float(vsapi, in, "h", nss::kNlmDefaultH);
-    d->wref = nss::map_float(vsapi, in, "wref", nss::kNlmDefaultWref);
-    if (d->d < 0 || d->d > nss::kNlmMaxD || d->a <= 0 || d->s < 0 || d->a > nss::kNlmMaxA ||
-        d->s > nss::kNlmMaxS ||
-        !std::isfinite(d->h) || d->h <= 0.f || !std::isfinite(d->wref) || d->wref <= 0.f) {
-        fail("nss.NLM: invalid d/a/s/h/wref");
-        return;
-    }
-    // d pins 2d+1 input frames outside the admission budget; reject radii
-    // whose pinned footprint is unreasonable for the actual frame size.
-    const std::int64_t nlm_frame_bytes = static_cast<std::int64_t>(d->vi.format.bytesPerSample) * d->vi.width *
-                                         d->vi.height * d->vi.format.numPlanes;
-    if ((2LL * d->d + 1) * nlm_frame_bytes > nss::kNlmMaxPinnedFrameBytes) {
-        fail("nss.NLM: temporal radius d pins too much frame memory for this frame size");
-        return;
-    }
-    const int wmode = nss::map_int(vsapi, in, "wmode", 0);
-    if (wmode != 0) {
-        fail("nss.NLM: only wmode=0 (Welsch) is implemented");
-        return;
-    }
+    static_cast<nss::NlmParams&>(*d) = nss::frontend::parse_nlm(vsapi, in, d->vi, "nss");
     int err = 0;
-    const char* ch = vsapi->mapGetData(in, "channels", 0, &err);
-    std::string cs = (!err && ch) ? ch : "AUTO";
-    if (cs == "Y") {
-        d->channels = nss::ChannelMode::Y;
-    } else if (cs == "UV") {
-        d->channels = nss::ChannelMode::UV;
-    } else if (cs == "YUV") {
-        d->channels = nss::ChannelMode::YUV;
-    } else if (cs == "RGB") {
-        d->channels = nss::ChannelMode::RGB;
-    } else if (cs == "AUTO") {
-        d->channels = (d->vi.format.colorFamily == cfRGB) ? nss::ChannelMode::RGB : nss::ChannelMode::Y;
-    } else {
-        fail("nss.NLM: channels must be Y, UV, YUV, RGB, or AUTO");
-        return;
-    }
-    if (d->channels == nss::ChannelMode::UV && d->vi.format.colorFamily != cfYUV) {
-        fail("nss.NLM: UV requires YUV");
-        return;
-    }
-    if (d->channels == nss::ChannelMode::YUV &&
-        (d->vi.format.colorFamily != cfYUV || d->vi.format.subSamplingW || d->vi.format.subSamplingH)) {
-        fail("nss.NLM: YUV requires YUV444");
-        return;
-    }
-    if (d->channels == nss::ChannelMode::RGB && d->vi.format.colorFamily != cfRGB) {
-        fail("nss.NLM: RGB requires RGB");
-        return;
-    }
-    // Failure contract: the factory must validate the model's legal shape.
-    // The distance/accumulation kernels clamp |ox| to w as defense-in-depth;
-    // rejecting a >= width here keeps the documented band semantics exact
-    // (|ox| >= plane width would otherwise write past the row into the next
-    // row's accumulation state).
-    int first_plane = 0;
-    int last_plane = 0;
-    if (d->channels == nss::ChannelMode::UV) {
-        first_plane = 1;
-        last_plane = 2;
-    } else if (d->channels != nss::ChannelMode::Y) {
-        last_plane = d->vi.format.numPlanes - 1;
-    }
-    for (int p = first_plane; p <= last_plane; ++p) {
-        if (d->a >= nss::plane_width(d->vi, p)) {
-            fail("nss.NLM: search radius a must be smaller than the processed plane width");
-            return;
-        }
-    }
-    err = 0;
     d->rclip = nss::get_node(vsapi, in, "rclip", 0, &err);
     if (err) {
         d->rclip = nullptr;
@@ -632,8 +551,6 @@ void VS_CC nlmCreate(const VSMap* in, VSMap* out, void* userData, VSCore* core, 
 }  // namespace
 
 void register_nlm(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
-    vspapi->registerFunction("NLM",
-                             "clip:vnode;d:int:opt;a:int:opt;s:int:opt;h:float:opt;channels:data:opt;wmode:int:opt;"
-                             "wref:float:opt;rclip:vnode:opt;memory_limit_mb:int:opt;",
+    vspapi->registerFunction("NLM", nss::frontend::kNlmSignature,
                              "clip:vnode;", nss::checked_create<nlmCreate>, nullptr, plugin);
 }

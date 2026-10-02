@@ -3,22 +3,12 @@
 
 #include "nss/params.hpp"
 #include "nss/checked.hpp"
+#include "nss/params/lssc.hpp"
 
 #include <algorithm>
 #include <cstddef>
 
 namespace nss {
-
-inline int lssc_axis_count(int len, int block, int step) {
-    if (len < block || block < 1 || step < 1) {
-        return 0;
-    }
-    return checked_int((static_cast<std::uint64_t>(len - block) + step - 1) / step + 1);
-}
-
-inline int lssc_grid_count(int width, int height, int block, int step) {
-    return checked_int(static_cast<std::uint64_t>(lssc_axis_count(width, block, step)) * lssc_axis_count(height, block, step));
-}
 
 // K-means / greedy assignment on packed patches (column-major). Every patch is assigned.
 // assign[i] ∈ [0, nclusters). counts[c] = |{i : assign[i] = c}| (size nclusters).

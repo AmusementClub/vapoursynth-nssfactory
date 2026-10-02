@@ -12,7 +12,6 @@
 
 namespace nss {
 
-enum class ChannelMode { Y, UV, YUV, RGB };
 
 void nlm_distance_luma_f32(float* dst, const float* center, const float* neighbor,
                            int ox, int oy, int w, int h, int stride);
