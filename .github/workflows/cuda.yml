@@ -63,7 +63,9 @@ jobs:
 
   windows:
     name: windows-cuda-12.9-msvc
-    runs-on: windows-latest
+    # CUDA 12.9 supports MSVC through VS 2022; windows-latest ships VS 2026
+    # (MSVC 14.5x), which nvcc 12.9 rejects.
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
       - uses: Jimver/cuda-toolkit@v0.2.36
@@ -75,7 +77,10 @@ jobs:
         with:
           arch: x64
       - name: packages
-        run: pip install vapoursynth ninja
+        run: |
+          pip install vapoursynth ninja
+          nvcc --version
+          cl 2>&1 | Select-Object -First 1
       - name: configure
         run: |
           $vsInclude = python -c "import vapoursynth, pathlib; print(pathlib.Path(vapoursynth.__file__).parent / 'include')"
