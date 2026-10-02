@@ -105,14 +105,17 @@ void JacobiSvd8(const float* A, int lda, float* U, int ldu, float* S, float* Vt,
                     const VW vq = vv[q];
                     vv[p] = hn::Sub(hn::Mul(vcs, vp), hn::Mul(vsn, vq));
                     vv[q] = hn::Add(hn::Mul(vsn, vp), hn::Mul(vcs, vq));
+                    // Orthogonal rotation: update the two squared norms in
+                    // closed form (as the batched WNNM/NCSR Jacobi does). The
+                    // sweep-end refresh below absorbs cancellation for
+                    // rank-deficient groups.
+                    const float c2 = cs * cs, s2 = sn * sn, cs2 = 2.f * cs * sn;
+                    nrm[p] = std::max(c2 * app[k] - cs2 * apq[k] + s2 * aqq[k], 0.f);
+                    nrm[q] = std::max(s2 * app[k] + cs2 * apq[k] + c2 * aqq[k], 0.f);
                 }
-                // The closed-form norm update is susceptible to cancellation
-                // for rank-deficient groups.  Recompute from the rotated
-                // columns before the next pairing round so its angle uses the
-                // actual current norms.
-                for (int j = 0; j < 8; ++j) {
-                    nrm[j] = hsum8(hn::Mul(u[j], u[j]));
-                }
+            }
+            for (int j = 0; j < 8; ++j) {
+                nrm[j] = hsum8(hn::Mul(u[j], u[j]));
             }
             if (!rotated) {
                 break;

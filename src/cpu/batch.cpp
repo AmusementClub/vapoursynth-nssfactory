@@ -438,6 +438,37 @@ int wnnm_shrink_batch(WnnmShrinkBatchItem* items, int count) {
     auto fail = [&](int index, int& first_error) {
         detail::record_batch_failure(index, first_error);
     };
+    // Batched n=8 path: WNNM only needs X = U_k S'_k V_k^T. With U = A V S^-1
+    // this is A * (V_k diag(S'_k / S_k) V_k^T), so the SVD skips the Q replay
+    // and U entirely. sv_shrink keeps S'/S in (0.5, 1], so the ratio is bounded.
+    auto finish_sv = [](WnnmShrinkBatchItem& item) {
+        const int m = item.m;
+        const int n = item.n;
+        float* scratch = item.work;
+        float* S = scratch + m * n;
+        float* Vt = S + n;
+        float* mean = Vt + n * n;
+        float original[kSvdMaxN];
+        std::copy_n(S, n, original);
+        const float constant = 8.f * std::sqrt(2.f * static_cast<float>(n)) * item.sigma * item.sigma;
+        const int kept = sv_shrink(S, n, constant, item.residual ? 0 : 1);
+        if (item.adaptive_weight) {
+            *item.adaptive_weight = item.adaptive && kept > 0 ? 1.f / static_cast<float>(kept) : 1.f;
+        }
+        float W[kSvdMaxN * kSvdMaxN] = {};
+        for (int i = 0; i < kept; ++i) {
+            const float ratio = original[i] > 0.f ? S[i] / original[i] : 0.f;
+            for (int b = 0; b < n; ++b) {
+                const float vb = ratio * Vt[i + b * n];
+                for (int a = 0; a < n; ++a) W[a + b * n] += Vt[i + a * n] * vb;
+            }
+        }
+        gemm_nn_hwy(m, n, n, item.group, item.lda, W, n, scratch, m);
+        for (int col = 0; col < n; ++col) {
+            std::copy_n(scratch + col * m, m, item.group + static_cast<std::size_t>(col) * item.lda);
+        }
+        if (item.residual) group_center_add(item.group, m, n, item.lda, mean);
+    };
     auto finish = [](WnnmShrinkBatchItem& item) {
         const int m = item.m;
         const int n = item.n;
@@ -518,8 +549,8 @@ int wnnm_shrink_batch(WnnmShrinkBatchItem* items, int count) {
                 s[pos] = S;
                 vt[pos] = Vt;
             }
-            if (svd_economy_8_batch_qreplay_hwy(first.m, a.data(), lda.data(), u.data(), ldu.data(), s.data(),
-                                                vt.data(), ldvt.data(), static_cast<int>(size)) != 0) {
+            if (svd_economy_8_batch_sv_hwy(first.m, a.data(), lda.data(), s.data(), vt.data(), ldvt.data(),
+                                           static_cast<int>(size)) != 0) {
                 // A batch-level failure must not poison the whole bucket: retry
                 // each matrix through the scalar guarded path, then finish.
                 for (int index : batch_indices) {
@@ -550,8 +581,12 @@ int wnnm_shrink_batch(WnnmShrinkBatchItem* items, int count) {
                     float* mean = Vt + item.n * item.n;
                     float* svd_work = mean + item.m;
                     const int svd_cap = item.work_floats - (item.m * item.n + item.n + item.n * item.n + item.m);
-                    if (!finite_singular_values(S, item.n) &&
-                        svd_economy(item.m, item.n, item.group, item.lda, U, item.m, S, Vt, item.n, svd_work,
+                    if (finite_singular_values(S, item.n)) {
+                        finish_sv(item);
+                        set_status(item, 1);
+                        continue;
+                    }
+                    if (svd_economy(item.m, item.n, item.group, item.lda, U, item.m, S, Vt, item.n, svd_work,
                                     svd_cap) != 0) {
                         if (item.residual) {
                             group_center_add(item.group, item.m, item.n, item.lda, mean);

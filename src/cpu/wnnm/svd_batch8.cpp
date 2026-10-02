@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <cstdint>
 
 #ifndef NSS_SVD_QREPLAY_ROW_MAJOR
 #define NSS_SVD_QREPLAY_ROW_MAJOR 0
@@ -38,7 +39,25 @@ inline std::size_t SmallIndex(int row, int col, int lane) {
     return (static_cast<std::size_t>(col) * kN + row) * kBatchLanes + lane;
 }
 
-template <bool kNeedVt, class D>
+#if HWY_MAX_BYTES >= 16
+// In-register 4x4 transpose (rows a,b,c,e become columns). Pure data
+// movement, so the SoA pack/unpack below is bit-identical to the scalar copy.
+using D4 = hn::FixedTag<float, 4>;
+HWY_INLINE void Transpose4x4(hn::Vec<D4>& a, hn::Vec<D4>& b, hn::Vec<D4>& c, hn::Vec<D4>& e) {
+    const D4 d;
+    const hn::Repartition<std::uint64_t, D4> d64;
+    const auto ab0 = hn::BitCast(d64, hn::InterleaveLower(d, a, b));
+    const auto ab1 = hn::BitCast(d64, hn::InterleaveUpper(d, a, b));
+    const auto ce0 = hn::BitCast(d64, hn::InterleaveLower(d, c, e));
+    const auto ce1 = hn::BitCast(d64, hn::InterleaveUpper(d, c, e));
+    a = hn::BitCast(d, hn::InterleaveLower(d64, ab0, ce0));
+    b = hn::BitCast(d, hn::InterleaveUpper(d64, ab0, ce0));
+    c = hn::BitCast(d, hn::InterleaveLower(d64, ab1, ce1));
+    e = hn::BitCast(d, hn::InterleaveUpper(d64, ab1, ce1));
+}
+#endif
+
+template <bool kNeedVt, class D, bool kNeedU = true>
 bool SvdChunk(D d, int m, const float* const* A, const int* lda, float* const* U, const int* ldu,
               float* const* S, float* const* Vt, const int* ldvt, int count) {
     using V = hn::Vec<D>;
@@ -63,6 +82,51 @@ bool SvdChunk(D d, int m, const float* const* A, const int* lda, float* const* U
     std::memset(beta, 0, sizeof(beta));
 
     float scales[kBatchLanes];
+#if HWY_MAX_BYTES >= 16
+    if (packed_hot) {
+        // Full chunk: transpose 4 lanes x 4 rows at a time into the SoA tile
+        // and keep each lane's magnitude maximum in the matching vector lane.
+        const D4 d4;
+        const hn::RebindToUnsigned<D4> du4;
+        const auto magnitude_mask = hn::Set(du4, 0x7fffffffu);
+        for (int lane0 = 0; lane0 < kBatchLanes; lane0 += 4) {
+            auto vmax = hn::Zero(du4);
+            for (int col = 0; col < kN; ++col) {
+                const float* a0 = A[lane0] + col * lda[lane0];
+                const float* a1 = A[lane0 + 1] + col * lda[lane0 + 1];
+                const float* a2 = A[lane0 + 2] + col * lda[lane0 + 2];
+                const float* a3 = A[lane0 + 3] + col * lda[lane0 + 3];
+                for (int row = 0; row < kSvdBatch8MaxM; row += 4) {
+                    auto r0 = hn::LoadU(d4, a0 + row);
+                    auto r1 = hn::LoadU(d4, a1 + row);
+                    auto r2 = hn::LoadU(d4, a2 + row);
+                    auto r3 = hn::LoadU(d4, a3 + row);
+                    Transpose4x4(r0, r1, r2, r3);
+                    vmax = hn::Max(vmax, hn::And(hn::BitCast(du4, r0), magnitude_mask));
+                    vmax = hn::Max(vmax, hn::And(hn::BitCast(du4, r1), magnitude_mask));
+                    vmax = hn::Max(vmax, hn::And(hn::BitCast(du4, r2), magnitude_mask));
+                    vmax = hn::Max(vmax, hn::And(hn::BitCast(du4, r3), magnitude_mask));
+                    hn::StoreU(r0, d4, tall + TallIndex(row, col, lane0));
+                    hn::StoreU(r1, d4, tall + TallIndex(row + 1, col, lane0));
+                    hn::StoreU(r2, d4, tall + TallIndex(row + 2, col, lane0));
+                    hn::StoreU(r3, d4, tall + TallIndex(row + 3, col, lane0));
+                }
+            }
+            alignas(16) std::uint32_t maxima[4];
+            hn::Store(vmax, du4, maxima);
+            for (int i = 0; i < 4; ++i) {
+                const int lane = lane0 + i;
+                if (maxima[i] >= 0x7f800000u) return false;
+                scales[lane] = detail::svd_input_scale(maxima[i]);
+                if (scales[lane] != 1.f) {
+                    for (int col = 0; col < kN; ++col) {
+                        for (int row = 0; row < m; ++row) tall[TallIndex(row, col, lane)] *= scales[lane];
+                    }
+                }
+            }
+        }
+    } else
+#endif
     for (int lane = 0; lane < count; ++lane) {
         std::uint32_t maximum = 0;
         for (int col = 0; col < kN; ++col) {
@@ -278,6 +342,21 @@ bool SvdChunk(D d, int m, const float* const* A, const int* lda, float* const* U
         }
     }
 
+    if constexpr (!kNeedU) {
+        // Singular values and right vectors only: no Q replay, no U output.
+        for (int lane = 0; lane < count; ++lane) {
+            for (int col = 0; col < kN; ++col) {
+                S[lane][col] = ssoa[static_cast<std::size_t>(col) * kBatchLanes + lane] / scales[lane];
+                if (detail::svd_magnitude_bits(S[lane][col]) >= 0x7f800000u) return false;
+            }
+            for (int col = 0; col < kN; ++col) {
+                for (int row = 0; row < kN; ++row) {
+                    Vt[lane][row + col * ldvt[lane]] = vsoa[SmallIndex(col, row, lane)];
+                }
+            }
+        }
+        return true;
+    }
     std::memset(tall, 0, sizeof(tall));
     for (int col = 0; col < kN; ++col) {
         for (int row = 0; row < kN; ++row) {
@@ -324,6 +403,48 @@ bool SvdChunk(D d, int m, const float* const* A, const int* lda, float* const* U
 #endif
     }
 
+#if HWY_MAX_BYTES >= 16
+    if (count == kBatchLanes && (m & 3) == 0) {
+        // A false return makes the caller recompute every item, so writing
+        // all S before U changes no observable result.
+        for (int lane = 0; lane < count; ++lane) {
+            for (int col = 0; col < kN; ++col) {
+                S[lane][col] = ssoa[static_cast<std::size_t>(col) * kBatchLanes + lane] / scales[lane];
+                if (detail::svd_magnitude_bits(S[lane][col]) >= 0x7f800000u) return false;
+            }
+        }
+        const D4 d4;
+        for (int lane0 = 0; lane0 < kBatchLanes; lane0 += 4) {
+            for (int col = 0; col < kN; ++col) {
+                float* u0 = U[lane0] + col * ldu[lane0];
+                float* u1 = U[lane0 + 1] + col * ldu[lane0 + 1];
+                float* u2 = U[lane0 + 2] + col * ldu[lane0 + 2];
+                float* u3 = U[lane0 + 3] + col * ldu[lane0 + 3];
+                for (int row = 0; row < m; row += 4) {
+                    auto r0 = hn::LoadU(d4, tall + TallIndex(row, col, lane0));
+                    auto r1 = hn::LoadU(d4, tall + TallIndex(row + 1, col, lane0));
+                    auto r2 = hn::LoadU(d4, tall + TallIndex(row + 2, col, lane0));
+                    auto r3 = hn::LoadU(d4, tall + TallIndex(row + 3, col, lane0));
+                    Transpose4x4(r0, r1, r2, r3);
+                    hn::StoreU(r0, d4, u0 + row);
+                    hn::StoreU(r1, d4, u1 + row);
+                    hn::StoreU(r2, d4, u2 + row);
+                    hn::StoreU(r3, d4, u3 + row);
+                }
+            }
+        }
+        if constexpr (kNeedVt) {
+            for (int lane = 0; lane < count; ++lane) {
+                for (int col = 0; col < kN; ++col) {
+                    for (int row = 0; row < kN; ++row) {
+                        Vt[lane][row + col * ldvt[lane]] = vsoa[SmallIndex(col, row, lane)];
+                    }
+                }
+            }
+        }
+        return true;
+    }
+#endif
     for (int lane = 0; lane < count; ++lane) {
         for (int col = 0; col < kN; ++col) {
             S[lane][col] = ssoa[static_cast<std::size_t>(col) * kBatchLanes + lane] / scales[lane];
@@ -373,6 +494,24 @@ int SvdEconomy8BatchU(int m, const float* const* A, const int* lda, float* const
     }
     return 0;
 }
+
+#if !NSS_SVD_QREPLAY_ROW_MAJOR
+// Singular values plus V^T only (WNNM reconstructs from A*V, see batch.cpp).
+int SvdEconomy8BatchSV(int m, const float* const* A, const int* lda, float* const* S, float* const* Vt,
+                       const int* ldvt, int count) {
+    if (m < kN || m > kSvdBatch8MaxM || !A || !lda || !S || !Vt || !ldvt || count < 1) {
+        return -1;
+    }
+    const hn::CappedTag<float, kBatchLanes> d;
+    const int lanes = static_cast<int>(hn::Lanes(d));
+    for (int begin = 0; begin < count; begin += lanes) {
+        const int chunk = std::min(lanes, count - begin);
+        if (!SvdChunk<true, decltype(d), false>(d, m, A + begin, lda + begin, nullptr, nullptr, S + begin,
+                                                 Vt + begin, ldvt + begin, chunk)) return -1;
+    }
+    return 0;
+}
+#endif
 
 }  // namespace HWY_NAMESPACE
 }  // namespace nss
@@ -453,6 +592,12 @@ int svd_economy_8_batch_u_hwy(int m, const float* const* A, const int* lda, floa
 #else
 HWY_EXPORT(SvdEconomy8Batch);
 HWY_EXPORT(SvdEconomy8BatchU);
+HWY_EXPORT(SvdEconomy8BatchSV);
+
+int svd_economy_8_batch_sv_hwy(int m, const float* const* A, const int* lda, float* const* S, float* const* Vt,
+                               const int* ldvt, int count) {
+    return HWY_DYNAMIC_DISPATCH(SvdEconomy8BatchSV)(m, A, lda, S, Vt, ldvt, count);
+}
 
 int svd_economy_8_batch_hwy(int m, const float* const* A, const int* lda, float* const* U, const int* ldu,
                             float* const* S, float* const* Vt, const int* ldvt, int count) {
