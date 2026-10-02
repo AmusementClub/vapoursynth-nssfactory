@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include "host/full_image.hpp"
-#include "host/validate.hpp"
+#include "frontend/validate.hpp"
 
 namespace {
 void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI* api) {

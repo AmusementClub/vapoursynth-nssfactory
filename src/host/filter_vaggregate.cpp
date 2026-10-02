@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include "nss/resources.hpp"
 #include "host/filters.hpp"
-#include "host/temporal.hpp"
-#include "host/validate.hpp"
-#include "host/contribution.hpp"
+#include "frontend/temporal.hpp"
+#include "frontend/validate.hpp"
+#include "frontend/contribution.hpp"
 #include "nss/backend.hpp"
 #include "nss/cpu_api.hpp"
 #include "nss/params.hpp"

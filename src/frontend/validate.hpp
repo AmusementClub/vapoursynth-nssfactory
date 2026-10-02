@@ -6,7 +6,7 @@
 #include <string>
 #include <exception>
 #include <new>
-#include "host/ownership.hpp"
+#include "frontend/ownership.hpp"
 #include "nss/resources.hpp"
 
 namespace nss {

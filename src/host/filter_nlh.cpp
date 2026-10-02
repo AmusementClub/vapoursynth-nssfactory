@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include "host/full_image.hpp"
-#include "host/validate.hpp"
+#include "frontend/validate.hpp"
 
 VSNode* nss_create_nlh(const VSMap* in, VSCore* core, const VSAPI* api, VSMap* error) {
     return nss_create_full_image(in, core, api, error, nss::Model::NLH);

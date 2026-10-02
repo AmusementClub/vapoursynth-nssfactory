@@ -5,10 +5,10 @@
 #include "cpu/bm/sliding-batch.hpp"
 #endif
 #include "host/filters.hpp"
-#include "host/temporal.hpp"
+#include "frontend/temporal.hpp"
 #include "host/batch_runner.hpp"
-#include "host/validate.hpp"
-#include "host/contribution.hpp"
+#include "frontend/validate.hpp"
+#include "frontend/contribution.hpp"
 #include "nss/backend.hpp"
 #include "nss/cpu_api.hpp"
 #include "nss/cpu_common.hpp"

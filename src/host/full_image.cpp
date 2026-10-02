@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include "host/full_image.hpp"
-#include "host/validate.hpp"
-#include "host/temporal.hpp"
-#include "host/contribution.hpp"
+#include "frontend/validate.hpp"
+#include "frontend/temporal.hpp"
+#include "frontend/contribution.hpp"
 #include "nss/backend.hpp"
 #include "nss/cpu_image.hpp"
 #include "nss/cpu_nlh_full.hpp"
