@@ -610,6 +610,7 @@ endforeach()
 if(VapourSynth_FOUND)
   add_library(nss_frontend STATIC
     src/frontend/validate.cpp
+    src/frontend/nlm_args.cpp
     src/frontend/lssc_args.cpp
     src/frontend/mcwnnm_args.cpp
     src/frontend/wnnm_args.cpp

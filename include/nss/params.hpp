@@ -20,6 +20,8 @@ inline constexpr int kNlmMaxS = 1024;
 // 2d+1 input frames a request pins (framework-side memory outside the
 // admission budget): 4K RGB at d=256 would otherwise pin ~100 GB.
 inline constexpr int kNlmMaxA = 64;
+// NLM distance channels (shared by every backend).
+enum class ChannelMode { Y, UV, YUV, RGB };
 inline constexpr std::int64_t kNlmMaxPinnedFrameBytes = std::int64_t{2} << 30;  // 2 GiB
 
 inline constexpr int kBmBlock = 8;
