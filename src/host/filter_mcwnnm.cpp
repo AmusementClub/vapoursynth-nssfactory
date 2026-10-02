@@ -5,6 +5,7 @@
 #include "frontend/temporal.hpp"
 #include "host/batch_runner.hpp"
 #include "frontend/validate.hpp"
+#include "frontend/mcwnnm_args.hpp"
 #include "frontend/contribution.hpp"
 #include "nss/backend.hpp"
 #include "nss/cpu_api.hpp"
@@ -26,27 +27,12 @@
 
 namespace {
 
-struct McwnnmData {
+struct McwnnmData : nss::McwnnmParams {
     std::shared_ptr<nss::ResourceBudget> budget = nss::current_budget();
     nss::NodeRef node;
     nss::NodeRef rclip;
     VSVideoInfo vi{};
     VSVideoInfo vi_out{};
-    float sigma[3]{nss::kMcwnnmDefaultSigma, nss::kMcwnnmDefaultSigma, nss::kMcwnnmDefaultSigma};
-    int block_size = nss::kMcwnnmDefaultBlock;
-    int block_step = nss::kMcwnnmDefaultStep;
-    int group_size = nss::kMcwnnmDefaultGroup;
-    int bm_range = nss::kMcwnnmDefaultRange;
-    int radius = nss::kWnnmDefaultRadius;
-    int ps_num = nss::kWnnmDefaultPsNum;
-    int ps_range = nss::kWnnmDefaultPsRange;
-    int residual = nss::kMcwnnmDefaultResidual;
-    int adaptive = nss::kMcwnnmDefaultAdaptive;
-    int admm_iter = nss::kMcwnnmDefaultAdmmIter;
-    float rho = nss::kMcwnnmDefaultRho;
-    float mu = nss::kMcwnnmDefaultMu;
-    int iters = nss::kMcwnnmDefaultIters;
-    float delta = nss::kMcwnnmDefaultDelta;
     nss::Workspace ws;
 };
 
@@ -380,54 +366,7 @@ static VSNode* nss_create_mcwnnm(const VSMap* in, VSCore* core, const VSAPI* vsa
         }
         return nullptr;
     };
-    if (!nss::is_const_32f(d->vi)) {
-        return fail("nss.MCWNNM: constant RGBS or YUV444PS required");
-    }
-    if (d->vi.format.numPlanes != 3 || d->vi.format.subSamplingW != 0 || d->vi.format.subSamplingH != 0 ||
-        (d->vi.format.colorFamily != cfRGB && d->vi.format.colorFamily != cfYUV)) {
-        return fail("nss.MCWNNM: constant RGBS or YUV444PS required");
-    }
-    nss::map_float_array(vsapi, in, "sigma", d->sigma, 3, nss::kMcwnnmDefaultSigma);
-    for (int c = 0; c < 3; ++c) {
-        if (!nss::is_finite_bits(d->sigma[c])) {
-            return fail("nss.MCWNNM: sigma must be finite");
-        }
-    }
-    d->block_size = nss::map_int(vsapi, in, "block_size", nss::kMcwnnmDefaultBlock);
-    d->block_step = nss::map_int(vsapi, in, "block_step", nss::kMcwnnmDefaultStep);
-    d->group_size = nss::map_int(vsapi, in, "group_size", nss::kMcwnnmDefaultGroup);
-    d->bm_range = nss::map_int(vsapi, in, "bm_range", nss::kMcwnnmDefaultRange);
-    d->radius = nss::map_int(vsapi, in, "radius", nss::kWnnmDefaultRadius);
-    d->ps_num = nss::map_int(vsapi, in, "ps_num", nss::kWnnmDefaultPsNum);
-    d->ps_range = nss::map_int(vsapi, in, "ps_range", nss::kWnnmDefaultPsRange);
-    d->residual = nss::map_int(vsapi, in, "residual", nss::kMcwnnmDefaultResidual);
-    d->adaptive = nss::map_int(vsapi, in, "adaptive_aggregation", nss::kMcwnnmDefaultAdaptive);
-    d->admm_iter = nss::map_int(vsapi, in, "admm_iter", nss::kMcwnnmDefaultAdmmIter);
-    d->rho = nss::map_float(vsapi, in, "rho", nss::kMcwnnmDefaultRho);
-    d->mu = nss::map_float(vsapi, in, "mu", nss::kMcwnnmDefaultMu);
-    d->iters = nss::map_int(vsapi, in, "iters", nss::kMcwnnmDefaultIters);
-    d->delta = nss::map_float(vsapi, in, "delta", nss::kMcwnnmDefaultDelta);
-    if (d->block_size < 1 || d->block_size > nss::kWnnmMaxBlock || d->group_size < 1 ||
-        d->group_size > nss::kWnnmMaxGroup || d->block_step < 1 || d->block_step > d->block_size || d->radius < 0 ||
-        d->radius > nss::kBmMaxRadius) {
-        return fail("nss.MCWNNM: invalid block_size/group_size/block_step/radius");
-    }
-    if (3 * d->block_size * d->block_size > nss::kSvdMaxM) {
-        return fail("nss.MCWNNM: 3*block_size*block_size exceeds SVD limit");
-    }
-    if (d->bm_range < 1 || d->bm_range > nss::kBmMaxRange) {
-        return fail("nss.MCWNNM: bm_range must be in [1, 64]");
-    }
-    if (d->admm_iter < 1 || d->admm_iter > 1000 || !(d->rho > 0.f) || d->mu < 1.f ||
-        !nss::is_finite_bits(d->rho) || !nss::is_finite_bits(d->mu)) {
-        return fail("nss.MCWNNM: invalid admm_iter/rho/mu (admm_iter in [1, 1000], mu >= 1)");
-    }
-    if (d->iters < 1 || d->iters > 64 || !nss::is_finite_bits(d->delta) || d->delta < 0.f || d->delta > 1.f) {
-        return fail("nss.MCWNNM: invalid iters/delta (iters in [1, 64], delta in [0, 1])");
-    }
-    if (d->ps_num < 1 || d->ps_num > d->group_size || d->ps_range < 1 || d->ps_range > nss::kBmMaxRange) {
-        return fail("nss.MCWNNM: invalid ps_num/ps_range");
-    }
+    static_cast<nss::McwnnmParams&>(*d) = nss::frontend::parse_mcwnnm(vsapi, in, d->vi, "nss");
     int e = 0;
     d->rclip = nss::get_node(vsapi, in, "rclip", 0, &e);
     if (e) {
@@ -462,10 +401,6 @@ void VS_CC mcwnnmCreate(const VSMap* in, VSMap* out, void* userData, VSCore* cor
 }
 
 void register_mcwnnm(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
-    const char* args =
-        "clip:vnode;sigma:float[]:opt;block_size:int:opt;block_step:int:opt;group_size:int:opt;"
-        "bm_range:int:opt;radius:int:opt;ps_num:int:opt;ps_range:int:opt;residual:int:opt;"
-        "adaptive_aggregation:int:opt;rclip:vnode:opt;admm_iter:int:opt;rho:float:opt;mu:float:opt;"
-        "iters:int:opt;delta:float:opt;memory_limit_mb:int:opt;";
+    const char* args = nss::frontend::kMcwnnmSignature;
     vspapi->registerFunction("MCWNNM", args, "clip:vnode;", nss::checked_create<mcwnnmCreate>, nullptr, plugin);
 }
