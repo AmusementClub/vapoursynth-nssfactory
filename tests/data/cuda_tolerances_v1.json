@@ -1,0 +1,91 @@
+{
+ "calibration": {
+  "sources": [
+   {
+    "file": "neon-m4-clang.json",
+    "plugin_sha256": "96139976ffd76d267eed8d4fdb886b2d9e0bf409f4c359b83e58deb81b03e21a",
+    "reference_plugin_sha256": "628ab03bb5e89b446de782e73d233660c82e55cd6f99b59aab5848d5b4d0a367"
+   },
+   {
+    "file": "x86-avx2-ref-exp0.json",
+    "plugin_sha256": "ae6abfbc28d9d97adefad48b9e8b299b506f911bb90a2129d94f52937b971c73",
+    "reference_plugin_sha256": "628ab03bb5e89b446de782e73d233660c82e55cd6f99b59aab5848d5b4d0a367"
+   }
+  ],
+  "spread": {
+   "BM3D": {
+    "max_abs": 0.0015629231929779053,
+    "min_psnr": 93.538,
+    "worst_case": "bm3d-g256-s25-b12g16"
+   },
+   "LSSC": {
+    "max_abs": 3.5762786865234375e-07,
+    "min_psnr": 142.128,
+    "worst_case": "lssc-g256-s25"
+   },
+   "MCWNNM": {
+    "max_abs": 1.3709068298339844e-06,
+    "min_psnr": 132.106,
+    "worst_case": "mcwnnm-rgb256-s25"
+   },
+   "NCSR": {
+    "max_abs": 0.002583920955657959,
+    "min_psnr": 107.445,
+    "worst_case": "ncsr-g1080"
+   },
+   "NLH": {
+    "max_abs": 0.00567251443862915,
+    "min_psnr": 78.23,
+    "worst_case": "nlh-gseq-r1-s3"
+   },
+   "NLM": {
+    "max_abs": 4.76837158203125e-06,
+    "min_psnr": 139.443,
+    "worst_case": "nlm-rgbseq"
+   },
+   "TWSC": {
+    "max_abs": 1.3113021850585938e-06,
+    "min_psnr": 146.706,
+    "worst_case": "twsc-gseq-r1-light"
+   },
+   "WNNM": {
+    "max_abs": 6.794929504394531e-06,
+    "min_psnr": 111.536,
+    "worst_case": "wnnm-g256-s25"
+   }
+  }
+ },
+ "cases": {},
+ "default": {
+  "deterministic": true
+ },
+ "filters": {
+  "BM3D": {
+   "min_psnr": 60.0
+  },
+  "LSSC": {
+   "min_psnr": 60.0
+  },
+  "MCWNNM": {
+   "min_psnr": 60.0
+  },
+  "NCSR": {
+   "min_psnr": 60.0
+  },
+  "NLH": {
+   "min_psnr": 60.0
+  },
+  "NLM": {
+   "min_psnr": 60.0
+  },
+  "TWSC": {
+   "min_psnr": 60.0
+  },
+  "WNNM": {
+   "min_psnr": 60.0
+  }
+ },
+ "references": "cuda_refs_v1.json",
+ "rule": "min_psnr = clamp(min CPU cross-build PSNR - 10 dB, 40, 60); identical builds count as the cap; every case must be finite and run-to-run deterministic",
+ "schema": "nssfactory.cuda_tolerances.v1"
+}
