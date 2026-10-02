@@ -72,7 +72,7 @@ jobs:
         with:
           cuda: "12.9.1"
           method: network
-          sub-packages: '["nvcc", "cudart", "visual_studio_integration"]'
+          sub-packages: '["nvcc", "cudart", "cuobjdump", "visual_studio_integration"]'
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
