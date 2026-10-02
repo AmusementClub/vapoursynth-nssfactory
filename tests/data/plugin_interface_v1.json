@@ -250,6 +250,208 @@
     "width": 48
    }
   },
+  "BM3D|GRAYS|combo:radius=1,rolling_cache_chunks=0,temporal_mode='rolling'": {
+   "error": "nss.BM3D: rolling_cache_limit must be in [1, 64]"
+  },
+  "BM3D|GRAYS|combo:radius=1,rolling_cache_chunks=1,temporal_mode='rolling'": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|GRAYS|combo:radius=1,rolling_cache_chunks=2,rolling_cache_limit=2,temporal_mode='rolling'": {
+   "error": "nss.BM3D: use only one of rolling_cache_limit and rolling_cache_chunks"
+  },
+  "BM3D|GRAYS|combo:radius=1,rolling_cache_chunks=4,temporal_mode='rolling'": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|GRAYS|combo:radius=1,rolling_cache_chunks=64,temporal_mode='rolling'": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|GRAYS|combo:radius=1,rolling_cache_chunks=65,temporal_mode='rolling'": {
+   "error": "nss.BM3D: rolling_cache_limit must be in [1, 64]"
+  },
+  "BM3D|GRAYS|combo:radius=1,rolling_cache_limit=0,temporal_mode='rolling'": {
+   "error": "nss.BM3D: rolling_cache_limit must be in [1, 64]"
+  },
+  "BM3D|GRAYS|combo:radius=1,rolling_cache_limit=1,temporal_mode='rolling'": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|GRAYS|combo:radius=1,rolling_cache_limit=4,temporal_mode='rolling'": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|GRAYS|combo:radius=1,rolling_cache_limit=64,temporal_mode='rolling'": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|GRAYS|combo:radius=1,rolling_cache_limit=65,temporal_mode='rolling'": {
+   "error": "nss.BM3D: rolling_cache_limit must be in [1, 64]"
+  },
+  "BM3D|GRAYS|combo:radius=1,rolling_chunk=0,temporal_mode='rolling'": {
+   "error": "nss.BM3D: rolling_chunk must be in [1, 64]"
+  },
+  "BM3D|GRAYS|combo:radius=1,rolling_chunk=1,temporal_mode='rolling'": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|GRAYS|combo:radius=1,rolling_chunk=4,temporal_mode='rolling'": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|GRAYS|combo:radius=1,rolling_chunk=64,temporal_mode='rolling'": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|GRAYS|combo:radius=1,rolling_chunk=65,temporal_mode='rolling'": {
+   "error": "nss.BM3D: rolling_chunk must be in [1, 64]"
+  },
+  "BM3D|GRAYS|combo:radius=1,temporal_mode='rolling'": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|GRAYS|combo:radius=2,rolling_cache_chunks=0,temporal_mode='rolling'": {
+   "error": "nss.BM3D: rolling_cache_limit must be in [1, 64]"
+  },
+  "BM3D|GRAYS|combo:radius=2,rolling_cache_chunks=1,temporal_mode='rolling'": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|GRAYS|combo:radius=2,rolling_cache_chunks=2,rolling_cache_limit=2,temporal_mode='rolling'": {
+   "error": "nss.BM3D: use only one of rolling_cache_limit and rolling_cache_chunks"
+  },
+  "BM3D|GRAYS|combo:radius=2,rolling_cache_chunks=4,temporal_mode='rolling'": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|GRAYS|combo:radius=2,rolling_cache_chunks=64,temporal_mode='rolling'": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|GRAYS|combo:radius=2,rolling_cache_chunks=65,temporal_mode='rolling'": {
+   "error": "nss.BM3D: rolling_cache_limit must be in [1, 64]"
+  },
+  "BM3D|GRAYS|combo:radius=2,rolling_cache_limit=0,temporal_mode='rolling'": {
+   "error": "nss.BM3D: rolling_cache_limit must be in [1, 64]"
+  },
+  "BM3D|GRAYS|combo:radius=2,rolling_cache_limit=1,temporal_mode='rolling'": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|GRAYS|combo:radius=2,rolling_cache_limit=4,temporal_mode='rolling'": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|GRAYS|combo:radius=2,rolling_cache_limit=64,temporal_mode='rolling'": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|GRAYS|combo:radius=2,rolling_cache_limit=65,temporal_mode='rolling'": {
+   "error": "nss.BM3D: rolling_cache_limit must be in [1, 64]"
+  },
+  "BM3D|GRAYS|combo:radius=2,rolling_chunk=0,temporal_mode='rolling'": {
+   "error": "nss.BM3D: rolling_chunk must be in [1, 64]"
+  },
+  "BM3D|GRAYS|combo:radius=2,rolling_chunk=1,temporal_mode='rolling'": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|GRAYS|combo:radius=2,rolling_chunk=4,temporal_mode='rolling'": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|GRAYS|combo:radius=2,rolling_chunk=64,temporal_mode='rolling'": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|GRAYS|combo:radius=2,rolling_chunk=65,temporal_mode='rolling'": {
+   "error": "nss.BM3D: rolling_chunk must be in [1, 64]"
+  },
+  "BM3D|GRAYS|combo:radius=2,temporal_mode='rolling'": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
   "BM3D|GRAYS|defaults": {
    "ok": {
     "format": "GrayS",
@@ -1396,6 +1598,208 @@
     "width": 48
    }
   },
+  "BM3D|RGBS|combo:radius=1,rolling_cache_chunks=0,temporal_mode='rolling'": {
+   "error": "nss.BM3D: rolling_cache_limit must be in [1, 64]"
+  },
+  "BM3D|RGBS|combo:radius=1,rolling_cache_chunks=1,temporal_mode='rolling'": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|RGBS|combo:radius=1,rolling_cache_chunks=2,rolling_cache_limit=2,temporal_mode='rolling'": {
+   "error": "nss.BM3D: use only one of rolling_cache_limit and rolling_cache_chunks"
+  },
+  "BM3D|RGBS|combo:radius=1,rolling_cache_chunks=4,temporal_mode='rolling'": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|RGBS|combo:radius=1,rolling_cache_chunks=64,temporal_mode='rolling'": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|RGBS|combo:radius=1,rolling_cache_chunks=65,temporal_mode='rolling'": {
+   "error": "nss.BM3D: rolling_cache_limit must be in [1, 64]"
+  },
+  "BM3D|RGBS|combo:radius=1,rolling_cache_limit=0,temporal_mode='rolling'": {
+   "error": "nss.BM3D: rolling_cache_limit must be in [1, 64]"
+  },
+  "BM3D|RGBS|combo:radius=1,rolling_cache_limit=1,temporal_mode='rolling'": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|RGBS|combo:radius=1,rolling_cache_limit=4,temporal_mode='rolling'": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|RGBS|combo:radius=1,rolling_cache_limit=64,temporal_mode='rolling'": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|RGBS|combo:radius=1,rolling_cache_limit=65,temporal_mode='rolling'": {
+   "error": "nss.BM3D: rolling_cache_limit must be in [1, 64]"
+  },
+  "BM3D|RGBS|combo:radius=1,rolling_chunk=0,temporal_mode='rolling'": {
+   "error": "nss.BM3D: rolling_chunk must be in [1, 64]"
+  },
+  "BM3D|RGBS|combo:radius=1,rolling_chunk=1,temporal_mode='rolling'": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|RGBS|combo:radius=1,rolling_chunk=4,temporal_mode='rolling'": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|RGBS|combo:radius=1,rolling_chunk=64,temporal_mode='rolling'": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|RGBS|combo:radius=1,rolling_chunk=65,temporal_mode='rolling'": {
+   "error": "nss.BM3D: rolling_chunk must be in [1, 64]"
+  },
+  "BM3D|RGBS|combo:radius=1,temporal_mode='rolling'": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|RGBS|combo:radius=2,rolling_cache_chunks=0,temporal_mode='rolling'": {
+   "error": "nss.BM3D: rolling_cache_limit must be in [1, 64]"
+  },
+  "BM3D|RGBS|combo:radius=2,rolling_cache_chunks=1,temporal_mode='rolling'": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|RGBS|combo:radius=2,rolling_cache_chunks=2,rolling_cache_limit=2,temporal_mode='rolling'": {
+   "error": "nss.BM3D: use only one of rolling_cache_limit and rolling_cache_chunks"
+  },
+  "BM3D|RGBS|combo:radius=2,rolling_cache_chunks=4,temporal_mode='rolling'": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|RGBS|combo:radius=2,rolling_cache_chunks=64,temporal_mode='rolling'": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|RGBS|combo:radius=2,rolling_cache_chunks=65,temporal_mode='rolling'": {
+   "error": "nss.BM3D: rolling_cache_limit must be in [1, 64]"
+  },
+  "BM3D|RGBS|combo:radius=2,rolling_cache_limit=0,temporal_mode='rolling'": {
+   "error": "nss.BM3D: rolling_cache_limit must be in [1, 64]"
+  },
+  "BM3D|RGBS|combo:radius=2,rolling_cache_limit=1,temporal_mode='rolling'": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|RGBS|combo:radius=2,rolling_cache_limit=4,temporal_mode='rolling'": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|RGBS|combo:radius=2,rolling_cache_limit=64,temporal_mode='rolling'": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|RGBS|combo:radius=2,rolling_cache_limit=65,temporal_mode='rolling'": {
+   "error": "nss.BM3D: rolling_cache_limit must be in [1, 64]"
+  },
+  "BM3D|RGBS|combo:radius=2,rolling_chunk=0,temporal_mode='rolling'": {
+   "error": "nss.BM3D: rolling_chunk must be in [1, 64]"
+  },
+  "BM3D|RGBS|combo:radius=2,rolling_chunk=1,temporal_mode='rolling'": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|RGBS|combo:radius=2,rolling_chunk=4,temporal_mode='rolling'": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|RGBS|combo:radius=2,rolling_chunk=64,temporal_mode='rolling'": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|RGBS|combo:radius=2,rolling_chunk=65,temporal_mode='rolling'": {
+   "error": "nss.BM3D: rolling_chunk must be in [1, 64]"
+  },
+  "BM3D|RGBS|combo:radius=2,temporal_mode='rolling'": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
   "BM3D|RGBS|defaults": {
    "ok": {
     "format": "RGBS",
@@ -2535,6 +2939,208 @@
    }
   },
   "BM3D|YUV420PS|bm_range=pair": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|YUV420PS|combo:radius=1,rolling_cache_chunks=0,temporal_mode='rolling'": {
+   "error": "nss.BM3D: rolling_cache_limit must be in [1, 64]"
+  },
+  "BM3D|YUV420PS|combo:radius=1,rolling_cache_chunks=1,temporal_mode='rolling'": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|YUV420PS|combo:radius=1,rolling_cache_chunks=2,rolling_cache_limit=2,temporal_mode='rolling'": {
+   "error": "nss.BM3D: use only one of rolling_cache_limit and rolling_cache_chunks"
+  },
+  "BM3D|YUV420PS|combo:radius=1,rolling_cache_chunks=4,temporal_mode='rolling'": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|YUV420PS|combo:radius=1,rolling_cache_chunks=64,temporal_mode='rolling'": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|YUV420PS|combo:radius=1,rolling_cache_chunks=65,temporal_mode='rolling'": {
+   "error": "nss.BM3D: rolling_cache_limit must be in [1, 64]"
+  },
+  "BM3D|YUV420PS|combo:radius=1,rolling_cache_limit=0,temporal_mode='rolling'": {
+   "error": "nss.BM3D: rolling_cache_limit must be in [1, 64]"
+  },
+  "BM3D|YUV420PS|combo:radius=1,rolling_cache_limit=1,temporal_mode='rolling'": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|YUV420PS|combo:radius=1,rolling_cache_limit=4,temporal_mode='rolling'": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|YUV420PS|combo:radius=1,rolling_cache_limit=64,temporal_mode='rolling'": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|YUV420PS|combo:radius=1,rolling_cache_limit=65,temporal_mode='rolling'": {
+   "error": "nss.BM3D: rolling_cache_limit must be in [1, 64]"
+  },
+  "BM3D|YUV420PS|combo:radius=1,rolling_chunk=0,temporal_mode='rolling'": {
+   "error": "nss.BM3D: rolling_chunk must be in [1, 64]"
+  },
+  "BM3D|YUV420PS|combo:radius=1,rolling_chunk=1,temporal_mode='rolling'": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|YUV420PS|combo:radius=1,rolling_chunk=4,temporal_mode='rolling'": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|YUV420PS|combo:radius=1,rolling_chunk=64,temporal_mode='rolling'": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|YUV420PS|combo:radius=1,rolling_chunk=65,temporal_mode='rolling'": {
+   "error": "nss.BM3D: rolling_chunk must be in [1, 64]"
+  },
+  "BM3D|YUV420PS|combo:radius=1,temporal_mode='rolling'": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|YUV420PS|combo:radius=2,rolling_cache_chunks=0,temporal_mode='rolling'": {
+   "error": "nss.BM3D: rolling_cache_limit must be in [1, 64]"
+  },
+  "BM3D|YUV420PS|combo:radius=2,rolling_cache_chunks=1,temporal_mode='rolling'": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|YUV420PS|combo:radius=2,rolling_cache_chunks=2,rolling_cache_limit=2,temporal_mode='rolling'": {
+   "error": "nss.BM3D: use only one of rolling_cache_limit and rolling_cache_chunks"
+  },
+  "BM3D|YUV420PS|combo:radius=2,rolling_cache_chunks=4,temporal_mode='rolling'": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|YUV420PS|combo:radius=2,rolling_cache_chunks=64,temporal_mode='rolling'": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|YUV420PS|combo:radius=2,rolling_cache_chunks=65,temporal_mode='rolling'": {
+   "error": "nss.BM3D: rolling_cache_limit must be in [1, 64]"
+  },
+  "BM3D|YUV420PS|combo:radius=2,rolling_cache_limit=0,temporal_mode='rolling'": {
+   "error": "nss.BM3D: rolling_cache_limit must be in [1, 64]"
+  },
+  "BM3D|YUV420PS|combo:radius=2,rolling_cache_limit=1,temporal_mode='rolling'": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|YUV420PS|combo:radius=2,rolling_cache_limit=4,temporal_mode='rolling'": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|YUV420PS|combo:radius=2,rolling_cache_limit=64,temporal_mode='rolling'": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|YUV420PS|combo:radius=2,rolling_cache_limit=65,temporal_mode='rolling'": {
+   "error": "nss.BM3D: rolling_cache_limit must be in [1, 64]"
+  },
+  "BM3D|YUV420PS|combo:radius=2,rolling_chunk=0,temporal_mode='rolling'": {
+   "error": "nss.BM3D: rolling_chunk must be in [1, 64]"
+  },
+  "BM3D|YUV420PS|combo:radius=2,rolling_chunk=1,temporal_mode='rolling'": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|YUV420PS|combo:radius=2,rolling_chunk=4,temporal_mode='rolling'": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|YUV420PS|combo:radius=2,rolling_chunk=64,temporal_mode='rolling'": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|YUV420PS|combo:radius=2,rolling_chunk=65,temporal_mode='rolling'": {
+   "error": "nss.BM3D: rolling_chunk must be in [1, 64]"
+  },
+  "BM3D|YUV420PS|combo:radius=2,temporal_mode='rolling'": {
    "ok": {
     "format": "YUV420PS",
     "frames": 4,

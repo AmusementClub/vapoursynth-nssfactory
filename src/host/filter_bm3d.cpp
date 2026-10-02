@@ -9,6 +9,8 @@
 #include "host/batch_runner.hpp"
 #include "frontend/validate.hpp"
 #include "frontend/contribution.hpp"
+#include "frontend/bm3d_args.hpp"
+#include "frontend/temporal_args.hpp"
 #include "nss/backend.hpp"
 #include "nss/cpu_api.hpp"
 #include "nss/cpu_common.hpp"
@@ -29,20 +31,12 @@
 
 namespace {
 
-struct Bm3dData {
+struct Bm3dData : nss::Bm3dParams {
     std::shared_ptr<nss::ResourceBudget> budget = nss::current_budget();
     nss::NodeRef node;
     nss::NodeRef ref;
     VSVideoInfo vi{};
     VSVideoInfo vi_out{};
-    float sigma[3]{nss::kBmDefaultSigma, nss::kBmDefaultSigma, nss::kBmDefaultSigma};
-    int block_size[3]{nss::kBmBlock, nss::kBmBlock, nss::kBmBlock};
-    int group_size[3]{nss::kBmGroup, nss::kBmGroup, nss::kBmGroup};
-    int block_step[3]{nss::kBmDefaultStep, nss::kBmDefaultStep, nss::kBmDefaultStep};
-    int bm_range[3]{nss::kBmDefaultRange, nss::kBmDefaultRange, nss::kBmDefaultRange};
-    int ps_num[3]{nss::kBmDefaultPsNum, nss::kBmDefaultPsNum, nss::kBmDefaultPsNum};
-    int ps_range[3]{nss::kBmDefaultPsRange, nss::kBmDefaultPsRange, nss::kBmDefaultPsRange};
-    int radius = 0;
     nss::Workspace ws;
 };
 
@@ -657,77 +651,13 @@ void VS_CC rollingFree(void* instanceData, VSCore* core, const VSAPI* vsapi) {
 const char* fill_bm3d_data(Bm3dData& d, const VSMap* in, const VSAPI* vsapi) {
     d.node = nss::get_node(vsapi, in, "clip", 0, nullptr);
     d.vi = *vsapi->getVideoInfo(d.node);
-    if (!nss::is_const_32f(d.vi)) {
-        return "nss.BM3D: constant Gray/YUV/RGB 32-bit float required";
-    }
     int e = 0;
     d.ref = nss::get_node(vsapi, in, "ref", 0, &e);
     if (e) {
         d.ref = nullptr;
-    } else if (!nss::same_video(d.vi, *vsapi->getVideoInfo(d.ref))) {
-        return "nss.BM3D: ref must match clip";
     }
-    const int np = d.vi.format.numPlanes;
-    nss::map_float_array(vsapi, in, "sigma", d.sigma, np, nss::kBmDefaultSigma);
-    for (int i = 0; i < np; ++i) {
-        if (!nss::is_finite_bits(d.sigma[i]) || d.sigma[i] < 0.f) {
-            return "nss.BM3D: sigma must be finite and non-negative";
-        }
-        if (d.sigma[i] != 0.f) {
-            d.sigma[i] = nss::NoiseProfile::bm3d_effective(d.sigma[i]);
-        }
-    }
-    nss::map_inherit_int(vsapi, in, "block_size", d.block_size, np, nss::kBmBlock);
-    nss::map_inherit_int(vsapi, in, "group_size", d.group_size, np, nss::kBmGroup);
-    {
-        const int nstep = vsapi->mapNumElements(in, "block_step");
-        if (nstep <= 0) {
-            for (int i = 0; i < np; ++i) {
-                d.block_step[i] = std::min(nss::kBmDefaultStep, d.block_size[i]);
-            }
-        } else {
-            nss::map_inherit_int(vsapi, in, "block_step", d.block_step, np, nss::kBmDefaultStep);
-        }
-    }
-    nss::map_int_array(vsapi, in, "bm_range", d.bm_range, np, nss::kBmDefaultRange);
-    {
-        const int nps = vsapi->mapNumElements(in, "ps_num");
-        if (nps <= 0) {
-            for (int i = 0; i < np; ++i) {
-                d.ps_num[i] = std::min(nss::kBmDefaultPsNum, d.group_size[i]);
-            }
-        } else {
-            nss::map_inherit_int(vsapi, in, "ps_num", d.ps_num, np, nss::kBmDefaultPsNum);
-        }
-    }
-    nss::map_int_array(vsapi, in, "ps_range", d.ps_range, np, nss::kBmDefaultPsRange);
-    d.radius = nss::map_int(vsapi, in, "radius", 0);
-    if (d.radius < 0 || d.radius > nss::kBmMaxRadius) {
-        return "nss.BM3D: radius must be in [0, 16]";
-    }
-    for (int i = 0; i < np; ++i) {
-        if (!nss::bm_allowed_block(d.block_size[i])) {
-            return "nss.BM3D: block_size must be one of 1, 2, 4, 8, 12, 16, 32";
-        }
-        if (!nss::bm_allowed_group(d.group_size[i])) {
-            return "nss.BM3D: group_size must be one of 1, 2, 4, 8, 16, 32, 64";
-        }
-        if (d.block_size[i] > nss::plane_width(d.vi, i) || d.block_size[i] > nss::plane_height(d.vi, i)) {
-            return "nss.BM3D: block_size must not exceed plane dimensions";
-        }
-        if (d.block_step[i] < 1 || d.block_step[i] > d.block_size[i]) {
-            return "nss.BM3D: block_step must be in [1, block_size]";
-        }
-        if (d.ps_num[i] < 1 || d.ps_num[i] > d.group_size[i]) {
-            return "nss.BM3D: ps_num must be in [1, group_size]";
-        }
-        if (d.bm_range[i] < 1 || d.bm_range[i] > nss::kBmMaxRange) {
-            return "nss.BM3D: bm_range must be in [1, 64]";
-        }
-        if (d.ps_range[i] < 0 || d.ps_range[i] > nss::kBmMaxRange) {
-            return "nss.BM3D: ps_range must be in [0, 64]";
-        }
-    }
+    const VSVideoInfo* ref_vi = d.ref ? vsapi->getVideoInfo(d.ref) : nullptr;
+    static_cast<nss::Bm3dParams&>(d) = nss::frontend::parse_bm3d(vsapi, in, d.vi, ref_vi, "nss");
     d.vi_out = d.vi;
     return nullptr;
 }
@@ -754,31 +684,14 @@ VSNode* create_rolling_bm3d(const VSMap* in, VSCore* core, const VSAPI* vsapi, V
         release_bm3d_nodes(d->bm, vsapi);
         return nullptr;
     }
-    d->rolling_chunk = nss::map_int(vsapi, in, "rolling_chunk", 4);
-    int cache_limit_err = 0;
-    d->cache_limit = nss::map_int(vsapi, in, "rolling_cache_limit", 1, &cache_limit_err);
-    int cache_chunks_err = 0;
-    const int cache_chunks = nss::map_int(vsapi, in, "rolling_cache_chunks", 1, &cache_chunks_err);
-    if (!cache_chunks_err) {
-        d->cache_limit = cache_chunks;
-    }
+    const auto rolling = nss::frontend::parse_rolling(vsapi, in, d->bm.radius, "BM3D", "nss");
+    d->rolling_chunk = rolling.rolling_chunk;
+    d->cache_limit = rolling.cache_limit;
     auto fail = [&](const char* msg) -> VSNode* {
         vsapi->mapSetError(err, msg);
         release_bm3d_nodes(d->bm, vsapi);
         return nullptr;
     };
-    if (d->bm.radius < 1) {
-        return fail("nss.BM3D: rolling mode requires radius > 0");
-    }
-    if (d->rolling_chunk < 1 || d->rolling_chunk > 64) {
-        return fail("nss.BM3D: rolling_chunk must be in [1, 64]");
-    }
-    if (!cache_limit_err && !cache_chunks_err) {
-        return fail("nss.BM3D: use only one of rolling_cache_limit and rolling_cache_chunks");
-    }
-    if (d->cache_limit < 1 || d->cache_limit > 64) {
-        return fail("nss.BM3D: rolling_cache_limit must be in [1, 64]");
-    }
     d->bm.ws.set_serial();
     d->bm.vi_out = d->bm.vi;
     VSFilterDependency deps[2]{{d->bm.node, rpGeneral}, {d->bm.ref, rpGeneral}};
@@ -826,26 +739,8 @@ VSNode* nss_create_bm3d(const VSMap* in, VSCore* core, const VSAPI* vsapi, VSMap
 void VS_CC bm3dCreate(const VSMap* in, VSMap* out, void* userData, VSCore* core, const VSAPI* vsapi) {
     (void)userData;
     const int radius = nss::map_int(vsapi, in, "radius", 0);
-    int mode_err = 0;
-    const char* mode = vsapi->mapGetData(in, "temporal_mode", 0, &mode_err);
-    std::string mode_s;
-    if (!mode_err && mode) {
-        mode_s = mode;
-        for (char& c : mode_s) {
-            if (c >= 'A' && c <= 'Z') {
-                c = static_cast<char>(c - 'A' + 'a');
-            }
-        }
-    }
-    if (mode_s == "fused") {
-        vsapi->mapSetError(out, "nss.BM3D: temporal_mode=fused is not supported; use rolling or legacy");
-        return;
-    }
-    if (!mode_s.empty() && mode_s != "rolling" && mode_s != "legacy") {
-        vsapi->mapSetError(out, "nss.BM3D: temporal_mode must be rolling or legacy");
-        return;
-    }
-    const bool rolling = radius > 0 && mode_s == "rolling";
+    const bool rolling =
+        nss::frontend::parse_temporal_mode(vsapi, in, radius, "BM3D", "nss") == nss::TemporalMode::Rolling;
     if (rolling) {
         VSNode* node = create_rolling_bm3d(in, core, vsapi, out);
         if (node) {
@@ -860,9 +755,6 @@ void VS_CC bm3dCreate(const VSMap* in, VSMap* out, void* userData, VSCore* core,
 }
 
 void register_bm3d(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
-    const char* args =
-        "clip:vnode;ref:vnode:opt;sigma:float[]:opt;block_size:int[]:opt;group_size:int[]:opt;"
-        "block_step:int[]:opt;bm_range:int[]:opt;radius:int:opt;ps_num:int[]:opt;ps_range:int[]:opt;"
-        "temporal_mode:data:opt;rolling_chunk:int:opt;rolling_cache_chunks:int:opt;rolling_cache_limit:int:opt;memory_limit_mb:int:opt;";
+    const char* args = nss::frontend::kBm3dSignature;
     vspapi->registerFunction("BM3D", args, "clip:vnode;", nss::checked_create<bm3dCreate>, nullptr, plugin);
 }

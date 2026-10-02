@@ -90,6 +90,20 @@ def main():
                 if is_array and kind in ("int", "float"):
                     cases[f"{name}|{fmt}|{arg}=pair"] = outcome(name, clip, {arg: [probes[4], probes[3]]})
 
+    # Combined probes for paths a single argument cannot reach.
+    combos = {
+        "BM3D": [dict(radius=r, temporal_mode="rolling", **extra)
+                 for r in (1, 2)
+                 for extra in ({}, *({k: v} for k in ("rolling_chunk", "rolling_cache_chunks", "rolling_cache_limit")
+                                     for v in (0, 1, 4, 64, 65)),
+                               dict(rolling_cache_chunks=2, rolling_cache_limit=2))],
+    }
+    for name, variants in combos.items():
+        for fmt, clip in clips.items():
+            for kwargs in variants:
+                key = ",".join(f"{k}={v!r}" for k, v in sorted(kwargs.items()))
+                cases[f"{name}|{fmt}|combo:{key}"] = outcome(name, clip, kwargs)
+
     record = dict(schema="nssfactory.plugin_interface.v1", functions=functions, cases=cases)
     if args.write:
         Path(args.golden).write_text(json.dumps(record, indent=1, sort_keys=True, ensure_ascii=False) + "\n")
