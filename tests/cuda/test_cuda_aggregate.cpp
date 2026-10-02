@@ -65,12 +65,16 @@ struct Device {
     }
 };
 
-int correctness(int block, int slices) {
-    const Load load = make_load(181, 97, block, std::max(1, block / 2), 8, 9, slices, 11u + block);
+int correctness(int block, int slices, bool batched) {
+    Load load = make_load(181, 97, block, std::max(1, block / 2), 8, 9, slices, 11u + block);
+    if (batched) {
+        for (std::size_t p = 3; p < load.patches.size(); p += 7) load.patches[p].slice = -1;  // empty slots
+    }
     const std::size_t plane = static_cast<std::size_t>(load.width) * load.height;
     std::vector<float> num(plane * slices, 0.f), den(plane * slices, 0.f);
     for (std::size_t p = 0; p < load.patches.size(); ++p) {
         const auto& patch = load.patches[p];
+        if (patch.slice < 0) continue;
         for (int r = 0; r < block; ++r) {
             for (int c = 0; c < block; ++c) {
                 const std::size_t i = patch.slice * plane + static_cast<std::size_t>(patch.y + r) * load.width + patch.x + c;
@@ -80,20 +84,29 @@ int correctness(int block, int slices) {
         }
     }
     Device dev(load);
-    nss_cuda::OrderedAggregator ordered(load.width, load.height, slices, block, load.patches.size(), nullptr);
-    ordered.run(dev.values.as<float>(), dev.patches.as<nss_cuda::AggregatePatch>(), static_cast<int>(load.patches.size()),
-                dev.target, nullptr);
+    nss_cuda::OrderedAggregator ordered(load.width, load.height, slices, load.patches.size(), nullptr);
+    if (batched) {  // two batches in patch-id order: overwrite, then accumulate
+        const int half = static_cast<int>(load.patches.size() / 2);
+        ordered.run(dev.values.as<float>(), dev.patches.as<nss_cuda::AggregatePatch>(), half, block, dev.target, nullptr);
+        ordered.run(dev.values.as<float>() + static_cast<std::size_t>(half) * block * block,
+                    dev.patches.as<nss_cuda::AggregatePatch>() + half, static_cast<int>(load.patches.size()) - half,
+                    block, dev.target, nullptr, true);
+    } else {
+        ordered.run(dev.values.as<float>(), dev.patches.as<nss_cuda::AggregatePatch>(),
+                    static_cast<int>(load.patches.size()), block, dev.target, nullptr);
+    }
     const auto num1 = dev.fetch(dev.num), den1 = dev.fetch(dev.den);
     ordered.run(dev.values.as<float>(), dev.patches.as<nss_cuda::AggregatePatch>(), static_cast<int>(load.patches.size()),
-                dev.target, nullptr);
+                block, dev.target, nullptr);
     const auto num2 = dev.fetch(dev.num);
     int failures = 0;
     if (std::memcmp(num1.data(), num.data(), num.size() * sizeof(float)) ||
         std::memcmp(den1.data(), den.data(), den.size() * sizeof(float))) {
-        std::printf("FAIL: ordered aggregation b%d s%d differs from the patch-order host reference\n", block, slices);
+        std::printf("FAIL: ordered aggregation b%d s%d%s differs from the patch-order host reference\n", block, slices,
+                    batched ? " batched" : "");
         ++failures;
     }
-    if (std::memcmp(num1.data(), num2.data(), num.size() * sizeof(float))) {
+    if (!batched && std::memcmp(num1.data(), num2.data(), num.size() * sizeof(float))) {
         std::printf("FAIL: ordered aggregation b%d s%d is not repeatable\n", block, slices);
         ++failures;
     }
@@ -119,7 +132,7 @@ void bench() {
             const Load load = make_load(1920, 1080, 8, step, 8, 7, slices, 5u);
             Device dev(load);
             const int n = static_cast<int>(load.patches.size());
-            nss_cuda::OrderedAggregator ordered(load.width, load.height, slices, 8, load.patches.size(), nullptr);
+            nss_cuda::OrderedAggregator ordered(load.width, load.height, slices, load.patches.size(), nullptr);
             cudaEvent_t a, b;
             cudaEventCreate(&a);
             cudaEventCreate(&b);
@@ -135,7 +148,7 @@ void bench() {
                 return ms / kIters;
             };
             const float t_ordered = time([&] {
-                ordered.run(dev.values.as<float>(), dev.patches.as<nss_cuda::AggregatePatch>(), n, dev.target, nullptr);
+                ordered.run(dev.values.as<float>(), dev.patches.as<nss_cuda::AggregatePatch>(), n, 8, dev.target, nullptr);
             });
             const float t_atomic = time([&] {
                 cudaMemsetAsync(dev.num.get(), 0, dev.num.bytes());
@@ -175,7 +188,10 @@ int main(int argc, char** argv) {
     }
     int failures = 0;
     for (const int block : {1, 4, 8, 12, 16, 32}) {
-        for (const int slices : {1, 3}) failures += correctness(block, slices);
+        for (const int slices : {1, 3}) {
+            failures += correctness(block, slices, false);
+            failures += correctness(block, slices, true);
+        }
     }
     std::printf("test_cuda_aggregate: %d failures\n", failures);
     return failures ? 1 : 0;

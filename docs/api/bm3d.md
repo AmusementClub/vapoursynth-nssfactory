@@ -76,3 +76,33 @@ dominant cost driver is `block_step` (positions scale as `1/step^2`), then
 - `sigma` is in 8-bit units even though the clip is float32; 25 means the
   usual "25/255" noise.
 - Array parameters are per-plane: `block_size=[8,16]` is legal on YUV.
+
+## CUDA (`core.nss_cuda.BM3D`)
+
+The CUDA plugin (`libnss_cuda`, built with `-DNSS_ENABLE_CUDA=ON`) takes the
+same arguments and gives the same errors as `nss.BM3D`. It adds two
+GPU-only arguments at the end of the argument list:
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `device_id` | 0 | CUDA device index. |
+| `num_streams` | up to 3 | How many frames can be in flight on the device at once. The default is lowered when 3 would not fit `memory_limit_mb`. An explicit value that does not fit is a creation error. |
+
+```python
+basic = core.nss_cuda.BM3D(clip, sigma=25)
+final = core.nss_cuda.BM3D(clip, ref=basic, sigma=25)
+```
+
+- **Device-resident.** Matching, collaborative filtering and aggregation all
+  run on the device; only the final plane is copied back.
+- **Numerics.** The transform math is the CPU's orthonormal 3D DCT.
+  - The output is not bit-identical to the CPU, but stays within the 60 dB
+    gate in `tests/data/cuda_tolerances_v1.json`.
+  - The output is run-to-run identical on a given GPU, driver and build.
+    Patches are summed per pixel in the CPU's order, with no float atomics.
+- **Memory.** `memory_limit_mb` (default 1024) also caps device memory and
+  pinned staging. 4K clips run at the default with smaller internal batches.
+- **Performance.** On an RTX 5080 at 1080p GRAYS with defaults, it runs at
+  bm3dcuda's speed or slightly faster.
+- **Not yet available.** `radius > 0` (legacy intermediate and
+  `temporal_mode="rolling"`) is rejected for now.

@@ -67,6 +67,7 @@ nss_forbid_cpu_includes("CUDA backend" ${NSS_CUDA_GUARDED})
 # intrinsics in the source instead of --use_fast_math.
 set(NSS_CUDA_IEEE_OPTIONS -O3 --fmad=true -prec-div=true -prec-sqrt=true -ftz=false)
 set(NSS_CUDA_IEEE_SOURCES
+  bm3d/kernels.cu
   common/aggregate.cu
   common/match.cu
   runtime/probe.cu
@@ -116,8 +117,10 @@ set_source_files_properties(runtime/device.cpp PROPERTIES COMPILE_DEFINITIONS
   "NSS_CUDA_ARCH_STRING=\"${NSS_CUDA_ARCH_STRING}\";NSS_CUDA_CUBIN_ARCHS=${NSS_CUDA_CUBIN_ARCHS_CSV};NSS_CUDA_PTX_ARCHS=${NSS_CUDA_PTX_ARCHS_CSV}")
 target_link_libraries(nss_cuda_core PUBLIC nss_frontend CUDA::cudart_static)
 
+# VapourSynth nodes, one per filter (docs/cuda-plan.md phase order).
 add_library(nss_cuda SHARED
   plugin.cpp
+  bm3d/filter.cpp
 )
 set_target_properties(nss_cuda PROPERTIES
   PREFIX "lib"

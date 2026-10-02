@@ -39,3 +39,10 @@ add_test(NAME test_cuda_plugin_interface
                  --backend-args device_id,num_streams --expect-missing "${NSS_CUDA_PENDING_FILTERS}")
 set_tests_properties(test_cuda_backend test_cuda_backend_forced_jit test_cuda_plugin_interface PROPERTIES
   LABELS cuda SKIP_RETURN_CODE 77)
+# Live CPU-vs-GPU filter checks need the CPU plugin as the reference.
+if(TARGET nss)
+  add_test(NAME test_cuda_bm3d_live
+           COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_cuda_bm3d_live.py"
+                   --cpu "$<TARGET_FILE:nss>" --cuda "${NSS_CUDA_PLUGIN}")
+  set_tests_properties(test_cuda_bm3d_live PROPERTIES LABELS cuda SKIP_RETURN_CODE 77)
+endif()
