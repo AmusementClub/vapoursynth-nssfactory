@@ -14,16 +14,23 @@ env:
 jobs:
   # Windows CI and release artifacts use GNU-driver Clang targeting the MSVC ABI.
   build-clang:
+    name: clang-${{ matrix.mode }}
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # avx2 pins the AVX2 floor; dynamic runs whatever the runner offers
+        # (AVX-512 runners otherwise never execute the AVX2 code paths).
+        mode: [dynamic, avx2]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/cache@v4
         with:
           path: .ccache
-          key: windows-ccache-clang-${{ github.ref_name }}-${{ github.sha }}
+          key: windows-ccache-clang-${{ matrix.mode }}-${{ github.ref_name }}-${{ github.sha }}
           restore-keys: |
-            windows-ccache-clang-${{ github.ref_name }}-
-            windows-ccache-clang-
+            windows-ccache-clang-${{ matrix.mode }}-${{ github.ref_name }}-
+            windows-ccache-clang-${{ matrix.mode }}-
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
@@ -44,7 +51,7 @@ jobs:
         run: |
           $vsInclude = python -c "import vapoursynth, pathlib; print(pathlib.Path(vapoursynth.__file__).parent / 'include')"
           $pythonExe = (Get-Command python).Source
-          cmake -S . -B build-clang -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DNSS_HWY_TARGET_MODE=dynamic -DVapourSynth_INCLUDE_DIR="$vsInclude" -DPython3_EXECUTABLE="$pythonExe"
+          cmake -S . -B build-clang -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DNSS_HWY_TARGET_MODE=${{ matrix.mode }} -DVapourSynth_INCLUDE_DIR="$vsInclude" -DPython3_EXECUTABLE="$pythonExe"
       - name: build
         run: cmake --build build-clang -j
       - name: unit tests

@@ -13,25 +13,75 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Runtime dispatch on whatever the runner offers.
+          - name: x86-gcc-dynamic
+            runner: ubuntu-latest
+            mode: dynamic
+            cc: gcc
+            cxx: g++
+          # Pin the AVX2 floor so its paths are tested even on AVX-512 runners.
+          - name: x86-gcc-avx2
+            runner: ubuntu-latest
+            mode: avx2
+            cc: gcc
+            cxx: g++
+          # The NEON release toolchain (GCC 15) on native AArch64.
+          - name: arm64-gcc15-neon
+            runner: ubuntu-24.04-arm
+            mode: neon
+            cc: gcc-15
+            cxx: g++-15
+            ppa: ppa:ubuntu-toolchain-r/test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/cache@v4
         with:
           path: .ccache
-          key: linux-ccache-${{ github.ref_name }}-${{ github.sha }}
+          key: linux-ccache-${{ matrix.name }}-${{ github.ref_name }}-${{ github.sha }}
           restore-keys: |
-            linux-ccache-${{ github.ref_name }}-
-            linux-ccache-
+            linux-ccache-${{ matrix.name }}-${{ github.ref_name }}-
+            linux-ccache-${{ matrix.name }}-
       - name: packages
-        run: sudo apt-get update && sudo apt-get install -y cmake g++ git ccache
+        run: |
+          if [ -n "${{ matrix.ppa }}" ]; then sudo add-apt-repository -y "${{ matrix.ppa }}"; fi
+          sudo apt-get update
+          sudo apt-get install -y cmake git ccache python3-venv ${{ matrix.cxx }}
+          python3 -m venv .vsenv
+          .vsenv/bin/pip install vapoursynth numpy scipy
+          echo "VapourSynth_INCLUDE_DIR=$(.vsenv/bin/python -c "import vapoursynth, pathlib; print(pathlib.Path(vapoursynth.__file__).parent / 'include')")" >> "$GITHUB_ENV"
+      - name: toolchain
+        run: |
+          ${{ matrix.cxx }} --version | head -1
+          .vsenv/bin/python -c "import numpy, scipy, vapoursynth as vs; print('numpy', numpy.__version__, 'scipy', scipy.__version__, 'vs', vs.__version__)"
       - name: configure
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
-            -DNSS_HWY_TARGET_MODE=dynamic
+            -DCMAKE_C_COMPILER=${{ matrix.cc }} -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} \
+            -DNSS_HWY_TARGET_MODE=${{ matrix.mode }} \
+            -DVapourSynth_INCLUDE_DIR="$VapourSynth_INCLUDE_DIR" \
+            -DPython3_EXECUTABLE="$GITHUB_WORKSPACE/.vsenv/bin/python"
       - name: build
         run: cmake --build build -j
       - name: unit tests
         run: ctest --test-dir build --output-on-failure
+      - name: plugin gate must execute
+        # A skip (missing VapourSynth/SciPy) is a CI configuration failure here.
+        run: |
+          ctest --test-dir build -R '^test_full_image_plugin$' -V | tee full-image.log
+          grep -q 'NSS_GATE_COMPLETED.*"passed": true' full-image.log
+      - name: host smoke (default parameters, all filters)
+        run: .vsenv/bin/python tests/smoke_defaults.py
+        env:
+          NSS_SO: ${{ github.workspace }}/build/libnss.so
+      - name: parameter bounds probe
+        run: .vsenv/bin/python tests/test_parameter_bounds_plugin.py
+        env:
+          NSS_SO: ${{ github.workspace }}/build/libnss.so
       - name: ccache stats
         run: ccache --show-stats
