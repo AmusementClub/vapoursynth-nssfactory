@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include "frontend/validate.hpp"
+#include "frontend/lssc_args.hpp"
 #include "nss/backend.hpp"
 #include "nss/cpu_api.hpp"
 #include "nss/cpu_lssc.hpp"
@@ -16,15 +17,11 @@
 
 namespace {
 
-struct LsscData {
+struct LsscData : nss::LsscParams {
     std::shared_ptr<nss::ResourceBudget> budget = nss::current_budget();
     nss::NodeRef node;
     VSVideoInfo vi{};
     VSVideoInfo vi_out{};
-    float sigma[3]{nss::kLsscDefaultSigma, nss::kLsscDefaultSigma, nss::kLsscDefaultSigma};
-    int block_size = nss::kLsscDefaultBlock;
-    int block_step = nss::kLsscDefaultStep;
-    int radius = 0;
     nss::Workspace ws;
 };
 
@@ -98,30 +95,7 @@ void VS_CC lsscCreate(const VSMap* in, VSMap* out, void* userData, VSCore* core,
         vsapi->mapSetError(out, msg);
         d->node.reset();
     };
-    if (!nss::is_const_32f(d->vi)) {
-        fail("nss.LSSC: constant Gray/YUV/RGB 32-bit float required");
-        return;
-    }
-    const int np = d->vi.format.numPlanes;
-    nss::map_float_array(vsapi, in, "sigma", d->sigma, np, nss::kLsscDefaultSigma);
-    d->block_size = nss::map_int(vsapi, in, "block_size", nss::kLsscDefaultBlock);
-    d->block_step = nss::map_int(vsapi, in, "block_step", nss::kLsscDefaultStep);
-    d->radius = nss::map_int(vsapi, in, "radius", 0);
-    if (!nss::lssc_allowed_block(d->block_size) || d->block_step < 1 ||
-        d->block_step > d->block_size) {
-        fail("nss.LSSC: block_size must be 1, 2, 4, 8, or 16");
-        return;
-    }
-    if (d->radius != 0) {
-        fail("nss.LSSC: radius>0 is not implemented (no temporal clustering)");
-        return;
-    }
-    const int np0 = nss::lssc_grid_count(d->vi.width, d->vi.height, d->block_size, d->block_step);
-    const int area = d->block_size * d->block_size;
-    if (area > 0 && np0 > 16000000 / area) {
-        fail("nss.LSSC: grid too large; increase block_step");
-        return;
-    }
+    static_cast<nss::LsscParams&>(*d) = nss::frontend::parse_lssc(vsapi, in, d->vi, "nss");
     nss::validate_group_planes(d->vi, d->sigma, d->block_size);
     d->vi_out = d->vi;
     VSFilterDependency deps[1]{{d->node, d->radius == 0 ? rpStrictSpatial : rpGeneral}};
@@ -139,7 +113,5 @@ void VS_CC lsscCreate(const VSMap* in, VSMap* out, void* userData, VSCore* core,
 }  // namespace
 
 void register_lssc(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
-    vspapi->registerFunction("LSSC",
-                             "clip:vnode;sigma:float[]:opt;block_size:int:opt;block_step:int:opt;radius:int:opt;memory_limit_mb:int:opt;",
-                             "clip:vnode;", nss::checked_create<lsscCreate>, nullptr, plugin);
+    vspapi->registerFunction("LSSC", nss::frontend::kLsscSignature, "clip:vnode;", nss::checked_create<lsscCreate>, nullptr, plugin);
 }
