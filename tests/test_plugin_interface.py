@@ -165,8 +165,12 @@ def main():
         return 0
     golden = json.loads(Path(args.golden).read_text())
     if ns != "nss":
+        # Version/Backend describe the backend itself and are not part of the
+        # shared filter interface (D14).
         prefix = re.compile(r"\bnss\.")
-        golden["functions"] = {k: v for k, v in golden["functions"].items() if k not in expect_missing}
+        shared = {k: v for k, v in shared.items() if k not in ("Version", "Backend")}
+        golden["functions"] = {k: v for k, v in golden["functions"].items()
+                               if k not in expect_missing and k not in ("Version", "Backend")}
         golden["cases"] = {key: ({"error": prefix.sub(ns + ".", value["error"])} if "error" in value else value)
                            for key, value in golden["cases"].items() if key.split("|")[0] not in skipped}
         missing = sorted(expect_missing & set(functions))

@@ -1,0 +1,97 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# CUDA backend (libnss_cuda) compile lanes. Runners have no GPU: these lanes
+# prove the toolchain/architecture contract (D13) and the plugin's no-device
+# load path; numerical and performance gates run on a GPU host (docs/cuda-plan.md).
+name: cuda
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  linux:
+    name: linux-cuda-${{ matrix.cuda }}
+    runs-on: ubuntu-latest
+    container: nvidia/cuda:${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Minimum supported toolkit: no sm_120 cubin, RTX 50 falls back to PTX.
+          - cuda: "12.4"
+            image: 12.4.1-devel-ubuntu22.04
+            cpu: "OFF"
+            cubins: "sm_75 sm_86 sm_89"
+          # Release toolkit, built together with the CPU tree.
+          - cuda: "12.9"
+            image: 12.9.1-devel-ubuntu24.04
+            cpu: "ON"
+            cubins: "sm_75 sm_86 sm_89 sm_120"
+          - cuda: "13.3"
+            image: 13.3.0-devel-ubuntu24.04
+            cpu: "OFF"
+            cubins: "sm_75 sm_86 sm_89 sm_120"
+    steps:
+      - name: packages
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git python3 python3-venv ca-certificates
+          python3 -m venv /opt/venv
+          /opt/venv/bin/pip install cmake ninja
+          # Headers only: the plugin is loaded by the host and never links libvapoursynth.
+          git clone --depth 1 --branch R80 https://github.com/vapoursynth/vapoursynth /opt/vapoursynth
+          # Python 3.12+ images can also load the plugin to exercise the no-GPU path.
+          if python3 -c 'import sys; sys.exit(sys.version_info < (3, 12))'; then /opt/venv/bin/pip install vapoursynth; fi
+      - uses: actions/checkout@v4
+      - name: configure
+        run: |
+          export PATH=/opt/venv/bin:$PATH
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DNSS_ENABLE_CUDA=ON -DNSS_BUILD_CPU=${{ matrix.cpu }} \
+            -DVapourSynth_INCLUDE_DIR=/opt/vapoursynth/include \
+            -DPython3_EXECUTABLE=/opt/venv/bin/python
+      - name: build
+        run: /opt/venv/bin/cmake --build build -j
+      - name: fat binary contents
+        run: |
+          cuobjdump --list-elf --list-ptx build/src/cuda/libnss_cuda.so | tee fatbin.txt
+          for arch in ${{ matrix.cubins }}; do grep -q "\.${arch}\.cubin" fatbin.txt || { echo "missing $arch cubin"; exit 1; }; done
+          grep -q "\.sm_75\.ptx" fatbin.txt || { echo "missing compute_75 PTX"; exit 1; }
+          if [ "${{ matrix.cuda }}" = "12.4" ] && grep -q "sm_120" fatbin.txt; then echo "unexpected sm_120 on 12.4"; exit 1; fi
+      - name: cuda tests (skip without a GPU)
+        run: /opt/venv/bin/ctest --test-dir build -L cuda --output-on-failure
+
+  windows:
+    name: windows-cuda-12.9-msvc
+    # CUDA 12.9 supports MSVC through VS 2022; windows-latest ships VS 2026
+    # (MSVC 14.5x), which nvcc 12.9 rejects.
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Jimver/cuda-toolkit@v0.2.36
+        with:
+          cuda: "12.9.1"
+          method: network
+          sub-packages: '["nvcc", "cudart", "cuobjdump", "visual_studio_integration"]'
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: packages
+        run: |
+          pip install vapoursynth ninja
+          nvcc --version
+          cl 2>&1 | Select-Object -First 1
+      - name: configure
+        run: |
+          $vsInclude = python -c "import vapoursynth, pathlib; print(pathlib.Path(vapoursynth.__file__).parent / 'include')"
+          $pythonExe = (Get-Command python).Source
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=cl -DNSS_ENABLE_CUDA=ON -DNSS_BUILD_CPU=OFF -DVapourSynth_INCLUDE_DIR="$vsInclude" -DPython3_EXECUTABLE="$pythonExe"
+      - name: build
+        run: cmake --build build -j
+      - name: plugin DLL
+        run: |
+          $dll = Get-ChildItem -Recurse build -Filter libnss_cuda.dll | Select-Object -First 1
+          if (-not $dll) { throw "libnss_cuda.dll was not produced" }
+          cuobjdump --list-elf --list-ptx $dll.FullName
+      - name: cuda tests (skip without a GPU)
+        run: ctest --test-dir build -L cuda --output-on-failure

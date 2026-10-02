@@ -77,6 +77,31 @@ disabled while provider threading and resource bounds are being qualified.
 
 Install `libnss.so` into the VapourSynth plugin directory.
 
+### CUDA plugin (in development)
+
+`-DNSS_ENABLE_CUDA=ON` also builds `libnss_cuda` (namespace `nss_cuda`). It
+needs nvcc from CUDA 12.4 or newer; Windows builds use nvcc with MSVC `cl.exe`.
+The plugin is being built up filter by filter. Currently it only provides
+`core.nss_cuda.Version()` and `core.nss_cuda.Backend()`, which reports the device,
+driver/runtime versions and the support level.
+
+- **Default architectures:** native code for sm_75, sm_86, sm_89 and sm_120,
+  plus compute_75 PTX. Toolkits older than 12.8 cannot target sm_120, so RTX 50
+  GPUs run that PTX through the driver JIT.
+- **Other sm_75+ GPUs:** they also run the PTX through the driver JIT, which is
+  untested and best effort. JIT only works when the driver supports at least
+  the CUDA version the plugin was built with.
+- **Faster single-GPU builds:** set `-DNSS_CUDA_ARCHITECTURES=120-real`, for
+  example.
+
+`-DNSS_BUILD_CPU=OFF` configures only the CUDA plugin, without Highway or the
+CPU kernels and tests.
+
+```bash
+cmake -S . -B build-cuda -DCMAKE_BUILD_TYPE=Release -DNSS_ENABLE_CUDA=ON
+cmake --build build-cuda -j && ctest --test-dir build-cuda -L cuda
+```
+
 Fresh x86 builds also enable `NSS_AVX2_DEFAULTS=ON`, with configuration-scoped
 AVX2 ports validated on C4 and Ryzen 5950X. `NSS_AVX2_EXPERIMENT=0` adds no
 experimental candidates; use `-DNSS_AVX2_DEFAULTS=OFF -DNSS_AVX2_EXPERIMENT=0`

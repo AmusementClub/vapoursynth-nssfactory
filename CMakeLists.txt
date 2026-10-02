@@ -9,6 +9,42 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   message(STATUS "NSSFactory: CMAKE_BUILD_TYPE unset, defaulting to Release")
 endif()
 
+# Plugin selection. The CPU tree (libnss, Highway, nss_cpu and its tests) and
+# the CUDA tree (libnss_cuda, docs/cuda-plan.md) share only the backend-neutral
+# frontend below. NSS_BUILD_CPU=OFF lets a CUDA-only configure (e.g. MSVC +
+# nvcc on Windows) skip the CPU toolchain contract entirely.
+option(NSS_BUILD_CPU "Build the CPU plugin libnss, its kernels and tests" ON)
+option(NSS_ENABLE_CUDA "Build the CUDA plugin libnss_cuda (namespace nss_cuda)" OFF)
+if(NOT NSS_BUILD_CPU AND NOT NSS_ENABLE_CUDA)
+  message(FATAL_ERROR "Nothing to build: enable NSS_BUILD_CPU and/or NSS_ENABLE_CUDA")
+endif()
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+
+find_package(VapourSynth)
+
+set(NSS_GIT_DESCRIBE "" CACHE STRING "Revision recorded in plugin and benchmark metadata")
+if(NOT NSS_GIT_DESCRIBE)
+  execute_process(
+    COMMAND git describe --tags --always --dirty
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    OUTPUT_VARIABLE NSS_GIT_DESCRIBE
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+  )
+endif()
+if(NOT NSS_GIT_DESCRIBE)
+  set(NSS_GIT_DESCRIBE "unknown")
+endif()
+
+if(NSS_BUILD_CPU)
+# ---- CPU tree (not re-indented; ends at the matching endif() below) ----
+
 set(NSS_HWY_X86 FALSE)
 set(NSS_HWY_ARM64 FALSE)
 # A single explicit macOS architecture overrides the native host architecture.
@@ -86,10 +122,6 @@ foreach(feature REUSE RASTER HOMOGENEOUS SCRATCH RING)
   math(EXPR enabled "${NSS_BM_EXPERIMENT} & ${bits}")
   add_compile_definitions(NSS_BM_${feature}=${enabled})
 endforeach()
-set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
-set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 option(NSS_BM_KERNEL_LAB "Build isolated BM3D SSD/DCT microkernel experiments" OFF)
 option(NSS_LSSC_EXPLORER "Build the isolated paper-track LSSC exploration library" OFF)
@@ -144,8 +176,6 @@ if(NSS_HWY_TARGET_MODE MATCHES "^avx" AND
   message(FATAL_ERROR "NSS_HWY_TARGET_MODE=${NSS_HWY_TARGET_MODE} requires an x86 processor")
 endif()
 
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
-
 include(cmake/Highway.cmake)
 if(NSS_HWY_TARGET_MODE STREQUAL "portable-test")
   # Highway disables EMU128 on affected compilers (including GCC 13). Fail
@@ -164,7 +194,6 @@ if(NSS_HWY_TARGET_MODE STREQUAL "portable-test")
     message(FATAL_ERROR "portable-test requires a Highway-supported EMU128 compiler; use Clang instead of overriding Highway's compiler blocklist")
   endif()
 endif()
-find_package(VapourSynth)
 
 # clang-cl parses the MSVC command-line dialect and silently IGNORES GNU-style
 # flags (observed: -ffast-math/-fno-fast-math/-ffp-contract=off/-O3 dropped with
@@ -220,20 +249,6 @@ function(nss_cc_flags out)
   endif()
 endfunction()
 nss_cc_flags(NSS_SAFE_PIN_COMPILE_OPTIONS -O3 -fno-fast-math -ffp-contract=off)
-
-set(NSS_GIT_DESCRIBE "" CACHE STRING "Revision recorded in plugin and benchmark metadata")
-if(NOT NSS_GIT_DESCRIBE)
-  execute_process(
-    COMMAND git describe --tags --always --dirty
-    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-    OUTPUT_VARIABLE NSS_GIT_DESCRIBE
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    ERROR_QUIET
-  )
-endif()
-if(NOT NSS_GIT_DESCRIBE)
-  set(NSS_GIT_DESCRIBE "unknown")
-endif()
 
 set(NSS_CPU_SOURCES
   src/cpu/backend.cpp
@@ -591,21 +606,28 @@ set(_nss_finite_hot_expected ${NSS_HOT_COMPILE_OPTIONS} -fno-finite-math-only)
 if(NOT "${NSS_FINITE_HOT_COMPILE_OPTIONS}" STREQUAL "${_nss_finite_hot_expected}")
   message(FATAL_ERROR "NSS_FINITE_HOT_COMPILE_OPTIONS must be exactly NSS_HOT_COMPILE_OPTIONS plus -fno-finite-math-only")
 endif()
+endif()  # NSS_BUILD_CPU: CPU tree
+
 # Backend-neutral frontend: VapourSynth argument parsing, validation and
 # frame/temporal protocol helpers shared by every backend plugin. It must not
 # reach CPU kernels or CPU host code, so a GPU plugin can link it unchanged.
+# The same include guard protects every backend tree (src/cuda via its own
+# CMakeLists) from reaching CPU kernels or CPU host code.
+function(nss_forbid_cpu_includes label)
+  foreach(_nss_file IN LISTS ARGN)
+    if(_nss_file MATCHES "\\.(hpp|cpp|h|cu|cuh)$")
+      file(STRINGS "${_nss_file}" _nss_hits
+           REGEX "#[ \t]*include[ \t]+[\"<](cpu/|host/|nss/cpu_|nss/backend\\.hpp|nss/avx2)")
+      if(_nss_hits)
+        message(FATAL_ERROR "${label} file includes CPU/host code: ${_nss_file}: ${_nss_hits}")
+      endif()
+    endif()
+  endforeach()
+endfunction()
 file(GLOB_RECURSE NSS_FRONTEND_GUARDED CONFIGURE_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/src/frontend/*"
   "${CMAKE_CURRENT_SOURCE_DIR}/include/nss/params/*")
-foreach(_nss_file IN LISTS NSS_FRONTEND_GUARDED)
-  if(_nss_file MATCHES "\\.(hpp|cpp|h)$")
-    file(STRINGS "${_nss_file}" _nss_hits
-         REGEX "#[ \t]*include[ \t]+[\"<](cpu/|host/|nss/cpu_|nss/backend\\.hpp|nss/avx2)")
-    if(_nss_hits)
-      message(FATAL_ERROR "backend-neutral frontend file includes CPU/host code: ${_nss_file}: ${_nss_hits}")
-    endif()
-  endif()
-endforeach()
+nss_forbid_cpu_includes("backend-neutral frontend" ${NSS_FRONTEND_GUARDED})
 
 if(VapourSynth_FOUND)
   add_library(nss_frontend STATIC
@@ -630,7 +652,12 @@ if(VapourSynth_FOUND)
     CXX_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN ON
   )
+endif()
+if(NSS_ENABLE_CUDA AND NOT VapourSynth_FOUND)
+  message(FATAL_ERROR "NSS_ENABLE_CUDA requires VapourSynth headers (set VapourSynth_INCLUDE_DIR)")
+endif()
 
+if(NSS_BUILD_CPU AND VapourSynth_FOUND)
   file(GLOB NSS_HOST_FILTERS CONFIGURE_DEPENDS src/host/filter_*.cpp)
   add_library(nss SHARED
     src/host/plugin.cpp
@@ -651,4 +678,10 @@ if(VapourSynth_FOUND)
 endif()
 
 enable_testing()
-add_subdirectory(tests)
+if(NSS_BUILD_CPU)
+  add_subdirectory(tests)
+endif()
+if(NSS_ENABLE_CUDA)
+  add_subdirectory(src/cuda)
+  add_subdirectory(tests/cuda)
+endif()
