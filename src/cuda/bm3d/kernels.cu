@@ -115,8 +115,8 @@ __global__ void __launch_bounds__(kThreads) group_filter_kernel(Bm3dGroupArgs a)
         float v = 0.f, rv = 0.f;
         if (g < kk) {
             const long long offset = static_cast<long long>(m[g].y + p / a.block) * a.pitch + m[g].x + p % a.block;
-            v = a.src[offset];
-            if (refc) rv = a.ref[offset];
+            v = a.src[m[g].t][offset];
+            if (refc) rv = a.ref[m[g].t][offset];
         }
         cube[i] = v;
         if (refc) refc[i] = rv;
@@ -159,7 +159,7 @@ __global__ void __launch_bounds__(kThreads) group_filter_kernel(Bm3dGroupArgs a)
 
     for (int g = threadIdx.x; g < a.group; g += blockDim.x) {
         a.patches[static_cast<long long>(r) * a.group + g] =
-            g < kk ? AggregatePatch{m[g].x, m[g].y, a.slice, weight} : AggregatePatch{0, 0, -1, 0.f};
+            g < kk ? AggregatePatch{m[g].x, m[g].y, m[g].t, weight} : AggregatePatch{0, 0, -1, 0.f};
     }
 }
 
@@ -171,6 +171,29 @@ __global__ void finish_kernel(const float* num, const float* den, const float* s
     const long long i = static_cast<long long>(y) * pitch + x;
     const float d = den[i];
     out[i] = d > 1e-12f ? num[i] / d : src[i];
+}
+
+__global__ void accumulate_kernel(float* acc_num, float* acc_den, const float* num, const float* den,
+                                  std::size_t count) {
+    const std::size_t i = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= count) return;
+    acc_num[i] += num[i];
+    acc_den[i] += den[i];
+}
+
+__global__ void vaggregate_kernel(const float* const* nums, const float* const* dens, int count, const float* src,
+                                  int width, int height, int pitch, float* out) {
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= width || y >= height) return;
+    const long long i = static_cast<long long>(y) * pitch + x;
+    float num = 0.f, den = 0.f;
+    for (int c = 0; c < count; ++c) {
+        num += nums[c][i];
+        den += dens[c][i];
+    }
+    // Disabled planes contribute one exact identity slice (den == 1).
+    out[i] = den == 1.f ? num : (den > 1e-12f ? num / den : src[i]);
 }
 
 }  // namespace
@@ -199,6 +222,21 @@ void bm3d_init_tables(int device) {
 void bm3d_filter_groups(const Bm3dGroupArgs& args, cudaStream_t stream) {
     if (args.batch <= 0) return;
     group_filter_kernel<<<args.batch, kThreads, 0, stream>>>(args);
+    NSS_CUDA_CHECK_LAUNCH();
+}
+
+void accumulate_slice(float* acc_num, float* acc_den, const float* num, const float* den, std::size_t count,
+                      cudaStream_t stream) {
+    if (count == 0) return;
+    accumulate_kernel<<<static_cast<unsigned>((count + 255) / 256), 256, 0, stream>>>(acc_num, acc_den, num, den, count);
+    NSS_CUDA_CHECK_LAUNCH();
+}
+
+void vaggregate_target(const float* const* nums, const float* const* dens, int count, const float* src, int width,
+                       int height, int pitch, float* out, cudaStream_t stream) {
+    const dim3 threads(32, 8);
+    const dim3 blocks((width + 31) / 32, (height + 7) / 8);
+    vaggregate_kernel<<<blocks, threads, 0, stream>>>(nums, dens, count, src, width, height, pitch, out);
     NSS_CUDA_CHECK_LAUNCH();
 }
 

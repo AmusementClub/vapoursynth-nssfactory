@@ -126,6 +126,7 @@ target_link_libraries(nss_cuda_core PUBLIC nss_frontend CUDA::cudart_static)
 add_library(nss_cuda SHARED
   plugin.cpp
   bm3d/filter.cpp
+  vaggregate/filter.cpp
 )
 set_target_properties(nss_cuda PROPERTIES
   PREFIX "lib"
