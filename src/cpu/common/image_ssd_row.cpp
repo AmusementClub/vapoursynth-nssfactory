@@ -14,55 +14,14 @@ namespace nss {
 namespace HWY_NAMESPACE {
 namespace hn = hwy::HWY_NAMESPACE;
 
-// The leaf arithmetic below mirrors cpu/bm/ssd.cpp verbatim so that every
-// candidate distance is bit-identical to a ssd_block call on the same target:
-// Ssd8 keeps the single 8-row accumulator + HSum8 tree, Ssd4 the 4-row chain,
+// The leaf functions are shared with cpu/bm/ssd.cpp (ssd_leaf-inl.hpp) so that
+// every candidate distance is bit-identical to a ssd_block call on the same
+// target: Ssd8 keeps the single 8-row accumulator + HSum8 tree, Ssd4 the 4-row chain,
 // and other block sizes the scalable chunk + LoadN remainder + ReduceSum
 // order. The row kernel only hoists dispatch, anchor loads, and candidate
 // iteration; per-candidate expression trees are unchanged.
 
-#if HWY_MAX_BYTES >= 32
-static float HSum8(hn::Vec<hn::FixedTag<float, 8>> v) {
-    const hn::FixedTag<float, 4> d4;
-    return hn::ReduceSum(d4, hn::Add(hn::LowerHalf(d4, v), hn::UpperHalf(d4, v)));
-}
-
-#endif
-
-#if HWY_MAX_BYTES >= 16
-static float Ssd4(const float* a, int sa, const float* b, int sb) {
-    const hn::FixedTag<float, 4> d;
-    auto acc = hn::Zero(d);
-    for (int y = 0; y < 4; ++y) {
-        const auto diff = hn::Sub(hn::LoadU(d, a + y * sa), hn::LoadU(d, b + y * sb));
-        acc = hn::MulAdd(diff, diff, acc);
-    }
-    return hn::ReduceSum(d, acc);
-}
-#endif
-
-static float Ssd8(const float* a, int sa, const float* b, int sb) {
-#if HWY_MAX_BYTES >= 32
-    const hn::FixedTag<float, 8> d;
-    auto acc = hn::Zero(d);
-    for (int y = 0; y < 8; ++y) {
-        const auto diff = hn::Sub(hn::LoadU(d, a + y * sa), hn::LoadU(d, b + y * sb));
-        acc = hn::MulAdd(diff, diff, acc);
-    }
-    return HSum8(acc);
-#else
-    float acc = 0.f;
-    for (int y = 0; y < 8; ++y) {
-        const float* pa = a + y * sa;
-        const float* pb = b + y * sb;
-        for (int x = 0; x < 8; ++x) {
-            const float t = pa[x] - pb[x];
-            acc += t * t;
-        }
-    }
-    return acc;
-#endif
-}
+#include "cpu/bm/ssd_leaf-inl.hpp"
 
 static float SsdBlockRow(const float* a, int sa, const float* b, int sb, int block) {
     if (block == 8) {

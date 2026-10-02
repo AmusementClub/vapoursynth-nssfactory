@@ -428,6 +428,14 @@ target_compile_definitions(nss_cpu PUBLIC ${NSS_HWY_EXTRA_DEFINITIONS}
 target_compile_definitions(nss_svd_qreplay PRIVATE ${NSS_HWY_EXTRA_DEFINITIONS})
 set(NSS_HOT_COMPILE_OPTIONS -O3 -ffast-math)
 list(APPEND NSS_HOT_COMPILE_OPTIONS ${NSS_CPU_ISA_OPTIONS})
+# Clang lowers fast-math float division and sqrt on x86 to rcpps/rsqrtps
+# estimates plus one Newton step (not exact, and able to fold identity guards
+# such as den == 1). GCC only does that under -mrecip, and AArch64 Clang keeps
+# fdiv/fsqrt, so this aligns the Clang x86 builds (the Windows release
+# toolchain) with the GCC-validated numerics without dropping fast-math.
+if(NSS_HWY_X86 AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  list(APPEND NSS_HOT_COMPILE_OPTIONS -mrecip=none)
+endif()
 # Keep IEEE NaN/Inf classification enabled while allowing errno-free hardware
 # math and non-trapping vectorization. The plugin does not inspect math errno
 # or enable floating-point traps; both options avoid the largest costs of the
