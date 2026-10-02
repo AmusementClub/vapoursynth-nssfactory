@@ -67,6 +67,8 @@ nss_forbid_cpu_includes("CUDA backend" ${NSS_CUDA_GUARDED})
 # intrinsics in the source instead of --use_fast_math.
 set(NSS_CUDA_IEEE_OPTIONS -O3 --fmad=true -prec-div=true -prec-sqrt=true -ftz=false)
 set(NSS_CUDA_IEEE_SOURCES
+  common/aggregate.cu
+  common/match.cu
   runtime/probe.cu
 )
 set(NSS_CUDA_CLASSIFIED ${NSS_CUDA_IEEE_SOURCES})
@@ -89,8 +91,17 @@ endif()
 set_source_files_properties(${NSS_CUDA_IEEE_SOURCES} PROPERTIES
   COMPILE_OPTIONS "${NSS_CUDA_IEEE_OPTIONS}")
 
-add_library(nss_cuda_kernels STATIC ${NSS_CUDA_CLASSIFIED})
-set_target_properties(nss_cuda_kernels PROPERTIES
+# Host-side runtime (plain C++) shared by every filter.
+set(NSS_CUDA_RUNTIME_SOURCES
+  runtime/context.cpp
+  runtime/device.cpp
+  runtime/frame_io.cpp
+  runtime/memory.cpp
+)
+
+# nss_cuda_core: runtime + all device code, static so tests/cuda can link it.
+add_library(nss_cuda_core STATIC ${NSS_CUDA_RUNTIME_SOURCES} ${NSS_CUDA_CLASSIFIED})
+set_target_properties(nss_cuda_core PROPERTIES
   CUDA_ARCHITECTURES "${NSS_CUDA_ARCH_LIST}"
   CUDA_RUNTIME_LIBRARY None
   POSITION_INDEPENDENT_CODE ON
@@ -98,12 +109,15 @@ set_target_properties(nss_cuda_kernels PROPERTIES
   CXX_VISIBILITY_PRESET hidden
   VISIBILITY_INLINES_HIDDEN ON
 )
-target_include_directories(nss_cuda_kernels PRIVATE
-  "${CMAKE_CURRENT_SOURCE_DIR}/.." "${PROJECT_SOURCE_DIR}/include")
+target_include_directories(nss_cuda_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")
+# Only the (host-compiled) classifier needs the list; nvcc would split a
+# comma-separated -D value into several macros.
+set_source_files_properties(runtime/device.cpp PROPERTIES COMPILE_DEFINITIONS
+  "NSS_CUDA_ARCH_STRING=\"${NSS_CUDA_ARCH_STRING}\";NSS_CUDA_CUBIN_ARCHS=${NSS_CUDA_CUBIN_ARCHS_CSV};NSS_CUDA_PTX_ARCHS=${NSS_CUDA_PTX_ARCHS_CSV}")
+target_link_libraries(nss_cuda_core PUBLIC nss_frontend CUDA::cudart_static)
 
 add_library(nss_cuda SHARED
   plugin.cpp
-  runtime/device.cpp
 )
 set_target_properties(nss_cuda PROPERTIES
   PREFIX "lib"
@@ -111,11 +125,5 @@ set_target_properties(nss_cuda PROPERTIES
   CXX_VISIBILITY_PRESET hidden
   VISIBILITY_INLINES_HIDDEN ON
 )
-target_include_directories(nss_cuda PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
-target_compile_definitions(nss_cuda PRIVATE
-  "NSS_VERSION_STRING=\"${NSS_GIT_DESCRIBE}\""
-  "NSS_CUDA_ARCH_STRING=\"${NSS_CUDA_ARCH_STRING}\""
-  "NSS_CUDA_CUBIN_ARCHS=${NSS_CUDA_CUBIN_ARCHS_CSV}"
-  "NSS_CUDA_PTX_ARCHS=${NSS_CUDA_PTX_ARCHS_CSV}"
-)
-target_link_libraries(nss_cuda PRIVATE nss_frontend nss_cuda_kernels CUDA::cudart_static VapourSynth::VapourSynth)
+target_compile_definitions(nss_cuda PRIVATE "NSS_VERSION_STRING=\"${NSS_GIT_DESCRIBE}\"")
+target_link_libraries(nss_cuda PRIVATE nss_cuda_core VapourSynth::VapourSynth)

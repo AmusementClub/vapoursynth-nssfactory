@@ -2,6 +2,22 @@
 # CUDA backend tests (label "cuda"). Every test exits 77 (skip) without a CUDA
 # device, so CUDA-enabled builds on GPU-less machines still pass ctest.
 
+# Primitive tests compare against the CPU kernels, so they need the CPU tree.
+if(TARGET nss_cpu)
+  add_executable(test_cuda_match test_cuda_match.cpp)
+  target_link_libraries(test_cuda_match PRIVATE nss_cuda_core nss_cpu)
+  target_include_directories(test_cuda_match PRIVATE "${PROJECT_SOURCE_DIR}/include" "${PROJECT_SOURCE_DIR}/src")
+  add_test(NAME test_cuda_match COMMAND test_cuda_match)
+  set_tests_properties(test_cuda_match PROPERTIES LABELS cuda SKIP_RETURN_CODE 77)
+endif()
+
+foreach(test test_cuda_aggregate test_cuda_runtime)
+  add_executable(${test} ${test}.cpp)
+  target_link_libraries(${test} PRIVATE nss_cuda_core)
+  add_test(NAME ${test} COMMAND ${test})
+  set_tests_properties(${test} PROPERTIES LABELS cuda SKIP_RETURN_CODE 77)
+endforeach()
+
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(NOT Python3_Interpreter_FOUND)
   message(WARNING "Python3 interpreter unavailable: CUDA plugin tests are not registered")
