@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include "nss/cpu_batch.hpp"
+#include "hq_test_target.hpp"
 #include "nss/cpu_api.hpp"
 #include "nss/cpu_mcwnnm.hpp"
 #include "nss/cpu_ncsr.hpp"
@@ -774,7 +775,8 @@ bool check_batch_failure_continues() {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    if (!hq_test_target(argc, argv)) return 77;
     if (!check_ordered_queue()) {
         return 1;
     }

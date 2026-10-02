@@ -2,6 +2,8 @@
 // Exact gate comparison against the original scalar arithmetic. Includes
 // padded input strides, inactive directions, malformed factors and threshold neighbors.
 #include "nss/cpu_twsc_full.hpp"
+#include "nss/backend.hpp"
+#include "hq_test_target.hpp"
 #include <algorithm>
 #include <cmath>
 #include <iostream>
@@ -29,10 +31,20 @@ bool reference(const float* a, int m, int n, int lda, const nss::TwscWorkspace& 
     return error<=norm*2.5e-9 && orthogonal<=5e-4;
 }
 }
-int main() {
+int main(int argc, char** argv) {
+    if (!hq_test_target(argc, argv)) return 77;
     try {
+        const auto caps = nss::backend_caps();
+        for (int columns : {0, 7, 8, 9, 32, 33, 90}) {
+            const bool expected = caps.selected_target == HWY_AVX2 ||
+                (caps.selected_target == HWY_AVX3 && columns == 8);
+            if (nss::twsc_svd_validation_lanes_available(columns) != expected)
+                throw std::runtime_error("unexpected TWSC validator target/column capability");
+        }
         int checks=0,accepted=0,rejected=0;
-        for(auto shape:{std::pair{32,33},{49,70},{64,90},{192,90},{81,140},{63,33},{768,256},{33,32},{7,70}}) {
+        for(auto shape:{std::pair{8,8},{9,8},{49,8},{63,8},{64,8},{192,8},{768,8},
+                        {7,8},{64,7},{64,9},{64,32},
+                        {32,33},{49,70},{64,90},{192,90},{81,140},{63,33},{768,256},{33,32},{7,70}}) {
             const auto [m,n]=shape;const int lda=m+3,r=std::min(m,n);
             std::vector<float>a(std::size_t(lda)*n,std::numeric_limits<float>::quiet_NaN());
             for(int j=0;j<n;++j)for(int i=0;i<m;++i)a[i+j*lda]=float(std::sin((i+3)*(j+5)*.071)+.01*(i%7));
@@ -62,8 +74,9 @@ int main() {
             a[lda/2]=std::numeric_limits<float>::quiet_NaN();check();
         }
         std::cout<<"{\"passed\":true,\"checks\":"<<checks<<",\"accepted\":"<<accepted
-                 <<",\"rejected\":"<<rejected<<",\"avx2_lane_active\":"
-                 <<(nss::twsc_svd_validation_lanes_available()?"true":"false")<<"}\n";
+                 <<",\"rejected\":"<<rejected<<",\"target\":\""<<caps.target_name
+                 <<"\",\"available_8\":"
+                 <<(nss::twsc_svd_validation_lanes_available(8)?"true":"false")<<"}\n";
         return 0;
     } catch(const std::exception& e) {std::cerr<<e.what()<<'\n';return 1;}
 }

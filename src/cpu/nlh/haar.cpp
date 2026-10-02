@@ -54,6 +54,13 @@ void NlhHaar2d(float* matrix, int q, int n, bool inverse) {
 #endif
 }
 
+// One dispatch for a run of independent q*n matrices stored back to back.
+// Each matrix sees exactly the NlhHaar2d operation sequence.
+void NlhHaar2dBatch(float* matrices, int count, int q, int n, bool inverse) {
+    const std::size_t size = static_cast<std::size_t>(q) * static_cast<std::size_t>(n);
+    for (int i = 0; i < count; ++i) NlhHaar2d(matrices + i * size, q, n, inverse);
+}
+
 }  // namespace HWY_NAMESPACE
 }  // namespace nss
 HWY_AFTER_NAMESPACE();
@@ -63,6 +70,7 @@ namespace nss {
 HWY_EXPORT(Haar1d);
 HWY_EXPORT(IHaar1d);
 HWY_EXPORT(NlhHaar2d);
+HWY_EXPORT(NlhHaar2dBatch);
 
 void haar1d(const float* in, float* out, int n) {
     HWY_DYNAMIC_DISPATCH(Haar1d)(in, out, n);
@@ -74,6 +82,10 @@ void ihaar1d(const float* in, float* out, int n) {
 
 void nlh_haar2d(float* matrix, int q, int n, bool inverse) {
     HWY_DYNAMIC_DISPATCH(NlhHaar2d)(matrix, q, n, inverse);
+}
+
+void nlh_haar2d_batch(float* matrices, int count, int q, int n, bool inverse) {
+    HWY_DYNAMIC_DISPATCH(NlhHaar2dBatch)(matrices, count, q, n, inverse);
 }
 
 }  // namespace nss

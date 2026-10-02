@@ -16,10 +16,10 @@ namespace nss {
 namespace HWY_NAMESPACE {
 namespace hn = hwy::HWY_NAMESPACE;
 
-bool TwscSvdValidationLanesAvailable() {
-    // Admission is currently the measured AVX2 lane. Other targets retain the
-    // scalar validator until their own complete-pipeline timing is available.
-    return HWY_TARGET == HWY_AVX2;
+bool TwscSvdValidationLanesAvailable(int columns) {
+    // Small groups use the same ordered reductions. Keep large-group AVX3
+    // validation on its existing scalar route.
+    return HWY_TARGET == HWY_AVX2 || (columns == 8 && HWY_TARGET == HWY_AVX3);
 }
 
 bool TwscValidSvdLanes(const float* a, int m, int n, int lda, const TwscWorkspace& w) {
@@ -216,8 +216,8 @@ namespace nss {
 HWY_EXPORT(TwscSvd64Batch);
 HWY_EXPORT(TwscValidSvdLanes);
 HWY_EXPORT(TwscSvdValidationLanesAvailable);
-bool twsc_svd_validation_lanes_available() {
-    return HWY_DYNAMIC_DISPATCH(TwscSvdValidationLanesAvailable)();
+bool twsc_svd_validation_lanes_available(int columns) {
+    return HWY_DYNAMIC_DISPATCH(TwscSvdValidationLanesAvailable)(columns);
 }
 bool twsc_valid_svd_lanes(const float* a, int m, int n, int lda, const TwscWorkspace& work) {
     return HWY_DYNAMIC_DISPATCH(TwscValidSvdLanes)(a, m, n, lda, work);

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include "nss/cpu_api.hpp"
 #include "nss/cpu_common.hpp"
+#include "hq_test_target.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -14,7 +15,58 @@ static int fail(const char* msg) {
     return 1;
 }
 
-int main() {
+static int check_fused_admm_stationarity() {
+    // Check the dual equation and the weighted least-squares stationarity
+    // equation in FP64, independently of the production update expression.
+    for (int m : {1, 7, 8, 9, 17, 48, 192, 243, 256}) {
+        for (int n : {1, 4, 8, 17, 32}) {
+            for (float penalty : {0.01f, 3.f, 9999.f}) {
+                const int ldy = m + 3;
+                constexpr float sentinel = -123.f;
+                std::vector<float> y(ldy * n, sentinel), z(m * n), a(m * n + 2, sentinel),
+                    x(m * n + 2, sentinel), w(m);
+                for (int i = 0; i < m; ++i) w[i] = i % 3 == 0 ? 1.f : i % 3 == 1 ? 0.0625f : 1e-6f;
+                for (int j = 0; j < n; ++j) {
+                    for (int i = 0; i < m; ++i) {
+                        const int p = j * m + i;
+                        y[j * ldy + i] = float((p * 7) % 31 - 15) / 16.f;
+                        z[p] = float((p * 3) % 17 - 8) / 16.f;
+                        a[p + 1] = float(p % 7 - 3) / 32.f;
+                        x[p + 1] = float((p * 5) % 19 - 9) / 16.f;
+                    }
+                }
+                const auto old_a = a, old_x = x, old_y = y, old_z = z, old_w = w;
+                const float next = std::min(10000.f, 1.7f * penalty);
+                nss::admm_dual_add_weighted_x(a.data() + 1, x.data() + 1, y.data(), ldy, z.data(), w.data(),
+                                             m, n, penalty, next);
+                for (int j = 0; j < n; ++j) {
+                    for (int i = 0; i < m; ++i) {
+                        const int p = j * m + i;
+                        const double dual_step = double(penalty) * (double(old_x[p + 1]) - z[p]);
+                        const double expected_a = old_a[p + 1] + dual_step;
+                        const double expected_x = (double(w[i]) * y[j * ldy + i] +
+                                                   double(next) * 0.5 * z[p] - expected_a * 0.5) /
+                                                  (double(w[i]) + double(next) * 0.5);
+                        if (!std::isfinite(a[p + 1]) || !std::isfinite(x[p + 1]) ||
+                            std::abs(a[p + 1] - expected_a) > 2e-6 * (1 + std::abs(expected_a)) ||
+                            std::abs(x[p + 1] - expected_x) > 2e-6 * (1 + std::abs(expected_x))) {
+                            return fail("fused ADMM violates dual or weighted-X stationarity");
+                        }
+                    }
+                }
+                if (a.front() != sentinel || a.back() != sentinel || x.front() != sentinel ||
+                    x.back() != sentinel || y != old_y || z != old_z || w != old_w) {
+                    return fail("fused ADMM modified padding or a read-only input");
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+int main(int argc, char** argv) {
+    if (!hq_test_target(argc, argv)) return 77;
+    if (check_fused_admm_stationarity()) return 1;
     {
         const float nan = std::numeric_limits<float>::quiet_NaN();
         const float inf = std::numeric_limits<float>::infinity();

@@ -29,6 +29,9 @@ add_executable(alignment_probe alignment_probe.cpp)
 target_link_libraries(alignment_probe PRIVATE nss_cpu nss_workspace)
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
+  add_test(NAME test_review_gate_harness
+           COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_review_gate_harness.py")
+  set_tests_properties(test_review_gate_harness PROPERTIES LABELS "harness")
   add_test(NAME test_alignment_math
            COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/run_alignment_math.py"
                    --probe "$<TARGET_FILE:alignment_probe>"
@@ -68,6 +71,12 @@ nss_cc_flags(NSS_TEST_SVDVAL_FLAGS -ffp-contract=off)
 target_compile_options(test_twsc_svd_validation PRIVATE ${NSS_TEST_SVDVAL_FLAGS})
 target_link_libraries(test_twsc_svd_validation PRIVATE nss_cpu nss_workspace)
 add_test(NAME test_twsc_svd_validation COMMAND test_twsc_svd_validation)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
+  foreach(isa avx2 avx3)
+    add_test(NAME test_twsc_svd_validation_${isa} COMMAND test_twsc_svd_validation ${isa})
+    set_tests_properties(test_twsc_svd_validation_${isa} PROPERTIES SKIP_RETURN_CODE 77)
+  endforeach()
+endif()
 
 if(NSS_ENABLE_SVD_LIBRARY)
   add_executable(test_twsc_svd_library twsc_svd_library_test.cpp)
@@ -140,6 +149,15 @@ foreach(name mcwnnm twsc nlh ncsr lssc)
     add_test(NAME test_${name} COMMAND test_${name})
   endif()
 endforeach()
+
+if(NSS_HWY_X86)
+  foreach(isa avx2 avx3)
+    foreach(name common mcwnnm batch)
+      add_test(NAME test_${name}_${isa} COMMAND test_${name} ${isa})
+      set_tests_properties(test_${name}_${isa} PROPERTIES SKIP_RETURN_CODE 77)
+    endforeach()
+  endforeach()
+endif()
 
 add_executable(test_lssc_omp test_lssc_omp.cpp)
 target_link_libraries(test_lssc_omp PRIVATE nss_cpu nss_workspace)
@@ -241,6 +259,15 @@ if(VapourSynth_FOUND)
   target_compile_options(test_host_failure PRIVATE ${NSS_TEST_HOSTFAIL_FLAGS})
   endif()
   add_test(NAME test_host_failure COMMAND test_host_failure)
+  if(Python3_Interpreter_FOUND AND TARGET nss)
+    add_test(NAME test_full_image_plugin
+             COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_full_image_plugin.py"
+                     --plugin "$<TARGET_FILE:nss>"
+                     --out "${CMAKE_CURRENT_BINARY_DIR}/full-image-plugin")
+    set_tests_properties(test_full_image_plugin PROPERTIES
+      LABELS "plugin;release"
+      SKIP_RETURN_CODE 77)
+  endif()
 endif()
 
 add_executable(test_temporal_matcher test_temporal_matcher.cpp)

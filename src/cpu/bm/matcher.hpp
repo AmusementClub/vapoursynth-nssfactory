@@ -144,6 +144,12 @@ public:
         return size_;
     }
 
+    // Once full, a finite candidate strictly farther than this distance is
+    // rejected by add(); callers may skip constructing it. Equal distances
+    // still need add() for the ordinal tie rule.
+    bool full() const noexcept { return storage_ && capacity_ > 0 && size_ == capacity_; }
+    float worst_distance() const noexcept { return storage_[size_ - 1].dist; }
+
 private:
     Match* storage_ = nullptr;
     int capacity_ = 0;

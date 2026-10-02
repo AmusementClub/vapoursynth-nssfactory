@@ -86,6 +86,53 @@ void AdmmWeightedX(float* X, const float* Y, int ldy, const float* Z, const floa
     }
 }
 
+void AdmmDualAddWeightedX(float* A, float* X, const float* Y, int ldy, const float* Z, const float* w2, int m, int n,
+                          float rho_dual, float rho_x) {
+    if (!A || !X || !Y || !Z || !w2 || m < 1 || n < 1 || ldy < m || !(rho_dual > 0.f) ||
+        !is_finite_bits(rho_dual) || !(rho_x > 0.f) || !is_finite_bits(rho_x)) {
+        return;
+    }
+    const float rho2 = 0.5f * rho_x;
+    const float inv_rho = 1.f / rho_x;
+    const hn::ScalableTag<float> d;
+    const int N = static_cast<int>(hn::Lanes(d));
+    const auto vdual = hn::Set(d, rho_dual);
+    const auto vrho2 = hn::Set(d, rho2);
+    const auto vinv = hn::Set(d, inv_rho);
+    const auto one = hn::Set(d, 1.f);
+    int i = 0;
+    for (; i + N <= m; i += N) {
+        const auto w = hn::LoadU(d, w2 + i);
+        const auto reciprocal = hn::Div(one, hn::Add(w, vrho2));
+        for (int j = 0; j < n; ++j) {
+            const float* ycol = Y + j * ldy;
+            const float* zcol = Z + j * m;
+            float* acol = A + j * m;
+            float* xcol = X + j * m;
+            const auto xv = hn::LoadU(d, xcol + i);
+            const auto zv = hn::LoadU(d, zcol + i);
+            const auto av = hn::LoadU(d, acol + i);
+            const auto anew = hn::MulAdd(vdual, hn::Sub(xv, zv), av);
+            hn::StoreU(anew, d, acol + i);
+            const auto yv = hn::LoadU(d, ycol + i);
+            const auto num = hn::MulAdd(w, yv, hn::Mul(vrho2, hn::Sub(zv, hn::Mul(anew, vinv))));
+            hn::StoreU(hn::Mul(num, reciprocal), d, xcol + i);
+        }
+    }
+    for (; i < m; ++i) {
+        const float reciprocal = 1.f / (w2[i] + rho2);
+        for (int j = 0; j < n; ++j) {
+            const float yv = Y[j * ldy + i];
+            const float zv = Z[j * m + i];
+            float* acol = A + j * m;
+            float* xcol = X + j * m;
+            const float anew = acol[i] + rho_dual * (xcol[i] - zv);
+            acol[i] = anew;
+            xcol[i] = (w2[i] * yv + rho2 * (zv - anew * inv_rho)) * reciprocal;
+        }
+    }
+}
+
 }  // namespace HWY_NAMESPACE
 }  // namespace nss
 HWY_AFTER_NAMESPACE();
@@ -94,6 +141,7 @@ HWY_AFTER_NAMESPACE();
 namespace nss {
 HWY_EXPORT(ChannelWeightDiag);
 HWY_EXPORT(AdmmWeightedX);
+HWY_EXPORT(AdmmDualAddWeightedX);
 
 float channel_weight_diag(float* w2, int m, int nch, const float* sigma) {
     return HWY_DYNAMIC_DISPATCH(ChannelWeightDiag)(w2, m, nch, sigma);
@@ -102,6 +150,11 @@ float channel_weight_diag(float* w2, int m, int nch, const float* sigma) {
 void admm_weighted_x(float* X, const float* Y, int ldy, const float* Z, const float* A, const float* w2, int m, int n,
                      float rho) {
     HWY_DYNAMIC_DISPATCH(AdmmWeightedX)(X, Y, ldy, Z, A, w2, m, n, rho);
+}
+
+void admm_dual_add_weighted_x(float* A, float* X, const float* Y, int ldy, const float* Z, const float* w2, int m,
+                              int n, float rho_dual, float rho_x) {
+    HWY_DYNAMIC_DISPATCH(AdmmDualAddWeightedX)(A, X, Y, ldy, Z, w2, m, n, rho_dual, rho_x);
 }
 
 }  // namespace nss

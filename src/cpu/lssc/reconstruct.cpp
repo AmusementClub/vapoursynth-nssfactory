@@ -81,7 +81,7 @@ void LsscGroupSoft(float* A, int atoms, int n, int lda_a, float lambda) {
 }
 
 static bool LsscUpdateGroupSoft(float* A, const float* G, int atoms, int n, float mu, float lambda,
-                                float absolute_limit) {
+                                float absolute_limit, int* active, int* active_count) {
     const float lam = lambda < 0.f ? 0.f : lambda;
     const hn::ScalableTag<float> d;
     const int N = static_cast<int>(hn::Lanes(d));
@@ -129,6 +129,12 @@ static bool LsscUpdateGroupSoft(float* A, const float* G, int atoms, int n, floa
         const float nrm = std::sqrt(nrm2[s]);
         scale[s] = (nrm <= lam) ? 0.f : (1.f - lam / nrm);
     }
+    // A zero scale makes the whole atom row exactly (signed) zero below.
+    int count = 0;
+    for (int i = 0; i < atoms; ++i) {
+        if (scale[i] != 0.f) active[count++] = i;
+    }
+    *active_count = count;
 
     bool exploded = false;
     const auto vlim = hn::Set(d, absolute_limit);
@@ -206,27 +212,65 @@ static void LsscReconstructImpl(float* patches, int m, int n, int lda, const flo
     constexpr int kIters = 16;
     constexpr float kALim = 1.0e4f;
     bool exploded = false;
-    for (int it = 0; it < kIters; ++it) {
-        lssc_gemm_nn(m, n, atoms, dictionary, ldd, A, atoms, R, m, gemm_work, gemm_work_floats, avx2_gemm);
-        for (int j = 0; j < n; ++j) {
-            const float* yj = patches + static_cast<std::size_t>(j) * static_cast<std::size_t>(lda);
-            float* rj = R + static_cast<std::size_t>(j) * static_cast<std::size_t>(m);
-            int i = 0;
-            for (; i + N <= m; i += N) {
-                hn::StoreU(hn::Sub(hn::LoadU(d, yj + i), hn::LoadU(d, rj + i)), d, rj + i);
-            }
-            for (; i < m; ++i) {
-                rj[i] = yj[i] - rj[i];
-            }
+    // Group soft-thresholding zeroes whole atom rows of A. D*A then only
+    // needs the active atoms: the GEMM accumulates each output along k with
+    // one FMA chain, and skipping exact zero coefficients leaves every partial
+    // sum unchanged (up to the sign of an exact zero result).
+    nss::ResourceVector<int> active(static_cast<std::size_t>(atoms));
+    nss::ResourceVector<float> packed_dictionary;
+    int active_count = atoms;
+    auto product = [&]() {
+        if (active_count * 4 >= atoms * 3) {
+            lssc_gemm_nn(m, n, atoms, dictionary, ldd, A, atoms, R, m, gemm_work, gemm_work_floats, avx2_gemm);
+            return;
         }
-        lssc_gemm_nn(atoms, n, m, transpose, atoms, R, m, G, atoms, gemm_work, gemm_work_floats, avx2_gemm);
-        exploded = LsscUpdateGroupSoft(A, G, atoms, n, mu, lam, kALim);
+        if (packed_dictionary.empty()) {
+            packed_dictionary.resize(static_cast<std::size_t>(m) * static_cast<std::size_t>(atoms));
+        }
+        float* dact = packed_dictionary.data();
+        float* aact = G;  // G is dead until the following D^T*R product.
+        for (int t = 0; t < active_count; ++t) {
+            const int atom = active[t];
+            std::memcpy(dact + static_cast<std::size_t>(t) * m, dictionary + static_cast<std::size_t>(atom) * ldd,
+                        static_cast<std::size_t>(m) * sizeof(float));
+        }
+        for (int j = 0; j < n; ++j) {
+            const float* aj = A + static_cast<std::size_t>(j) * atoms;
+            float* bj = aact + static_cast<std::size_t>(j) * active_count;
+            for (int t = 0; t < active_count; ++t) bj[t] = aj[active[t]];
+        }
+        lssc_gemm_nn(m, n, active_count, dact, m, aact, active_count > 0 ? active_count : 1, R, m, gemm_work,
+                     gemm_work_floats, avx2_gemm);
+    };
+    for (int it = 0; it < kIters; ++it) {
+        // A starts at zero, so the first residual is the centered input.
+        // Avoid the D*0 product and the following full residual write/read.
+        if (it == 0) {
+            lssc_gemm_nn(atoms, n, m, transpose, atoms, patches, lda, G, atoms, gemm_work,
+                         gemm_work_floats, avx2_gemm);
+        } else {
+            product();
+            for (int j = 0; j < n; ++j) {
+                const float* yj = patches + static_cast<std::size_t>(j) * static_cast<std::size_t>(lda);
+                float* rj = R + static_cast<std::size_t>(j) * static_cast<std::size_t>(m);
+                int i = 0;
+                for (; i + N <= m; i += N) {
+                    hn::StoreU(hn::Sub(hn::LoadU(d, yj + i), hn::LoadU(d, rj + i)), d, rj + i);
+                }
+                for (; i < m; ++i) {
+                    rj[i] = yj[i] - rj[i];
+                }
+            }
+            lssc_gemm_nn(atoms, n, m, transpose, atoms, R, m, G, atoms, gemm_work, gemm_work_floats, avx2_gemm);
+        }
+        exploded = LsscUpdateGroupSoft(A, G, atoms, n, mu, lam, kALim, active.data(), &active_count);
         if (exploded) {
             std::memset(A, 0, static_cast<std::size_t>(atoms) * static_cast<std::size_t>(n) * sizeof(float));
+            active_count = 0;
             break;
         }
     }
-    lssc_gemm_nn(m, n, atoms, dictionary, ldd, A, atoms, R, m, gemm_work, gemm_work_floats, avx2_gemm);
+    product();
     const auto vlim = hn::Set(d, 8.f);
     for (int j = 0; j < n; ++j) {
         float* yj = patches + static_cast<std::size_t>(j) * static_cast<std::size_t>(lda);

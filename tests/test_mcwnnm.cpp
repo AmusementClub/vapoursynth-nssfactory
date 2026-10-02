@@ -3,6 +3,7 @@
 #include "nss/cpu_common.hpp"
 #include "nss/cpu_mcwnnm.hpp"
 #include "nss/params.hpp"
+#include "hq_test_target.hpp"
 #include "../src/cpu/mcwnnm/gram_guard.hpp"
 #include "../src/cpu/wnnm/jacobi8.hpp"
 
@@ -17,7 +18,50 @@ static int fail(const char* msg) {
     return 1;
 }
 
-int main() {
+static int check_unshrunk_single_column() {
+    // With one column and sv_start_k=1, the spectral step is the identity.
+    // A stays zero and X/Y = 1 - product(rho/2 / (w + rho/2)). This closed
+    // form checks iteration scheduling, next-rho selection, and its cap.
+    for (int m : {3, 27, 48, 192, 243}) {
+        for (int iterations : {1, 2, 10}) {
+            for (float mu : {1.f, 1.001f, 4.f}) {
+                const int lda = m + 5;
+                constexpr float sentinel = -123.f;
+                std::vector<float> input(lda, sentinel);
+                for (int i = 0; i < m; ++i) input[i] = float((i * 7) % 29 - 14) / 16.f;
+                const auto original = input;
+                const float sigma[] = {0.01f, 0.03f, 0.07f};
+                const int need = nss::mcwnnm_admm_work_floats(m, 1);
+                std::vector<float> work(need);
+                const int kept = nss::mcwnnm_admm(input.data(), m, 1, lda, 3, sigma, iterations, 3.f, mu, 1,
+                                                 work.data(), need);
+                if (kept != 1) return fail("single-column ADMM unexpectedly discarded the protected component");
+                for (int i = 0; i < m; ++i) {
+                    const double relative_sigma = double(sigma[0]) / sigma[i / (m / 3)];
+                    const double w = relative_sigma * relative_sigma;
+                    double remainder = 1;
+                    float rho = 3.f;
+                    for (int it = 0; it < iterations; ++it) {
+                        remainder *= double(rho) * 0.5 / (w + double(rho) * 0.5);
+                        rho = std::min(1e4f, mu * rho);
+                    }
+                    const double expected = original[i] * (1 - remainder);
+                    if (!std::isfinite(input[i]) || std::abs(input[i] - expected) > 2e-5) {
+                        return fail("ADMM iteration schedule disagrees with the closed-form unshrunk solution");
+                    }
+                }
+                for (int i = m; i < lda; ++i) {
+                    if (input[i] != sentinel) return fail("single-column ADMM modified padding");
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+int main(int argc, char** argv) {
+    if (!hq_test_target(argc, argv)) return 77;
+    if (check_unshrunk_single_column()) return 1;
     // A negative eigenvalue has a positive SVD magnitude. Check the actual
     // factor-sign guard with rotated symmetric matrices at three scales.
     for (float scale : {1e-5f, 1.f, 1e5f}) {

@@ -23,6 +23,9 @@ int svd_economy_8_batch_hwy(int m, const float* const* A, const int* lda, float*
 // U/S-only variant for PCA consumers that never read the right singular vectors.
 int svd_economy_8_batch_u_hwy(int m, const float* const* A, const int* lda, float* const* U, const int* ldu,
                               float* const* S, int count);
+// Singular values and V^T only (no U); same QR/Jacobi as the batches above.
+int svd_economy_8_batch_sv_hwy(int m, const float* const* A, const int* lda, float* const* S, float* const* Vt,
+                               const int* ldvt, int count);
 #if defined(__GNUC__) || defined(__clang__)
 __attribute__((visibility("hidden")))
 #endif

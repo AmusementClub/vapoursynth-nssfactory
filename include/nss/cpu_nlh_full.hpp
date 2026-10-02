@@ -43,4 +43,9 @@ void nlh_filter_full_batch(NlhFullBatchItem* items, int count);
 // Two-sided normalized Haar. The optimized q4/n16 implementation is shared
 // with the public 1D transform; every other power-of-two shape is supported.
 void nlh_haar2d(float* matrix, int q, int n, bool inverse);
+// Batched forms: count independent q*n matrices stored back to back, each
+// processed with the exact single-matrix operation sequence.
+void nlh_haar2d_batch(float* matrices, int count, int q, int n, bool inverse);
+void nlh_shrink_full_batch(float* matrices, const float* references, int count, int q, int n, double threshold,
+                           double noise, int wiener_iterations, bool wiener);
 } // namespace nss

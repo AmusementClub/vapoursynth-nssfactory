@@ -69,6 +69,14 @@ void NlhShrinkFull(float* matrix, const float* reference, int q, int n, double t
     }
 }
 
+void NlhShrinkFullBatch(float* matrices, const float* references, int count, int q, int n, double threshold,
+                        double noise, int wiener_iterations, bool wiener) {
+    const std::size_t size = static_cast<std::size_t>(q) * static_cast<std::size_t>(n);
+    for (int i = 0; i < count; ++i)
+        NlhShrinkFull(matrices + i * size, wiener ? references + i * size : nullptr, q, n, threshold, noise,
+                      wiener_iterations, wiener);
+}
+
 }  // namespace HWY_NAMESPACE
 }  // namespace nss
 HWY_AFTER_NAMESPACE();
@@ -76,10 +84,17 @@ HWY_AFTER_NAMESPACE();
 #if HWY_ONCE
 namespace nss {
 HWY_EXPORT(NlhShrinkFull);
+HWY_EXPORT(NlhShrinkFullBatch);
 
 void nlh_shrink_full(float* matrix, const float* reference, int q, int n, double threshold, double noise,
                      int wiener_iterations, bool wiener) {
     HWY_DYNAMIC_DISPATCH(NlhShrinkFull)(matrix, reference, q, n, threshold, noise, wiener_iterations, wiener);
+}
+
+void nlh_shrink_full_batch(float* matrices, const float* references, int count, int q, int n, double threshold,
+                           double noise, int wiener_iterations, bool wiener) {
+    HWY_DYNAMIC_DISPATCH(NlhShrinkFullBatch)(matrices, references, count, q, n, threshold, noise,
+                                             wiener_iterations, wiener);
 }
 
 }  // namespace nss

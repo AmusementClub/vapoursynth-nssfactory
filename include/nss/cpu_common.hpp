@@ -46,6 +46,18 @@ float channel_weight_diag(float* w2, int m, int nch, const float* sigma);
 void admm_weighted_x(float* X, const float* Y, int ldy, const float* Z, const float* A, const float* w2, int m, int n,
                      float rho);
 
+// Update A with the current ADMM dual step and overwrite X with the next
+// weighted-X solution in one column-major pass. rho_dual is the current
+// iteration's penalty; rho_x is the already validated next penalty.
+//
+// Aliasing contract: A and X are disjoint writable m*n matrices. Y, Z and
+// w2 must not overlap either writable region; Y is read with ldy >= m and Z
+// is packed with leading dimension m. Overlapping inputs are unsupported, so
+// callers must provide separate workspace slices rather than relying on a
+// particular vector/tail ordering.
+void admm_dual_add_weighted_x(float* A, float* X, const float* Y, int ldy, const float* Z, const float* w2, int m,
+                              int n, float rho_dual, float rho_x);
+
 float dot_n(const float* a, const float* b, int n);
 float ssd_vec(const float* a, const float* b, int n);
 void axpy_n(float* y, const float* x, float a, int n);
