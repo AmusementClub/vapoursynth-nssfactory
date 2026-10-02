@@ -3,6 +3,8 @@
 
 #include "nss/cpu_twsc_full.hpp"
 #include "nss/params.hpp"
+#include "nss/params/nlh.hpp"
+#include "nss/params/twsc.hpp"
 #include <array>
 #include <span>
 
@@ -27,21 +29,6 @@ using ImageSequence = ResourceVector<ImageFrame>;
 struct ImageSearch {
     int block = 8, step = 1, group = 16, window = 40;
     int radius = 0, ps_num = 2, ps_range = 4;
-};
-struct TwscImageOptions {
-    int block = kTwscDefaultBlock, group = kTwscDefaultGroup, iterations = kTwscDefaultIters;
-    int step = kTwscDefaultStep, window = 60, radius = 0, ps_num = 2, ps_range = 4;
-    double lambda2 = 1, delta = 0;
-    TwscSolverOptions solver;
-};
-struct NlhImageOptions {
-    // Zero integer fields and exactly -1 coefficient fields request a preset.
-    // Public parsing permits these sentinels only through omitted arguments.
-    std::array<int, 2> block{0, 0}, step{0, 0}, group{0, 0}, q{0, 0}, window{0, 0};
-    int basic_iterations = 0, wiener_iterations = 0;
-    int radius = 0, ps_num = 2, ps_range = 4;
-    double basic_mix = -1, hard_strength = -1, wiener_sigma_scale = -1;
-    bool real_noise = false;
 };
 struct ImageFilterStats {
     std::uint64_t groups = 0, max_iteration_groups = 0, double_svd_groups = 0;

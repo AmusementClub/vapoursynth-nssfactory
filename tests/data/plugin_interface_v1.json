@@ -10315,6 +10315,95 @@
     "width": 48
    }
   },
+  "NLH|GRAYS|combo:basic_iters=2,lambda_basic=0.5,sigma=3,wiener_iters=3": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|combo:block_size=[16, 16],sigma=3": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|combo:block_size=[4, 8],q=[2, 4],sigma=3": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|combo:block_step=[8, 2],sigma=3": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|combo:bm_range=3,search_window=[9, 9],sigma=3": {
+   "error": "nss: bm_range and search_window are mutually exclusive"
+  },
+  "NLH|GRAYS|combo:group_size=[4, 8],ps_num=8,sigma=3": {
+   "error": "nss: ps_num outside supported range"
+  },
+  "NLH|GRAYS|combo:noise_model='awgn'": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|combo:noise_model='awgn',sigma=60": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|combo:noise_model='real',sigma=3": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|combo:ps_num=3,radius=1,sigma=3": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 240,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|combo:sigma=0": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|combo:sigma=60": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|combo:sigma=[3, 0, 3]": {
+   "error": "nss: sigma must contain one value per selected input plane (last value broadcasts)"
+  },
   "NLH|GRAYS|defaults": {
    "ok": {
     "format": "GrayS",
@@ -10956,6 +11045,25 @@
     "format": "GrayS",
     "frames": 4,
     "height": 1520,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rclip-mismatch": {
+   "error": "nss: rclip must match clip"
+  },
+  "NLH|GRAYS|rclip-self:[('sigma', 3)]": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rclip-self:[]": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
     "width": 48
    }
   },
@@ -11604,6 +11712,95 @@
     "width": 48
    }
   },
+  "NLH|RGBS|combo:basic_iters=2,lambda_basic=0.5,sigma=3,wiener_iters=3": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|combo:block_size=[16, 16],sigma=3": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|combo:block_size=[4, 8],q=[2, 4],sigma=3": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|combo:block_step=[8, 2],sigma=3": {
+   "error": "nss.NLH: invalid resolved stage shape"
+  },
+  "NLH|RGBS|combo:bm_range=3,search_window=[9, 9],sigma=3": {
+   "error": "nss: bm_range and search_window are mutually exclusive"
+  },
+  "NLH|RGBS|combo:group_size=[4, 8],ps_num=8,sigma=3": {
+   "error": "nss: ps_num outside supported range"
+  },
+  "NLH|RGBS|combo:noise_model='awgn'": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|combo:noise_model='awgn',sigma=60": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|combo:noise_model='real',sigma=3": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|combo:ps_num=3,radius=1,sigma=3": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 240,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|combo:sigma=0": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|combo:sigma=60": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|combo:sigma=[3, 0, 3]": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
   "NLH|RGBS|defaults": {
    "ok": {
     "format": "RGBS",
@@ -12245,6 +12442,25 @@
     "format": "RGBS",
     "frames": 4,
     "height": 1520,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rclip-mismatch": {
+   "error": "nss: rclip must match clip"
+  },
+  "NLH|RGBS|rclip-self:[('sigma', 3)]": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rclip-self:[]": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
     "width": 48
    }
   },
@@ -12898,6 +13114,95 @@
     "width": 48
    }
   },
+  "NLH|YUV420PS|combo:basic_iters=2,lambda_basic=0.5,sigma=3,wiener_iters=3": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|combo:block_size=[16, 16],sigma=3": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|combo:block_size=[4, 8],q=[2, 4],sigma=3": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|combo:block_step=[8, 2],sigma=3": {
+   "error": "nss.NLH: invalid resolved stage shape"
+  },
+  "NLH|YUV420PS|combo:bm_range=3,search_window=[9, 9],sigma=3": {
+   "error": "nss: bm_range and search_window are mutually exclusive"
+  },
+  "NLH|YUV420PS|combo:group_size=[4, 8],ps_num=8,sigma=3": {
+   "error": "nss: ps_num outside supported range"
+  },
+  "NLH|YUV420PS|combo:noise_model='awgn'": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|combo:noise_model='awgn',sigma=60": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|combo:noise_model='real',sigma=3": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|combo:ps_num=3,radius=1,sigma=3": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 240,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|combo:sigma=0": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|combo:sigma=60": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|combo:sigma=[3, 0, 3]": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
   "NLH|YUV420PS|defaults": {
    "ok": {
     "format": "YUV420PS",
@@ -13539,6 +13844,25 @@
     "format": "YUV420PS",
     "frames": 4,
     "height": 1520,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rclip-mismatch": {
+   "error": "nss: rclip must match clip"
+  },
+  "NLH|YUV420PS|rclip-self:[('sigma', 3)]": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rclip-self:[]": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
     "width": 48
    }
   },
@@ -15949,6 +16273,57 @@
     "width": 48
    }
   },
+  "TWSC|GRAYS|combo:block_size=4": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|combo:block_size=4,block_step=8": {
+   "error": "nss: block_step outside supported range"
+  },
+  "TWSC|GRAYS|combo:bm_range=3,search_window=9": {
+   "error": "nss: bm_range and search_window are mutually exclusive"
+  },
+  "TWSC|GRAYS|combo:estimate_sigma=1,radius=1": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 240,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|combo:estimate_sigma=1,sigma=3": {
+   "error": "nss.TWSC: estimate_sigma and explicit sigma are mutually exclusive"
+  },
+  "TWSC|GRAYS|combo:group_size=1": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|combo:group_size=1,ps_num=2": {
+   "error": "nss.TWSC: ps_num exceeds resolved group_size"
+  },
+  "TWSC|GRAYS|combo:group_size=4,ps_num=8": {
+   "error": "nss.TWSC: ps_num exceeds resolved group_size"
+  },
+  "TWSC|GRAYS|combo:sigma=1e-45": {
+   "error": "nss: positive sigma is not representable after float32 normalization"
+  },
+  "TWSC|GRAYS|combo:sigma=[3, 0, 3]": {
+   "error": "nss: sigma must contain one value per selected input plane (last value broadcasts)"
+  },
+  "TWSC|GRAYS|combo:sigma=[3, 0]": {
+   "error": "nss: sigma must contain one value per selected input plane (last value broadcasts)"
+  },
+  "TWSC|GRAYS|combo:sigma=[3, 2, 1, 0]": {
+   "error": "nss: sigma must contain one value per selected input plane (last value broadcasts)"
+  },
   "TWSC|GRAYS|defaults": {
    "ok": {
     "format": "GrayS",
@@ -16685,6 +17060,25 @@
     "width": 48
    }
   },
+  "TWSC|GRAYS|rclip-mismatch": {
+   "error": "nss: rclip must match clip"
+  },
+  "TWSC|GRAYS|rclip-self:[('sigma', 3)]": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|rclip-self:[]": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
   "TWSC|GRAYS|rho=-1.0": {
    "error": "nss: invalid rho"
   },
@@ -17251,6 +17645,67 @@
     "height": 40,
     "width": 48
    }
+  },
+  "TWSC|RGBS|combo:block_size=4": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|combo:block_size=4,block_step=8": {
+   "error": "nss: block_step outside supported range"
+  },
+  "TWSC|RGBS|combo:bm_range=3,search_window=9": {
+   "error": "nss: bm_range and search_window are mutually exclusive"
+  },
+  "TWSC|RGBS|combo:estimate_sigma=1,radius=1": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 240,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|combo:estimate_sigma=1,sigma=3": {
+   "error": "nss.TWSC: estimate_sigma and explicit sigma are mutually exclusive"
+  },
+  "TWSC|RGBS|combo:group_size=1": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|combo:group_size=1,ps_num=2": {
+   "error": "nss.TWSC: ps_num exceeds resolved group_size"
+  },
+  "TWSC|RGBS|combo:group_size=4,ps_num=8": {
+   "error": "nss.TWSC: ps_num exceeds resolved group_size"
+  },
+  "TWSC|RGBS|combo:sigma=1e-45": {
+   "error": "nss: positive sigma is not representable after float32 normalization"
+  },
+  "TWSC|RGBS|combo:sigma=[3, 0, 3]": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|combo:sigma=[3, 0]": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|combo:sigma=[3, 2, 1, 0]": {
+   "error": "nss: sigma must contain one value per selected input plane (last value broadcasts)"
   },
   "TWSC|RGBS|defaults": {
    "ok": {
@@ -17988,6 +18443,25 @@
     "width": 48
    }
   },
+  "TWSC|RGBS|rclip-mismatch": {
+   "error": "nss: rclip must match clip"
+  },
+  "TWSC|RGBS|rclip-self:[('sigma', 3)]": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|rclip-self:[]": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
   "TWSC|RGBS|rho=-1.0": {
    "error": "nss: invalid rho"
   },
@@ -18559,6 +19033,67 @@
     "height": 40,
     "width": 48
    }
+  },
+  "TWSC|YUV420PS|combo:block_size=4": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|combo:block_size=4,block_step=8": {
+   "error": "nss: block_step outside supported range"
+  },
+  "TWSC|YUV420PS|combo:bm_range=3,search_window=9": {
+   "error": "nss: bm_range and search_window are mutually exclusive"
+  },
+  "TWSC|YUV420PS|combo:estimate_sigma=1,radius=1": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 240,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|combo:estimate_sigma=1,sigma=3": {
+   "error": "nss.TWSC: estimate_sigma and explicit sigma are mutually exclusive"
+  },
+  "TWSC|YUV420PS|combo:group_size=1": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|combo:group_size=1,ps_num=2": {
+   "error": "nss.TWSC: ps_num exceeds resolved group_size"
+  },
+  "TWSC|YUV420PS|combo:group_size=4,ps_num=8": {
+   "error": "nss.TWSC: ps_num exceeds resolved group_size"
+  },
+  "TWSC|YUV420PS|combo:sigma=1e-45": {
+   "error": "nss: positive sigma is not representable after float32 normalization"
+  },
+  "TWSC|YUV420PS|combo:sigma=[3, 0, 3]": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|combo:sigma=[3, 0]": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|combo:sigma=[3, 2, 1, 0]": {
+   "error": "nss: sigma must contain one value per selected input plane (last value broadcasts)"
   },
   "TWSC|YUV420PS|defaults": {
    "ok": {
@@ -19293,6 +19828,25 @@
     "format": "YUV420PS",
     "frames": 4,
     "height": 1520,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rclip-mismatch": {
+   "error": "nss: rclip must match clip"
+  },
+  "TWSC|YUV420PS|rclip-self:[('sigma', 3)]": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rclip-self:[]": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
     "width": 48
    }
   },

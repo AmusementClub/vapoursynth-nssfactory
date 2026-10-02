@@ -163,40 +163,7 @@ NlhImageOptions nlh_resolve_options(std::span<const ImageFrame> input, int plane
         for (const auto& frame : input) if (frame.sigma[c] > 0)
             available = std::min({available, frame.planes[c].width, frame.planes[c].height});
     }
-    if (available < 2) throw std::invalid_argument("nss: selected plane is smaller than block_size");
-    const auto& preset = requested.real_noise ? nlh_detail::kReal :
-                         sigma <= 50 ? nlh_detail::kAwgnLow : nlh_detail::kAwgnHigh;
-    auto o = requested;
-    for (int s = 0; s < 2; ++s) {
-        o.block[s] = o.block[s] ? o.block[s] : std::min(preset.block[s], available);
-        if (o.block[s] < 2 || o.block[s] > 16 || o.block[s] > available)
-            throw std::invalid_argument("nss.NLH: invalid resolved block_size");
-        o.step[s] = o.step[s] ? o.step[s] : std::min(preset.step[s], o.block[s]);
-        if (!o.q[s]) {
-            o.q[s] = preset.q[s];
-            while (o.q[s] > o.block[s] * o.block[s]) o.q[s] /= 2;
-        }
-        o.group[s] = o.group[s] ? o.group[s] : preset.group[s];
-        o.window[s] = o.window[s] ? o.window[s] : preset.window[s];
-        if (o.q[s] < 2 || o.q[s] > 16 || (o.q[s] & (o.q[s] - 1)) ||
-            o.q[s] > o.block[s] * o.block[s] || o.group[s] < 2 || o.group[s] > 64 ||
-            (o.group[s] & (o.group[s] - 1)) || o.step[s] < 1 || o.step[s] > o.block[s] ||
-            o.window[s] < 1 || o.window[s] > 129)
-            throw std::invalid_argument("nss.NLH: invalid resolved stage shape");
-    }
-    o.basic_iterations = o.basic_iterations ? o.basic_iterations : preset.basic_iterations;
-    o.wiener_iterations = o.wiener_iterations ? o.wiener_iterations : preset.wiener_iterations;
-    if (o.basic_mix == -1) o.basic_mix = preset.basic_mix;
-    if (o.hard_strength == -1) o.hard_strength = preset.hard_strength;
-    if (o.wiener_sigma_scale == -1) o.wiener_sigma_scale = preset.wiener_sigma_scale;
-    if (o.basic_iterations < 1 || o.basic_iterations > 64 || o.wiener_iterations < 1 || o.wiener_iterations > 64 ||
-        !(o.basic_mix >= 0 && o.basic_mix <= 1) || !std::isfinite(o.basic_mix) ||
-        !(o.hard_strength >= 0) || !std::isfinite(o.hard_strength) ||
-        !(o.wiener_sigma_scale >= 0) || !std::isfinite(o.wiener_sigma_scale) ||
-        o.radius < 0 || o.radius > 16 || o.ps_num < 1 || o.ps_num > std::min(o.group[0], o.group[1]) ||
-        o.ps_range < 1 || o.ps_range > 64)
-        throw std::invalid_argument("nss.NLH: invalid resolved iteration, coefficient or temporal parameters");
-    return o;
+    return nlh_resolve_preset(sigma, available, requested);
 }
 
 ImageContributions nlh_image(const ImageSequence& input, const ImageSequence* reference,

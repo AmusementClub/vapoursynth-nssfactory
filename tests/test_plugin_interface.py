@@ -97,7 +97,23 @@ def main():
                  for extra in ({}, *({k: v} for k in ("rolling_chunk", "rolling_cache_chunks", "rolling_cache_limit")
                                      for v in (0, 1, 4, 64, 65)),
                                dict(rolling_cache_chunks=2, rolling_cache_limit=2))],
+        "TWSC": [dict(sigma=3, estimate_sigma=1), dict(bm_range=3, search_window=9), dict(block_size=4),
+                 dict(block_size=4, block_step=8), dict(group_size=1), dict(group_size=1, ps_num=2),
+                 dict(group_size=4, ps_num=8), dict(estimate_sigma=1, radius=1), dict(sigma=[3, 0, 3]),
+                 dict(sigma=[3, 0]), dict(sigma=[3, 2, 1, 0]), dict(sigma=1e-45)],
+        "NLH": [dict(sigma=[3, 0, 3]), dict(sigma=60), dict(sigma=60, noise_model="awgn"),
+                dict(sigma=3, noise_model="real"), dict(sigma=3, block_size=[4, 8], q=[2, 4]),
+                dict(sigma=3, block_size=[16, 16]), dict(sigma=3, block_step=[8, 2]),
+                dict(sigma=3, bm_range=3, search_window=[9, 9]), dict(sigma=3, group_size=[4, 8], ps_num=8),
+                dict(sigma=3, radius=1, ps_num=3), dict(sigma=0), dict(noise_model="awgn"),
+                dict(sigma=3, basic_iters=2, wiener_iters=3, lambda_basic=0.5)],
     }
+    for name in ("TWSC", "NLH"):
+        for fmt, clip in clips.items():
+            for kwargs in ({}, dict(sigma=3)):
+                cases[f"{name}|{fmt}|rclip-self:{sorted(kwargs.items())}"] = outcome(name, clip, dict(kwargs, rclip=clip))
+            other = core.std.BlankClip(clip, width=clip.width - 8)
+            cases[f"{name}|{fmt}|rclip-mismatch"] = outcome(name, clip, dict(rclip=other))
     for name, variants in combos.items():
         for fmt, clip in clips.items():
             for kwargs in variants:
