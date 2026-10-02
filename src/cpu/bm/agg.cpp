@@ -41,6 +41,19 @@ void AggFinish(float* dst, const float* num, const float* den, const float* src,
     }
 }
 
+// Opaque copy: under -ffast-math the compiler may fold
+// IfThenElse(den == 1, num, num / den) into the division (x / 1 == x) and
+// then lower that division to an approximate reciprocal (AVX2 vrcpps + one
+// Newton step is not exact at den == 1). Hiding the quotient keeps the
+// identity select intact.
+template <class V>
+HWY_INLINE V OpaqueQuotient(V v) {
+#if (defined(__GNUC__) || defined(__clang__)) && HWY_ARCH_X86 && HWY_TARGET <= HWY_SSE2
+    __asm__("" : "+v"(v.raw));
+#endif
+    return v;
+}
+
 template <int kSlices>
 void VAggReduceImpl(float* dst, const float* fat, const float* src, int width, int height, int dstride,
                     int fstride, int sstride, int radius) {
@@ -175,7 +188,7 @@ void VAggTarget(float* dst, const float* const* nums, const float* const* dens, 
             auto safe=hn::IfThenElse(ok,den,hn::Set(d,1.f));
             // Disabled planes contribute one exact identity slice. Preserve
             // that identity even when the ISA's division uses a reciprocal.
-            auto normalized=hn::IfThenElse(hn::Eq(den,hn::Set(d,1.f)),num,hn::Div(num,safe));
+            auto normalized=hn::IfThenElse(hn::Eq(den,hn::Set(d,1.f)),num,OpaqueQuotient(hn::Div(num,safe)));
             hn::StoreU(hn::IfThenElse(ok,normalized,hn::LoadU(d,src+y*sstride+x)),d,dst+y*dstride+x);
         }
         for (;x<width;++x) {
