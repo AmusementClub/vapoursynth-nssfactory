@@ -76,8 +76,12 @@ int image_match(const float* const* guides, int frames, int nch, int width, int 
         for (int i = 0; i < count; ++i) {
             const int x = xlo + i;
             if (x == x0 && y == y0) continue;
-            if (!std::isfinite(dist_row[i])) throw std::runtime_error("nss: unrepresentable patch distance");
-            spatial.add(Match{x, y, t0, dist_row[i], std::uint32_t(1 + y * width + x)});
+            const float dist = dist_row[i];
+            if (!std::isfinite(dist)) throw std::runtime_error("nss: unrepresentable patch distance");
+            // Retained distances are finite, so a strictly larger finite
+            // distance is exactly what SortedTopK::add would reject.
+            if (spatial.full() && dist > spatial.worst_distance()) continue;
+            spatial.add(Match{x, y, t0, dist, std::uint32_t(1 + y * width + x)});
         }
     }
 #endif
