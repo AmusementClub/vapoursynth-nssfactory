@@ -611,6 +611,7 @@ if(VapourSynth_FOUND)
   add_library(nss_frontend STATIC
     src/frontend/validate.cpp
     src/frontend/wnnm_args.cpp
+    src/frontend/ncsr_args.cpp
   )
   target_include_directories(nss_frontend PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
