@@ -8,10 +8,18 @@ output format/size/length) or the exact error text. Creation only: no frames
 are requested. Use --write to regenerate the golden file after an intended
 interface change; otherwise the run must match it exactly.
 
+Another backend (D14) is checked against the same golden with --namespace:
+every signature must be the CPU signature followed by exactly the
+--backend-args tail, error text must match with the "nss." prefix replaced,
+and filters listed in --expect-missing may be absent (their cases, and
+VAggregate's when BM3D is absent, are skipped).
+
 usage: test_plugin_interface.py --plugin PATH [--golden FILE] [--write]
+                                [--namespace NS --backend-args A,B --expect-missing F1,F2]
 """
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -48,12 +56,22 @@ def main():
     parser.add_argument("--plugin", required=True)
     parser.add_argument("--golden", default=str(GOLDEN))
     parser.add_argument("--write", action="store_true")
+    parser.add_argument("--namespace", default="nss")
+    parser.add_argument("--backend-args", default="")
+    parser.add_argument("--expect-missing", default="")
     args = parser.parse_args()
+    ns = args.namespace
+    backend_args = [a for a in args.backend_args.split(",") if a]
+    expect_missing = {f for f in args.expect_missing.split(",") if f}
+    if args.write and ns != "nss":
+        raise SystemExit("--write only regenerates the CPU golden")
 
     core = vs.core
     core.num_threads = 1
-    core.std.LoadPlugin(path=str(Path(args.plugin).resolve()))
-    functions = {f.name: f.signature for f in core.nss.functions()}
+    if not hasattr(core, ns):
+        core.std.LoadPlugin(path=str(Path(args.plugin).resolve()))
+    plugin = getattr(core, ns)
+    functions = {f.name: f.signature for f in plugin.functions()}
 
     clips = {
         "GRAYS": core.std.BlankClip(width=48, height=40, length=4, format=vs.GRAYS, color=0.5),
@@ -65,9 +83,25 @@ def main():
         if name == "VAggregate":
             radius = kwargs.get("radius", 1)
             radius = radius if isinstance(radius, int) and 0 <= radius <= 16 else 1
-            base = core.nss.BM3D(clip, radius=radius) if radius else core.nss.BM3D(clip)
-            return core.nss.VAggregate(base, clip, **kwargs)
-        return getattr(core.nss, name)(clip, **kwargs)
+            base = plugin.BM3D(clip, radius=radius) if radius else plugin.BM3D(clip)
+            return plugin.VAggregate(base, clip, **kwargs)
+        return getattr(plugin, name)(clip, **kwargs)
+
+    def cpu_signature(name):
+        """Strip and check the backend-only tail so probes cover the shared arguments only."""
+        signature = functions[name]
+        if ns == "nss" or name in ("Version", "Backend"):
+            return signature
+        items = [item for item in signature.split(";") if item]
+        tail = [item.split(":")[0] for item in items[len(items) - len(backend_args):]] if backend_args else []
+        if tail != backend_args:
+            raise SystemExit(f"{ns}.{name}: signature tail {tail} != --backend-args {backend_args}")
+        return "".join(item + ";" for item in items[:len(items) - len(backend_args)])
+
+    shared = {name: cpu_signature(name) for name in functions}
+    skipped = set(expect_missing)
+    if "BM3D" in skipped:
+        skipped.add("VAggregate")
 
     def outcome(name, clip, kwargs):
         try:
@@ -76,12 +110,12 @@ def main():
             return dict(error=str(error))
 
     cases = {}
-    for name in sorted(functions):
-        if name in ("Version", "Backend"):
+    for name in sorted(shared):
+        if name in ("Version", "Backend") or name in skipped:
             continue
         for fmt, clip in clips.items():
             cases[f"{name}|{fmt}|defaults"] = outcome(name, clip, {})
-            for arg, kind, is_array, optional in parse_signature(functions[name]):
+            for arg, kind, is_array, optional in parse_signature(shared[name]):
                 if arg in SKIP_ARGS or kind in ("vnode", "anode", "vframe", "func"):
                     continue
                 probes = INT_PROBES if kind == "int" else FLOAT_PROBES if kind == "float" else DATA_PROBES
@@ -109,12 +143,16 @@ def main():
                 dict(sigma=3, basic_iters=2, wiener_iters=3, lambda_basic=0.5)],
     }
     for name in ("TWSC", "NLH"):
+        if name in skipped:
+            continue
         for fmt, clip in clips.items():
             for kwargs in ({}, dict(sigma=3)):
                 cases[f"{name}|{fmt}|rclip-self:{sorted(kwargs.items())}"] = outcome(name, clip, dict(kwargs, rclip=clip))
             other = core.std.BlankClip(clip, width=clip.width - 8)
             cases[f"{name}|{fmt}|rclip-mismatch"] = outcome(name, clip, dict(rclip=other))
     for name, variants in combos.items():
+        if name in skipped:
+            continue
         for fmt, clip in clips.items():
             for kwargs in variants:
                 key = ",".join(f"{k}={v!r}" for k, v in sorted(kwargs.items()))
@@ -126,17 +164,25 @@ def main():
         print(f"wrote {args.golden}: {len(functions)} functions, {len(cases)} cases")
         return 0
     golden = json.loads(Path(args.golden).read_text())
+    if ns != "nss":
+        prefix = re.compile(r"\bnss\.")
+        golden["functions"] = {k: v for k, v in golden["functions"].items() if k not in expect_missing}
+        golden["cases"] = {key: ({"error": prefix.sub(ns + ".", value["error"])} if "error" in value else value)
+                           for key, value in golden["cases"].items() if key.split("|")[0] not in skipped}
+        missing = sorted(expect_missing & set(functions))
+        if missing:
+            print(f"note: {missing} listed in --expect-missing but present in {ns}")
     problems = []
-    if golden["functions"] != functions:
-        for key in sorted(set(golden["functions"]) | set(functions)):
-            if golden["functions"].get(key) != functions.get(key):
-                problems.append(f"signature {key}: {golden['functions'].get(key)!r} -> {functions.get(key)!r}")
+    if golden["functions"] != shared:
+        for key in sorted(set(golden["functions"]) | set(shared)):
+            if golden["functions"].get(key) != shared.get(key):
+                problems.append(f"signature {key}: {golden['functions'].get(key)!r} -> {shared.get(key)!r}")
     for key in sorted(set(golden["cases"]) | set(cases)):
         if golden["cases"].get(key) != cases.get(key):
             problems.append(f"{key}: {golden['cases'].get(key)} -> {cases.get(key)}")
     for line in problems[:40]:
         print(line)
-    print(f"plugin interface: {len(cases)} cases, {len(problems)} differences")
+    print(f"plugin interface ({ns}): {len(cases)} cases, {len(problems)} differences")
     return 1 if problems else 0
 
 
