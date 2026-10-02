@@ -23,48 +23,7 @@ namespace nss {
 namespace HWY_NAMESPACE {
 namespace hn = hwy::HWY_NAMESPACE;
 
-#if HWY_MAX_BYTES >= 32
-static float HSum8(hn::Vec<hn::FixedTag<float, 8>> v) {
-    const hn::FixedTag<float, 4> d4;
-    return hn::ReduceSum(d4, hn::Add(hn::LowerHalf(d4, v), hn::UpperHalf(d4, v)));
-}
-
-#endif
-
-#if HWY_MAX_BYTES >= 16
-static float Ssd4(const float* a, int sa, const float* b, int sb) {
-    const hn::FixedTag<float, 4> d;
-    auto acc = hn::Zero(d);
-    for (int y = 0; y < 4; ++y) {
-        const auto diff = hn::Sub(hn::LoadU(d, a + y * sa), hn::LoadU(d, b + y * sb));
-        acc = hn::MulAdd(diff, diff, acc);
-    }
-    return hn::ReduceSum(d, acc);
-}
-#endif
-
-static float Ssd8(const float* a, int sa, const float* b, int sb) {
-#if HWY_MAX_BYTES >= 32
-    const hn::FixedTag<float, 8> d;
-    auto acc = hn::Zero(d);
-    for (int y = 0; y < 8; ++y) {
-        const auto diff = hn::Sub(hn::LoadU(d, a + y * sa), hn::LoadU(d, b + y * sb));
-        acc = hn::MulAdd(diff, diff, acc);
-    }
-    return HSum8(acc);
-#else
-    float acc = 0.f;
-    for (int y = 0; y < 8; ++y) {
-        const float* pa = a + y * sa;
-        const float* pb = b + y * sb;
-        for (int x = 0; x < 8; ++x) {
-            const float t = pa[x] - pb[x];
-            acc += t * t;
-        }
-    }
-    return acc;
-#endif
-}
+#include "cpu/bm/ssd_leaf-inl.hpp"
 
 float SsdBlock(const float* a, int sa, const float* b, int sb, int block) {
     if (!a || !b || block < 1 || sa < block || sb < block) {
