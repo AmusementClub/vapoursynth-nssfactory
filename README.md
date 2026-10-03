@@ -88,8 +88,8 @@ The plugin is being built up filter by filter. Available so far:
   See `docs/api/bm3d.md`.
 - `core.nss_cuda.NLM`: all channel modes, temporal `d`, and `rclip`. See
   `docs/api/nlm.md`.
-- `core.nss_cuda.WNNM`: spatial and temporal (legacy fat intermediate). See
-  `docs/api/wnnm.md`.
+- `core.nss_cuda.WNNM` and `core.nss_cuda.MCWNNM`: spatial and temporal (legacy
+  fat intermediate). See `docs/api/wnnm.md` and `docs/api/mcwnnm.md`.
 - `core.nss_cuda.VAggregate`, which also accepts CPU fat intermediates
   (a host-side reduction; the device-resident temporal path is rolling).
 - `core.nss_cuda.Version()`.

@@ -47,7 +47,7 @@ struct StagingRegion {
 struct Slot {
     Stream stream;
     // Window frames: 2R+1 (rolling uses them as a ring indexed by frame), 1 when spatial.
-    std::vector<DeviceBuffer> src_frames, ref_frames;
+    std::vector<DeviceBuffer> src_frames, ref_frames, noisy_frames;
     std::vector<const float*> host_src_ptrs, host_ref_ptrs;
     DeviceBuffer src_ptrs, ref_ptrs;  // device arrays: window slot t -> plane pointer
     DeviceBuffer num, den;            // 2R+1 slices each
@@ -76,6 +76,7 @@ struct Driver : GroupFilterConfig {
     std::size_t plane_floats = 0;  // largest plane (tight pitch)
     int ntemp = 1;                 // 2R+1
     int regions = 0;               // staging regions per slot
+    bool channel_out[3]{true, true, true};  // joint: channel c is written (else copied)
     std::unique_ptr<SlotPool<Slot>> pool;
 
     // Rolling chunk cache (LRU) and chunks being computed.
@@ -86,6 +87,8 @@ struct Driver : GroupFilterConfig {
 };
 
 bool has_guide(const Driver& d) { return d.guide != nullptr; }
+// Joint or multi-round filters keep their estimate in the window frames.
+bool iterative(const Driver& d) { return d.channels > 1 || d.iters > 1; }
 std::string prefix(const Driver& d) { return "nss_cuda." + d.name + ": "; }
 
 std::size_t scratch_floats(const Driver& d, const GroupPlane& p) {
@@ -93,17 +96,20 @@ std::size_t scratch_floats(const Driver& d, const GroupPlane& p) {
 }
 
 std::size_t per_ref_bytes(const Driver& d, const GroupPlane& p) {
-    const std::size_t cube = static_cast<std::size_t>(p.group) * p.block * p.block * sizeof(float);
+    const std::size_t cube = static_cast<std::size_t>(d.channels) * p.group * p.block * p.block * sizeof(float);
     return cube + scratch_floats(d, p) * sizeof(float) + sizeof(int) +
            static_cast<std::size_t>(p.group) *
                (sizeof(DeviceMatch) + sizeof(AggregatePatch) + OrderedAggregator::kBytesPerPatch);
 }
 
-// Staging regions: one upload per window frame (src, ref), then downloads
-// (legacy: 2 * ntemp fat rows; spatial: 1; rolling: one per chunk frame).
-int upload_regions(const Driver& d) { return d.ntemp * (has_guide(d) ? 2 : 1); }
+// Staging regions: one upload per window frame and channel (src, ref), then
+// downloads (legacy: 2 * ntemp fat rows per channel; spatial: one per channel;
+// rolling: one per chunk frame).
+int upload_regions(const Driver& d) { return d.ntemp * d.channels * (has_guide(d) ? 2 : 1); }
 int staging_regions(const Driver& d) {
-    const int downloads = d.mode == GroupMode::Legacy ? 2 * d.ntemp : d.mode == GroupMode::Rolling ? d.rolling.rolling_chunk : 1;
+    const int downloads = d.mode == GroupMode::Legacy    ? 2 * d.ntemp * d.channels
+                          : d.mode == GroupMode::Rolling ? d.rolling.rolling_chunk
+                                                         : d.channels;
     return upload_regions(d) + downloads;
 }
 
@@ -127,7 +133,9 @@ void plan_planes(Driver& d) {
     // minimum batch of groups.
     const std::size_t plane_bytes = d.plane_floats * sizeof(float);
     const int chunk = d.mode == GroupMode::Rolling ? d.rolling.rolling_chunk : 0;
-    const std::size_t device_planes = static_cast<std::size_t>(upload_regions(d)) + 2 * d.ntemp + 1 + 3 * chunk;
+    const std::size_t device_planes = static_cast<std::size_t>(upload_regions(d)) +
+                                      static_cast<std::size_t>(d.channels) * (2 * d.ntemp + 1 + (d.iters > 1 ? d.ntemp : 0)) +
+                                      3 * chunk;
     // Rolling also holds host chunk stores: one being built per slot, up to
     // cache_limit finished ones, and the output frames copied out of them.
     const std::size_t chunk_bytes = frame_bytes * chunk;
@@ -178,6 +186,7 @@ std::unique_ptr<Slot> make_slot(const Driver& d) {
     auto slot = std::make_unique<Slot>();
     const bool w = has_guide(d);
     const std::size_t plane_bytes = d.plane_floats * sizeof(float);
+    const std::size_t unit_bytes = plane_bytes * d.channels;
     std::size_t values = 0, matches = 0, counts = 0, patches = 0, max_patches = 0, scratch = 0;
     int max_w = 1, max_h = 1;
     for (const GroupPlane& p : d.planes) {
@@ -186,25 +195,26 @@ std::unique_ptr<Slot> make_slot(const Driver& d) {
         max_patches = std::max(max_patches, batch * p.group);
         max_w = std::max(max_w, p.width);
         max_h = std::max(max_h, p.height);
-        values = std::max(values, batch * p.group * p.block * p.block * sizeof(float));
+        values = std::max(values, batch * d.channels * p.group * p.block * p.block * sizeof(float));
         matches = std::max(matches, batch * p.group * sizeof(DeviceMatch));
         counts = std::max(counts, batch * sizeof(int));
         patches = std::max(patches, batch * p.group * sizeof(AggregatePatch));
         scratch = std::max(scratch, batch * scratch_floats(d, p) * sizeof(float));
     }
     for (int t = 0; t < d.ntemp; ++t) {
-        slot->src_frames.emplace_back(plane_bytes, d.budget);
+        slot->src_frames.emplace_back(unit_bytes, d.budget);
         slot->host_src_ptrs.push_back(slot->src_frames.back().as<float>());
+        if (d.iters > 1) slot->noisy_frames.emplace_back(unit_bytes, d.budget);
         if (w) {
-            slot->ref_frames.emplace_back(plane_bytes, d.budget);
+            slot->ref_frames.emplace_back(unit_bytes, d.budget);
             slot->host_ref_ptrs.push_back(slot->ref_frames.back().as<float>());
         }
     }
     slot->src_ptrs = DeviceBuffer(d.ntemp * sizeof(float*), d.budget);
     if (w) slot->ref_ptrs = DeviceBuffer(d.ntemp * sizeof(float*), d.budget);
-    slot->num = DeviceBuffer(plane_bytes * d.ntemp, d.budget);
-    slot->den = DeviceBuffer(plane_bytes * d.ntemp, d.budget);
-    slot->out = DeviceBuffer(plane_bytes, d.budget);
+    slot->num = DeviceBuffer(unit_bytes * d.ntemp, d.budget);
+    slot->den = DeviceBuffer(unit_bytes * d.ntemp, d.budget);
+    slot->out = DeviceBuffer(unit_bytes, d.budget);
     if (d.mode == GroupMode::Rolling) {
         slot->acc = DeviceBuffer(plane_bytes * 2 * d.rolling.rolling_chunk, d.budget);
         slot->chunk_src = DeviceBuffer(plane_bytes * d.rolling.rolling_chunk, d.budget);
@@ -250,18 +260,20 @@ void download(Slot& s, int r, const void* device, const GroupPlane& p) {
     NSS_CUDA_CHECK(cudaEventRecord(region.done, s.stream));
 }
 
-// All groups of one center into the slot's num/den slices (ntemp of them).
-// The device pointer arrays map window slot t to the plane of frame
-// temporal_slot_frame(center, t).
-void filter_center(const Driver& d, Slot& s, const GroupPlane& p, int center) {
+// All groups of one center into the slot's num/den slices (ntemp of them per
+// channel, channel-major). The device pointer arrays map window slot t to the
+// plane of frame temporal_slot_frame(center, t). Matching runs on the guide
+// when match_guide is set, otherwise on the source/estimate frames.
+void filter_center(const Driver& d, Slot& s, const GroupPlane& p, int center, bool match_guide) {
     cudaStream_t stream = s.stream;
     const bool w = has_guide(d);
     const int radius = d.radius;
-    const MatchGeometry geometry{p.width, p.height, p.width, p.block, p.range, p.group};
-    const AggregateTarget target{s.num.as<float>(), s.den.as<float>(), p.width, p.height, p.width, d.ntemp, p.floats};
+    MatchGeometry geometry{p.width, p.height, p.width, p.block, p.range, p.group};
+    geometry.channels = d.channels;
+    geometry.channel_step = static_cast<long long>(p.floats);
     TemporalWindow window{};
     if (radius > 0) {
-        window.frames = (w ? s.ref_ptrs : s.src_ptrs).as<const float*>();
+        window.frames = (match_guide ? s.ref_ptrs : s.src_ptrs).as<const float*>();
         window.ntemp = d.ntemp;
         window.t0 = radius;
         window.radius = radius;
@@ -278,7 +290,7 @@ void filter_center(const Driver& d, Slot& s, const GroupPlane& p, int center) {
                 predictive_match(geometry, window, p.grid, begin, count, s.matches.as<DeviceMatch>(), s.counts.as<int>(),
                                  stream);
             } else {
-                const float* plane = w ? s.host_ref_ptrs[0] : s.host_src_ptrs[0];
+                const float* plane = match_guide ? s.host_ref_ptrs[0] : s.host_src_ptrs[0];
                 spatial_match(plane, geometry, p.grid, begin, count, s.matches.as<DeviceMatch>(), s.counts.as<int>(),
                               stream);
             }
@@ -291,6 +303,8 @@ void filter_center(const Driver& d, Slot& s, const GroupPlane& p, int center) {
         launch.counts = s.counts.as<int>();
         launch.batch = count;
         launch.plane = &p;
+        launch.channels = d.channels;
+        launch.channel_step = geometry.channel_step;
         launch.values = s.values.as<float>();
         launch.scratch = s.scratch.as<float>();
         launch.patches = s.patches.as<AggregatePatch>();
@@ -300,8 +314,14 @@ void filter_center(const Driver& d, Slot& s, const GroupPlane& p, int center) {
             d.launch(launch);
         }
         NSS_CUDA_RANGE("group.aggregate");
-        s.aggregator->run(s.values.as<float>(), s.patches.as<AggregatePatch>(), count * p.group, p.block, target, stream,
-                          begin > 0);
+        const std::size_t channel_values = static_cast<std::size_t>(count) * p.group * p.block * p.block;
+        for (int c = 0; c < d.channels; ++c) {
+            const AggregateTarget target{s.num.as<float>() + c * d.ntemp * p.floats,
+                                         s.den.as<float>() + c * d.ntemp * p.floats,
+                                         p.width, p.height, p.width, d.ntemp, p.floats};
+            s.aggregator->run(s.values.as<float>() + c * channel_values, s.patches.as<AggregatePatch>(), count * p.group,
+                              p.block, target, stream, begin > 0);
+        }
     }
 }
 
@@ -327,46 +347,92 @@ const VSFrame* frame_output(Driver* d, int n, VSFrameContext* ctx, VSCore* core,
     nss::stamp_contribution(dst, radius, n, d->model, vsapi);
 
     const int downloads = upload_regions(*d);
-    for (int plane = 0; plane < d->vi.format.numPlanes; ++plane) {
+    const int channels = d->channels;
+    const auto identity = [&](int plane) {
         const GroupPlane& p = d->planes[plane];
-        const std::size_t row_bytes = static_cast<std::size_t>(p.width) * sizeof(float);
-        auto* op = static_cast<std::uint8_t*>(static_cast<void*>(vsapi->getWritePtr(dst, plane)));
+        auto* op = vsapi->getWritePtr(dst, plane);
         const std::ptrdiff_t ds = vsapi->getStride(dst, plane);
+        const auto* sp = vsapi->getReadPtr(src0, plane);
+        const std::ptrdiff_t ss = vsapi->getStride(src0, plane);
+        if (radius > 0) {
+            nss::host_detail::temporal_identity(reinterpret_cast<float*>(op), static_cast<int>(ds / sizeof(float)),
+                                                reinterpret_cast<const float*>(sp),
+                                                static_cast<int>(ss / sizeof(float)), p.width, p.height, radius);
+        } else {
+            vsh::bitblt(op, ds, sp, ss, static_cast<std::size_t>(p.width) * sizeof(float), p.height);
+        }
+    };
+    // A unit is one plane, or all three planes of a joint filter.
+    for (int unit = 0; unit < (channels > 1 ? 1 : d->vi.format.numPlanes); ++unit) {
+        const GroupPlane& p = d->planes[unit];
+        const std::size_t row_bytes = static_cast<std::size_t>(p.width) * sizeof(float);
         if (!p.active) {
-            const auto* sp = vsapi->getReadPtr(src0, plane);
-            const std::ptrdiff_t ss = vsapi->getStride(src0, plane);
-            if (radius > 0) {
-                nss::host_detail::temporal_identity(reinterpret_cast<float*>(op), static_cast<int>(ds / sizeof(float)),
-                                                    reinterpret_cast<const float*>(sp),
-                                                    static_cast<int>(ss / sizeof(float)), p.width, p.height, radius);
-            } else {
-                vsh::bitblt(op, ds, sp, ss, row_bytes, p.height);
-            }
+            for (int c = 0; c < channels; ++c) identity(unit + c);
             continue;
         }
         int region = 0;
         for (int t = 0; t < d->ntemp; ++t) {
-            upload(s, region++, srcf[t], plane, p, s.src_frames[t].get(), vsapi);
-            if (w) upload(s, region++, reff[t], plane, p, s.ref_frames[t].get(), vsapi);
+            for (int c = 0; c < channels; ++c) {
+                upload(s, region++, srcf[t], unit + c, p, s.src_frames[t].as<float>() + c * p.floats, vsapi);
+                if (w) upload(s, region++, reff[t], unit + c, p, s.ref_frames[t].as<float>() + c * p.floats, vsapi);
+            }
         }
-        filter_center(*d, s, p, n);
-        if (radius == 0) {
-            aggregate_finish(s.num.as<float>(), s.den.as<float>(), s.host_src_ptrs[0], p.width, p.height, p.width,
-                        s.out.as<float>(), s.stream);
-            download(s, downloads, s.out.get(), p);
-        } else {
-            // Fat layout: slice sl -> num rows at 2*sl*h, den rows at (2*sl+1)*h.
-            for (int sl = 0; sl < d->ntemp; ++sl) {
-                download(s, downloads + 2 * sl, s.num.as<float>() + sl * p.floats, p);
-                download(s, downloads + 2 * sl + 1, s.den.as<float>() + sl * p.floats, p);
+        const std::size_t unit_floats = p.floats * channels;
+        for (int t = 0; t < d->ntemp && d->iters > 1; ++t) {
+            NSS_CUDA_CHECK(cudaMemcpyAsync(s.noisy_frames[t].get(), s.src_frames[t].get(), unit_floats * sizeof(float),
+                                           cudaMemcpyDeviceToDevice, s.stream));
+        }
+        for (int iter = 0; iter < d->iters; ++iter) {
+            for (int t = 0; t < d->ntemp && iter > 0; ++t) {
+                iter_regularize(s.src_frames[t].as<float>(), s.noisy_frames[t].as<float>(), unit_floats, d->delta, s.stream);
+            }
+            filter_center(*d, s, p, n, w && iter == 0);
+            if (!iterative(*d) || (radius > 0 && iter + 1 == d->iters)) break;
+            // The estimate of every window frame becomes the finished slice.
+            for (int t = 0; t < d->ntemp; ++t) {
+                for (int c = 0; c < channels; ++c) {
+                    float* est = s.src_frames[t].as<float>() + c * p.floats;
+                    const std::size_t slice = (static_cast<std::size_t>(c) * d->ntemp + t) * p.floats;
+                    aggregate_finish(s.num.as<float>() + slice, s.den.as<float>() + slice, est, p.width, p.height, p.width,
+                                     est, s.stream);
+                }
+            }
+        }
+        // Download region of row k of channel c.
+        const int rows = radius == 0 ? 1 : 2 * d->ntemp;
+        const auto slot_region = [&](int c, int k) { return downloads + c * rows + k; };
+        for (int c = 0; c < channels; ++c) {
+            if (!d->channel_out[c]) continue;
+            if (radius == 0) {
+                const float* result = s.src_frames[0].as<float>() + c * p.floats;
+                if (!iterative(*d)) {
+                    aggregate_finish(s.num.as<float>(), s.den.as<float>(), s.host_src_ptrs[0], p.width, p.height, p.width,
+                                     s.out.as<float>(), s.stream);
+                    result = s.out.as<float>();
+                }
+                download(s, slot_region(c, 0), result, p);
+            } else {
+                // Fat layout: slice sl -> num rows at 2*sl*h, den rows at (2*sl+1)*h.
+                for (int sl = 0; sl < d->ntemp; ++sl) {
+                    const std::size_t slice = (static_cast<std::size_t>(c) * d->ntemp + sl) * p.floats;
+                    download(s, slot_region(c, 2 * sl), s.num.as<float>() + slice, p);
+                    download(s, slot_region(c, 2 * sl + 1), s.den.as<float>() + slice, p);
+                }
             }
         }
         // The next plane reuses these regions; finish this plane's copies first.
         s.stream.synchronize();
-        const int rows = radius == 0 ? 1 : 2 * d->ntemp;
-        for (int k = 0; k < rows; ++k) {
-            finish_download(s.regions[downloads + k].bytes, row_bytes, p.height,
-                            op + static_cast<std::ptrdiff_t>(k) * p.height * ds, ds);
+        for (int c = 0; c < channels; ++c) {
+            if (!d->channel_out[c]) {
+                identity(unit + c);
+                continue;
+            }
+            auto* op = static_cast<std::uint8_t*>(static_cast<void*>(vsapi->getWritePtr(dst, unit + c)));
+            const std::ptrdiff_t ds = vsapi->getStride(dst, unit + c);
+            for (int k = 0; k < rows; ++k) {
+                finish_download(s.regions[slot_region(c, k)].bytes, row_bytes, p.height,
+                                op + static_cast<std::ptrdiff_t>(k) * p.height * ds, ds);
+            }
         }
     }
     for (int t = 0; t < d->ntemp; ++t) {
@@ -445,7 +511,7 @@ std::shared_ptr<ChunkStore> compute_chunk(Driver* d, int start, int count, VSFra
                 NSS_CUDA_CHECK(cudaMemcpyAsync(s.ref_ptrs.get(), rp.data(), d->ntemp * sizeof(float*),
                                                cudaMemcpyHostToDevice, s.stream));
             }
-            filter_center(*d, s, p, center);
+            filter_center(*d, s, p, center, w);
             for (int target = std::max(start, center - radius);
                  target <= std::min(start + count - 1, temporal_last(center, radius, nframes)); ++target) {
                 const int slice = target - center + radius;
@@ -570,6 +636,18 @@ void group_filter_install(GroupFilterConfig&& config, VSMap* out, VSCore* core, 
     d->vi_out = d->vi;
     if (d->mode == GroupMode::Legacy) d->vi_out.height = nss::checked_fat_height(d->vi.height, d->radius);
     d->budget = nss::current_budget();
+    if (d->mode == GroupMode::Rolling && iterative(*d)) {
+        throw std::logic_error(prefix(*d) + "rolling mode does not support joint or multi-round filters");
+    }
+    if (d->channels > 1) {
+        bool any = false;
+        for (int c = 0; c < d->channels; ++c) {
+            d->channel_out[c] = d->planes[c].active;
+            any = any || d->planes[c].active;
+            if (c > 0) d->planes[c].active = false;  // planes[0] carries the unit
+        }
+        d->planes[0].active = any;
+    }
     DeviceGuard guard(d->device.index);
     plan_planes(*d);
     std::vector<std::unique_ptr<Slot>> slots;
