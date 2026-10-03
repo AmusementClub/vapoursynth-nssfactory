@@ -15,6 +15,11 @@ if(CMAKE_CUDA_COMPILER_VERSION VERSION_LESS 12.4)
   message(FATAL_ERROR "libnss_cuda requires CUDA 12.4 or newer (found ${CMAKE_CUDA_COMPILER_VERSION})")
 endif()
 find_package(CUDAToolkit REQUIRED)
+# <windows.h> (pulled in by the CUDA headers) must not define min/max macros
+# over std::min/std::max.
+if(WIN32)
+  add_compile_definitions(NOMINMAX)
+endif()
 set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_EXTENSIONS OFF)
