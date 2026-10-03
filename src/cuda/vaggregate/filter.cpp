@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // nss_cuda.VAggregate: reduces versioned fat intermediates (from any
-// backend's legacy temporal output) to final frames on the device (D8). For
-// frame n it uploads slice n - c + R of every contributing center c in
-// [n - R, n + R], sums them in ascending center order and normalizes with the
-// CPU's identity rule (den == 1 -> num, den > 1e-12 -> num / den, else src).
-#include "cuda/bm3d/kernels.hpp"
+// backend's legacy temporal output) to final frames. The fat frames are host
+// VSFrames by definition of the two-stage API, so the reduction runs on the
+// host: uploading 2(2R+1) planes per frame costs several times more than the
+// sum itself (measured 5.8 vs 1.2 ms per 1080p frame at radius 1). The
+// device-resident temporal path is BM3D's temporal_mode="rolling" (D8/D19).
+//
+// For frame n it sums slice n - c + R of every contributing center c in
+// [n - R, n + R] in ascending center order and normalizes with the CPU's
+// identity rule (den == 1 -> num, den > 1e-12 -> num / den, else src), using
+// IEEE division (this TU is not built with fast-math).
 #include "cuda/runtime/context.hpp"
-#include "cuda/runtime/frame_io.hpp"
-#include "cuda/runtime/memory.hpp"
-#include "cuda/runtime/nvtx.hpp"
-#include "cuda/runtime/stream_pool.hpp"
 #include "frontend/contribution.hpp"
 #include "frontend/ownership.hpp"
 #include "frontend/temporal.hpp"
@@ -20,6 +21,8 @@
 #include <VSHelper4.h>
 
 #include <algorithm>
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -30,44 +33,23 @@ namespace {
 
 using nss::host_detail::temporal_last;
 
-struct Slot {
-    Stream stream;
-    std::vector<DeviceBuffer> nums, dens;  // one plane per contributing center
-    DeviceBuffer num_ptrs, den_ptrs, src, out;
-    std::vector<const float*> host_num_ptrs, host_den_ptrs;
-    PinnedBuffer staging;  // (2 * centers + 2) plane regions: num/den uploads, src, out
-};
-
 struct VAggData : nss::VAggregateParams {
     nss::NodeRef clip, src;
     VSVideoInfo vi{};
     std::shared_ptr<nss::ResourceBudget> budget;
-    BackendArgs backend;
-    DeviceInfo device;
-    std::size_t plane_floats = 0;
-    int centers = 1;  // 2R+1
-    std::unique_ptr<SlotPool<Slot>> pool;
 };
 
-std::unique_ptr<Slot> make_slot(const VAggData& d) {
-    auto s = std::make_unique<Slot>();
-    const std::size_t bytes = d.plane_floats * sizeof(float);
-    for (int c = 0; c < d.centers; ++c) {
-        s->nums.emplace_back(bytes, d.budget);
-        s->dens.emplace_back(bytes, d.budget);
-        s->host_num_ptrs.push_back(s->nums.back().as<float>());
-        s->host_den_ptrs.push_back(s->dens.back().as<float>());
+void reduce_row(float* out, const float* const* nums, const float* const* dens, int count, const float* src,
+                int width) {
+    for (int x = 0; x < width; ++x) {
+        float num = 0.f, den = 0.f;
+        for (int c = 0; c < count; ++c) {
+            num += nums[c][x];
+            den += dens[c][x];
+        }
+        // Disabled planes contribute one exact identity slice (den == 1).
+        out[x] = den == 1.f ? num : (den > 1e-12f ? num / den : src[x]);
     }
-    s->num_ptrs = DeviceBuffer(d.centers * sizeof(float*), d.budget);
-    s->den_ptrs = DeviceBuffer(d.centers * sizeof(float*), d.budget);
-    NSS_CUDA_CHECK(cudaMemcpy(s->num_ptrs.get(), s->host_num_ptrs.data(), d.centers * sizeof(float*),
-                              cudaMemcpyHostToDevice));
-    NSS_CUDA_CHECK(cudaMemcpy(s->den_ptrs.get(), s->host_den_ptrs.data(), d.centers * sizeof(float*),
-                              cudaMemcpyHostToDevice));
-    s->src = DeviceBuffer(bytes, d.budget);
-    s->out = DeviceBuffer(bytes, d.budget);
-    s->staging = PinnedBuffer(bytes * (2 * d.centers + 2), d.budget);
-    return s;
 }
 
 const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameContext* ctx, VSCore* core,
@@ -81,10 +63,6 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
         return nullptr;
     }
     if (activation != arAllFramesReady) return nullptr;
-    NSS_CUDA_RANGE("vaggregate.frame");
-    auto slot = d->pool->acquire();
-    Slot& s = *slot;
-    DeviceGuard guard(d->device.index);
     nss::ResourceScope resource_scope(d->budget);
     nss::FrameScope frames(vsapi);
     std::vector<const VSFrame*> fats;
@@ -100,36 +78,36 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
     const VSFrame* src = frames.getFrameFilter(n, d->src, ctx);
     VSFrame* dst = frames.newVideoFrame(&d->vi.format, d->vi.width, d->vi.height, src, core);
     const int count = last - first + 1;
-    const std::size_t region = d->plane_floats * sizeof(float);
-    auto* staging = s.staging.as<std::uint8_t>();
+    const float* nums[2 * nss::kBmMaxRadius + 1];
+    const float* dens[2 * nss::kBmMaxRadius + 1];
+    std::ptrdiff_t strides[2 * nss::kBmMaxRadius + 1];
     for (int plane = 0; plane < d->vi.format.numPlanes; ++plane) {
         const int pw = nss::plane_width(d->vi, plane);
         const int ph = nss::plane_height(d->vi, plane);
-        const std::size_t row_bytes = static_cast<std::size_t>(pw) * sizeof(float);
+        const std::ptrdiff_t ss = vsapi->getStride(src, plane), ds = vsapi->getStride(dst, plane);
+        const auto* sp = vsapi->getReadPtr(src, plane);
+        auto* op = vsapi->getWritePtr(dst, plane);
         if (!d->planes[plane]) {
-            vsh::bitblt(vsapi->getWritePtr(dst, plane), vsapi->getStride(dst, plane), vsapi->getReadPtr(src, plane),
-                        vsapi->getStride(src, plane), row_bytes, ph);
+            vsh::bitblt(op, ds, sp, ss, static_cast<std::size_t>(pw) * sizeof(float), ph);
             continue;
         }
         for (int i = 0; i < count; ++i) {
-            const VSFrame* fat = fats[i];
-            const std::ptrdiff_t stride = vsapi->getStride(fat, plane);
+            strides[i] = vsapi->getStride(fats[i], plane);
             const int slice = n - (first + i) + d->radius;
-            const auto* base = vsapi->getReadPtr(fat, plane);
-            const auto* num = base + static_cast<std::ptrdiff_t>(2 * slice) * ph * stride;
-            upload_plane(num, stride, row_bytes, ph, staging + region * (2 * i), s.nums[i].get(), row_bytes, s.stream);
-            upload_plane(num + static_cast<std::ptrdiff_t>(ph) * stride, stride, row_bytes, ph,
-                         staging + region * (2 * i + 1), s.dens[i].get(), row_bytes, s.stream);
+            const auto* base = vsapi->getReadPtr(fats[i], plane) + static_cast<std::ptrdiff_t>(2 * slice) * ph * strides[i];
+            nums[i] = reinterpret_cast<const float*>(base);
+            dens[i] = reinterpret_cast<const float*>(base + static_cast<std::ptrdiff_t>(ph) * strides[i]);
         }
-        upload_plane(vsapi->getReadPtr(src, plane), vsapi->getStride(src, plane), row_bytes, ph,
-                     staging + region * (2 * d->centers), s.src.get(), row_bytes, s.stream);
-        vaggregate_target(s.num_ptrs.as<const float*>(), s.den_ptrs.as<const float*>(), count, s.src.as<float>(), pw,
-                          ph, pw, s.out.as<float>(), s.stream);
-        begin_download(s.out.get(), row_bytes, row_bytes, ph, staging + region * (2 * d->centers + 1), s.stream);
-        // Staging regions are reused by the next plane.
-        s.stream.synchronize();
-        finish_download(staging + region * (2 * d->centers + 1), row_bytes, ph, vsapi->getWritePtr(dst, plane),
-                        vsapi->getStride(dst, plane));
+        const float* row_nums[2 * nss::kBmMaxRadius + 1];
+        const float* row_dens[2 * nss::kBmMaxRadius + 1];
+        for (int y = 0; y < ph; ++y) {
+            for (int i = 0; i < count; ++i) {
+                row_nums[i] = reinterpret_cast<const float*>(reinterpret_cast<const std::uint8_t*>(nums[i]) + y * strides[i]);
+                row_dens[i] = reinterpret_cast<const float*>(reinterpret_cast<const std::uint8_t*>(dens[i]) + y * strides[i]);
+            }
+            reduce_row(reinterpret_cast<float*>(op + y * ds), row_nums, row_dens, count,
+                       reinterpret_cast<const float*>(sp + y * ss), pw);
+        }
     }
     if (model > 0) nss::stamp_contribution(dst, 0, n, static_cast<nss::Model>(model), vsapi);
     auto* props = vsapi->getFramePropertiesRW(dst);
@@ -141,12 +119,7 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
 }
 
 void VS_CC freeFilter(void* instance, VSCore*, const VSAPI*) {
-    auto* d = static_cast<VAggData*>(instance);
-    {
-        DeviceGuard guard(d->device.index);
-        d->pool.reset();
-    }
-    delete d;
+    delete static_cast<VAggData*>(instance);
 }
 
 void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI* vsapi) {
@@ -162,24 +135,10 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     nss::frontend::validate_vaggregate_shape(d->vi, *vsapi->getVideoInfo(fat), d->radius, "nss_cuda");
     d->clip = std::move(fat);
     d->src = std::move(src);
-    d->backend = parse_backend_args(vsapi, in, "VAggregate");
-    d->device = acquire_device(d->backend.device_id, "VAggregate", core, vsapi);
+    // The backend arguments are validated for interface parity; the host
+    // reduction itself uses no device.
+    (void)parse_backend_args(vsapi, in, "VAggregate");
     d->budget = nss::current_budget();
-    d->centers = 2 * d->radius + 1;
-    for (int plane = 0; plane < d->vi.format.numPlanes; ++plane) {
-        d->plane_floats = std::max(d->plane_floats, static_cast<std::size_t>(nss::plane_width(d->vi, plane)) *
-                                                        nss::plane_height(d->vi, plane));
-    }
-    DeviceGuard guard(d->device.index);
-    // Default streams are lowered to what fits memory_limit_mb, as BM3D.
-    const std::size_t per_slot = d->plane_floats * sizeof(float) * (4 * d->centers + 4) + d->plane_floats * 4 * 3;
-    const std::size_t limit = d->budget ? d->budget->snapshot().limit : SIZE_MAX;
-    if (!d->backend.streams_explicit) {
-        d->backend.num_streams = static_cast<int>(std::clamp<std::size_t>(limit / per_slot, 1, kDefaultStreams));
-    }
-    std::vector<std::unique_ptr<Slot>> slots;
-    for (int i = 0; i < d->backend.num_streams; ++i) slots.push_back(make_slot(*d));
-    d->pool = std::make_unique<SlotPool<Slot>>(std::move(slots));
 
     VSFilterDependency deps[2]{{d->clip, d->radius ? rpGeneral : rpStrictSpatial}, {d->src, rpStrictSpatial}};
     VAggData* raw = d.get();

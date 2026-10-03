@@ -181,21 +181,6 @@ __global__ void accumulate_kernel(float* acc_num, float* acc_den, const float* n
     acc_den[i] += den[i];
 }
 
-__global__ void vaggregate_kernel(const float* const* nums, const float* const* dens, int count, const float* src,
-                                  int width, int height, int pitch, float* out) {
-    const int x = blockIdx.x * blockDim.x + threadIdx.x;
-    const int y = blockIdx.y * blockDim.y + threadIdx.y;
-    if (x >= width || y >= height) return;
-    const long long i = static_cast<long long>(y) * pitch + x;
-    float num = 0.f, den = 0.f;
-    for (int c = 0; c < count; ++c) {
-        num += nums[c][i];
-        den += dens[c][i];
-    }
-    // Disabled planes contribute one exact identity slice (den == 1).
-    out[i] = den == 1.f ? num : (den > 1e-12f ? num / den : src[i]);
-}
-
 }  // namespace
 
 constexpr double kPi = 3.14159265358979323846;
@@ -229,14 +214,6 @@ void accumulate_slice(float* acc_num, float* acc_den, const float* num, const fl
                       cudaStream_t stream) {
     if (count == 0) return;
     accumulate_kernel<<<static_cast<unsigned>((count + 255) / 256), 256, 0, stream>>>(acc_num, acc_den, num, den, count);
-    NSS_CUDA_CHECK_LAUNCH();
-}
-
-void vaggregate_target(const float* const* nums, const float* const* dens, int count, const float* src, int width,
-                       int height, int pitch, float* out, cudaStream_t stream) {
-    const dim3 threads(32, 8);
-    const dim3 blocks((width + 31) / 32, (height + 7) / 8);
-    vaggregate_kernel<<<blocks, threads, 0, stream>>>(nums, dens, count, src, width, height, pitch, out);
     NSS_CUDA_CHECK_LAUNCH();
 }
 

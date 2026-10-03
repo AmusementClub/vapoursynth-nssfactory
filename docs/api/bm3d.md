@@ -86,7 +86,7 @@ adds two GPU-only arguments at the end of the argument list:
 | Parameter | Default | Meaning |
 |---|---|---|
 | `device_id` | 0 | CUDA device index. |
-| `num_streams` | up to 3 | How many frames (or rolling chunks) can be in flight on the device at once. The default is lowered when 3 would not fit `memory_limit_mb`. An explicit value that does not fit is a creation error. |
+| `num_streams` | up to 3 | How many frames (or rolling chunks) can be in flight on the device at once. The default is the largest count (at most 3) that fits `memory_limit_mb`, preferring one that lets a whole plane run as a single batch. An explicit value that does not fit is a creation error. `VAggregate` accepts both arguments but does not use a device. |
 
 ```python
 basic = core.nss_cuda.BM3D(clip, sigma=25)
@@ -108,10 +108,14 @@ temporal = core.nss_cuda.VAggregate(fat, clip, radius=1)
   - Each center frame's contributions are added into the chunk's target
     frames in ascending order, as the CPU does.
   - It is bit-identical to `nss_cuda.VAggregate(nss_cuda.BM3D(..., radius=R))`.
+- **`nss_cuda.VAggregate` runs on the host.** Its inputs are already host
+  frames, and uploading 2(2R+1) planes per frame costs several times more than
+  the sum itself. It sums slices in the CPU's order and divides with IEEE
+  rounding.
 - **Interop.** The fat intermediate is a plain VS frame with versioned
   properties, so `nss.VAggregate` and `nss_cuda.VAggregate` accept each other's
-  BM3D output. They agree within a few ulp: the GPU divides with IEEE
-  rounding, the CPU's fast-math division may be up to 2 ulp off.
+  BM3D output. They agree within a few ulp: the CPU's fast-math division may
+  be up to 2 ulp off IEEE rounding.
 - **Numerics.** The transform math is the CPU's orthonormal 3D DCT.
   - The output is not bit-identical to the CPU, but stays within the 60 dB
     gate in `tests/data/cuda_tolerances_v1.json`.
@@ -119,5 +123,7 @@ temporal = core.nss_cuda.VAggregate(fat, clip, radius=1)
 - **Memory.** `memory_limit_mb` (default 1024) also caps device memory, pinned
   staging and the rolling chunk cache. 4K clips run at the default with
   smaller internal batches.
-- **Performance.** At 1080p GRAYS with defaults on an RTX 5080, spatial
-  runs at bm3dcuda's speed or slightly faster.
+- **Performance.** At 1080p GRAYS with defaults on an RTX 5080:
+  - Spatial runs at bm3dcuda's speed or slightly faster.
+  - Temporal runs at about 0.85 to 0.95x bm3dcuda. It uses the CPU's
+    predictive search and deterministic aggregation.

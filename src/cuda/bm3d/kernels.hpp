@@ -45,10 +45,4 @@ void bm3d_finish(const float* num, const float* den, const float* src, int width
 void accumulate_slice(float* acc_num, float* acc_den, const float* num, const float* den, std::size_t count,
                       cudaStream_t stream);
 
-// VAggregate target: sums `count` (num, den) slice pairs in order, then
-// den == 1 -> num exactly, den > 1e-12 -> num / den, else src
-// (nss::vaggregate_target). nums/dens are device arrays of plane pointers.
-void vaggregate_target(const float* const* nums, const float* const* dens, int count, const float* src, int width,
-                       int height, int pitch, float* out, cudaStream_t stream);
-
 }  // namespace nss_cuda

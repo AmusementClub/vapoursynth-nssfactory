@@ -184,7 +184,18 @@ void plan_planes(Bm3dData& d) {
     }
     const std::size_t limit = total == SIZE_MAX ? SIZE_MAX : total - shared_cache;
     if (!d.backend.streams_explicit) {
-        d.backend.num_streams = static_cast<int>(std::clamp<std::size_t>(limit / need, 1, kDefaultStreams));
+        // Prefer the most streams that still run a whole plane as one batch
+        // (extra batches cost a matching/aggregation launch each); otherwise
+        // the most streams that fit at all.
+        std::size_t full_batch = 0;
+        for (const PlanePlan& p : d.planes) {
+            if (p.active) {
+                full_batch = std::max(full_batch, std::min<std::size_t>(kBatchBytes, p.grid.count() * per_ref_bytes(p, w)));
+            }
+        }
+        const std::size_t whole = limit / (fixed + full_batch * 4 / 3 + 4096);
+        d.backend.num_streams = static_cast<int>(
+            std::clamp<std::size_t>(whole >= 1 ? whole : limit / need, 1, kDefaultStreams));
     }
     if (limit / static_cast<std::size_t>(d.backend.num_streams) < need) {
         throw std::invalid_argument("nss_cuda.BM3D: memory_limit_mb is too small for this clip: each of the " +
