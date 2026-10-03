@@ -13,6 +13,7 @@
 
 namespace nss_cuda {
 void register_bm3d(VSPlugin* plugin, const VSPLUGINAPI* vspapi);
+void register_nlm(VSPlugin* plugin, const VSPLUGINAPI* vspapi);
 void register_vaggregate(VSPlugin* plugin, const VSPLUGINAPI* vspapi);
 }  // namespace nss_cuda
 
@@ -71,5 +72,6 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin* plugin, const VSPLUGINAPI
         "multiprocessors:int:opt;probe_ok:int:opt;probe_ms:float:opt;probe_error:data:opt;",
         backendCreate, nullptr, plugin);
     nss_cuda::register_bm3d(plugin, vspapi);
+    nss_cuda::register_nlm(plugin, vspapi);
     nss_cuda::register_vaggregate(plugin, vspapi);
 }
