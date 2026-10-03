@@ -75,6 +75,7 @@ set(NSS_CUDA_IEEE_SOURCES
   bm3d/kernels.cu
   common/aggregate.cu
   common/match.cu
+  lssc/kernels.cu
   mcwnnm/kernels.cu
   ncsr/kernels.cu
   nlh/kernels.cu
@@ -133,6 +134,7 @@ add_library(nss_cuda SHARED
   plugin.cpp
   common/group_driver.cpp
   bm3d/filter.cpp
+  lssc/filter.cpp
   mcwnnm/filter.cpp
   ncsr/filter.cpp
   common/image_filter.cpp

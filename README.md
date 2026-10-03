@@ -81,7 +81,7 @@ Install `libnss.so` into the VapourSynth plugin directory.
 
 `-DNSS_ENABLE_CUDA=ON` also builds `libnss_cuda` (namespace `nss_cuda`). It
 needs nvcc from CUDA 12.4 or newer; Windows builds use nvcc with MSVC `cl.exe`.
-The plugin is being built up filter by filter. Available so far:
+All nine filters are available:
 
 - `core.nss_cuda.BM3D`: spatial, `ref`/Wiener, and temporal (legacy fat
   intermediate or `temporal_mode="rolling"`, which is recommended on the GPU).
@@ -94,6 +94,7 @@ The plugin is being built up filter by filter. Available so far:
 - `core.nss_cuda.NLH` and `core.nss_cuda.TWSC`: given or blind sigma,
   Gray/YUV/RGB, and temporal (legacy fat intermediate). See `docs/api/nlh.md`
   and `docs/api/twsc.md`.
+- `core.nss_cuda.LSSC`. See `docs/api/lssc.md`.
 - `core.nss_cuda.VAggregate`, which also accepts CPU fat intermediates
   (a host-side reduction; the device-resident temporal path is rolling).
 - `core.nss_cuda.Version()`.
