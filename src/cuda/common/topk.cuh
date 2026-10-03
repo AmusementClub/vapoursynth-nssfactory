@@ -41,21 +41,21 @@ __device__ __forceinline__ int key_t(const MatchKey& k) { return static_cast<int
 __device__ __forceinline__ int key_y(const MatchKey& k) { return static_cast<int>(k.lo >> 32); }
 __device__ __forceinline__ int key_x(const MatchKey& k) { return static_cast<int>(k.lo & 0xffffffffu); }
 
-// Ascending bitonic sort of N (power of two) keys in shared memory.
+// Ascending bitonic sort of N (power of two) keys in shared memory; every
+// pass assigns one compare-exchange pair per thread slot.
 template <int N>
 __device__ void bitonic_sort(MatchKey* keys) {
     for (int k = 2; k <= N; k <<= 1) {
         for (int j = k >> 1; j > 0; j >>= 1) {
-            for (int i = threadIdx.x; i < N; i += blockDim.x) {
-                const int partner = i ^ j;
-                if (partner > i) {
-                    const bool ascending = (i & k) == 0;
-                    MatchKey a = keys[i];
-                    MatchKey b = keys[partner];
-                    if (key_less(b, a) == ascending) {
-                        keys[i] = b;
-                        keys[partner] = a;
-                    }
+            for (int pair = threadIdx.x; pair < N / 2; pair += blockDim.x) {
+                const int i = 2 * j * (pair / j) + pair % j;
+                const int partner = i + j;
+                const bool ascending = (i & k) == 0;
+                const MatchKey a = keys[i];
+                const MatchKey b = keys[partner];
+                if (key_less(b, a) == ascending) {
+                    keys[i] = b;
+                    keys[partner] = a;
                 }
             }
             __syncthreads();
@@ -63,24 +63,34 @@ __device__ void bitonic_sort(MatchKey* keys) {
     }
 }
 
-// Streaming top-K: the current result occupies [0, k) (k <= 64) and each
-// chunk of candidates is written to [64, N) before merge(). After the last
-// merge, entries [0, filled) are the selected keys in ascending order.
+__host__ __device__ constexpr int pow2_at_least(int v) {
+    int p = 1;
+    while (p < v) p <<= 1;
+    return p;
+}
+
+// Streaming top-K over a shared buffer of N keys: the current result occupies
+// the front (pow2_at_least(k) slots, k <= 64) and each chunk of candidates is
+// written behind it before merge(). After the last merge, entries
+// [0, filled) are the selected keys in ascending order.
 template <int N>
 struct BlockTopK {
-    static constexpr int kChunk = N - 64;
     MatchKey* keys;
     int k;
+    int front;
+    int chunk;
     int filled;
 
     __device__ void init(MatchKey* storage, int wanted) {
         keys = storage;
         k = wanted;
+        front = pow2_at_least(wanted > 0 ? wanted : 1);
+        chunk = N - front;
         filled = 0;
         for (int i = threadIdx.x; i < N; i += blockDim.x) keys[i] = sentinel_key();
         __syncthreads();
     }
-    __device__ MatchKey& candidate(int i) { return keys[64 + i]; }
+    __device__ MatchKey& candidate(int i) { return keys[front + i]; }
     __device__ void merge() {
         bitonic_sort<N>(keys);
         int valid = 0;

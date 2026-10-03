@@ -14,7 +14,9 @@ namespace nss_cuda {
 
 // Appended to every shared k<Filter>Signature (D14).
 inline constexpr const char* kBackendSignature = "device_id:int:opt;num_streams:int:opt;";
-inline constexpr int kDefaultStreams = 2;
+// Three slots hide the per-frame host staging copies behind device work
+// (1080p BM3D: 286 fps with 2, 357 with 3, 360 with 4 on an RTX 5080).
+inline constexpr int kDefaultStreams = 3;
 inline constexpr int kMaxStreams = 16;
 
 std::string signature(const char* shared);
@@ -22,6 +24,7 @@ std::string signature(const char* shared);
 struct BackendArgs {
     int device_id = 0;
     int num_streams = kDefaultStreams;
+    bool streams_explicit = false;  // default may be lowered to fit memory_limit_mb
 };
 // Throws std::invalid_argument("nss_cuda.<filter>: ...") on invalid values.
 BackendArgs parse_backend_args(const VSAPI* vsapi, const VSMap* in, const char* filter);

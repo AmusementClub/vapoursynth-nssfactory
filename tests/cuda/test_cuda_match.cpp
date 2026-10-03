@@ -75,11 +75,11 @@ void spatial_case(int width, int height, int block, int group, int step, int ran
     nss_cuda::DeviceBuffer d_plane(plane.size() * sizeof(float));
     NSS_CUDA_CHECK(cudaMemcpy(d_plane.get(), plane.data(), plane.size() * sizeof(float), cudaMemcpyHostToDevice));
     const auto grid = nss_cuda::make_raster_grid(width, height, block, step);
-    nss_cuda::DeviceBuffer d_out(static_cast<std::size_t>(grid.count()) * nss_cuda::kMaxGroup * sizeof(nss_cuda::DeviceMatch));
+    nss_cuda::DeviceBuffer d_out(static_cast<std::size_t>(grid.count()) * group * sizeof(nss_cuda::DeviceMatch));
     nss_cuda::DeviceBuffer d_counts(static_cast<std::size_t>(grid.count()) * sizeof(int));
     const nss_cuda::MatchGeometry g{width, height, width, block, range, group};
-    nss_cuda::spatial_match(d_plane.as<float>(), g, grid, d_out.as<nss_cuda::DeviceMatch>(), d_counts.as<int>(), nullptr);
-    std::vector<nss_cuda::DeviceMatch> out(static_cast<std::size_t>(grid.count()) * nss_cuda::kMaxGroup);
+    nss_cuda::spatial_match(d_plane.as<float>(), g, grid, 0, grid.count(), d_out.as<nss_cuda::DeviceMatch>(), d_counts.as<int>(), nullptr);
+    std::vector<nss_cuda::DeviceMatch> out(static_cast<std::size_t>(grid.count()) * group);
     std::vector<int> counts(grid.count());
     NSS_CUDA_CHECK(cudaMemcpy(out.data(), d_out.get(), d_out.bytes(), cudaMemcpyDeviceToHost));
     NSS_CUDA_CHECK(cudaMemcpy(counts.data(), d_counts.get(), d_counts.bytes(), cudaMemcpyDeviceToHost));
@@ -90,8 +90,7 @@ void spatial_case(int width, int height, int block, int group, int step, int ran
         nss::Match cpu[nss_cuda::kMaxGroup];
         const int n = nss::spatial_match(plane.data(), width, width, height, grid.x(ref), grid.y(ref), block, range,
                                          group, cpu);
-        compare_group(cpu, n, out.data() + static_cast<std::size_t>(ref) * nss_cuda::kMaxGroup, counts[ref], flat,
-                      stats, label, ref);
+        compare_group(cpu, n, out.data() + static_cast<std::size_t>(ref) * group, counts[ref], flat, stats, label, ref);
     }
 }
 
@@ -125,13 +124,13 @@ void temporal_case(int width, int height, int block, int group, int step, int ra
     cfg.valid_t_end = radius + std::min(radius + 1, frame_count - center);
 
     const auto grid = nss_cuda::make_raster_grid(width, height, block, step);
-    nss_cuda::DeviceBuffer d_out(static_cast<std::size_t>(grid.count()) * nss_cuda::kMaxGroup * sizeof(nss_cuda::DeviceMatch));
+    nss_cuda::DeviceBuffer d_out(static_cast<std::size_t>(grid.count()) * group * sizeof(nss_cuda::DeviceMatch));
     nss_cuda::DeviceBuffer d_counts(static_cast<std::size_t>(grid.count()) * sizeof(int));
     const nss_cuda::MatchGeometry g{width, height, width, block, range, group};
     const nss_cuda::TemporalWindow w{d_ptrs.as<const float*>(), ntemp, radius, radius, cfg.valid_t_begin,
                                      cfg.valid_t_end, cfg.ps_num, cfg.ps_range};
-    nss_cuda::predictive_match(g, w, grid, d_out.as<nss_cuda::DeviceMatch>(), d_counts.as<int>(), nullptr);
-    std::vector<nss_cuda::DeviceMatch> out(static_cast<std::size_t>(grid.count()) * nss_cuda::kMaxGroup);
+    nss_cuda::predictive_match(g, w, grid, 0, grid.count(), d_out.as<nss_cuda::DeviceMatch>(), d_counts.as<int>(), nullptr);
+    std::vector<nss_cuda::DeviceMatch> out(static_cast<std::size_t>(grid.count()) * group);
     std::vector<int> counts(grid.count());
     NSS_CUDA_CHECK(cudaMemcpy(out.data(), d_out.get(), d_out.bytes(), cudaMemcpyDeviceToHost));
     NSS_CUDA_CHECK(cudaMemcpy(counts.data(), d_counts.get(), d_counts.bytes(), cudaMemcpyDeviceToHost));
@@ -142,8 +141,7 @@ void temporal_case(int width, int height, int block, int group, int step, int ra
         nss::Match cpu[nss_cuda::kMaxGroup];
         const int n = nss::predictive_match(host_ptrs.data(), strides.data(), ntemp, width, height, grid.x(ref),
                                             grid.y(ref), radius, cfg, cpu);
-        compare_group(cpu, n, out.data() + static_cast<std::size_t>(ref) * nss_cuda::kMaxGroup, counts[ref], flat,
-                      stats, label, ref);
+        compare_group(cpu, n, out.data() + static_cast<std::size_t>(ref) * group, counts[ref], flat, stats, label, ref);
     }
 }
 

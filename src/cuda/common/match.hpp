@@ -46,9 +46,11 @@ struct MatchGeometry {
     int group;  // clamped to kMaxGroup
 };
 
-// out: grid.count() * kMaxGroup matches; counts: grid.count().
-void spatial_match(const float* plane, const MatchGeometry& geometry, const RasterGrid& grid, DeviceMatch* out,
-                   int* counts, cudaStream_t stream);
+// References [ref_begin, ref_begin + ref_count) of the grid; out holds
+// ref_count * geometry.group matches (group-strided) and counts ref_count
+// entries (batch-relative).
+void spatial_match(const float* plane, const MatchGeometry& geometry, const RasterGrid& grid, int ref_begin,
+                   int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream);
 
 struct TemporalWindow {
     const float* const* frames;  // device array of ntemp device plane pointers (same pitch)
@@ -62,6 +64,6 @@ struct TemporalWindow {
 };
 
 void predictive_match(const MatchGeometry& geometry, const TemporalWindow& window, const RasterGrid& grid,
-                      DeviceMatch* out, int* counts, cudaStream_t stream);
+                      int ref_begin, int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream);
 
 }  // namespace nss_cuda
