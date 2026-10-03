@@ -86,6 +86,8 @@ The plugin is being built up filter by filter. Available so far:
 - `core.nss_cuda.BM3D`: spatial, `ref`/Wiener, and temporal (legacy fat
   intermediate or `temporal_mode="rolling"`, which is recommended on the GPU).
   See `docs/api/bm3d.md`.
+- `core.nss_cuda.NLM`: all channel modes, temporal `d`, and `rclip`. See
+  `docs/api/nlm.md`.
 - `core.nss_cuda.VAggregate`, which also accepts CPU fat intermediates
   (a host-side reduction; the device-resident temporal path is rolling).
 - `core.nss_cuda.Version()`.
