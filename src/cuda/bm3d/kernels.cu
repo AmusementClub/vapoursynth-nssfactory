@@ -183,6 +183,9 @@ void bm3d_init_tables(int device) {
         }
     }
     NSS_CUDA_CHECK(cudaMemcpyToSymbol(c_dct, table.data(), table.size() * sizeof(float)));
+    // The copy from pageable memory may complete after the call returns;
+    // filter streams are non-blocking and would not wait for it.
+    NSS_CUDA_CHECK(cudaDeviceSynchronize());
     ready.insert(device);
 }
 

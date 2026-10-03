@@ -238,6 +238,10 @@ std::unique_ptr<Slot> make_slot(const Driver& d) {
         NSS_CUDA_CHECK(cudaMemcpy(slot->ref_ptrs.get(), slot->host_ref_ptrs.data(), d.ntemp * sizeof(float*),
                                   cudaMemcpyHostToDevice));
     }
+    // A small copy from pageable memory may still be in flight when
+    // cudaMemcpy returns, and the slot's non-blocking stream does not wait
+    // for it: without this, the first kernels can read the arrays unset.
+    NSS_CUDA_CHECK(cudaDeviceSynchronize());
     return slot;
 }
 
