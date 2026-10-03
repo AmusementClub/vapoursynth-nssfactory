@@ -76,6 +76,7 @@ set(NSS_CUDA_IEEE_SOURCES
   common/aggregate.cu
   common/match.cu
   mcwnnm/kernels.cu
+  ncsr/kernels.cu
   nlm/kernels.cu
   runtime/probe.cu
   wnnm/kernels.cu
@@ -131,6 +132,7 @@ add_library(nss_cuda SHARED
   common/group_driver.cpp
   bm3d/filter.cpp
   mcwnnm/filter.cpp
+  ncsr/filter.cpp
   nlm/filter.cpp
   vaggregate/filter.cpp
   wnnm/filter.cpp
