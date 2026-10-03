@@ -36,13 +36,4 @@ struct Bm3dGroupArgs {
 };
 void bm3d_filter_groups(const Bm3dGroupArgs& args, cudaStream_t stream);
 
-// out = den > 1e-12 ? num / den : src (nss::aggregate_finish).
-void bm3d_finish(const float* num, const float* den, const float* src, int width, int height, int pitch, float* out,
-                 cudaStream_t stream);
-
-// acc_num += num, acc_den += den over `count` floats (rolling accumulation,
-// one call per center in ascending center order as the CPU rolling path).
-void accumulate_slice(float* acc_num, float* acc_den, const float* num, const float* den, std::size_t count,
-                      cudaStream_t stream);
-
 }  // namespace nss_cuda

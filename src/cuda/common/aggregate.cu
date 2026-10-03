@@ -133,6 +133,24 @@ __global__ void atomic_kernel(const float* values, const AggregatePatch* patches
     atomicAdd(target.den + offset, patch.weight);
 }
 
+__global__ void finish_kernel(const float* num, const float* den, const float* src, int width, int height, int pitch,
+                              float* out) {
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= width || y >= height) return;
+    const long long i = static_cast<long long>(y) * pitch + x;
+    const float d = den[i];
+    out[i] = d > 1e-12f ? num[i] / d : src[i];
+}
+
+__global__ void accumulate_slice_kernel(float* acc_num, float* acc_den, const float* num, const float* den,
+                                        std::size_t count) {
+    const std::size_t i = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= count) return;
+    acc_num[i] += num[i];
+    acc_den[i] += den[i];
+}
+
 int bits_for(unsigned value) {
     int bits = 1;
     while (bits < 32 && (value >> bits) != 0) ++bits;
@@ -211,6 +229,22 @@ void aggregate_atomic(const float* values, const AggregatePatch* patches, int np
     const long long total = static_cast<long long>(npatch) * block * block;
     if (total == 0) return;
     atomic_kernel<<<static_cast<unsigned>((total + 255) / 256), 256, 0, stream>>>(values, patches, total, block, target);
+    NSS_CUDA_CHECK_LAUNCH();
+}
+
+void aggregate_finish(const float* num, const float* den, const float* src, int width, int height, int pitch,
+                      float* out, cudaStream_t stream) {
+    const dim3 threads(32, 8);
+    const dim3 blocks((width + 31) / 32, (height + 7) / 8);
+    finish_kernel<<<blocks, threads, 0, stream>>>(num, den, src, width, height, pitch, out);
+    NSS_CUDA_CHECK_LAUNCH();
+}
+
+void accumulate_slice(float* acc_num, float* acc_den, const float* num, const float* den, std::size_t count,
+                      cudaStream_t stream) {
+    if (count == 0) return;
+    accumulate_slice_kernel<<<static_cast<unsigned>((count + 255) / 256), 256, 0, stream>>>(acc_num, acc_den, num, den,
+                                                                                         count);
     NSS_CUDA_CHECK_LAUNCH();
 }
 
