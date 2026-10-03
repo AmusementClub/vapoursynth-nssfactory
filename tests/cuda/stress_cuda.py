@@ -6,10 +6,11 @@ process's device memory (nvidia-smi) for growth. ctest runs a short pass
 (test_cuda_stress); run it with more --cycles for a long soak. Exits 77
 without VapourSynth or a CUDA device.
 
-usage: stress_cuda.py --cuda PATH [--cycles N] [--frames N]
+usage: stress_cuda.py --cuda PATH [--cycles N] [--frames N] [--only REGEX]
 """
 import argparse
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -53,6 +54,7 @@ def main():
     parser.add_argument("--cuda", required=True)
     parser.add_argument("--cycles", type=int, default=40)
     parser.add_argument("--frames", type=int, default=24)
+    parser.add_argument("--only", default="", help="regular expression selecting the filters to cycle")
     args = parser.parse_args()
     core = vs.core
     core.std.LoadPlugin(path=str(Path(args.cuda).resolve()))
@@ -75,6 +77,8 @@ def main():
         ("TWSC", lambda: n.TWSC(gray, sigma=5, **light)),
         ("LSSC", lambda: n.LSSC(gray, sigma=5)),
     ]
+    if args.only:
+        builders = [(name, build) for name, build in builders if re.search(args.only, name)]
     readings, frames = [], 0
     for cycle in range(args.cycles):
         for name, build in builders:
