@@ -50,7 +50,9 @@ struct GroupLaunch {
     const int* counts;          // batch
     int batch;
     const GroupPlane* plane;
-    float* values;              // batch * group * block^2: filtered patches (also workspace)
+    int channels;               // 1, or 3 for joint groups
+    long long channel_step;     // floats from channel c to c + 1 inside a src/guide frame
+    float* values;              // channels * batch * group * block^2, channel-major: filtered patches
     float* scratch;             // batch * scratch_floats(plane) extra workspace, or nullptr
     AggregatePatch* patches;    // batch * group: position, slice = match t, weight; unused slots slice -1
     cudaStream_t stream;
@@ -68,6 +70,16 @@ struct GroupFilterConfig {
     BackendArgs backend;
     DeviceInfo device;
     GroupPlane planes[3];
+    // Joint groups (MCWNNM): with channels == 3 the three planes are matched
+    // and filtered as one unit using planes[0]'s geometry; planes[c].active
+    // then only says whether channel c is written or copied from the source.
+    int channels = 1;
+    // Outer rounds (MCWNNM, NCSR): every round after the first relaxes the
+    // estimate toward the input by delta, re-matches on the estimate (the
+    // guide only drives the first round) and filters the estimate again.
+    // Rolling mode requires channels == 1 and iters == 1.
+    int iters = 1;
+    float delta = 0.f;
     // Extra device floats per reference group (second argument: guide present).
     std::function<std::size_t(const GroupPlane&, bool)> scratch_floats;
     std::function<void(const GroupLaunch&)> launch;

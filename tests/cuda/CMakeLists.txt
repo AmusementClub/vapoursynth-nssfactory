@@ -32,7 +32,7 @@ add_test(NAME test_cuda_backend_forced_jit
 set_tests_properties(test_cuda_backend_forced_jit PROPERTIES ENVIRONMENT "CUDA_FORCE_PTX_JIT=1")
 # D14 parity against the CPU golden. Filters still pending in docs/cuda-plan.md
 # are expected to be missing; each phase removes the filters it delivers.
-set(NSS_CUDA_PENDING_FILTERS "MCWNNM,NCSR,TWSC,NLH,LSSC")
+set(NSS_CUDA_PENDING_FILTERS "TWSC,NLH,LSSC")
 add_test(NAME test_cuda_plugin_interface
          COMMAND ${Python3_EXECUTABLE} "${PROJECT_SOURCE_DIR}/tests/test_plugin_interface.py"
                  --plugin "${NSS_CUDA_PLUGIN}" --namespace nss_cuda
@@ -41,15 +41,10 @@ set_tests_properties(test_cuda_backend test_cuda_backend_forced_jit test_cuda_pl
   LABELS cuda SKIP_RETURN_CODE 77)
 # Live CPU-vs-GPU filter checks need the CPU plugin as the reference.
 if(TARGET nss)
-  add_test(NAME test_cuda_bm3d_live
-           COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_cuda_bm3d_live.py"
-                   --cpu "$<TARGET_FILE:nss>" --cuda "${NSS_CUDA_PLUGIN}")
-  add_test(NAME test_cuda_nlm_live
-           COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_cuda_nlm_live.py"
-                   --cpu "$<TARGET_FILE:nss>" --cuda "${NSS_CUDA_PLUGIN}")
-  add_test(NAME test_cuda_wnnm_live
-           COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_cuda_wnnm_live.py"
-                   --cpu "$<TARGET_FILE:nss>" --cuda "${NSS_CUDA_PLUGIN}")
-  set_tests_properties(test_cuda_bm3d_live test_cuda_nlm_live test_cuda_wnnm_live PROPERTIES
-    LABELS cuda SKIP_RETURN_CODE 77)
+  foreach(filter bm3d nlm wnnm mcwnnm ncsr)
+    add_test(NAME test_cuda_${filter}_live
+             COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_cuda_${filter}_live.py"
+                     --cpu "$<TARGET_FILE:nss>" --cuda "${NSS_CUDA_PLUGIN}")
+    set_tests_properties(test_cuda_${filter}_live PROPERTIES LABELS cuda SKIP_RETURN_CODE 77)
+  endforeach()
 endif()

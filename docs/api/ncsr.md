@@ -64,3 +64,22 @@ with `1/step^2 * bm_range^2`; per-group cost scales with the PCA/SVD solve at
   quality change on textured noise; measure before shipping.
 - `radius > 0` output requires `VAggregate`.
 - No `_NSS*` frame properties on this filter.
+
+## CUDA (`core.nss_cuda.NCSR`)
+
+`core.nss_cuda.NCSR` (from `libnss_cuda`, built with `-DNSS_ENABLE_CUDA=ON`)
+takes the same arguments and gives the same errors as `nss.NCSR`. It adds
+`device_id` (default 0) and `num_streams` (default up to 3, fitted to
+`memory_limit_mb`) at the end of the argument list.
+
+- **Device-resident.** Matching, the per-group PCA and centralized shrinkage,
+  the aggregation and all outer rounds run on the device. `radius > 0`
+  returns the same fat intermediate as the CPU, so either backend's
+  `VAggregate` can reduce it.
+- **Numerics.** The PCA is taken through the FP32 Gram matrix with a cyclic
+  Jacobi eigensolver, and the column weights use `expf` where the CPU uses
+  its fast exponential.
+  - The output is not bit-identical to the CPU, but is inside the 60 dB gate
+    (105–139 dB on the frozen references).
+  - The output is run-to-run identical: one thread handles each group in a
+    fixed order, and aggregation is ordered.
