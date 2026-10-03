@@ -77,6 +77,7 @@ set(NSS_CUDA_IEEE_SOURCES
   common/match.cu
   nlm/kernels.cu
   runtime/probe.cu
+  wnnm/kernels.cu
 )
 set(NSS_CUDA_CLASSIFIED ${NSS_CUDA_IEEE_SOURCES})
 set(_nss_cuda_dedup ${NSS_CUDA_CLASSIFIED})
@@ -126,9 +127,11 @@ target_link_libraries(nss_cuda_core PUBLIC nss_frontend CUDA::cudart_static)
 # VapourSynth nodes, one per filter (docs/cuda-plan.md phase order).
 add_library(nss_cuda SHARED
   plugin.cpp
+  common/group_driver.cpp
   bm3d/filter.cpp
   nlm/filter.cpp
   vaggregate/filter.cpp
+  wnnm/filter.cpp
 )
 set_target_properties(nss_cuda PROPERTIES
   PREFIX "lib"

@@ -66,3 +66,20 @@ Cost scales with `1/step^2` for matching plus per-group SVD work growing with
 - `group_size=1` degenerates the SVD to per-patch shrinkage; legal but rarely
   useful.
 - This filter emits no `_NSS*` frame properties; diagnostics live on NLH/TWSC.
+
+## CUDA (`core.nss_cuda.WNNM`)
+
+`core.nss_cuda.WNNM` (from `libnss_cuda`, built with `-DNSS_ENABLE_CUDA=ON`)
+takes the same arguments and gives the same errors as `nss.WNNM`. It adds
+`device_id` (default 0) and `num_streams` (default up to 3, fitted to
+`memory_limit_mb`) at the end of the argument list.
+
+- **Device-resident.** Matching, the per-group SVD shrinkage and the
+  aggregation all run on the device. `radius > 0` returns the same fat
+  intermediate as the CPU, so either backend's `VAggregate` can reduce it.
+- **Numerics.** The SVD is taken through the FP32 Gram matrix with a cyclic
+  Jacobi eigensolver.
+  - The output is not bit-identical to the CPU, but is inside the 60 dB gate
+    (86–143 dB on the frozen references).
+  - The output is run-to-run identical: one thread handles each group in a
+    fixed order, and aggregation is ordered.
