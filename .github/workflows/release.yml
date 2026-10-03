@@ -163,8 +163,97 @@ jobs:
           path: nssfactory-${{ inputs.tag }}-windows-x86_64.zip
           if-no-files-found: error
 
+  # CUDA plugin: built with the release toolkit (12.9: native cubins for
+  # sm_75/86/89/120 plus compute_75 PTX), CUDA runtime linked statically.
+  build-linux-cuda:
+    runs-on: ubuntu-latest
+    container: nvidia/cuda:12.9.1-devel-ubuntu24.04
+    env:  # no ccache in the toolkit image
+      CMAKE_C_COMPILER_LAUNCHER: ""
+      CMAKE_CXX_COMPILER_LAUNCHER: ""
+    steps:
+      - name: packages
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git python3 python3-venv ca-certificates
+          python3 -m venv /opt/venv
+          /opt/venv/bin/pip install cmake ninja vapoursynth
+          # Headers only: the plugin is loaded by the host and never links libvapoursynth.
+          git clone --depth 1 --branch R80 https://github.com/vapoursynth/vapoursynth /opt/vapoursynth
+      - uses: actions/checkout@v4
+      - name: configure
+        run: |
+          export PATH=/opt/venv/bin:$PATH
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DNSS_ENABLE_CUDA=ON -DNSS_BUILD_CPU=OFF \
+            -DVapourSynth_INCLUDE_DIR=/opt/vapoursynth/include \
+            -DPython3_EXECUTABLE=/opt/venv/bin/python
+      - name: build
+        run: /opt/venv/bin/cmake --build build -j
+      - name: fat binary contents
+        run: |
+          cuobjdump --list-elf --list-ptx build/src/cuda/libnss_cuda.so | tee fatbin.txt
+          for arch in sm_75 sm_86 sm_89 sm_120; do grep -q "\.${arch}\.cubin" fatbin.txt || { echo "missing $arch cubin"; exit 1; }; done
+          grep -q "\.sm_75\.ptx" fatbin.txt || { echo "missing compute_75 PTX"; exit 1; }
+      - name: cuda tests (no GPU: load, signatures, creation errors)
+        run: /opt/venv/bin/ctest --test-dir build -L cuda --output-on-failure
+      - name: package
+        run: |
+          pkg="nssfactory-${{ inputs.tag }}-linux-x86_64-cuda"
+          mkdir -p "pkg/$pkg"
+          cp build/src/cuda/libnss_cuda.so README.md LICENSE NOTICE "pkg/$pkg/"
+          tar -C pkg -czf "$pkg.tar.gz" "$pkg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64-cuda
+          path: nssfactory-${{ inputs.tag }}-linux-x86_64-cuda.tar.gz
+          if-no-files-found: error
+
+  build-windows-cuda:
+    # CUDA 12.9 supports MSVC through VS 2022; windows-latest ships VS 2026
+    # (MSVC 14.5x), which nvcc 12.9 rejects.
+    runs-on: windows-2022
+    env:  # no ccache on this runner image
+      CMAKE_C_COMPILER_LAUNCHER: ""
+      CMAKE_CXX_COMPILER_LAUNCHER: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Jimver/cuda-toolkit@v0.2.36
+        with:
+          cuda: "12.9.1"
+          method: network
+          sub-packages: '["nvcc", "cudart", "cuobjdump", "nvtx", "visual_studio_integration"]'
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: packages
+        run: pip install vapoursynth ninja
+      - name: configure
+        run: |
+          $vsInclude = python -c "import vapoursynth, pathlib; print(pathlib.Path(vapoursynth.__file__).parent / 'include')"
+          $pythonExe = (Get-Command python).Source
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=cl -DNSS_ENABLE_CUDA=ON -DNSS_BUILD_CPU=OFF -DVapourSynth_INCLUDE_DIR="$vsInclude" -DPython3_EXECUTABLE="$pythonExe"
+      - name: build
+        run: cmake --build build -j
+      - name: cuda tests (no GPU: load, signatures, creation errors)
+        run: ctest --test-dir build -L cuda --output-on-failure
+      - name: package
+        run: |
+          $dll = Get-ChildItem -Recurse build -Filter libnss_cuda.dll | Select-Object -First 1
+          if (-not $dll) { throw "libnss_cuda.dll was not produced" }
+          cuobjdump --list-elf --list-ptx $dll.FullName
+          $pkg = "nssfactory-${{ inputs.tag }}-windows-x86_64-cuda"
+          New-Item -ItemType Directory "pkg/$pkg" | Out-Null
+          Copy-Item $dll.FullName, README.md, LICENSE, NOTICE "pkg/$pkg/"
+          tar -C pkg -a -c -f "$pkg.zip" "$pkg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86_64-cuda
+          path: nssfactory-${{ inputs.tag }}-windows-x86_64-cuda.zip
+          if-no-files-found: error
+
   release:
-    needs: [build-linux, build-macos, build-windows]
+    needs: [build-linux, build-macos, build-windows, build-linux-cuda, build-windows-cuda]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -176,4 +265,5 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release create "${{ inputs.tag }}" --draft --target "${{ github.sha }}" --generate-notes \
-            dist/linux-x86_64/*.tar.gz dist/macos-arm64/*.tar.gz dist/windows-x86_64/*.zip
+            dist/linux-x86_64/*.tar.gz dist/macos-arm64/*.tar.gz dist/windows-x86_64/*.zip \
+            dist/linux-x86_64-cuda/*.tar.gz dist/windows-x86_64-cuda/*.zip

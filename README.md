@@ -77,7 +77,7 @@ disabled while provider threading and resource bounds are being qualified.
 
 Install `libnss.so` into the VapourSynth plugin directory.
 
-### CUDA plugin (in development)
+### CUDA plugin
 
 `-DNSS_ENABLE_CUDA=ON` also builds `libnss_cuda` (namespace `nss_cuda`). It
 needs nvcc from CUDA 12.4 or newer; Windows builds use nvcc with MSVC `cl.exe`.
@@ -102,7 +102,23 @@ All nine filters are available:
   versions and the support level.
 
 Each filter takes the same arguments as its `nss` counterpart, plus
-`device_id` and `num_streams` at the end.
+`device_id` and `num_streams` at the end, and gives the same errors under the
+`nss_cuda` name. Outputs agree with the CPU plugin to 60 dB PSNR or better
+(not bit-for-bit) and are identical from run to run.
+
+- **`device_id`** (default 0) selects the GPU; one filter instance uses one
+  device.
+- **`num_streams`** (default up to 3) is the number of frames an instance
+  processes at once. Each stream owns its device buffers, so the default is
+  lowered until the streams fit `memory_limit_mb`.
+- **`memory_limit_mb`** caps the instance's device and pinned host memory. A
+  limit that cannot hold one stream is a creation error; nothing degrades
+  silently.
+- **Temporal filtering.** `radius > 0` returns the fat intermediate for
+  `VAggregate`, as on the CPU. For BM3D, `temporal_mode="rolling"` keeps the
+  accumulation on the device and returns finished frames, which is faster.
+- **Driver.** A prebuilt plugin needs a driver for the CUDA release it was
+  built with (12.9 for the release packages) or newer.
 
 - **Default architectures:** native code for sm_75, sm_86, sm_89 and sm_120,
   plus compute_75 PTX. Toolkits older than 12.8 cannot target sm_120, so RTX 50
