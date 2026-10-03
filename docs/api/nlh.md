@@ -102,3 +102,25 @@ stage dominates; blind estimation adds a full step-1 matching pass per frame.
   silent clamps.
 - The Wiener stage's `wiener_iters` re-applies the fixed gain; it is not a
   second Wiener image pass.
+
+## CUDA (`core.nss_cuda.NLH`)
+
+`core.nss_cuda.NLH` (from `libnss_cuda`, built with `-DNSS_ENABLE_CUDA=ON`)
+takes the same arguments and gives the same errors as `nss.NLH`. It adds
+`device_id` (default 0) and `num_streams` (default up to 3, fitted to
+`memory_limit_mb`) at the end of the argument list.
+
+- **Device-resident.** The whole frame pipeline runs on the device: the
+  RGB/YUV conversion, the blind noise estimate, every Basic round over the
+  request window, the Wiener round and the per-pixel aggregation.
+  `radius > 0` returns the same fat intermediate as the CPU, so either
+  backend's `VAggregate` can reduce it.
+- **Frame properties.** The `_NSS*` diagnostics match the CPU; `_NSSSigma` of
+  a blind estimate agrees to float precision.
+- **Numerics.** Matching, pixel selection, the Haar transform and the
+  thresholds follow the CPU model; the per-pixel sums are accumulated in FP32
+  where the CPU uses FP64.
+  - The output is not bit-identical to the CPU, but is inside the 60 dB gate
+    (77–107 dB on the frozen references; the differences are coefficients
+    that fall on the other side of the hard threshold).
+  - The output is run-to-run identical.

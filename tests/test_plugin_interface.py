@@ -189,8 +189,16 @@ def main():
         for key in sorted(set(golden["functions"]) | set(shared)):
             if golden["functions"].get(key) != shared.get(key):
                 problems.append(f"signature {key}: {golden['functions'].get(key)!r} -> {shared.get(key)!r}")
+    def same(expected, actual):
+        # Errors that name only the plugin ("nss: ...") come from code shared by
+        # the backends; a backend may report them under either name.
+        if expected == actual:
+            return True
+        error = (expected or {}).get("error", "")
+        return ns != "nss" and error.startswith("nss: ") and actual == {"error": ns + error[3:]}
+
     for key in sorted(set(golden["cases"]) | set(cases)):
-        if golden["cases"].get(key) != cases.get(key):
+        if not same(golden["cases"].get(key), cases.get(key)):
             problems.append(f"{key}: {golden['cases'].get(key)} -> {cases.get(key)}")
     for line in problems[:40]:
         print(line)

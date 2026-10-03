@@ -68,9 +68,8 @@ struct Window {
 };
 
 __device__ __forceinline__ Window spatial_window(const MatchGeometry& g, int cx, int cy) {
-    const int range = max(g.bm_range, 0);
-    return Window{max(cx - range, 0), max(cy - range, 0), min(cx + range, g.width - g.block),
-                  min(cy + range, g.height - g.block)};
+    return Window{max(cx - g.lo(), 0), max(cy - g.lo(), 0), min(cx + g.hi(), g.width - g.block),
+                  min(cy + g.hi(), g.height - g.block)};
 }
 
 __device__ void write_result(DeviceMatch* dst, int* count, int cx, int cy, int t0, const MatchKey* keys, int n) {
@@ -154,6 +153,8 @@ __global__ void __launch_bounds__(kThreads) spatial_match_kernel(const float* pl
 // candidate index when keys are compared, which keeps the block small enough
 // for good occupancy. The K smallest keys are extracted by K warp-wide argmin
 // rounds. Keys are a total order, so the result equals the block top-K path.
+// A block holds as many warps (references) as fit the shared-memory budget:
+// kWarpRefs for the BM3D/WNNM windows, fewer for NLH's larger ones.
 constexpr int kWarpRefs = kThreads / 32;
 constexpr int kWarpMaxK = 16;
 constexpr unsigned kConsumed = 0xffffffffu;  // sortable_distance never returns this
@@ -289,15 +290,16 @@ __global__ void __launch_bounds__(kThreads) spatial_match_warp_kernel(const floa
                                                                       DeviceMatch* out, int* counts, int window_floats,
                                                                       int capacity) {
     extern __shared__ unsigned char shared[];
+    const int warps = blockDim.x / 32;
     const int warp = threadIdx.x / 32;
     const int lane = threadIdx.x % 32;
-    const int ref = blockIdx.x * kWarpRefs + warp;
+    const int ref = blockIdx.x * warps + warp;
     if (ref >= ref_count) return;  // warp-uniform; only warp barriers below
     auto* selected = reinterpret_cast<MatchKey*>(shared) + warp * kWarpMaxK;
-    auto* sortable = reinterpret_cast<unsigned*>(reinterpret_cast<MatchKey*>(shared) + kWarpRefs * kWarpMaxK) +
+    auto* sortable = reinterpret_cast<unsigned*>(reinterpret_cast<MatchKey*>(shared) + warps * kWarpMaxK) +
                      warp * capacity;
     float* window = reinterpret_cast<float*>(reinterpret_cast<unsigned*>(
-                        reinterpret_cast<MatchKey*>(shared) + kWarpRefs * kWarpMaxK) + kWarpRefs * capacity) +
+                        reinterpret_cast<MatchKey*>(shared) + warps * kWarpMaxK) + warps * capacity) +
                     warp * window_floats;
     const int cx = grid.x(ref_begin + ref);
     const int cy = grid.y(ref_begin + ref);
@@ -328,19 +330,20 @@ __global__ void __launch_bounds__(kThreads) predictive_match_warp_kernel(MatchGe
                                                                          int window_floats, int capacity) {
     extern __shared__ unsigned char shared[];
     constexpr int kSlots = kWarpMaxK;
+    const int warps = blockDim.x / 32;
     const int warp = threadIdx.x / 32;
     const int lane = threadIdx.x % 32;
-    const int ref = blockIdx.x * kWarpRefs + warp;
+    const int ref = blockIdx.x * warps + warp;
     if (ref >= ref_count) return;  // warp-uniform; only warp barriers below
     auto* key_base = reinterpret_cast<MatchKey*>(shared);
     MatchKey* merge = key_base + warp * 3 * kSlots;
     MatchKey* scratch = merge + 2 * kSlots;
-    auto* center_base = reinterpret_cast<Center*>(key_base + kWarpRefs * 3 * kSlots);
+    auto* center_base = reinterpret_cast<Center*>(key_base + warps * 3 * kSlots);
     Center* centers = center_base + warp * 2 * kSlots;
     Center* seeds = centers + kSlots;
-    auto* sortable_base = reinterpret_cast<unsigned*>(center_base + kWarpRefs * 2 * kSlots);
+    auto* sortable_base = reinterpret_cast<unsigned*>(center_base + warps * 2 * kSlots);
     unsigned* sortable = sortable_base + warp * capacity;
-    float* window = reinterpret_cast<float*>(sortable_base + kWarpRefs * capacity) + warp * window_floats;
+    float* window = reinterpret_cast<float*>(sortable_base + warps * capacity) + warp * window_floats;
 
     const int cx = grid.x(ref_begin + ref);
     const int cy = grid.y(ref_begin + ref);
@@ -557,9 +560,8 @@ __global__ void __launch_bounds__(kThreads) predictive_match_kernel(MatchGeometr
 template <int N>
 void launch_spatial(const float* plane, const MatchGeometry& g, const RasterGrid& grid, int ref_begin, int ref_count,
                     DeviceMatch* out, int* counts, cudaStream_t stream) {
-    const int range = std::max(g.bm_range, 0);
-    const std::size_t window =
-        static_cast<std::size_t>(2 * range + g.block) * (2 * range + g.block) * g.channels * sizeof(float);
+    const int span = g.lo() + g.hi();
+    const std::size_t window = static_cast<std::size_t>(span + g.block) * (span + g.block) * g.channels * sizeof(float);
     const bool staged = window + N * sizeof(MatchKey) <= kSharedBudget;
     spatial_match_kernel<N><<<ref_count, kThreads, staged ? window : 0, stream>>>(plane, g, grid, ref_begin, out,
                                                                                     counts, staged);
@@ -578,14 +580,15 @@ RasterGrid make_raster_grid(int width, int height, int block, int step) {
 void spatial_match(const float* plane, const MatchGeometry& geometry, const RasterGrid& grid, int ref_begin,
                    int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream) {
     if (ref_count <= 0) return;
-    const int range = std::max(geometry.bm_range, 0);
-    const int candidates = (2 * range + 1) * (2 * range + 1);
+    const int span = geometry.lo() + geometry.hi();
+    const int candidates = (span + 1) * (span + 1);
     const int wanted = std::min(geometry.group, kMaxGroup) - 1;
-    const int window_floats = (2 * range + geometry.block) * (2 * range + geometry.block) * geometry.channels;
-    const std::size_t warp_bytes = kWarpRefs * (kWarpMaxK * sizeof(MatchKey) + candidates * sizeof(unsigned) +
-                                                window_floats * sizeof(float));
-    if (wanted >= 1 && wanted <= kWarpMaxK && warp_bytes <= kSharedBudget) {
-        spatial_match_warp_kernel<<<(ref_count + kWarpRefs - 1) / kWarpRefs, kThreads, warp_bytes, stream>>>(
+    const int window_floats = (span + geometry.block) * (span + geometry.block) * geometry.channels;
+    const std::size_t warp_bytes =
+        kWarpMaxK * sizeof(MatchKey) + candidates * sizeof(unsigned) + window_floats * sizeof(float);
+    const int warps = static_cast<int>(std::min<std::size_t>(kWarpRefs, kSharedBudget / warp_bytes));
+    if (wanted >= 1 && wanted <= kWarpMaxK && warps >= 1) {
+        spatial_match_warp_kernel<<<(ref_count + warps - 1) / warps, 32 * warps, warps * warp_bytes, stream>>>(
             plane, geometry, grid, ref_begin, ref_count, out, counts, window_floats, candidates);
         NSS_CUDA_CHECK_LAUNCH();
         return;
@@ -605,15 +608,16 @@ void spatial_match(const float* plane, const MatchGeometry& geometry, const Rast
 void predictive_match(const MatchGeometry& geometry, const TemporalWindow& window, const RasterGrid& grid,
                       int ref_begin, int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream) {
     if (ref_count <= 0) return;
-    const int range = std::max(geometry.bm_range, 0);
+    const int span = geometry.lo() + geometry.hi();
     const int wanted = std::min(geometry.group, kMaxGroup) - 1;
     const int side = 2 * window.ps_range + 1;
-    const int candidates = std::max((2 * range + 1) * (2 * range + 1), std::min(window.ps_num, kWarpMaxK) * side * side);
-    const int window_floats = (2 * range + geometry.block) * (2 * range + geometry.block) * geometry.channels;
-    const std::size_t warp_bytes = kWarpRefs * (3 * kWarpMaxK * sizeof(MatchKey) + 2 * kWarpMaxK * sizeof(Center) +
-                                                candidates * sizeof(unsigned) + window_floats * sizeof(float));
-    if (wanted >= 1 && wanted <= kWarpMaxK && window.ps_num <= kWarpMaxK && warp_bytes <= kSharedBudget) {
-        predictive_match_warp_kernel<<<(ref_count + kWarpRefs - 1) / kWarpRefs, kThreads, warp_bytes, stream>>>(
+    const int candidates = std::max((span + 1) * (span + 1), std::min(window.ps_num, kWarpMaxK) * side * side);
+    const int window_floats = (span + geometry.block) * (span + geometry.block) * geometry.channels;
+    const std::size_t warp_bytes = 3 * kWarpMaxK * sizeof(MatchKey) + 2 * kWarpMaxK * sizeof(Center) +
+                                   candidates * sizeof(unsigned) + window_floats * sizeof(float);
+    const int warps = static_cast<int>(std::min<std::size_t>(kWarpRefs, kSharedBudget / warp_bytes));
+    if (wanted >= 1 && wanted <= kWarpMaxK && window.ps_num <= kWarpMaxK && warps >= 1) {
+        predictive_match_warp_kernel<<<(ref_count + warps - 1) / warps, 32 * warps, warps * warp_bytes, stream>>>(
             geometry, window, grid, ref_begin, ref_count, out, counts, window_floats, candidates);
         NSS_CUDA_CHECK_LAUNCH();
         return;
