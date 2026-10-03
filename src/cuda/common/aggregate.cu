@@ -63,7 +63,8 @@ __global__ void bin_bounds_kernel(const unsigned* keys, int n, unsigned invalid,
 template <int kTile>
 __global__ void __launch_bounds__(kTileThreads)
 tile_reduce_kernel(const float* values, const AggregatePatch* patches, const int* ids, const int* begin,
-                   const int* end, int block, int tiles_x, int tiles_y, AggregateTarget target, bool accumulate) {
+                   const int* end, int block, int tiles_x, int tiles_y, AggregateTarget target, bool accumulate,
+                   const float* pixel_den, int den_group) {
     constexpr int kPerThread = kTile * kTile / kTileThreads;
     constexpr int kRowStep = kTileThreads / kTile;
     __shared__ AggregatePatch staged[kTileThreads];
@@ -98,12 +99,13 @@ tile_reduce_kernel(const float* values, const AggregatePatch* patches, const int
             const int dx = px - patch.x;
             if (dx < 0 || dx >= block) continue;
             const float* v = values + static_cast<long long>(staged_id[e]) * area + dx;
+            const float* w = pixel_den ? pixel_den + static_cast<long long>(staged_id[e] / den_group) * area + dx : nullptr;
 #pragma unroll
             for (int k = 0; k < kPerThread; ++k) {
                 const int dy = ty * kTile + row0 + k * kRowStep - patch.y;
                 if (dy >= 0 && dy < block) {
                     num[k] = fmaf(patch.weight, v[dy * block], num[k]);
-                    den[k] += patch.weight;
+                    den[k] += w ? w[dy * block] : patch.weight;
                 }
             }
         }
@@ -192,7 +194,8 @@ OrderedAggregator::OrderedAggregator(int max_width, int max_height, int max_slic
 }
 
 void OrderedAggregator::run(const float* values, const AggregatePatch* patches, int npatch, int block,
-                            const AggregateTarget& target, cudaStream_t stream, bool accumulate) {
+                            const AggregateTarget& target, cudaStream_t stream, bool accumulate,
+                            const float* pixel_den, int den_group) {
     const int tile = tile_for(block);
     const int tiles_x = (target.width + tile - 1) / tile;
     const int tiles_y = (target.height + tile - 1) / tile;
@@ -221,11 +224,11 @@ void OrderedAggregator::run(const float* values, const AggregatePatch* patches, 
     if (tile == kSmallTile) {
         tile_reduce_kernel<kSmallTile><<<grid, kTileThreads, 0, stream>>>(
             values, patches, ids_out_.as<int>(), bin_begin_.as<int>(), bin_end_.as<int>(), block, tiles_x, tiles_y,
-            target, accumulate);
+            target, accumulate, pixel_den, den_group);
     } else {
         tile_reduce_kernel<kLargeTile><<<grid, kTileThreads, 0, stream>>>(
             values, patches, ids_out_.as<int>(), bin_begin_.as<int>(), bin_end_.as<int>(), block, tiles_x, tiles_y,
-            target, accumulate);
+            target, accumulate, pixel_den, den_group);
     }
     NSS_CUDA_CHECK_LAUNCH();
 }

@@ -77,6 +77,7 @@ set(NSS_CUDA_IEEE_SOURCES
   common/match.cu
   mcwnnm/kernels.cu
   ncsr/kernels.cu
+  nlh/kernels.cu
   nlm/kernels.cu
   runtime/probe.cu
   wnnm/kernels.cu
@@ -133,6 +134,7 @@ add_library(nss_cuda SHARED
   bm3d/filter.cpp
   mcwnnm/filter.cpp
   ncsr/filter.cpp
+  nlh/filter.cpp
   nlm/filter.cpp
   vaggregate/filter.cpp
   wnnm/filter.cpp

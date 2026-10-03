@@ -49,6 +49,12 @@ struct MatchGeometry {
     // channel c - 1.
     int channels = 1;
     long long channel_step = 0;
+    // Exact-size windows (nss::image_match): candidates span
+    // [c - bm_range, c + range_hi] when range_hi >= 0, else the symmetric
+    // [c - bm_range, c + bm_range].
+    int range_hi = -1;
+    __host__ __device__ int lo() const { return bm_range > 0 ? bm_range : 0; }
+    __host__ __device__ int hi() const { return range_hi >= 0 ? range_hi : lo(); }
 };
 
 // References [ref_begin, ref_begin + ref_count) of the grid; out holds
