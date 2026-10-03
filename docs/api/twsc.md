@@ -83,3 +83,27 @@ work.
 - `estimate_sigma` and explicit `sigma` are mutually exclusive (creation-time
   error).
 - `ps_num > group_size` is an error after resolution.
+
+## CUDA (`core.nss_cuda.TWSC`)
+
+`core.nss_cuda.TWSC` (from `libnss_cuda`, built with `-DNSS_ENABLE_CUDA=ON`)
+takes the same arguments and gives the same errors as `nss.TWSC`. It adds
+`device_id` (default 0) and `num_streams` (default up to 3, fitted to
+`memory_limit_mb`) at the end of the argument list.
+
+- **Device-resident.** The blind noise estimate, the joint matching, the
+  per-group dictionary and ADMM solve, the aggregation and every round run on
+  the device. `radius > 0` returns the same fat intermediate as the CPU, so
+  either backend's `VAggregate` can reduce it.
+- **Numerics.** The dictionary comes from an FP32 Jacobi eigendecomposition of
+  the Gram matrix of the smaller group side, and the solver runs in FP32
+  (FP64 was measured and gave the same agreement with the CPU).
+  - The output is not bit-identical to the CPU, but is inside the 60 dB gate
+    (92–143 dB on the frozen references) and run-to-run identical.
+- **Frame properties.** `_NSSSigma`, `_NSSGroups` and the shape properties
+  match the CPU. `_NSSADMMMaxIterGroups` counts this backend's own
+  non-converged groups; `_NSSSvdDoubleGroups` and `_NSSSylvesterResidual` are
+  CPU-solver diagnostics and are reported as 0.
+- **Speed.** The default settings remain very heavy (one 64x64
+  eigendecomposition per pixel position per round): about 8 s for a 128x128
+  frame on an RTX 5080, against about 190 s on 16 CPU threads.
