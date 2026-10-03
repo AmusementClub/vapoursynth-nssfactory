@@ -435,14 +435,16 @@ __global__ void __launch_bounds__(kThreads) predictive_match_warp_kernel(MatchGe
     }
 }
 
+// K bounds the group size and ps_num (64 for the BM3D family, 256 for TWSC).
+template <int K>
 __global__ void __launch_bounds__(kThreads) predictive_match_kernel(MatchGeometry g, TemporalWindow tw,
                                                                     RasterGrid grid, int ref_begin, DeviceMatch* out,
                                                                     int* counts) {
     constexpr int N = kTemporalSort;
     __shared__ MatchKey keys[N];
-    __shared__ MatchKey global_keys[128];
-    __shared__ Center seeds[kMaxGroup];
-    __shared__ Center centers[kMaxGroup];
+    __shared__ MatchKey global_keys[2 * K];
+    __shared__ Center seeds[K];
+    __shared__ Center centers[K];
     __shared__ int global_count;
     __shared__ int center_count;
 
@@ -451,7 +453,7 @@ __global__ void __launch_bounds__(kThreads) predictive_match_kernel(MatchGeometr
     const int cy = grid.y(ref_begin + ref);
     const int t0 = tw.t0;
     DeviceMatch* dst = out + static_cast<long long>(ref) * g.group;
-    const int wanted = min(g.group, kMaxGroup);
+    const int wanted = min(g.group, K);
     if (wanted <= 1) {
         write_result(dst, counts + ref, cx, cy, t0, keys, 0);
         return;
@@ -469,8 +471,8 @@ __global__ void __launch_bounds__(kThreads) predictive_match_kernel(MatchGeometr
     }
 
     // Seeds: the reference itself followed by the best spatial matches.
-    const int seed_count = min(min(1 + spatial, tw.ps_num), kMaxGroup);
-    for (int i = threadIdx.x; i < 128; i += blockDim.x) {
+    const int seed_count = min(min(1 + spatial, tw.ps_num), K);
+    for (int i = threadIdx.x; i < 2 * K; i += blockDim.x) {
         global_keys[i] = i < spatial ? keys[i] : detail::sentinel_key();
     }
     for (int i = threadIdx.x; i < seed_count; i += blockDim.x) {
@@ -481,7 +483,7 @@ __global__ void __launch_bounds__(kThreads) predictive_match_kernel(MatchGeometr
 
     const int first = max(0, tw.valid_begin);
     const int last = tw.valid_end < 0 ? tw.ntemp : min(tw.ntemp, tw.valid_end);
-    const int local_k = min(tw.ps_num, g.group);
+    const int local_k = min(min(tw.ps_num, g.group), K);
     const int pr = tw.ps_range;
     const int max_x = g.width - g.block;
     const int max_y = g.height - g.block;
@@ -530,14 +532,14 @@ __global__ void __launch_bounds__(kThreads) predictive_match_kernel(MatchGeometr
                 }
             }
             const int local = topk.filled;
-            // Global merge: current global (<= 63) + this layer's local (<= 64).
+            // Global merge: current global (< K) + this layer's local (<= K).
             const int gc = global_count;
-            for (int i = threadIdx.x; i < 128; i += blockDim.x) {
-                if (i >= gc && i < 64) global_keys[i] = detail::sentinel_key();
-                if (i >= 64) global_keys[i] = i - 64 < local ? keys[i - 64] : detail::sentinel_key();
+            for (int i = threadIdx.x; i < 2 * K; i += blockDim.x) {
+                if (i >= gc && i < K) global_keys[i] = detail::sentinel_key();
+                if (i >= K) global_keys[i] = i - K < local ? keys[i - K] : detail::sentinel_key();
             }
             __syncthreads();
-            detail::bitonic_sort<128>(global_keys);
+            detail::bitonic_sort<2 * K>(global_keys);
             if (threadIdx.x == 0) {
                 int valid = 0;
                 while (valid < wanted - 1 &&
@@ -622,7 +624,11 @@ void predictive_match(const MatchGeometry& geometry, const TemporalWindow& windo
         NSS_CUDA_CHECK_LAUNCH();
         return;
     }
-    predictive_match_kernel<<<ref_count, kThreads, 0, stream>>>(geometry, window, grid, ref_begin, out, counts);
+    if (geometry.group <= 64 && window.ps_num <= 64) {
+        predictive_match_kernel<64><<<ref_count, kThreads, 0, stream>>>(geometry, window, grid, ref_begin, out, counts);
+    } else {
+        predictive_match_kernel<256><<<ref_count, kThreads, 0, stream>>>(geometry, window, grid, ref_begin, out, counts);
+    }
     NSS_CUDA_CHECK_LAUNCH();
 }
 

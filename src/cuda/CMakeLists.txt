@@ -80,6 +80,7 @@ set(NSS_CUDA_IEEE_SOURCES
   nlh/kernels.cu
   nlm/kernels.cu
   runtime/probe.cu
+  twsc/kernels.cu
   wnnm/kernels.cu
 )
 set(NSS_CUDA_CLASSIFIED ${NSS_CUDA_IEEE_SOURCES})
@@ -134,7 +135,7 @@ add_library(nss_cuda SHARED
   bm3d/filter.cpp
   mcwnnm/filter.cpp
   ncsr/filter.cpp
-  nlh/filter.cpp
+  common/image_filter.cpp
   nlm/filter.cpp
   vaggregate/filter.cpp
   wnnm/filter.cpp

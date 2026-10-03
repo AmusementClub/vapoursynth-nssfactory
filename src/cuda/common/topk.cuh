@@ -70,7 +70,7 @@ __host__ __device__ constexpr int pow2_at_least(int v) {
 }
 
 // Streaming top-K over a shared buffer of N keys: the current result occupies
-// the front (pow2_at_least(k) slots, k <= 64) and each chunk of candidates is
+// the front (pow2_at_least(k) slots, k < N) and each chunk of candidates is
 // written behind it before merge(). After the last merge, entries
 // [0, filled) are the selected keys in ascending order.
 template <int N>
