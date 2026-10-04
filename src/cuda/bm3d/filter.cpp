@@ -66,10 +66,6 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         args.patches = l.patches;
         bm3d_filter_groups(args, l.stream);
     };
-    {
-        DeviceGuard guard(config.device.index);
-        bm3d_init_tables(config.device.index);
-    }
     group_filter_install(std::move(config), out, core, vsapi);
 }
 

@@ -9,14 +9,20 @@
 namespace nss_cuda {
 namespace {
 
-// Tiles are 16x16 for blocks up to 16 (one pixel per thread, fewer
-// redundant coverage tests) and 32x32 above; a block <= tile + 1 spans at
-// most 2x2 tiles either way.
+// Tiles are 8x8 for blocks up to 8, 16x16 up to 16 (one pixel per thread) and
+// 32x32 above. A block <= tile + 1 spans at most 2x2 tiles, and the smaller
+// the tile, the fewer entries of its bin miss a given pixel. The per-pixel
+// order (patch id) does not depend on the tile size.
+constexpr int kTinyTile = 8;
 constexpr int kSmallTile = 16;
 constexpr int kLargeTile = OrderedAggregator::kTile;
 constexpr int kTilesPerPatch = 4;
-__host__ __device__ constexpr int tile_for(int block) { return block <= kSmallTile ? kSmallTile : kLargeTile; }
+__host__ __device__ constexpr int tile_for(int block) {
+    return block <= kTinyTile ? kTinyTile : block <= kSmallTile ? kSmallTile : kLargeTile;
+}
 constexpr int kTileThreads = 256;
+template <int kTile>
+constexpr int kTileBlock = kTile * kTile < kTileThreads ? kTile * kTile : kTileThreads;
 
 // Padding entries use key == bins (one past the last bin) so they sort last
 // while the radix sort only needs bits_for(bins) bits.
@@ -65,10 +71,11 @@ __global__ void __launch_bounds__(kTileThreads)
 tile_reduce_kernel(const float* values, const AggregatePatch* patches, const int* ids, const int* begin,
                    const int* end, int block, int tiles_x, int tiles_y, AggregateTarget target, bool accumulate,
                    const float* pixel_den, int den_group) {
-    constexpr int kPerThread = kTile * kTile / kTileThreads;
-    constexpr int kRowStep = kTileThreads / kTile;
-    __shared__ AggregatePatch staged[kTileThreads];
-    __shared__ int staged_id[kTileThreads];
+    constexpr int kThreads = kTileBlock<kTile>;
+    constexpr int kPerThread = kTile * kTile / kThreads;
+    constexpr int kRowStep = kThreads / kTile;
+    __shared__ AggregatePatch staged[kThreads];
+    __shared__ int staged_id[kThreads];
     const int tx = blockIdx.x, ty = blockIdx.y, slice = blockIdx.z;
     const int bin = slice * tiles_x * tiles_y + ty * tiles_x + tx;
     const int col = threadIdx.x % kTile;
@@ -85,8 +92,8 @@ tile_reduce_kernel(const float* values, const AggregatePatch* patches, const int
     }
     const int area = block * block;
     const int first = begin[bin], last = end[bin];
-    for (int chunk = first; chunk < last; chunk += kTileThreads) {
-        const int n = min(kTileThreads, last - chunk);
+    for (int chunk = first; chunk < last; chunk += kThreads) {
+        const int n = min(kThreads, last - chunk);
         __syncthreads();
         if (threadIdx.x < n) {
             const int p = ids[chunk + threadIdx.x];
@@ -177,8 +184,8 @@ std::size_t sort_temp_size(std::size_t entries) {
 
 OrderedAggregator::OrderedAggregator(int max_width, int max_height, int max_slices, std::size_t max_patches,
                                      const std::shared_ptr<nss::ResourceBudget>& budget)
-    : max_bins_(static_cast<std::size_t>((max_width + kSmallTile - 1) / kSmallTile) *
-                ((max_height + kSmallTile - 1) / kSmallTile) * max_slices),
+    : max_bins_(static_cast<std::size_t>((max_width + kTinyTile - 1) / kTinyTile) *
+                ((max_height + kTinyTile - 1) / kTinyTile) * max_slices),
       max_patches_(max_patches), max_entries_(max_patches * kTilesPerPatch) {
     if (max_bins_ >= 0x7fffffffu || max_entries_ > static_cast<std::size_t>(INT32_MAX)) {
         throw std::invalid_argument("nss_cuda: aggregation geometry too large");
@@ -221,7 +228,11 @@ void OrderedAggregator::run(const float* values, const AggregatePatch* patches, 
         NSS_CUDA_CHECK_LAUNCH();
     }
     const dim3 grid(tiles_x, tiles_y, target.slices);
-    if (tile == kSmallTile) {
+    if (tile == kTinyTile) {
+        tile_reduce_kernel<kTinyTile><<<grid, kTileBlock<kTinyTile>, 0, stream>>>(
+            values, patches, ids_out_.as<int>(), bin_begin_.as<int>(), bin_end_.as<int>(), block, tiles_x, tiles_y,
+            target, accumulate, pixel_den, den_group);
+    } else if (tile == kSmallTile) {
         tile_reduce_kernel<kSmallTile><<<grid, kTileThreads, 0, stream>>>(
             values, patches, ids_out_.as<int>(), bin_begin_.as<int>(), bin_end_.as<int>(), block, tiles_x, tiles_y,
             target, accumulate, pixel_den, den_group);

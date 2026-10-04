@@ -285,6 +285,34 @@ __device__ int warp_select_raster(unsigned* sortable, int total, int lane, int k
     return filled;
 }
 
+// Sortable distances of one lane's candidates with the B x B reference block
+// held in registers (one channel).
+template <int B>
+__device__ __forceinline__ void warp_distances(const float* anchor, const float* window, int sw, const Window& w,
+                                               const SpatialLayout& layout, SpatialLayout::Cursor cursor, int lane,
+                                               int total, int cx, int cy, unsigned* sortable) {
+    float ref[B * B];
+#pragma unroll
+    for (int r = 0; r < B; ++r) {
+#pragma unroll
+        for (int c = 0; c < B; ++c) ref[r * B + c] = anchor[r * sw + c];
+    }
+    for (int idx = lane; idx < total; idx += 32, layout.advance(cursor)) {
+        const Center pos = layout.at(cursor);
+        const float* b = window + (pos.y - w.top) * sw + (pos.x - w.left);
+        float sum = 0.f;
+#pragma unroll
+        for (int r = 0; r < B; ++r) {
+#pragma unroll
+            for (int c = 0; c < B; ++c) {
+                const float d = ref[r * B + c] - b[r * sw + c];
+                sum = fmaf(d, d, sum);
+            }
+        }
+        sortable[idx] = (pos.x == cx && pos.y == cy) ? kConsumed : detail::sortable_distance(sum);
+    }
+}
+
 // Stages the spatial window and fills the sortable distances of the spatial
 // candidates of (cx, cy); returns the layout and candidate count.
 __device__ __forceinline__ int warp_spatial(const float* plane, const MatchGeometry& g, int cx, int cy, int lane,
@@ -304,30 +332,16 @@ __device__ __forceinline__ int warp_spatial(const float* plane, const MatchGeome
     anchor_step = sw * sh;
     const int total = layout.ww * (w.bottom - w.top + 1);
     auto cursor = layout.begin(lane);
+    // The kernel is bound by shared-memory loads, two per term. Holding the
+    // reference block in registers leaves one; the terms and their order are
+    // those of block_ssd_fixed.
     if (g.channels == 1 && g.block == 8) {
-        // The kernel is bound by shared-memory loads, two per term. Holding the
-        // reference block in registers leaves one; the terms and their order
-        // are those of block_ssd_fixed<8>.
-        float ref[64];
-#pragma unroll
-        for (int r = 0; r < 8; ++r) {
-#pragma unroll
-            for (int c = 0; c < 8; ++c) ref[r * 8 + c] = anchor[r * sw + c];
-        }
-        for (int idx = lane; idx < total; idx += 32, layout.advance(cursor)) {
-            const Center pos = layout.at(cursor);
-            const float* b = window + (pos.y - w.top) * sw + (pos.x - w.left);
-            float sum = 0.f;
-#pragma unroll
-            for (int r = 0; r < 8; ++r) {
-#pragma unroll
-                for (int c = 0; c < 8; ++c) {
-                    const float d = ref[r * 8 + c] - b[r * sw + c];
-                    sum = fmaf(d, d, sum);
-                }
-            }
-            sortable[idx] = (pos.x == cx && pos.y == cy) ? kConsumed : detail::sortable_distance(sum);
-        }
+        warp_distances<8>(anchor, window, sw, w, layout, cursor, lane, total, cx, cy, sortable);
+        __syncwarp();
+        return total;
+    }
+    if (g.channels == 1 && g.block == 4) {
+        warp_distances<4>(anchor, window, sw, w, layout, cursor, lane, total, cx, cy, sortable);
         __syncwarp();
         return total;
     }

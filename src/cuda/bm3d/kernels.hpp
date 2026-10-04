@@ -15,9 +15,6 @@
 
 namespace nss_cuda {
 
-// Loads the orthonormal DCT tables for the current device (idempotent, thread-safe).
-void bm3d_init_tables(int device);
-
 struct Bm3dGroupArgs {
     // Device arrays of per-frame plane pointers indexed by DeviceMatch::t
     // (one entry for spatial filtering). ref == nullptr: hard threshold.

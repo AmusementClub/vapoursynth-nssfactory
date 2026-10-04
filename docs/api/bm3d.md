@@ -116,10 +116,12 @@ temporal = core.nss_cuda.VAggregate(fat, clip, radius=1)
   properties, so `nss.VAggregate` and `nss_cuda.VAggregate` accept each other's
   BM3D output. They agree within a few ulp: the CPU's fast-math division may
   be up to 2 ulp off IEEE rounding.
-- **Numerics.** The transform math is the CPU's 3D DCT. The default shape
-  (block 8, group 8) runs the same 8-point butterflies as the CPU's fused
-  path, in registers, four groups per warp; other shapes use the orthonormal
-  matrix transform.
+- **Numerics.** The transform math is the CPU's 3D DCT, as butterflies: the
+  8-point ones of the CPU's fused path and the same generated codelets for
+  12, 16, 32 and 64.
+  - Shapes whose group fits registers (block 4, 8 or 16 with up to 128
+    samples per lane) are filtered several groups per warp; the others run one
+    block per group with the cube in shared memory.
   - The output is not bit-identical to the CPU, but stays within the 60 dB
     gate in `tests/data/cuda_tolerances_v1.json`.
   - The output is run-to-run identical on a given GPU, driver and build.

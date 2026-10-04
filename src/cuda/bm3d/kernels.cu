@@ -1,176 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include "cuda/bm3d/kernels.hpp"
+#include "cuda/bm3d/dct_codelets.cuh"
 #include "cuda/runtime/error.hpp"
 
-#include <cmath>
-#include <mutex>
-#include <set>
-#include <vector>
+#include <cstddef>
+#include <stdexcept>
 
 namespace nss_cuda {
 namespace {
 
-// Orthonormal DCT-II matrices T_n[k][j] for every block and group length.
-// Threads of a warp read the same entry at the same time (broadcast).
-constexpr int kTableSizes[] = {1, 2, 4, 8, 12, 16, 32, 64};
-constexpr int kTableFloats = 1 + 4 + 16 + 64 + 144 + 256 + 1024 + 4096;
-__constant__ float c_dct[kTableFloats];
-
-// Running sum of n^2 over kTableSizes (spelled out: device code cannot read
-// the host array).
-__host__ __device__ constexpr int table_offset(int n) {
-    switch (n) {
-    case 1: return 0;
-    case 2: return 1;
-    case 4: return 5;
-    case 8: return 21;
-    case 12: return 85;
-    case 16: return 229;
-    case 32: return 485;
-    case 64: return 1509;
-    default: return -1;
-    }
-}
-static_assert(table_offset(64) + 64 * 64 == kTableFloats, "DCT table layout");
-
 constexpr float kHardLambda = 2.7f;  // nss::kBmHardLambda
-constexpr int kThreads = 128;
 
-// In-place transform of one line of N samples (stride apart).
-// Short lines unroll fully; 32/64 (large blocks, long groups) stay compact.
-template <int N>
-__device__ __forceinline__ void dct_line(float* base, int stride, bool inverse) {
-    constexpr int kOffset = table_offset(N);
-    constexpr int kUnroll = N <= 16 ? N : 4;
-    const float* t = c_dct + kOffset;
-    float in[N];
-#pragma unroll
-    for (int j = 0; j < N; ++j) in[j] = base[j * stride];
-#pragma unroll kUnroll
-    for (int k = 0; k < N; ++k) {
-        float acc = 0.f;
-#pragma unroll kUnroll
-        for (int j = 0; j < N; ++j) acc = fmaf(inverse ? t[j * N + k] : t[k * N + j], in[j], acc);
-        base[k * stride] = acc;
-    }
-}
-
-__device__ void dct_line_n(int n, float* base, int stride, bool inverse) {
-    switch (n) {
-    case 1: return;
-    case 2: dct_line<2>(base, stride, inverse); return;
-    case 4: dct_line<4>(base, stride, inverse); return;
-    case 8: dct_line<8>(base, stride, inverse); return;
-    case 12: dct_line<12>(base, stride, inverse); return;
-    case 16: dct_line<16>(base, stride, inverse); return;
-    case 32: dct_line<32>(base, stride, inverse); return;
-    default: dct_line<64>(base, stride, inverse); return;
-    }
-}
-
-// 2D transform of `group` patches (rows then columns), cube = [group][block][block].
-__device__ void dct2d(float* cube, int block, int group, bool inverse) {
-    const int lines = group * block;
-    for (int i = threadIdx.x; i < lines; i += blockDim.x) dct_line_n(block, cube + i * block, 1, inverse);
-    __syncthreads();
-    for (int i = threadIdx.x; i < lines; i += blockDim.x) {
-        const int g = i / block, c = i % block;
-        dct_line_n(block, cube + g * block * block + c, block, inverse);
-    }
-    __syncthreads();
-}
-
-__device__ void dct_group(float* cube, int area, int group, bool inverse) {
-    for (int f = threadIdx.x; f < area; f += blockDim.x) dct_line_n(group, cube + f, area, inverse);
-    __syncthreads();
-}
-
-// Fixed-shape tree reduction: deterministic for a fixed blockDim.
-template <class T>
-__device__ T block_sum(T value, T* scratch) {
-    scratch[threadIdx.x] = value;
-    __syncthreads();
-    for (int half = blockDim.x / 2; half > 0; half >>= 1) {
-        if (threadIdx.x < half) scratch[threadIdx.x] += scratch[threadIdx.x + half];
-        __syncthreads();
-    }
-    const T total = scratch[0];
-    __syncthreads();
-    return total;
-}
-
-__global__ void __launch_bounds__(kThreads) group_filter_kernel(Bm3dGroupArgs a) {
-    __shared__ float fsum[kThreads];
-    __shared__ int isum[kThreads];
-    const int r = blockIdx.x;
-    const int area = a.block * a.block;
-    const int cube_n = a.group * area;
-    float* cube = a.values + static_cast<long long>(r) * cube_n;
-    float* refc = a.ref ? a.ref_cube + static_cast<long long>(r) * cube_n : nullptr;
-    const DeviceMatch* m = a.matches + static_cast<long long>(r) * a.group;
-    const int kk = min(a.counts[r], a.group);
-
-    for (int i = threadIdx.x; i < cube_n; i += blockDim.x) {
-        const int g = i / area, p = i % area;
-        float v = 0.f, rv = 0.f;
-        if (g < kk) {
-            const long long offset = static_cast<long long>(m[g].y + p / a.block) * a.pitch + m[g].x + p % a.block;
-            v = a.src[m[g].t][offset];
-            if (refc) rv = a.ref[m[g].t][offset];
-        }
-        cube[i] = v;
-        if (refc) refc[i] = rv;
-    }
-    __syncthreads();
-    dct2d(cube, a.block, a.group, false);
-    if (refc) dct2d(refc, a.block, a.group, false);
-    dct_group(cube, area, a.group, false);
-    if (refc) dct_group(refc, area, a.group, false);
-
-    float weight;
-    if (refc) {
-        const float sig2 = a.sigma * a.sigma;
-        float w2 = 0.f;
-        for (int i = threadIdx.x; i < cube_n; i += blockDim.x) {
-            float w = 1.f;
-            if (i != 0) {
-                const float q = refc[i] * refc[i];
-                w = q / (q + sig2);
-            }
-            cube[i] *= w;
-            w2 = fmaf(w, w, w2);
-        }
-        weight = 1.f / fmaxf(block_sum(w2, fsum), 1e-12f);
-    } else {
-        const float thr = kHardLambda * a.sigma;
-        int kept = 0;
-        for (int i = threadIdx.x; i < cube_n; i += blockDim.x) {
-            if (i != 0 && fabsf(cube[i]) < thr) {
-                cube[i] = 0.f;
-            } else {
-                ++kept;
-            }
-        }
-        weight = 1.f / static_cast<float>(max(block_sum(kept, isum), 1));
-    }
-    __syncthreads();
-    dct_group(cube, area, a.group, true);
-    dct2d(cube, a.block, a.group, true);
-
-    for (int g = threadIdx.x; g < a.group; g += blockDim.x) {
-        a.patches[static_cast<long long>(r) * a.group + g] =
-            g < kk ? AggregatePatch{m[g].x, m[g].y, m[g].t, weight} : AggregatePatch{0, 0, -1, 0.f};
-    }
-}
-
-
-// --- Block 8, group 8: one warp filters four groups in registers -----------
-//
-// Lane l serves group l / 8 with sub-lane j = l % 8 and holds 64 samples
-// v[p * 8 + r]: patch p, row r, column j. The transforms along r and p run in
-// registers; the one along the columns runs after an 8 x 8 transposition
-// across the group's lanes through a small shared buffer.
-//
 // 8-point DCT-II / DCT-III butterflies (FFTW e10_8 / e01_8, the arithmetic of
 // the CPU's bm3d_filter8). Each is 4x the orthonormal transform, so the 3-D
 // forward scales coefficients by 64 and the round trip by 4096: both exact
@@ -242,19 +82,243 @@ __device__ __forceinline__ void dct8_inverse(float* b, int s) {
     b[s] = fmaf(kDctP1662, to, tl);
 }
 
+// --- Every other shape: one block per group, sizes known at compile time ----
+//
+// The cube lives in shared memory when it fits (it is written to `values`
+// once at the end), the block has as many threads as a transform pass has
+// lines, and the line transforms are butterflies wherever one exists.
+
+// Orthonormal 2- and 4-point DCT-II / DCT-III as the matrix product the CPU
+// uses for these sizes (same terms in the same order).
+constexpr float kDct4A = 0.653281482438188263928322f;  // cos(pi / 8) / sqrt(2)
+constexpr float kDct4B = 0.270598050073098492199862f;  // sin(pi / 8) / sqrt(2)
+
+template <int N>
+__device__ __forceinline__ constexpr float dct_small_term(int k, int j) {
+    if constexpr (N == 2) {
+        constexpr float t[2][2] = {{kDctP707, kDctP707}, {kDctP707, -kDctP707}};
+        return t[k][j];
+    } else {
+        constexpr float t[4][4] = {{0.5f, 0.5f, 0.5f, 0.5f},
+                                   {kDct4A, kDct4B, -kDct4B, -kDct4A},
+                                   {0.5f, -0.5f, -0.5f, 0.5f},
+                                   {kDct4B, -kDct4A, kDct4A, -kDct4B}};
+        return t[k][j];
+    }
+}
+
+template <int N>
+__device__ __forceinline__ void dct_small(float* base, int stride, bool inverse) {
+    float in[N];
+#pragma unroll
+    for (int j = 0; j < N; ++j) in[j] = base[j * stride];
+#pragma unroll
+    for (int k = 0; k < N; ++k) {
+        float acc = 0.f;
+#pragma unroll
+        for (int j = 0; j < N; ++j) {
+            acc = fmaf(inverse ? dct_small_term<N>(j, k) : dct_small_term<N>(k, j), in[j], acc);
+        }
+        base[k * stride] = acc;
+    }
+}
+
+// Scale of dct_line_fixed<N> against the orthonormal transform.
+template <int N>
+constexpr float kLineScale = N == 8 ? 4.f : 1.f;
+
+template <int N>
+__device__ __forceinline__ void dct_line_fixed(float* base, int stride, bool inverse) {
+    if constexpr (N == 1) {
+        return;
+    } else if constexpr (N == 8) {
+        if (inverse) {
+            dct8_inverse(base, stride);
+        } else {
+            dct8_forward(base, stride);
+        }
+    } else if constexpr (N == 12 || N == 16 || N == 32 || N == 64) {
+        float in[8 * N], out[8 * N];
+#pragma unroll
+        for (int k = 0; k < N; ++k) in[8 * k] = base[k * stride];
+        if constexpr (N == 12) {
+            inverse ? codelet::nss_dct12_inv_is8(0, in, out) : codelet::nss_dct12_fwd_is8(0, in, out);
+        } else if constexpr (N == 16) {
+            inverse ? codelet::nss_dct16_inv_is8(0, in, out) : codelet::nss_dct16_fwd_is8(0, in, out);
+        } else if constexpr (N == 32) {
+            inverse ? codelet::nss_dct32_inv_is8(0, in, out) : codelet::nss_dct32_fwd_is8(0, in, out);
+        } else {
+            inverse ? codelet::nss_dct64_inv_is8(0, in, out) : codelet::nss_dct64_fwd_is8(0, in, out);
+        }
+#pragma unroll
+        for (int k = 0; k < N; ++k) base[k * stride] = out[8 * k];
+    } else {
+        dct_small<N>(base, stride, inverse);  // 2 and 4
+    }
+}
+
+// Sum over the block of one value per thread: lanes by shuffles, then the
+// warps in order. Fixed shape for a fixed block size. blockDim is a multiple
+// of 32.
+template <class T>
+__device__ __forceinline__ T block_total(T value, T* per_warp) {
+#pragma unroll
+    for (int offset = 16; offset > 0; offset >>= 1) value += __shfl_xor_sync(0xffffffffu, value, offset);
+    if ((threadIdx.x & 31) == 0) per_warp[threadIdx.x >> 5] = value;
+    __syncthreads();
+    T total = 0;
+    for (int w = 0; w < static_cast<int>(blockDim.x >> 5); ++w) total += per_warp[w];
+    __syncthreads();
+    return total;
+}
+
+template <int B, int G>
+__device__ __forceinline__ void transform_cube(float* cube, bool inverse) {
+    constexpr int kArea = B * B;
+    const int tid = threadIdx.x, threads = blockDim.x;
+    if (inverse) {
+        for (int f = tid; f < kArea; f += threads) dct_line_fixed<G>(cube + f, kArea, true);
+        __syncthreads();
+    }
+    for (int i = tid; i < G * B; i += threads) dct_line_fixed<B>(cube + i * B, 1, inverse);
+    __syncthreads();
+    for (int i = tid; i < G * B; i += threads) dct_line_fixed<B>(cube + (i / B) * kArea + i % B, B, inverse);
+    __syncthreads();
+    if (!inverse) {
+        for (int f = tid; f < kArea; f += threads) dct_line_fixed<G>(cube + f, kArea, false);
+        __syncthreads();
+    }
+}
+
+constexpr int kMaxWarps = 8;  // blocks of the shape kernels have at most 256 threads
+
+template <int B, int G>
+__global__ void __launch_bounds__(256) group_shape_kernel(Bm3dGroupArgs a, bool in_shared) {
+    extern __shared__ float staged[];  // cube, then the reference cube; empty when !in_shared
+    __shared__ float fsum[kMaxWarps];
+    __shared__ int isum[kMaxWarps];
+    constexpr int kArea = B * B, kCube = G * kArea;
+    constexpr float kScale = kLineScale<B> * kLineScale<B> * kLineScale<G>;
+    const int r = blockIdx.x, tid = threadIdx.x, threads = blockDim.x;
+    float* const out = a.values + static_cast<long long>(r) * kCube;
+    float* const cube = in_shared ? staged : out;
+    float* const refc = !a.ref ? nullptr : in_shared ? staged + kCube : a.ref_cube + static_cast<long long>(r) * kCube;
+    const DeviceMatch* m = a.matches + static_cast<long long>(r) * G;
+    const int kk = min(a.counts[r], G);
+
+    for (int i = tid; i < kCube; i += threads) {
+        const int g = i / kArea, p = i % kArea;
+        float v = 0.f, rv = 0.f;
+        if (g < kk) {
+            const long long offset = static_cast<long long>(m[g].y + p / B) * a.pitch + m[g].x + p % B;
+            v = a.src[m[g].t][offset];
+            if (refc) rv = a.ref[m[g].t][offset];
+        }
+        cube[i] = v;
+        if (refc) refc[i] = rv;
+    }
+    __syncthreads();
+    transform_cube<B, G>(cube, false);
+    if (refc) transform_cube<B, G>(refc, false);
+
+    float weight;
+    if (refc) {
+        const float sig2 = kScale * kScale * a.sigma * a.sigma;
+        float w2 = 0.f;
+        for (int i = tid; i < kCube; i += threads) {
+            float w = 1.f;
+            if (i != 0) {
+                const float q = refc[i] * refc[i];
+                w = q / (q + sig2);
+            }
+            cube[i] *= w;
+            w2 = fmaf(w, w, w2);
+        }
+        weight = 1.f / fmaxf(block_total(w2, fsum), 1e-12f);
+    } else {
+        const float thr = kScale * kHardLambda * a.sigma;
+        int kept = 0;
+        for (int i = tid; i < kCube; i += threads) {
+            if (i != 0 && fabsf(cube[i]) < thr) {
+                cube[i] = 0.f;
+            } else {
+                ++kept;
+            }
+        }
+        weight = 1.f / static_cast<float>(max(block_total(kept, isum), 1));
+    }
+    transform_cube<B, G>(cube, true);
+    constexpr float kUnscale = 1.f / (kScale * kScale);
+    if (in_shared) {
+        for (int i = tid; i < kCube; i += threads) out[i] = cube[i] * kUnscale;
+    } else if (kUnscale != 1.f) {
+        for (int i = tid; i < kCube; i += threads) out[i] *= kUnscale;
+    }
+    for (int g = tid; g < G; g += threads) {
+        a.patches[static_cast<long long>(r) * G + g] =
+            g < kk ? AggregatePatch{m[g].x, m[g].y, m[g].t, weight} : AggregatePatch{0, 0, -1, 0.f};
+    }
+}
+
+constexpr std::size_t kCubeSharedBytes = 24 * 1024;  // per block; larger cubes stay in `values`
+
+template <int B, int G>
+void launch_shape(const Bm3dGroupArgs& args, cudaStream_t stream) {
+    const std::size_t bytes = static_cast<std::size_t>(G) * B * B * sizeof(float) * (args.ref ? 2 : 1);
+    const bool in_shared = bytes <= kCubeSharedBytes;
+    const int lines = G * B > B * B ? G * B : B * B;
+    const int threads = lines >= 256 ? 256 : (lines + 31) / 32 * 32;
+    group_shape_kernel<B, G><<<args.batch, threads, in_shared ? bytes : 0, stream>>>(args, in_shared);
+}
+
+template <int B>
+bool launch_block(const Bm3dGroupArgs& args, cudaStream_t stream) {
+    switch (args.group) {
+    case 1: launch_shape<B, 1>(args, stream); return true;
+    case 2: launch_shape<B, 2>(args, stream); return true;
+    case 4: launch_shape<B, 4>(args, stream); return true;
+    case 8: launch_shape<B, 8>(args, stream); return true;
+    case 16: launch_shape<B, 16>(args, stream); return true;
+    case 32: launch_shape<B, 32>(args, stream); return true;
+    case 64: launch_shape<B, 64>(args, stream); return true;
+    default: return false;
+    }
+}
+
+bool launch_shapes(const Bm3dGroupArgs& args, cudaStream_t stream) {
+    switch (args.block) {
+    case 1: return launch_block<1>(args, stream);
+    case 2: return launch_block<2>(args, stream);
+    case 4: return launch_block<4>(args, stream);
+    case 8: return launch_block<8>(args, stream);
+    case 12: return launch_block<12>(args, stream);
+    case 16: return launch_block<16>(args, stream);
+    case 32: return launch_block<32>(args, stream);
+    default: return false;
+    }
+}
+
+
+// --- Shapes whose cube fits registers: one warp filters 32 / B groups -------
+//
+// Lane l serves group l / B with sub-lane j = l % B and holds G * B samples
+// v[p * B + r]: patch p, row r, column j. The transforms along r and p run in
+// registers; the one along the columns runs after a B x B transposition
+// across the group's lanes through a small shared buffer.
 constexpr int kWarpStride = 33;  // one more than the warp: conflict-free banks both ways
 
-// Transposes, for every p, the 8 x 8 matrix whose columns are the lanes of a
-// group: v[p * 8 + i] of sub-lane j <-> v[p * 8 + j] of sub-lane i.
-__device__ __forceinline__ void transpose8(float* v, float* buffer, int lane) {
-    const int sub = lane & 7, base = lane & ~7;
+// Transposes, for every p, the B x B matrix whose columns are the lanes of a
+// group: v[p * B + i] of sub-lane j <-> v[p * B + j] of sub-lane i.
+template <int B, int G>
+__device__ __forceinline__ void transpose_lanes(float* v, float* buffer, int lane) {
+    const int sub = lane % B, base = lane - sub;
 #pragma unroll
-    for (int p = 0; p < 8; ++p) {
+    for (int p = 0; p < G; ++p) {
 #pragma unroll
-        for (int i = 0; i < 8; ++i) buffer[i * kWarpStride + lane] = v[p * 8 + i];
+        for (int i = 0; i < B; ++i) buffer[i * kWarpStride + lane] = v[p * B + i];
         __syncwarp();
 #pragma unroll
-        for (int i = 0; i < 8; ++i) v[p * 8 + i] = buffer[sub * kWarpStride + base + i];
+        for (int i = 0; i < B; ++i) v[p * B + i] = buffer[sub * kWarpStride + base + i];
         __syncwarp();
     }
 }
@@ -263,128 +327,139 @@ __device__ __forceinline__ void transpose8(float* v, float* buffer, int lane) {
 // slots beyond the group's count) and applies the forward transform. On
 // return the lane is the row frequency and the index within a patch the
 // column frequency: the DC coefficient is v[0] of sub-lane 0.
-__device__ __forceinline__ void forward8(float* v, const float* const* planes, const DeviceMatch* m, int kk, int pitch,
-                                         float* buffer, int lane) {
-    const int sub = lane & 7;
+template <int B, int G>
+__device__ __forceinline__ void forward_lanes(float* v, const float* const* planes, const DeviceMatch* m, int kk,
+                                              int pitch, float* buffer, int lane) {
+    const int sub = lane % B;
 #pragma unroll
-    for (int p = 0; p < 8; ++p) {
+    for (int p = 0; p < G; ++p) {
         const DeviceMatch& mp = m[p < kk ? p : 0];
         const float* at = planes[mp.t] + static_cast<long long>(mp.y) * pitch + mp.x + sub;
 #pragma unroll
-        for (int row = 0; row < 8; ++row) v[p * 8 + row] = p < kk ? at[row * pitch] : 0.f;
+        for (int row = 0; row < B; ++row) v[p * B + row] = p < kk ? at[row * pitch] : 0.f;
     }
 #pragma unroll
-    for (int p = 0; p < 8; ++p) dct8_forward(v + p * 8, 1);  // rows of the patch
+    for (int p = 0; p < G; ++p) dct_line_fixed<B>(v + p * B, 1, false);  // rows of the patch
 #pragma unroll
-    for (int row = 0; row < 8; ++row) dct8_forward(v + row, 8);  // group axis
-    transpose8(v, buffer, lane);
+    for (int row = 0; row < B; ++row) dct_line_fixed<G>(v + row, B, false);  // group axis
+    transpose_lanes<B, G>(v, buffer, lane);
 #pragma unroll
-    for (int p = 0; p < 8; ++p) dct8_forward(v + p * 8, 1);  // columns of the patch
+    for (int p = 0; p < G; ++p) dct_line_fixed<B>(v + p * B, 1, false);  // columns of the patch
 }
 
-template <bool Wiener>
-__global__ void __launch_bounds__(32) group_filter8_kernel(Bm3dGroupArgs a) {
-    __shared__ float buffer[8 * kWarpStride];
-    const int lane = threadIdx.x, sub = lane & 7;
-    const int r = blockIdx.x * 4 + lane / 8;
+// Sum over the B lanes of a group (B a power of two).
+template <int B, class T>
+__device__ __forceinline__ T group_total(T value) {
+#pragma unroll
+    for (int offset = 1; offset < B; offset <<= 1) value += __shfl_xor_sync(0xffffffffu, value, offset);
+    return value;
+}
+
+template <int B, int G, bool Wiener>
+__global__ void __launch_bounds__(32) group_warp_kernel(Bm3dGroupArgs a) {
+    __shared__ float buffer[B * kWarpStride];
+    constexpr int kLane = G * B, kCube = G * B * B, kPerWarp = 32 / B;
+    constexpr float kScale = kLineScale<B> * kLineScale<B> * kLineScale<G>;
+    const int lane = threadIdx.x, sub = lane % B;
+    const int r = blockIdx.x * kPerWarp + lane / B;
     const bool live = r < a.batch;
     const int rr = live ? r : a.batch - 1;  // idle lanes mirror the last group and store nothing
-    const DeviceMatch* m = a.matches + static_cast<long long>(rr) * 8;
-    const int kk = min(a.counts[rr], 8);
-    float v[64];
+    const DeviceMatch* m = a.matches + static_cast<long long>(rr) * G;
+    const int kk = min(a.counts[rr], G);
+    float v[kLane];
     float weight;
     if constexpr (Wiener) {
-        // Gains from the reference cube, parked in the lane's slice of ref_cube
-        // while the registers transform the noisy cube.
-        float* gain = a.ref_cube + static_cast<long long>(rr) * 512 + sub * 64;
-        forward8(v, a.ref, m, kk, a.pitch, buffer, lane);
-        const float sig2 = 4096.f * a.sigma * a.sigma;
+        // Gains from the reference cube, parked in shared memory while the
+        // registers transform the noisy cube.
+        __shared__ float gains[32 * kLane];
+        float* gain = gains + lane * kLane;
+        forward_lanes<B, G>(v, a.ref, m, kk, a.pitch, buffer, lane);
+        const float sig2 = kScale * kScale * a.sigma * a.sigma;
         float w2 = 0.f;
 #pragma unroll
-        for (int i = 0; i < 64; ++i) {
+        for (int i = 0; i < kLane; ++i) {
             const float q = v[i] * v[i];
             const float w = (i == 0 && sub == 0) ? 1.f : q / (q + sig2);
-            if (live) gain[i] = w;
+            gain[i] = w;
             w2 = fmaf(w, w, w2);
         }
-        w2 += __shfl_xor_sync(0xffffffffu, w2, 1);
-        w2 += __shfl_xor_sync(0xffffffffu, w2, 2);
-        w2 += __shfl_xor_sync(0xffffffffu, w2, 4);
-        weight = 1.f / fmaxf(w2, 1e-12f);
-        forward8(v, a.src, m, kk, a.pitch, buffer, lane);
-        if (live) {
+        weight = 1.f / fmaxf(group_total<B>(w2), 1e-12f);
+        forward_lanes<B, G>(v, a.src, m, kk, a.pitch, buffer, lane);
 #pragma unroll
-            for (int i = 0; i < 64; ++i) v[i] *= gain[i];
-        }
+        for (int i = 0; i < kLane; ++i) v[i] *= gain[i];
     } else {
-        forward8(v, a.src, m, kk, a.pitch, buffer, lane);
-        const float thr = 64.f * kHardLambda * a.sigma;
+        forward_lanes<B, G>(v, a.src, m, kk, a.pitch, buffer, lane);
+        const float thr = kScale * kHardLambda * a.sigma;
         int kept = 0;
 #pragma unroll
-        for (int i = 0; i < 64; ++i) {
+        for (int i = 0; i < kLane; ++i) {
             const bool keep = (i == 0 && sub == 0) || !(fabsf(v[i]) < thr);
             v[i] = keep ? v[i] : 0.f;
             kept += keep;
         }
-        kept += __shfl_xor_sync(0xffffffffu, kept, 1);
-        kept += __shfl_xor_sync(0xffffffffu, kept, 2);
-        kept += __shfl_xor_sync(0xffffffffu, kept, 4);
-        weight = 1.f / static_cast<float>(max(kept, 1));
+        weight = 1.f / static_cast<float>(max(group_total<B>(kept), 1));
     }
 #pragma unroll
-    for (int p = 0; p < 8; ++p) dct8_inverse(v + p * 8, 1);
-    transpose8(v, buffer, lane);
+    for (int p = 0; p < G; ++p) dct_line_fixed<B>(v + p * B, 1, true);
+    transpose_lanes<B, G>(v, buffer, lane);
 #pragma unroll
-    for (int row = 0; row < 8; ++row) dct8_inverse(v + row, 8);
+    for (int row = 0; row < B; ++row) dct_line_fixed<G>(v + row, B, true);
 #pragma unroll
-    for (int p = 0; p < 8; ++p) dct8_inverse(v + p * 8, 1);
+    for (int p = 0; p < G; ++p) dct_line_fixed<B>(v + p * B, 1, true);
     if (!live) return;
-    float* cube = a.values + static_cast<long long>(r) * 512 + sub;
+    constexpr float kUnscale = 1.f / (kScale * kScale);
+    float* cube = a.values + static_cast<long long>(r) * kCube + sub;
 #pragma unroll
-    for (int p = 0; p < 8; ++p) {
+    for (int p = 0; p < G; ++p) {
 #pragma unroll
-        for (int row = 0; row < 8; ++row) cube[p * 64 + row * 8] = v[p * 8 + row] * (1.f / 4096.f);
+        for (int row = 0; row < B; ++row) cube[p * B * B + row * B] = v[p * B + row] * kUnscale;
     }
-    a.patches[static_cast<long long>(r) * 8 + sub] =
-        sub < kk ? AggregatePatch{m[sub].x, m[sub].y, m[sub].t, weight} : AggregatePatch{0, 0, -1, 0.f};
+    for (int g = sub; g < G; g += B) {
+        a.patches[static_cast<long long>(r) * G + g] =
+            g < kk ? AggregatePatch{m[g].x, m[g].y, m[g].t, weight} : AggregatePatch{0, 0, -1, 0.f};
+    }
+}
+
+template <int B, int G>
+void launch_warp(const Bm3dGroupArgs& args, cudaStream_t stream) {
+    const unsigned blocks = static_cast<unsigned>((args.batch + 32 / B - 1) / (32 / B));
+    if (args.ref) {
+        group_warp_kernel<B, G, true><<<blocks, 32, 0, stream>>>(args);
+    } else {
+        group_warp_kernel<B, G, false><<<blocks, 32, 0, stream>>>(args);
+    }
+}
+
+template <int B, int G>
+void launch_warp_hard(const Bm3dGroupArgs& args, cudaStream_t stream) {
+    group_warp_kernel<B, G, false><<<static_cast<unsigned>((args.batch + 32 / B - 1) / (32 / B)), 32, 0, stream>>>(args);
+}
+
+// The shapes the warp kernel serves. Each was admitted on a paired
+// measurement against the block kernel. Up to 128 samples per lane it wins
+// for both stages. At 256 the kernel uses every register and spills a little:
+// the hard-threshold stage still wins, the Wiener stage only for 16 / 16.
+// At 512 samples per lane (8 / 64) it loses, except 16 / 32.
+bool launch_warps(const Bm3dGroupArgs& args, cudaStream_t stream) {
+    switch (args.block * 100 + args.group) {
+#define NSS_WARP(B, G) case B * 100 + G: launch_warp<B, G>(args, stream); return true;
+#define NSS_WARP_HARD(B, G) case B * 100 + G: if (args.ref) return false; launch_warp_hard<B, G>(args, stream); return true;
+    NSS_WARP(4, 2) NSS_WARP(4, 4) NSS_WARP(4, 8) NSS_WARP(4, 16) NSS_WARP(4, 32)
+    NSS_WARP(8, 2) NSS_WARP(8, 4) NSS_WARP(8, 8) NSS_WARP(8, 16)
+    NSS_WARP(16, 2) NSS_WARP(16, 4) NSS_WARP(16, 8) NSS_WARP(16, 16)
+    NSS_WARP_HARD(4, 64) NSS_WARP_HARD(8, 32) NSS_WARP_HARD(16, 32)
+#undef NSS_WARP
+#undef NSS_WARP_HARD
+    default: return false;
+    }
 }
 
 }  // namespace
 
-constexpr double kPi = 3.14159265358979323846;
-
-void bm3d_init_tables(int device) {
-    static std::mutex mutex;
-    static std::set<int> ready;
-    std::lock_guard lock(mutex);
-    if (ready.count(device)) return;
-    std::vector<float> table(kTableFloats);
-    for (const int n : kTableSizes) {
-        const int offset = table_offset(n);
-        for (int k = 0; k < n; ++k) {
-            const double scale = std::sqrt((k == 0 ? 1.0 : 2.0) / n);
-            for (int j = 0; j < n; ++j) {
-                table[offset + k * n + j] = static_cast<float>(scale * std::cos(kPi * (2 * j + 1) * k / (2.0 * n)));
-            }
-        }
-    }
-    NSS_CUDA_CHECK(cudaMemcpyToSymbol(c_dct, table.data(), table.size() * sizeof(float)));
-    // The copy from pageable memory may complete after the call returns;
-    // filter streams are non-blocking and would not wait for it.
-    NSS_CUDA_CHECK(cudaDeviceSynchronize());
-    ready.insert(device);
-}
-
 void bm3d_filter_groups(const Bm3dGroupArgs& args, cudaStream_t stream) {
     if (args.batch <= 0) return;
-    if (args.block == 8 && args.group == 8) {
-        if (args.ref) {
-            group_filter8_kernel<true><<<(args.batch + 3) / 4, 32, 0, stream>>>(args);
-        } else {
-            group_filter8_kernel<false><<<(args.batch + 3) / 4, 32, 0, stream>>>(args);
-        }
-    } else {
-        group_filter_kernel<<<args.batch, kThreads, 0, stream>>>(args);
+    if (!launch_warps(args, stream) && !launch_shapes(args, stream)) {
+        throw std::logic_error("nss_cuda: unsupported BM3D block or group size");
     }
     NSS_CUDA_CHECK_LAUNCH();
 }
