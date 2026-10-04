@@ -532,6 +532,32 @@ void run_twsc(Frame& f) {
     NSS_CUDA_CHECK(cudaMemcpyAsync(&f.stalled, s.stalled.get(), sizeof(int), cudaMemcpyDeviceToHost, s.stream));
 }
 
+// nss::nlh_image: Basic rounds over the window (mix with the input, filter,
+// finish), one Wiener round for the center against the Basic estimate, and
+// for RGB the numerators back from YUV.
+void run_nlh(Frame& f, const nss::NlhImageOptions& o) {
+    const ImageData& d = f.d;
+    Slot& s = f.s;
+    const std::size_t window_floats = static_cast<std::size_t>(f.count) * 3 * d.plane_floats;
+    NSS_CUDA_CHECK(cudaMemcpyAsync(s.basic.get(), s.input.get(), window_floats * sizeof(float),
+                                   cudaMemcpyDeviceToDevice, s.stream));
+    for (int iteration = 0; iteration < o.basic_iterations; ++iteration) {
+        nlh_mix(s.basic.as<float>(), s.input.as<float>(), window_floats, o.basic_mix, s.stream);
+        run_pass(f, s.basic, o, 0, false);
+        for (int t = 0; t < f.count; ++t) {
+            for (int c = 0; c < d.planes; ++c) {
+                aggregate_finish(f.accum(s.num, c, t), f.accum(s.den, c, t), f.plane(s.input, t, c), d.width[c],
+                                 d.height[c], d.width[c], f.plane(s.basic, t, c), s.stream);
+            }
+        }
+    }
+    run_pass(f, s.input, o, 1, true);
+    for (int t = 0; t < f.count && d.rgb; ++t) {
+        // Shared pixel indices give all three channels identical counts.
+        nlh_yuv_to_rgb(f.accum(s.num, 0, t), f.accum(s.num, 1, t), f.accum(s.num, 2, t), d.plane_floats, s.stream);
+    }
+}
+
 void diagnostic_ints(const VSAPI* api, VSMap* props, const char* key, const int* values, int count) {
     std::int64_t data[2]{values[0], count > 1 ? values[1] : 0};
     if (api->mapSetIntArray(props, key, data, count)) throw std::bad_alloc();
@@ -634,26 +660,7 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
     const int downloads = region;
     if (!bypass) {
         if (twsc) run_twsc(f);
-        const std::size_t window_bytes = static_cast<std::size_t>(f.count) * 3 * d.plane_floats * sizeof(float);
-        if (!twsc) {
-            NSS_CUDA_CHECK(cudaMemcpyAsync(s.basic.get(), s.input.get(), window_bytes, cudaMemcpyDeviceToDevice, s.stream));
-        }
-        for (int iteration = 0; iteration < (twsc ? 0 : o.basic_iterations); ++iteration) {
-            nlh_mix(s.basic.as<float>(), s.input.as<float>(), static_cast<std::size_t>(f.count) * 3 * d.plane_floats,
-                    o.basic_mix, s.stream);
-            run_pass(f, s.basic, o, 0, false);
-            for (int t = 0; t < f.count; ++t) {
-                for (int c = 0; c < planes; ++c) {
-                    aggregate_finish(f.accum(s.num, c, t), f.accum(s.den, c, t), f.plane(s.input, t, c), d.width[c],
-                                     d.height[c], d.width[c], f.plane(s.basic, t, c), s.stream);
-                }
-            }
-        }
-        if (!twsc) run_pass(f, s.input, o, 1, true);
-        for (int t = 0; t < f.count && d.rgb; ++t) {
-            // Shared pixel indices give all three channels identical counts.
-            nlh_yuv_to_rgb(f.accum(s.num, 0, t), f.accum(s.num, 1, t), f.accum(s.num, 2, t), d.plane_floats, s.stream);
-        }
+        else run_nlh(f, o);
         for (int c = 0; c < planes; ++c) {
             const std::size_t row_bytes = static_cast<std::size_t>(d.width[c]) * sizeof(float);
             if (!d.estimate && d.sigma[c] == 0) continue;

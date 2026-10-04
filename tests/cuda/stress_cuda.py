@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-only
-"""Long-run stability check for libnss_cuda (CUDA plan C15): creates and frees
-every filter repeatedly, fetching frames through each instance, and watches
-the process's device memory (nvidia-smi) for growth. Run manually on a GPU
-host; exits 77 without VapourSynth or a CUDA device.
+"""Stability check for libnss_cuda: creates and frees every filter repeatedly,
+fetching frames through each instance with several in flight, and watches the
+process's device memory (nvidia-smi) for growth. ctest runs a short pass
+(test_cuda_stress); run it with more --cycles for a long soak. Exits 77
+without VapourSynth or a CUDA device.
 
-usage: stress_cuda.py --cuda PATH [--cycles N] [--frames N]
+usage: stress_cuda.py --cuda PATH [--cycles N] [--frames N] [--only REGEX]
 """
 import argparse
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -22,12 +24,15 @@ except ImportError as error:
 
 
 def device_memory_mb():
-    out = subprocess.run(["nvidia-smi", "--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"],
-                         capture_output=True, text=True, check=False).stdout
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"],
+                             capture_output=True, text=True, check=False).stdout
+    except OSError:
+        return 0  # no nvidia-smi: the run still checks for failures
     for line in out.splitlines():
-        pid, used = (part.strip() for part in line.split(","))
-        if int(pid) == os.getpid():
-            return int(used)
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit() and int(parts[0]) == os.getpid():
+            return int(parts[1])
     return 0
 
 
@@ -49,6 +54,7 @@ def main():
     parser.add_argument("--cuda", required=True)
     parser.add_argument("--cycles", type=int, default=40)
     parser.add_argument("--frames", type=int, default=24)
+    parser.add_argument("--only", default="", help="regular expression selecting the filters to cycle")
     args = parser.parse_args()
     core = vs.core
     core.std.LoadPlugin(path=str(Path(args.cuda).resolve()))
@@ -71,6 +77,8 @@ def main():
         ("TWSC", lambda: n.TWSC(gray, sigma=5, **light)),
         ("LSSC", lambda: n.LSSC(gray, sigma=5)),
     ]
+    if args.only:
+        builders = [(name, build) for name, build in builders if re.search(args.only, name)]
     readings, frames = [], 0
     for cycle in range(args.cycles):
         for name, build in builders:

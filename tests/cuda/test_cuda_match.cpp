@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // GPU block matching vs the CPU matcher contract (nss::spatial_match /
-// nss::predictive_match). Positions must agree; a disagreement is accepted
+// nss::predictive_match, and nss::image_match for joint channels, exact-size
+// windows and groups up to 256). Positions must agree; a disagreement is accepted
 // only as a near-tie (the two backends sum SSD in different orders), and on
 // a piecewise-constant image with exact ties the order must match exactly.
 #include "cuda/common/match.hpp"
 #include "cuda/runtime/device.hpp"
 #include "cuda/runtime/memory.hpp"
 #include "nss/cpu_api.hpp"
+#include "nss/cpu_image.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -145,6 +147,65 @@ void temporal_case(int width, int height, int block, int group, int step, int ra
     }
 }
 
+// nss::image_match: `nch` channels summed, the exact-size window
+// [c - window / 2, c + window - window / 2 - 1], groups up to 256, and the
+// predictive search over `frames` frames from reference frame t0.
+void image_case(int width, int height, int block, int group, int step, int window, int nch, int frames, int t0,
+                int radius, int ps_num, bool flat, Stats& stats) {
+    const std::size_t plane_floats = static_cast<std::size_t>(width) * height;
+    std::vector<std::vector<float>> host(frames);  // per frame: nch stacked planes
+    std::vector<nss_cuda::DeviceBuffer> device;
+    std::vector<const float*> guides, dev_ptrs;
+    for (int t = 0; t < frames; ++t) {
+        for (int c = 0; c < nch; ++c) {
+            const auto plane = make_plane(width, height, 17u * t + 5u * c + 1u, flat);
+            host[t].insert(host[t].end(), plane.begin(), plane.end());
+        }
+        device.emplace_back(host[t].size() * sizeof(float));
+        NSS_CUDA_CHECK(cudaMemcpy(device.back().get(), host[t].data(), host[t].size() * sizeof(float), cudaMemcpyHostToDevice));
+        dev_ptrs.push_back(device.back().as<float>());
+    }
+    for (int t = 0; t < frames; ++t) {
+        for (int c = 0; c < nch; ++c) guides.push_back(host[t].data() + c * plane_floats);
+    }
+    nss_cuda::DeviceBuffer d_ptrs(dev_ptrs.size() * sizeof(float*));
+    NSS_CUDA_CHECK(cudaMemcpy(d_ptrs.get(), dev_ptrs.data(), d_ptrs.bytes(), cudaMemcpyHostToDevice));
+
+    const auto grid = nss_cuda::make_raster_grid(width, height, block, step);
+    nss_cuda::DeviceBuffer d_out(static_cast<std::size_t>(grid.count()) * group * sizeof(nss_cuda::DeviceMatch));
+    nss_cuda::DeviceBuffer d_counts(static_cast<std::size_t>(grid.count()) * sizeof(int));
+    nss_cuda::MatchGeometry g{width, height, width, block, window / 2, group};
+    g.range_hi = window - window / 2 - 1;
+    g.channels = nch;
+    g.channel_step = static_cast<long long>(plane_floats);
+    if (radius > 0 && frames > 1) {
+        const nss_cuda::TemporalWindow w{d_ptrs.as<const float*>(), frames, t0, radius, 0, frames, ps_num, 4};
+        nss_cuda::predictive_match(g, w, grid, 0, grid.count(), d_out.as<nss_cuda::DeviceMatch>(), d_counts.as<int>(), nullptr);
+    } else {
+        nss_cuda::spatial_match(dev_ptrs[t0], g, grid, 0, grid.count(), d_out.as<nss_cuda::DeviceMatch>(),
+                                d_counts.as<int>(), nullptr);
+    }
+    std::vector<nss_cuda::DeviceMatch> out(static_cast<std::size_t>(grid.count()) * group);
+    std::vector<int> counts(grid.count());
+    NSS_CUDA_CHECK(cudaMemcpy(out.data(), d_out.get(), d_out.bytes(), cudaMemcpyDeviceToHost));
+    NSS_CUDA_CHECK(cudaMemcpy(counts.data(), d_counts.get(), d_counts.bytes(), cudaMemcpyDeviceToHost));
+    char label[128];
+    std::snprintf(label, sizeof label, "image %dx%d b%d g%d s%d w%d ch%d f%d t%d R%d%s", width, height, block, group,
+                  step, window, nch, frames, t0, radius, flat ? " flat" : "");
+    const nss::ImageSearch search{block, step, group, window, radius, ps_num, 4};
+    std::vector<nss::Match> cpu(256);
+    for (int ref = 0; ref < grid.count(); ++ref) {
+        const int n = nss::image_match(guides.data(), frames, nch, width, height, t0, grid.x(ref), grid.y(ref), search,
+                                       cpu.data());
+        nss_cuda::DeviceMatch* gpu = out.data() + static_cast<std::size_t>(ref) * group;
+        // The spatial kernels report slot 0; the CPU reports the sequence index.
+        if (!(radius > 0 && frames > 1)) {
+            for (int i = 0; i < counts[ref]; ++i) gpu[i].t = t0;
+        }
+        compare_group(cpu.data(), n, gpu, counts[ref], flat, stats, label, ref);
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -167,6 +228,22 @@ int main() {
             temporal_case(71, 66, 4, 32, 6, 9, radius, 8, 9, flat, stats);  // clip end
         }
     }
+    for (const bool flat : {false, true}) {
+        for (const int nch : {1, 2, 3}) {
+            image_case(61, 57, 8, 8, 5, 15, nch, 1, 0, 0, 2, flat, stats);    // MCWNNM-like joint groups
+            image_case(72, 64, 8, 16, 6, 40, nch, 1, 0, 0, 2, flat, stats);   // NLH window (even: asymmetric)
+        }
+        image_case(72, 64, 8, 90, 7, 60, 1, 1, 0, 0, 2, flat, stats);         // TWSC default group
+        image_case(72, 64, 4, 256, 9, 33, 2, 1, 0, 0, 2, flat, stats);        // group limit
+        image_case(40, 36, 16, 64, 8, 129, 1, 1, 0, 0, 2, flat, stats);       // window larger than the plane
+    }
+    // Predictive search (ties across frames are ordered differently, so only
+    // the noisy planes): warp path, block top-K, and the 256-entry kernel.
+    image_case(64, 56, 8, 16, 6, 40, 1, 3, 1, 1, 2, false, stats);
+    image_case(64, 56, 8, 16, 6, 21, 3, 5, 0, 2, 3, false, stats);
+    image_case(64, 56, 8, 16, 6, 21, 1, 5, 4, 2, 3, false, stats);
+    image_case(64, 56, 8, 64, 8, 21, 2, 3, 1, 1, 20, false, stats);
+    image_case(64, 56, 4, 200, 8, 25, 1, 3, 2, 1, 100, false, stats);
     std::printf("test_cuda_match: %ld refs, %ld entries, %ld near-tie flips, %d failures\n", stats.refs, stats.entries,
                 stats.flips, failures);
     if (stats.flips * 100 > stats.entries) {
