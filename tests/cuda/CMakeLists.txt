@@ -32,7 +32,7 @@ add_test(NAME test_cuda_backend_forced_jit
 set_tests_properties(test_cuda_backend_forced_jit PROPERTIES ENVIRONMENT "CUDA_FORCE_PTX_JIT=1")
 # D14 parity against the CPU golden. Filters still pending in docs/cuda-plan.md
 # are expected to be missing; each phase removes the filters it delivers.
-set(NSS_CUDA_PENDING_FILTERS "NLM,WNNM,MCWNNM,NCSR,TWSC,NLH,LSSC")
+set(NSS_CUDA_PENDING_FILTERS "WNNM,MCWNNM,NCSR,TWSC,NLH,LSSC")
 add_test(NAME test_cuda_plugin_interface
          COMMAND ${Python3_EXECUTABLE} "${PROJECT_SOURCE_DIR}/tests/test_plugin_interface.py"
                  --plugin "${NSS_CUDA_PLUGIN}" --namespace nss_cuda
@@ -44,5 +44,8 @@ if(TARGET nss)
   add_test(NAME test_cuda_bm3d_live
            COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_cuda_bm3d_live.py"
                    --cpu "$<TARGET_FILE:nss>" --cuda "${NSS_CUDA_PLUGIN}")
-  set_tests_properties(test_cuda_bm3d_live PROPERTIES LABELS cuda SKIP_RETURN_CODE 77)
+  add_test(NAME test_cuda_nlm_live
+           COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_cuda_nlm_live.py"
+                   --cpu "$<TARGET_FILE:nss>" --cuda "${NSS_CUDA_PLUGIN}")
+  set_tests_properties(test_cuda_bm3d_live test_cuda_nlm_live PROPERTIES LABELS cuda SKIP_RETURN_CODE 77)
 endif()

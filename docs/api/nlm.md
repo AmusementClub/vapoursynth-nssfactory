@@ -60,3 +60,22 @@ Cost scales with `(2a+1)^2 * (2d+1)`; `s` has a smaller linear effect.
   `d` parameter and the result stays normal-height.
 - `a` must be smaller than the processed plane width (creation-time error).
 - `d` pins `2d+1` input frames; creation rejects radii whose pinned footprint exceeds 2 GiB for the actual frame size.
+
+## CUDA (`core.nss_cuda.NLM`)
+
+`core.nss_cuda.NLM` (from `libnss_cuda`, built with `-DNSS_ENABLE_CUDA=ON`)
+takes the same arguments and gives the same errors as `nss.NLM`. It adds
+`device_id` (default 0) and `num_streams` (default up to 3, fitted to
+`memory_limit_mb`) at the end of the argument list.
+
+- **Device-resident.** The whole frame runs on the device: clamped distance
+  maps, the (2s+1)² box sums, Welsch weights, the symmetric accumulation and
+  the `wref` normalization.
+- **Memory.** Only the centre frame and the current backward/forward pair
+  are resident, so a large `d` does not grow device memory.
+- **Numerics.** The GPU uses the same model as the CPU, with `expf` where the
+  CPU uses its fast exponential.
+  - The output is not bit-identical to the CPU, but is far inside the 60 dB
+    gate (about 140 dB measured).
+  - The output is run-to-run identical: every pixel is accumulated by one
+    thread in a fixed offset order.
