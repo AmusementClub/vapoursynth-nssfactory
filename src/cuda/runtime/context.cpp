@@ -71,12 +71,9 @@ DeviceInfo acquire_device(int device_id, const char* filter, VSCore* core, const
 }
 
 DeviceGuard::DeviceGuard(int device) {
-    NSS_CUDA_CHECK(cudaGetDevice(&previous_));
-    if (previous_ != device) NSS_CUDA_CHECK(cudaSetDevice(device));
-}
-
-DeviceGuard::~DeviceGuard() {
-    if (previous_ >= 0) cudaSetDevice(previous_);
+    int current = -1;
+    NSS_CUDA_CHECK(cudaGetDevice(&current));
+    if (current != device) NSS_CUDA_CHECK(cudaSetDevice(device));
 }
 
 }  // namespace nss_cuda

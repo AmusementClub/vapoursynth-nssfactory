@@ -34,16 +34,16 @@ BackendArgs parse_backend_args(const VSAPI* vsapi, const VSMap* in, const char* 
 // std::invalid_argument with the "nss_cuda.<filter>: " prefix.
 DeviceInfo acquire_device(int device_id, const char* filter, VSCore* core, const VSAPI* vsapi);
 
-// Makes `device` current for the calling (VapourSynth worker) thread.
+// Makes `device` current for the calling (VapourSynth worker) thread: the
+// device's primary context, shared with every other CUDA user in the process.
+// The thread's previous device is not restored. cudaSetDevice initializes the
+// device it selects, so switching back would create a primary context on a
+// device this filter never uses (the thread's default device is 0).
 class DeviceGuard {
 public:
     explicit DeviceGuard(int device);
     DeviceGuard(const DeviceGuard&) = delete;
     DeviceGuard& operator=(const DeviceGuard&) = delete;
-    ~DeviceGuard();
-
-private:
-    int previous_ = -1;
 };
 
 }  // namespace nss_cuda
