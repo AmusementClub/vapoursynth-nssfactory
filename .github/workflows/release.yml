@@ -195,7 +195,7 @@ jobs:
           cuobjdump --list-elf --list-ptx build/src/cuda/libnss_cuda.so | tee fatbin.txt
           for arch in sm_75 sm_86 sm_89 sm_120; do grep -q "\.${arch}\.cubin" fatbin.txt || { echo "missing $arch cubin"; exit 1; }; done
           grep -q "\.sm_75\.ptx" fatbin.txt || { echo "missing compute_75 PTX"; exit 1; }
-      - name: cuda tests (no GPU: load, signatures, creation errors)
+      - name: "cuda tests (no GPU: load, signatures, creation errors)"
         run: /opt/venv/bin/ctest --test-dir build -L cuda --output-on-failure
       - name: package
         run: |
@@ -235,7 +235,7 @@ jobs:
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=cl -DNSS_ENABLE_CUDA=ON -DNSS_BUILD_CPU=OFF -DVapourSynth_INCLUDE_DIR="$vsInclude" -DPython3_EXECUTABLE="$pythonExe"
       - name: build
         run: cmake --build build -j
-      - name: cuda tests (no GPU: load, signatures, creation errors)
+      - name: "cuda tests (no GPU: load, signatures, creation errors)"
         run: ctest --test-dir build -L cuda --output-on-failure
       - name: package
         run: |
