@@ -23,7 +23,10 @@ core.nss.NLH(clip clip[, float[] sigma, string noise_model = "auto",
              int[] search_window, int bm_range, int radius = 0,
              int ps_num = 2, int ps_range = 4, int[] q, clip rclip = None,
              int basic_iters, float lambda_basic, float hard_strength,
-             int wiener_iters, float wiener_sigma_scale, int memory_limit_mb])
+             int wiener_iters, float wiener_sigma_scale,
+             int memory_limit_mb, string temporal_mode = "legacy",
+             int rolling_chunk = 4, int rolling_cache_chunks,
+             int rolling_cache_limit = 1])
 ```
 
 ## Primary parameters
@@ -37,7 +40,7 @@ core.nss.NLH(clip clip[, float[] sigma, string noise_model = "auto",
 | `group_size` | [16, 16] | {2,4,8,16,32,64} | Pixel-matrix size per group (power of two). |
 | `search_window` | [40, 40] | [1, 129] | Matching window per stage. `bm_range=r` means `2r+1` on both stages; passing both is an error. |
 | `q` | lane table | {2,4,8,16}, q <= block^2 | Haar coefficient rows kept per group (power of two). |
-| `radius` | 0 | [0, 16] | Temporal radius. >0 returns the weighted intermediate for `VAggregate`. |
+| `radius` | 0 | [0, 16] | Temporal radius. >0 returns the weighted intermediate for `VAggregate`, or the finished result with `temporal_mode="rolling"`. |
 | `rclip` | none | clip | Reference clip guiding matching. |
 
 ### Lane defaults (resolved when fields are omitted)
@@ -62,6 +65,8 @@ core.nss.NLH(clip clip[, float[] sigma, string noise_model = "auto",
 | `wiener_sigma_scale` | lane table | >= 0 | Noise scale inside the Wiener gain `r^2 / (r^2 + noise)`. |
 | `ps_num` / `ps_range` | 2 / 4 | [1,min(group)] / [1,64] | Predictive temporal search (`radius > 0`). |
 | `memory_limit_mb` | none | — | Workspace cap; fails instead of degrading. |
+| `temporal_mode` | `"legacy"` | legacy / rolling | With `radius > 0`: legacy returns the weighted intermediate for an explicit `VAggregate`; rolling returns the normalized, normal-height result directly (the same result as legacy followed by `VAggregate`). |
+| `rolling_chunk`, `rolling_cache_chunks` / `rolling_cache_limit` | 4, — / 1 | [1, 64] | Rolling chunk and cache knobs, validated in rolling mode; they only change scheduling where a device rolling path exists. |
 
 ## Diagnostics
 
@@ -115,6 +120,8 @@ takes the same arguments and gives the same errors as `nss.NLH`. It adds
   request window, the Wiener round and the per-pixel aggregation.
   `radius > 0` returns the same fat intermediate as the CPU, so either
   backend's `VAggregate` can reduce it.
+  `temporal_mode="rolling"` reduces the fat intermediate with
+  `nss_cuda.VAggregate` inside the filter.
 - **Frame properties.** The `_NSS*` diagnostics match the CPU; `_NSSSigma` of
   a blind estimate agrees to float precision.
 - **Numerics.** Matching, pixel selection, the Haar transform and the

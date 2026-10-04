@@ -3,6 +3,8 @@
 #include "frontend/args.hpp"
 #include "frontend/validate.hpp"
 
+#include <cstdint>
+#include <stdexcept>
 #include <string>
 
 namespace nss::frontend {
@@ -37,6 +39,45 @@ RollingParams parse_rolling(const VSAPI* vsapi, const VSMap* in, int radius, con
         fail(ns, filter, "use only one of rolling_cache_limit and rolling_cache_chunks");
     if (p.cache_limit < 1 || p.cache_limit > 64) fail(ns, filter, "rolling_cache_limit must be in [1, 64]");
     return p;
+}
+
+TemporalRequest parse_temporal(const VSAPI* vsapi, const VSMap* in, int default_radius, const char* filter,
+                               const char* ns) {
+    const int radius = map_int(vsapi, in, "radius", default_radius);
+    TemporalRequest request;
+    request.rolling = parse_temporal_mode(vsapi, in, radius, filter, ns) == TemporalMode::Rolling;
+    if (request.rolling) request.params = parse_rolling(vsapi, in, radius, filter, ns);
+    return request;
+}
+
+void aggregate_rolling(const VSAPI* vsapi, const VSMap* in, VSMap* out, VSCore* core, int default_radius,
+                       const char* filter, const char* ns) {
+    if (vsapi->mapGetError(out)) return;
+    VSPlugin* plugin = vsapi->getPluginByNamespace(ns, core);
+    if (!plugin) fail(ns, filter, "rolling mode could not find VAggregate");
+    VSMap* args = vsapi->createMap();
+    vsapi->mapConsumeNode(args, "clip", vsapi->mapGetNode(out, "clip", 0, nullptr), maReplace);
+    vsapi->mapConsumeNode(args, "src", vsapi->mapGetNode(in, "clip", 0, nullptr), maReplace);
+    vsapi->mapSetInt(args, "radius", map_int(vsapi, in, "radius", default_radius), maReplace);
+    int device_err = 0;
+    const int64_t device = vsapi->mapGetInt(in, "device_id", 0, &device_err);
+    if (!device_err) vsapi->mapSetInt(args, "device_id", device, maReplace);
+    VSMap* result = vsapi->invoke(plugin, "VAggregate", args);
+    vsapi->freeMap(args);
+    if (const char* error = vsapi->mapGetError(result)) {
+        const std::string message = std::string(ns) + "." + filter + ": rolling aggregation failed: " + error;
+        vsapi->freeMap(result);
+        throw std::runtime_error(message);
+    }
+    vsapi->mapConsumeNode(out, "clip", vsapi->mapGetNode(result, "clip", 0, nullptr), maReplace);
+    vsapi->freeMap(result);
+}
+
+void create_temporal(VSPublicFunction create, const VSMap* in, VSMap* out, VSCore* core, const VSAPI* vsapi,
+                     int default_radius, const char* filter, const char* ns) {
+    const TemporalRequest request = parse_temporal(vsapi, in, default_radius, filter, ns);
+    create(in, out, nullptr, core, vsapi);
+    if (request.rolling) aggregate_rolling(vsapi, in, out, core, default_radius, filter, ns);
 }
 
 }  // namespace nss::frontend

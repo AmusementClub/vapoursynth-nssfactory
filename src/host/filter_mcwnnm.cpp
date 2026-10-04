@@ -400,7 +400,11 @@ void VS_CC mcwnnmCreate(const VSMap* in, VSMap* out, void* userData, VSCore* cor
     }
 }
 
+void VS_CC mcwnnmCreateTemporal(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI* vsapi) {
+    nss::frontend::create_temporal(mcwnnmCreate, in, out, core, vsapi, nss::kWnnmDefaultRadius, "MCWNNM", "nss");
+}
+
 void register_mcwnnm(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
     const char* args = nss::frontend::kMcwnnmSignature;
-    vspapi->registerFunction("MCWNNM", args, "clip:vnode;", nss::checked_create<mcwnnmCreate>, nullptr, plugin);
+    vspapi->registerFunction("MCWNNM", args, "clip:vnode;", nss::checked_create<mcwnnmCreateTemporal>, nullptr, plugin);
 }

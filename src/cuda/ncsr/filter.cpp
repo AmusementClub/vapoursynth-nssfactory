@@ -15,6 +15,7 @@ namespace {
 
 void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI* vsapi) {
     // Same validation order and text as nss.NCSR (D14).
+    const auto temporal = nss::frontend::parse_temporal(vsapi, in, nss::kWnnmDefaultRadius, "NCSR", "nss_cuda");
     GroupFilterConfig config;
     config.name = "NCSR";
     config.model = nss::Model::NCSR;
@@ -30,7 +31,11 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     }
     nss::validate_group_planes(config.vi, p.sigma, p.block_size);
     config.radius = p.radius;
-    config.mode = GroupMode::Legacy;
+    // The driver's rolling mode covers a single round; more rounds aggregate
+    // the fat intermediate with nss_cuda.VAggregate instead.
+    const bool device_rolling = temporal.rolling && p.iters == 1;
+    config.mode = device_rolling ? GroupMode::Rolling : GroupMode::Legacy;
+    config.rolling = temporal.params;
     config.iters = p.iters;
     config.delta = p.delta;
     config.backend = parse_backend_args(vsapi, in, "NCSR");
@@ -61,6 +66,9 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         ncsr_filter_groups(args, l.stream);
     };
     group_filter_install(std::move(config), out, core, vsapi);
+    if (temporal.rolling && !device_rolling) {
+        nss::frontend::aggregate_rolling(vsapi, in, out, core, nss::kWnnmDefaultRadius, "NCSR", "nss_cuda");
+    }
 }
 
 }  // namespace

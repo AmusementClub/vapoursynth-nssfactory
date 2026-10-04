@@ -11,8 +11,11 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     VSNode* node = nss_create_nlh(in, core, api, out);
     if (node) api->mapConsumeNode(out, "clip", node, maAppend);
 }
+void VS_CC create_temporal(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI* api) {
+    nss::frontend::create_temporal(create, in, out, core, api, 0, "NLH", "nss");
+}
 }
 void register_nlh(VSPlugin* plugin, const VSPLUGINAPI* api) {
     const char* args = nss::frontend::kNlhSignature;
-    api->registerFunction("NLH", args, "clip:vnode;", nss::checked_create<create>, nullptr, plugin);
+    api->registerFunction("NLH", args, "clip:vnode;", nss::checked_create<create_temporal>, nullptr, plugin);
 }

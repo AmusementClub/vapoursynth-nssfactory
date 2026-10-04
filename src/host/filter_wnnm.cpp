@@ -312,7 +312,11 @@ void VS_CC wnnmCreate(const VSMap* in, VSMap* out, void* userData, VSCore* core,
     }
 }
 
+void VS_CC wnnmCreateTemporal(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI* vsapi) {
+    nss::frontend::create_temporal(wnnmCreate, in, out, core, vsapi, nss::kWnnmDefaultRadius, "WNNM", "nss");
+}
+
 void register_wnnm(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
     const char* args = nss::frontend::kWnnmSignature;
-    vspapi->registerFunction("WNNM", args, "clip:vnode;", nss::checked_create<wnnmCreate>, nullptr, plugin);
+    vspapi->registerFunction("WNNM", args, "clip:vnode;", nss::checked_create<wnnmCreateTemporal>, nullptr, plugin);
 }

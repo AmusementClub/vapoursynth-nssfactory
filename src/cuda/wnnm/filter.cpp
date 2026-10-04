@@ -14,6 +14,7 @@ namespace {
 
 void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI* vsapi) {
     // Same validation order and text as nss.WNNM (D14).
+    const auto temporal = nss::frontend::parse_temporal(vsapi, in, nss::kWnnmDefaultRadius, "WNNM", "nss_cuda");
     GroupFilterConfig config;
     config.name = "WNNM";
     config.model = nss::Model::WNNM;
@@ -29,7 +30,8 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     }
     nss::validate_group_planes(config.vi, p.sigma, p.block_size);
     config.radius = p.radius;
-    config.mode = GroupMode::Legacy;
+    config.mode = temporal.rolling ? GroupMode::Rolling : GroupMode::Legacy;
+    config.rolling = temporal.params;
     config.backend = parse_backend_args(vsapi, in, "WNNM");
     config.device = acquire_device(config.backend.device_id, "WNNM", core, vsapi);
     for (int plane = 0; plane < config.vi.format.numPlanes; ++plane) {

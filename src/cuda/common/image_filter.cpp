@@ -873,10 +873,16 @@ void create(const VSMap* in, VSMap* out, VSCore* core, const VSAPI* api, nss::Mo
 }
 
 void VS_CC create_nlh(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI* api) {
-    create(in, out, core, api, nss::Model::NLH);
+    const auto plain = [](const VSMap* i, VSMap* o, void*, VSCore* c, const VSAPI* a) {
+        create(i, o, c, a, nss::Model::NLH);
+    };
+    nss::frontend::create_temporal(plain, in, out, core, api, 0, "NLH", "nss_cuda");
 }
 void VS_CC create_twsc(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI* api) {
-    create(in, out, core, api, nss::Model::TWSC);
+    const auto plain = [](const VSMap* i, VSMap* o, void*, VSCore* c, const VSAPI* a) {
+        create(i, o, c, a, nss::Model::TWSC);
+    };
+    nss::frontend::create_temporal(plain, in, out, core, api, 0, "TWSC", "nss_cuda");
 }
 
 }  // namespace
