@@ -252,7 +252,11 @@ void VS_CC ncsrCreate(const VSMap* in, VSMap* out, void* userData, VSCore* core,
     vsapi->mapConsumeNode(out, "clip", node, maAppend);
 }
 
+void VS_CC ncsrCreateTemporal(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI* vsapi) {
+    nss::frontend::create_temporal(ncsrCreate, in, out, core, vsapi, nss::kWnnmDefaultRadius, "NCSR", "nss");
+}
+
 void register_ncsr(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
     const char* args = nss::frontend::kNcsrSignature;
-    vspapi->registerFunction("NCSR", args, "clip:vnode;", nss::checked_create<ncsrCreate>, nullptr, plugin);
+    vspapi->registerFunction("NCSR", args, "clip:vnode;", nss::checked_create<ncsrCreateTemporal>, nullptr, plugin);
 }

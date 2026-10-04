@@ -8,8 +8,11 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     VSNode* node = nss_create_full_image(in, core, api, out, nss::Model::TWSC);
     if (node) api->mapConsumeNode(out, "clip", node, maAppend);
 }
+void VS_CC create_temporal(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI* api) {
+    nss::frontend::create_temporal(create, in, out, core, api, 0, "TWSC", "nss");
+}
 }
 void register_twsc(VSPlugin* plugin, const VSPLUGINAPI* api) {
     const char* args = nss::frontend::kTwscSignature;
-    api->registerFunction("TWSC", args, "clip:vnode;", nss::checked_create<create>, nullptr, plugin);
+    api->registerFunction("TWSC", args, "clip:vnode;", nss::checked_create<create_temporal>, nullptr, plugin);
 }

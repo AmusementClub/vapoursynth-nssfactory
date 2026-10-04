@@ -5601,6 +5601,132 @@
   "MCWNNM|GRAYS|rho=3.0": {
    "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
   },
+  "MCWNNM|GRAYS|rolling_cache_chunks=-1": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|rolling_cache_chunks=0": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|rolling_cache_chunks=1": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|rolling_cache_chunks=1000": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|rolling_cache_chunks=16": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|rolling_cache_chunks=17": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|rolling_cache_chunks=2": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|rolling_cache_chunks=3": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|rolling_cache_chunks=33": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|rolling_cache_chunks=4": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|rolling_cache_chunks=65": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|rolling_cache_chunks=7": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|rolling_cache_chunks=8": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|rolling_cache_chunks=9": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|rolling_cache_limit=-1": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|rolling_cache_limit=0": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|rolling_cache_limit=1": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|rolling_cache_limit=1000": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|rolling_cache_limit=16": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|rolling_cache_limit=17": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|rolling_cache_limit=2": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|rolling_cache_limit=3": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|rolling_cache_limit=33": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|rolling_cache_limit=4": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|rolling_cache_limit=65": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|rolling_cache_limit=7": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|rolling_cache_limit=8": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|rolling_cache_limit=9": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|rolling_chunk=-1": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|rolling_chunk=0": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|rolling_chunk=1": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|rolling_chunk=1000": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|rolling_chunk=16": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|rolling_chunk=17": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|rolling_chunk=2": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|rolling_chunk=3": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|rolling_chunk=33": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|rolling_chunk=4": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|rolling_chunk=65": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|rolling_chunk=7": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|rolling_chunk=8": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|rolling_chunk=9": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
   "MCWNNM|GRAYS|sigma=-1.0": {
    "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
   },
@@ -5620,6 +5746,48 @@
    "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
   },
   "MCWNNM|GRAYS|sigma=pair": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|temporal_mode=''": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|temporal_mode='AUTO'": {
+   "error": "nss.MCWNNM: temporal_mode must be rolling or legacy"
+  },
+  "MCWNNM|GRAYS|temporal_mode='RGB'": {
+   "error": "nss.MCWNNM: temporal_mode must be rolling or legacy"
+  },
+  "MCWNNM|GRAYS|temporal_mode='UV'": {
+   "error": "nss.MCWNNM: temporal_mode must be rolling or legacy"
+  },
+  "MCWNNM|GRAYS|temporal_mode='Y'": {
+   "error": "nss.MCWNNM: temporal_mode must be rolling or legacy"
+  },
+  "MCWNNM|GRAYS|temporal_mode='YUV'": {
+   "error": "nss.MCWNNM: temporal_mode must be rolling or legacy"
+  },
+  "MCWNNM|GRAYS|temporal_mode='auto'": {
+   "error": "nss.MCWNNM: temporal_mode must be rolling or legacy"
+  },
+  "MCWNNM|GRAYS|temporal_mode='awgn'": {
+   "error": "nss.MCWNNM: temporal_mode must be rolling or legacy"
+  },
+  "MCWNNM|GRAYS|temporal_mode='bogus'": {
+   "error": "nss.MCWNNM: temporal_mode must be rolling or legacy"
+  },
+  "MCWNNM|GRAYS|temporal_mode='fused'": {
+   "error": "nss.MCWNNM: temporal_mode=fused is not supported; use rolling or legacy"
+  },
+  "MCWNNM|GRAYS|temporal_mode='gaussian'": {
+   "error": "nss.MCWNNM: temporal_mode must be rolling or legacy"
+  },
+  "MCWNNM|GRAYS|temporal_mode='legacy'": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|GRAYS|temporal_mode='real'": {
+   "error": "nss.MCWNNM: temporal_mode must be rolling or legacy"
+  },
+  "MCWNNM|GRAYS|temporal_mode='rolling'": {
    "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
   },
   "MCWNNM|RGBS|adaptive_aggregation=-1": {
@@ -6803,6 +6971,342 @@
     "width": 48
    }
   },
+  "MCWNNM|RGBS|rolling_cache_chunks=-1": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|rolling_cache_chunks=0": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|rolling_cache_chunks=1": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|rolling_cache_chunks=1000": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|rolling_cache_chunks=16": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|rolling_cache_chunks=17": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|rolling_cache_chunks=2": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|rolling_cache_chunks=3": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|rolling_cache_chunks=33": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|rolling_cache_chunks=4": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|rolling_cache_chunks=65": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|rolling_cache_chunks=7": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|rolling_cache_chunks=8": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|rolling_cache_chunks=9": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|rolling_cache_limit=-1": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|rolling_cache_limit=0": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|rolling_cache_limit=1": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|rolling_cache_limit=1000": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|rolling_cache_limit=16": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|rolling_cache_limit=17": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|rolling_cache_limit=2": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|rolling_cache_limit=3": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|rolling_cache_limit=33": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|rolling_cache_limit=4": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|rolling_cache_limit=65": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|rolling_cache_limit=7": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|rolling_cache_limit=8": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|rolling_cache_limit=9": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|rolling_chunk=-1": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|rolling_chunk=0": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|rolling_chunk=1": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|rolling_chunk=1000": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|rolling_chunk=16": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|rolling_chunk=17": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|rolling_chunk=2": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|rolling_chunk=3": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|rolling_chunk=33": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|rolling_chunk=4": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|rolling_chunk=65": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|rolling_chunk=7": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|rolling_chunk=8": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|rolling_chunk=9": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
   "MCWNNM|RGBS|sigma=-1.0": {
    "error": "nss: sigma must be non-negative"
   },
@@ -6847,6 +7351,63 @@
    }
   },
   "MCWNNM|RGBS|sigma=pair": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|temporal_mode=''": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|temporal_mode='AUTO'": {
+   "error": "nss.MCWNNM: temporal_mode must be rolling or legacy"
+  },
+  "MCWNNM|RGBS|temporal_mode='RGB'": {
+   "error": "nss.MCWNNM: temporal_mode must be rolling or legacy"
+  },
+  "MCWNNM|RGBS|temporal_mode='UV'": {
+   "error": "nss.MCWNNM: temporal_mode must be rolling or legacy"
+  },
+  "MCWNNM|RGBS|temporal_mode='Y'": {
+   "error": "nss.MCWNNM: temporal_mode must be rolling or legacy"
+  },
+  "MCWNNM|RGBS|temporal_mode='YUV'": {
+   "error": "nss.MCWNNM: temporal_mode must be rolling or legacy"
+  },
+  "MCWNNM|RGBS|temporal_mode='auto'": {
+   "error": "nss.MCWNNM: temporal_mode must be rolling or legacy"
+  },
+  "MCWNNM|RGBS|temporal_mode='awgn'": {
+   "error": "nss.MCWNNM: temporal_mode must be rolling or legacy"
+  },
+  "MCWNNM|RGBS|temporal_mode='bogus'": {
+   "error": "nss.MCWNNM: temporal_mode must be rolling or legacy"
+  },
+  "MCWNNM|RGBS|temporal_mode='fused'": {
+   "error": "nss.MCWNNM: temporal_mode=fused is not supported; use rolling or legacy"
+  },
+  "MCWNNM|RGBS|temporal_mode='gaussian'": {
+   "error": "nss.MCWNNM: temporal_mode must be rolling or legacy"
+  },
+  "MCWNNM|RGBS|temporal_mode='legacy'": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "MCWNNM|RGBS|temporal_mode='real'": {
+   "error": "nss.MCWNNM: temporal_mode must be rolling or legacy"
+  },
+  "MCWNNM|RGBS|temporal_mode='rolling'": {
    "ok": {
     "format": "RGBS",
     "frames": 4,
@@ -7415,6 +7976,132 @@
   "MCWNNM|YUV420PS|rho=3.0": {
    "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
   },
+  "MCWNNM|YUV420PS|rolling_cache_chunks=-1": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|rolling_cache_chunks=0": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|rolling_cache_chunks=1": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|rolling_cache_chunks=1000": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|rolling_cache_chunks=16": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|rolling_cache_chunks=17": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|rolling_cache_chunks=2": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|rolling_cache_chunks=3": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|rolling_cache_chunks=33": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|rolling_cache_chunks=4": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|rolling_cache_chunks=65": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|rolling_cache_chunks=7": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|rolling_cache_chunks=8": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|rolling_cache_chunks=9": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|rolling_cache_limit=-1": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|rolling_cache_limit=0": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|rolling_cache_limit=1": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|rolling_cache_limit=1000": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|rolling_cache_limit=16": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|rolling_cache_limit=17": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|rolling_cache_limit=2": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|rolling_cache_limit=3": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|rolling_cache_limit=33": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|rolling_cache_limit=4": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|rolling_cache_limit=65": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|rolling_cache_limit=7": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|rolling_cache_limit=8": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|rolling_cache_limit=9": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|rolling_chunk=-1": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|rolling_chunk=0": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|rolling_chunk=1": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|rolling_chunk=1000": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|rolling_chunk=16": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|rolling_chunk=17": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|rolling_chunk=2": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|rolling_chunk=3": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|rolling_chunk=33": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|rolling_chunk=4": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|rolling_chunk=65": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|rolling_chunk=7": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|rolling_chunk=8": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|rolling_chunk=9": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
   "MCWNNM|YUV420PS|sigma=-1.0": {
    "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
   },
@@ -7434,6 +8121,48 @@
    "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
   },
   "MCWNNM|YUV420PS|sigma=pair": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|temporal_mode=''": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|temporal_mode='AUTO'": {
+   "error": "nss.MCWNNM: temporal_mode must be rolling or legacy"
+  },
+  "MCWNNM|YUV420PS|temporal_mode='RGB'": {
+   "error": "nss.MCWNNM: temporal_mode must be rolling or legacy"
+  },
+  "MCWNNM|YUV420PS|temporal_mode='UV'": {
+   "error": "nss.MCWNNM: temporal_mode must be rolling or legacy"
+  },
+  "MCWNNM|YUV420PS|temporal_mode='Y'": {
+   "error": "nss.MCWNNM: temporal_mode must be rolling or legacy"
+  },
+  "MCWNNM|YUV420PS|temporal_mode='YUV'": {
+   "error": "nss.MCWNNM: temporal_mode must be rolling or legacy"
+  },
+  "MCWNNM|YUV420PS|temporal_mode='auto'": {
+   "error": "nss.MCWNNM: temporal_mode must be rolling or legacy"
+  },
+  "MCWNNM|YUV420PS|temporal_mode='awgn'": {
+   "error": "nss.MCWNNM: temporal_mode must be rolling or legacy"
+  },
+  "MCWNNM|YUV420PS|temporal_mode='bogus'": {
+   "error": "nss.MCWNNM: temporal_mode must be rolling or legacy"
+  },
+  "MCWNNM|YUV420PS|temporal_mode='fused'": {
+   "error": "nss.MCWNNM: temporal_mode=fused is not supported; use rolling or legacy"
+  },
+  "MCWNNM|YUV420PS|temporal_mode='gaussian'": {
+   "error": "nss.MCWNNM: temporal_mode must be rolling or legacy"
+  },
+  "MCWNNM|YUV420PS|temporal_mode='legacy'": {
+   "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
+  },
+  "MCWNNM|YUV420PS|temporal_mode='real'": {
+   "error": "nss.MCWNNM: temporal_mode must be rolling or legacy"
+  },
+  "MCWNNM|YUV420PS|temporal_mode='rolling'": {
    "error": "nss.MCWNNM: constant RGBS or YUV444PS required"
   },
   "NCSR|GRAYS|block_size=-1": {
@@ -8225,6 +8954,342 @@
     "width": 48
    }
   },
+  "NCSR|GRAYS|rolling_cache_chunks=-1": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|rolling_cache_chunks=0": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|rolling_cache_chunks=1": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|rolling_cache_chunks=1000": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|rolling_cache_chunks=16": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|rolling_cache_chunks=17": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|rolling_cache_chunks=2": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|rolling_cache_chunks=3": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|rolling_cache_chunks=33": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|rolling_cache_chunks=4": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|rolling_cache_chunks=65": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|rolling_cache_chunks=7": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|rolling_cache_chunks=8": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|rolling_cache_chunks=9": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|rolling_cache_limit=-1": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|rolling_cache_limit=0": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|rolling_cache_limit=1": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|rolling_cache_limit=1000": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|rolling_cache_limit=16": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|rolling_cache_limit=17": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|rolling_cache_limit=2": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|rolling_cache_limit=3": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|rolling_cache_limit=33": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|rolling_cache_limit=4": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|rolling_cache_limit=65": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|rolling_cache_limit=7": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|rolling_cache_limit=8": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|rolling_cache_limit=9": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|rolling_chunk=-1": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|rolling_chunk=0": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|rolling_chunk=1": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|rolling_chunk=1000": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|rolling_chunk=16": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|rolling_chunk=17": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|rolling_chunk=2": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|rolling_chunk=3": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|rolling_chunk=33": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|rolling_chunk=4": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|rolling_chunk=65": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|rolling_chunk=7": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|rolling_chunk=8": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|rolling_chunk=9": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
   "NCSR|GRAYS|sigma=-1.0": {
    "error": "nss: sigma must be non-negative"
   },
@@ -8269,6 +9334,63 @@
    }
   },
   "NCSR|GRAYS|sigma=pair": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|temporal_mode=''": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|temporal_mode='AUTO'": {
+   "error": "nss.NCSR: temporal_mode must be rolling or legacy"
+  },
+  "NCSR|GRAYS|temporal_mode='RGB'": {
+   "error": "nss.NCSR: temporal_mode must be rolling or legacy"
+  },
+  "NCSR|GRAYS|temporal_mode='UV'": {
+   "error": "nss.NCSR: temporal_mode must be rolling or legacy"
+  },
+  "NCSR|GRAYS|temporal_mode='Y'": {
+   "error": "nss.NCSR: temporal_mode must be rolling or legacy"
+  },
+  "NCSR|GRAYS|temporal_mode='YUV'": {
+   "error": "nss.NCSR: temporal_mode must be rolling or legacy"
+  },
+  "NCSR|GRAYS|temporal_mode='auto'": {
+   "error": "nss.NCSR: temporal_mode must be rolling or legacy"
+  },
+  "NCSR|GRAYS|temporal_mode='awgn'": {
+   "error": "nss.NCSR: temporal_mode must be rolling or legacy"
+  },
+  "NCSR|GRAYS|temporal_mode='bogus'": {
+   "error": "nss.NCSR: temporal_mode must be rolling or legacy"
+  },
+  "NCSR|GRAYS|temporal_mode='fused'": {
+   "error": "nss.NCSR: temporal_mode=fused is not supported; use rolling or legacy"
+  },
+  "NCSR|GRAYS|temporal_mode='gaussian'": {
+   "error": "nss.NCSR: temporal_mode must be rolling or legacy"
+  },
+  "NCSR|GRAYS|temporal_mode='legacy'": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|GRAYS|temporal_mode='real'": {
+   "error": "nss.NCSR: temporal_mode must be rolling or legacy"
+  },
+  "NCSR|GRAYS|temporal_mode='rolling'": {
    "ok": {
     "format": "GrayS",
     "frames": 4,
@@ -9065,6 +10187,342 @@
     "width": 48
    }
   },
+  "NCSR|RGBS|rolling_cache_chunks=-1": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|rolling_cache_chunks=0": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|rolling_cache_chunks=1": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|rolling_cache_chunks=1000": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|rolling_cache_chunks=16": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|rolling_cache_chunks=17": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|rolling_cache_chunks=2": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|rolling_cache_chunks=3": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|rolling_cache_chunks=33": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|rolling_cache_chunks=4": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|rolling_cache_chunks=65": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|rolling_cache_chunks=7": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|rolling_cache_chunks=8": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|rolling_cache_chunks=9": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|rolling_cache_limit=-1": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|rolling_cache_limit=0": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|rolling_cache_limit=1": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|rolling_cache_limit=1000": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|rolling_cache_limit=16": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|rolling_cache_limit=17": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|rolling_cache_limit=2": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|rolling_cache_limit=3": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|rolling_cache_limit=33": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|rolling_cache_limit=4": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|rolling_cache_limit=65": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|rolling_cache_limit=7": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|rolling_cache_limit=8": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|rolling_cache_limit=9": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|rolling_chunk=-1": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|rolling_chunk=0": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|rolling_chunk=1": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|rolling_chunk=1000": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|rolling_chunk=16": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|rolling_chunk=17": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|rolling_chunk=2": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|rolling_chunk=3": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|rolling_chunk=33": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|rolling_chunk=4": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|rolling_chunk=65": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|rolling_chunk=7": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|rolling_chunk=8": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|rolling_chunk=9": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
   "NCSR|RGBS|sigma=-1.0": {
    "error": "nss: sigma must be non-negative"
   },
@@ -9109,6 +10567,63 @@
    }
   },
   "NCSR|RGBS|sigma=pair": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|temporal_mode=''": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|temporal_mode='AUTO'": {
+   "error": "nss.NCSR: temporal_mode must be rolling or legacy"
+  },
+  "NCSR|RGBS|temporal_mode='RGB'": {
+   "error": "nss.NCSR: temporal_mode must be rolling or legacy"
+  },
+  "NCSR|RGBS|temporal_mode='UV'": {
+   "error": "nss.NCSR: temporal_mode must be rolling or legacy"
+  },
+  "NCSR|RGBS|temporal_mode='Y'": {
+   "error": "nss.NCSR: temporal_mode must be rolling or legacy"
+  },
+  "NCSR|RGBS|temporal_mode='YUV'": {
+   "error": "nss.NCSR: temporal_mode must be rolling or legacy"
+  },
+  "NCSR|RGBS|temporal_mode='auto'": {
+   "error": "nss.NCSR: temporal_mode must be rolling or legacy"
+  },
+  "NCSR|RGBS|temporal_mode='awgn'": {
+   "error": "nss.NCSR: temporal_mode must be rolling or legacy"
+  },
+  "NCSR|RGBS|temporal_mode='bogus'": {
+   "error": "nss.NCSR: temporal_mode must be rolling or legacy"
+  },
+  "NCSR|RGBS|temporal_mode='fused'": {
+   "error": "nss.NCSR: temporal_mode=fused is not supported; use rolling or legacy"
+  },
+  "NCSR|RGBS|temporal_mode='gaussian'": {
+   "error": "nss.NCSR: temporal_mode must be rolling or legacy"
+  },
+  "NCSR|RGBS|temporal_mode='legacy'": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|RGBS|temporal_mode='real'": {
+   "error": "nss.NCSR: temporal_mode must be rolling or legacy"
+  },
+  "NCSR|RGBS|temporal_mode='rolling'": {
    "ok": {
     "format": "RGBS",
     "frames": 4,
@@ -9905,6 +11420,342 @@
     "width": 48
    }
   },
+  "NCSR|YUV420PS|rolling_cache_chunks=-1": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|rolling_cache_chunks=0": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|rolling_cache_chunks=1": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|rolling_cache_chunks=1000": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|rolling_cache_chunks=16": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|rolling_cache_chunks=17": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|rolling_cache_chunks=2": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|rolling_cache_chunks=3": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|rolling_cache_chunks=33": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|rolling_cache_chunks=4": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|rolling_cache_chunks=65": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|rolling_cache_chunks=7": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|rolling_cache_chunks=8": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|rolling_cache_chunks=9": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|rolling_cache_limit=-1": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|rolling_cache_limit=0": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|rolling_cache_limit=1": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|rolling_cache_limit=1000": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|rolling_cache_limit=16": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|rolling_cache_limit=17": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|rolling_cache_limit=2": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|rolling_cache_limit=3": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|rolling_cache_limit=33": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|rolling_cache_limit=4": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|rolling_cache_limit=65": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|rolling_cache_limit=7": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|rolling_cache_limit=8": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|rolling_cache_limit=9": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|rolling_chunk=-1": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|rolling_chunk=0": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|rolling_chunk=1": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|rolling_chunk=1000": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|rolling_chunk=16": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|rolling_chunk=17": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|rolling_chunk=2": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|rolling_chunk=3": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|rolling_chunk=33": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|rolling_chunk=4": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|rolling_chunk=65": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|rolling_chunk=7": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|rolling_chunk=8": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|rolling_chunk=9": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
   "NCSR|YUV420PS|sigma=-1.0": {
    "error": "nss: sigma must be non-negative"
   },
@@ -9949,6 +11800,63 @@
    }
   },
   "NCSR|YUV420PS|sigma=pair": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|temporal_mode=''": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|temporal_mode='AUTO'": {
+   "error": "nss.NCSR: temporal_mode must be rolling or legacy"
+  },
+  "NCSR|YUV420PS|temporal_mode='RGB'": {
+   "error": "nss.NCSR: temporal_mode must be rolling or legacy"
+  },
+  "NCSR|YUV420PS|temporal_mode='UV'": {
+   "error": "nss.NCSR: temporal_mode must be rolling or legacy"
+  },
+  "NCSR|YUV420PS|temporal_mode='Y'": {
+   "error": "nss.NCSR: temporal_mode must be rolling or legacy"
+  },
+  "NCSR|YUV420PS|temporal_mode='YUV'": {
+   "error": "nss.NCSR: temporal_mode must be rolling or legacy"
+  },
+  "NCSR|YUV420PS|temporal_mode='auto'": {
+   "error": "nss.NCSR: temporal_mode must be rolling or legacy"
+  },
+  "NCSR|YUV420PS|temporal_mode='awgn'": {
+   "error": "nss.NCSR: temporal_mode must be rolling or legacy"
+  },
+  "NCSR|YUV420PS|temporal_mode='bogus'": {
+   "error": "nss.NCSR: temporal_mode must be rolling or legacy"
+  },
+  "NCSR|YUV420PS|temporal_mode='fused'": {
+   "error": "nss.NCSR: temporal_mode=fused is not supported; use rolling or legacy"
+  },
+  "NCSR|YUV420PS|temporal_mode='gaussian'": {
+   "error": "nss.NCSR: temporal_mode must be rolling or legacy"
+  },
+  "NCSR|YUV420PS|temporal_mode='legacy'": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NCSR|YUV420PS|temporal_mode='real'": {
+   "error": "nss.NCSR: temporal_mode must be rolling or legacy"
+  },
+  "NCSR|YUV420PS|temporal_mode='rolling'": {
    "ok": {
     "format": "YUV420PS",
     "frames": 4,
@@ -11067,6 +12975,342 @@
     "width": 48
    }
   },
+  "NLH|GRAYS|rolling_cache_chunks=-1": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rolling_cache_chunks=0": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rolling_cache_chunks=1": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rolling_cache_chunks=1000": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rolling_cache_chunks=16": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rolling_cache_chunks=17": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rolling_cache_chunks=2": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rolling_cache_chunks=3": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rolling_cache_chunks=33": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rolling_cache_chunks=4": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rolling_cache_chunks=65": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rolling_cache_chunks=7": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rolling_cache_chunks=8": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rolling_cache_chunks=9": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rolling_cache_limit=-1": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rolling_cache_limit=0": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rolling_cache_limit=1": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rolling_cache_limit=1000": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rolling_cache_limit=16": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rolling_cache_limit=17": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rolling_cache_limit=2": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rolling_cache_limit=3": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rolling_cache_limit=33": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rolling_cache_limit=4": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rolling_cache_limit=65": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rolling_cache_limit=7": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rolling_cache_limit=8": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rolling_cache_limit=9": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rolling_chunk=-1": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rolling_chunk=0": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rolling_chunk=1": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rolling_chunk=1000": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rolling_chunk=16": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rolling_chunk=17": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rolling_chunk=2": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rolling_chunk=3": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rolling_chunk=33": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rolling_chunk=4": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rolling_chunk=65": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rolling_chunk=7": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rolling_chunk=8": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|rolling_chunk=9": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
   "NLH|GRAYS|search_window=-1": {
    "error": "nss.NLH: invalid search_window"
   },
@@ -11217,6 +13461,63 @@
   },
   "NLH|GRAYS|sigma=pair": {
    "error": "nss: sigma must contain one value per selected input plane (last value broadcasts)"
+  },
+  "NLH|GRAYS|temporal_mode=''": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|temporal_mode='AUTO'": {
+   "error": "nss.NLH: temporal_mode must be rolling or legacy"
+  },
+  "NLH|GRAYS|temporal_mode='RGB'": {
+   "error": "nss.NLH: temporal_mode must be rolling or legacy"
+  },
+  "NLH|GRAYS|temporal_mode='UV'": {
+   "error": "nss.NLH: temporal_mode must be rolling or legacy"
+  },
+  "NLH|GRAYS|temporal_mode='Y'": {
+   "error": "nss.NLH: temporal_mode must be rolling or legacy"
+  },
+  "NLH|GRAYS|temporal_mode='YUV'": {
+   "error": "nss.NLH: temporal_mode must be rolling or legacy"
+  },
+  "NLH|GRAYS|temporal_mode='auto'": {
+   "error": "nss.NLH: temporal_mode must be rolling or legacy"
+  },
+  "NLH|GRAYS|temporal_mode='awgn'": {
+   "error": "nss.NLH: temporal_mode must be rolling or legacy"
+  },
+  "NLH|GRAYS|temporal_mode='bogus'": {
+   "error": "nss.NLH: temporal_mode must be rolling or legacy"
+  },
+  "NLH|GRAYS|temporal_mode='fused'": {
+   "error": "nss.NLH: temporal_mode=fused is not supported; use rolling or legacy"
+  },
+  "NLH|GRAYS|temporal_mode='gaussian'": {
+   "error": "nss.NLH: temporal_mode must be rolling or legacy"
+  },
+  "NLH|GRAYS|temporal_mode='legacy'": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|GRAYS|temporal_mode='real'": {
+   "error": "nss.NLH: temporal_mode must be rolling or legacy"
+  },
+  "NLH|GRAYS|temporal_mode='rolling'": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
   },
   "NLH|GRAYS|wiener_iters=-1": {
    "error": "nss: wiener_iters outside supported range"
@@ -12464,6 +14765,342 @@
     "width": 48
    }
   },
+  "NLH|RGBS|rolling_cache_chunks=-1": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rolling_cache_chunks=0": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rolling_cache_chunks=1": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rolling_cache_chunks=1000": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rolling_cache_chunks=16": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rolling_cache_chunks=17": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rolling_cache_chunks=2": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rolling_cache_chunks=3": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rolling_cache_chunks=33": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rolling_cache_chunks=4": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rolling_cache_chunks=65": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rolling_cache_chunks=7": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rolling_cache_chunks=8": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rolling_cache_chunks=9": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rolling_cache_limit=-1": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rolling_cache_limit=0": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rolling_cache_limit=1": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rolling_cache_limit=1000": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rolling_cache_limit=16": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rolling_cache_limit=17": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rolling_cache_limit=2": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rolling_cache_limit=3": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rolling_cache_limit=33": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rolling_cache_limit=4": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rolling_cache_limit=65": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rolling_cache_limit=7": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rolling_cache_limit=8": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rolling_cache_limit=9": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rolling_chunk=-1": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rolling_chunk=0": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rolling_chunk=1": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rolling_chunk=1000": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rolling_chunk=16": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rolling_chunk=17": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rolling_chunk=2": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rolling_chunk=3": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rolling_chunk=33": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rolling_chunk=4": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rolling_chunk=65": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rolling_chunk=7": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rolling_chunk=8": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|rolling_chunk=9": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
   "NLH|RGBS|search_window=-1": {
    "error": "nss.NLH: invalid search_window"
   },
@@ -12613,6 +15250,63 @@
    }
   },
   "NLH|RGBS|sigma=pair": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|temporal_mode=''": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|temporal_mode='AUTO'": {
+   "error": "nss.NLH: temporal_mode must be rolling or legacy"
+  },
+  "NLH|RGBS|temporal_mode='RGB'": {
+   "error": "nss.NLH: temporal_mode must be rolling or legacy"
+  },
+  "NLH|RGBS|temporal_mode='UV'": {
+   "error": "nss.NLH: temporal_mode must be rolling or legacy"
+  },
+  "NLH|RGBS|temporal_mode='Y'": {
+   "error": "nss.NLH: temporal_mode must be rolling or legacy"
+  },
+  "NLH|RGBS|temporal_mode='YUV'": {
+   "error": "nss.NLH: temporal_mode must be rolling or legacy"
+  },
+  "NLH|RGBS|temporal_mode='auto'": {
+   "error": "nss.NLH: temporal_mode must be rolling or legacy"
+  },
+  "NLH|RGBS|temporal_mode='awgn'": {
+   "error": "nss.NLH: temporal_mode must be rolling or legacy"
+  },
+  "NLH|RGBS|temporal_mode='bogus'": {
+   "error": "nss.NLH: temporal_mode must be rolling or legacy"
+  },
+  "NLH|RGBS|temporal_mode='fused'": {
+   "error": "nss.NLH: temporal_mode=fused is not supported; use rolling or legacy"
+  },
+  "NLH|RGBS|temporal_mode='gaussian'": {
+   "error": "nss.NLH: temporal_mode must be rolling or legacy"
+  },
+  "NLH|RGBS|temporal_mode='legacy'": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|RGBS|temporal_mode='real'": {
+   "error": "nss.NLH: temporal_mode must be rolling or legacy"
+  },
+  "NLH|RGBS|temporal_mode='rolling'": {
    "ok": {
     "format": "RGBS",
     "frames": 4,
@@ -13866,6 +16560,342 @@
     "width": 48
    }
   },
+  "NLH|YUV420PS|rolling_cache_chunks=-1": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rolling_cache_chunks=0": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rolling_cache_chunks=1": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rolling_cache_chunks=1000": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rolling_cache_chunks=16": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rolling_cache_chunks=17": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rolling_cache_chunks=2": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rolling_cache_chunks=3": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rolling_cache_chunks=33": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rolling_cache_chunks=4": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rolling_cache_chunks=65": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rolling_cache_chunks=7": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rolling_cache_chunks=8": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rolling_cache_chunks=9": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rolling_cache_limit=-1": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rolling_cache_limit=0": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rolling_cache_limit=1": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rolling_cache_limit=1000": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rolling_cache_limit=16": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rolling_cache_limit=17": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rolling_cache_limit=2": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rolling_cache_limit=3": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rolling_cache_limit=33": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rolling_cache_limit=4": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rolling_cache_limit=65": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rolling_cache_limit=7": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rolling_cache_limit=8": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rolling_cache_limit=9": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rolling_chunk=-1": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rolling_chunk=0": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rolling_chunk=1": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rolling_chunk=1000": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rolling_chunk=16": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rolling_chunk=17": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rolling_chunk=2": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rolling_chunk=3": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rolling_chunk=33": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rolling_chunk=4": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rolling_chunk=65": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rolling_chunk=7": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rolling_chunk=8": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|rolling_chunk=9": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
   "NLH|YUV420PS|search_window=-1": {
    "error": "nss.NLH: invalid search_window"
   },
@@ -14015,6 +17045,63 @@
    }
   },
   "NLH|YUV420PS|sigma=pair": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|temporal_mode=''": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|temporal_mode='AUTO'": {
+   "error": "nss.NLH: temporal_mode must be rolling or legacy"
+  },
+  "NLH|YUV420PS|temporal_mode='RGB'": {
+   "error": "nss.NLH: temporal_mode must be rolling or legacy"
+  },
+  "NLH|YUV420PS|temporal_mode='UV'": {
+   "error": "nss.NLH: temporal_mode must be rolling or legacy"
+  },
+  "NLH|YUV420PS|temporal_mode='Y'": {
+   "error": "nss.NLH: temporal_mode must be rolling or legacy"
+  },
+  "NLH|YUV420PS|temporal_mode='YUV'": {
+   "error": "nss.NLH: temporal_mode must be rolling or legacy"
+  },
+  "NLH|YUV420PS|temporal_mode='auto'": {
+   "error": "nss.NLH: temporal_mode must be rolling or legacy"
+  },
+  "NLH|YUV420PS|temporal_mode='awgn'": {
+   "error": "nss.NLH: temporal_mode must be rolling or legacy"
+  },
+  "NLH|YUV420PS|temporal_mode='bogus'": {
+   "error": "nss.NLH: temporal_mode must be rolling or legacy"
+  },
+  "NLH|YUV420PS|temporal_mode='fused'": {
+   "error": "nss.NLH: temporal_mode=fused is not supported; use rolling or legacy"
+  },
+  "NLH|YUV420PS|temporal_mode='gaussian'": {
+   "error": "nss.NLH: temporal_mode must be rolling or legacy"
+  },
+  "NLH|YUV420PS|temporal_mode='legacy'": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "NLH|YUV420PS|temporal_mode='real'": {
+   "error": "nss.NLH: temporal_mode must be rolling or legacy"
+  },
+  "NLH|YUV420PS|temporal_mode='rolling'": {
    "ok": {
     "format": "YUV420PS",
     "frames": 4,
@@ -17117,6 +20204,342 @@
     "width": 48
    }
   },
+  "TWSC|GRAYS|rolling_cache_chunks=-1": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|rolling_cache_chunks=0": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|rolling_cache_chunks=1": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|rolling_cache_chunks=1000": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|rolling_cache_chunks=16": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|rolling_cache_chunks=17": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|rolling_cache_chunks=2": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|rolling_cache_chunks=3": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|rolling_cache_chunks=33": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|rolling_cache_chunks=4": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|rolling_cache_chunks=65": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|rolling_cache_chunks=7": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|rolling_cache_chunks=8": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|rolling_cache_chunks=9": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|rolling_cache_limit=-1": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|rolling_cache_limit=0": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|rolling_cache_limit=1": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|rolling_cache_limit=1000": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|rolling_cache_limit=16": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|rolling_cache_limit=17": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|rolling_cache_limit=2": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|rolling_cache_limit=3": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|rolling_cache_limit=33": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|rolling_cache_limit=4": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|rolling_cache_limit=65": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|rolling_cache_limit=7": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|rolling_cache_limit=8": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|rolling_cache_limit=9": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|rolling_chunk=-1": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|rolling_chunk=0": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|rolling_chunk=1": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|rolling_chunk=1000": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|rolling_chunk=16": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|rolling_chunk=17": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|rolling_chunk=2": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|rolling_chunk=3": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|rolling_chunk=33": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|rolling_chunk=4": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|rolling_chunk=65": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|rolling_chunk=7": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|rolling_chunk=8": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|rolling_chunk=9": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
   "TWSC|GRAYS|search_window=-1": {
    "error": "nss: search_window outside supported range"
   },
@@ -17259,6 +20682,63 @@
   },
   "TWSC|GRAYS|sigma=pair": {
    "error": "nss: sigma must contain one value per selected input plane (last value broadcasts)"
+  },
+  "TWSC|GRAYS|temporal_mode=''": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|temporal_mode='AUTO'": {
+   "error": "nss.TWSC: temporal_mode must be rolling or legacy"
+  },
+  "TWSC|GRAYS|temporal_mode='RGB'": {
+   "error": "nss.TWSC: temporal_mode must be rolling or legacy"
+  },
+  "TWSC|GRAYS|temporal_mode='UV'": {
+   "error": "nss.TWSC: temporal_mode must be rolling or legacy"
+  },
+  "TWSC|GRAYS|temporal_mode='Y'": {
+   "error": "nss.TWSC: temporal_mode must be rolling or legacy"
+  },
+  "TWSC|GRAYS|temporal_mode='YUV'": {
+   "error": "nss.TWSC: temporal_mode must be rolling or legacy"
+  },
+  "TWSC|GRAYS|temporal_mode='auto'": {
+   "error": "nss.TWSC: temporal_mode must be rolling or legacy"
+  },
+  "TWSC|GRAYS|temporal_mode='awgn'": {
+   "error": "nss.TWSC: temporal_mode must be rolling or legacy"
+  },
+  "TWSC|GRAYS|temporal_mode='bogus'": {
+   "error": "nss.TWSC: temporal_mode must be rolling or legacy"
+  },
+  "TWSC|GRAYS|temporal_mode='fused'": {
+   "error": "nss.TWSC: temporal_mode=fused is not supported; use rolling or legacy"
+  },
+  "TWSC|GRAYS|temporal_mode='gaussian'": {
+   "error": "nss.TWSC: temporal_mode must be rolling or legacy"
+  },
+  "TWSC|GRAYS|temporal_mode='legacy'": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|temporal_mode='real'": {
+   "error": "nss.TWSC: temporal_mode must be rolling or legacy"
+  },
+  "TWSC|GRAYS|temporal_mode='rolling'": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
   },
   "TWSC|GRAYS|tol=-1.0": {
    "error": "nss: invalid tol"
@@ -18500,6 +21980,342 @@
     "width": 48
    }
   },
+  "TWSC|RGBS|rolling_cache_chunks=-1": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|rolling_cache_chunks=0": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|rolling_cache_chunks=1": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|rolling_cache_chunks=1000": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|rolling_cache_chunks=16": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|rolling_cache_chunks=17": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|rolling_cache_chunks=2": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|rolling_cache_chunks=3": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|rolling_cache_chunks=33": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|rolling_cache_chunks=4": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|rolling_cache_chunks=65": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|rolling_cache_chunks=7": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|rolling_cache_chunks=8": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|rolling_cache_chunks=9": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|rolling_cache_limit=-1": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|rolling_cache_limit=0": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|rolling_cache_limit=1": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|rolling_cache_limit=1000": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|rolling_cache_limit=16": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|rolling_cache_limit=17": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|rolling_cache_limit=2": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|rolling_cache_limit=3": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|rolling_cache_limit=33": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|rolling_cache_limit=4": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|rolling_cache_limit=65": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|rolling_cache_limit=7": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|rolling_cache_limit=8": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|rolling_cache_limit=9": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|rolling_chunk=-1": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|rolling_chunk=0": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|rolling_chunk=1": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|rolling_chunk=1000": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|rolling_chunk=16": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|rolling_chunk=17": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|rolling_chunk=2": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|rolling_chunk=3": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|rolling_chunk=33": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|rolling_chunk=4": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|rolling_chunk=65": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|rolling_chunk=7": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|rolling_chunk=8": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|rolling_chunk=9": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
   "TWSC|RGBS|search_window=-1": {
    "error": "nss: search_window outside supported range"
   },
@@ -18641,6 +22457,63 @@
    }
   },
   "TWSC|RGBS|sigma=pair": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|temporal_mode=''": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|temporal_mode='AUTO'": {
+   "error": "nss.TWSC: temporal_mode must be rolling or legacy"
+  },
+  "TWSC|RGBS|temporal_mode='RGB'": {
+   "error": "nss.TWSC: temporal_mode must be rolling or legacy"
+  },
+  "TWSC|RGBS|temporal_mode='UV'": {
+   "error": "nss.TWSC: temporal_mode must be rolling or legacy"
+  },
+  "TWSC|RGBS|temporal_mode='Y'": {
+   "error": "nss.TWSC: temporal_mode must be rolling or legacy"
+  },
+  "TWSC|RGBS|temporal_mode='YUV'": {
+   "error": "nss.TWSC: temporal_mode must be rolling or legacy"
+  },
+  "TWSC|RGBS|temporal_mode='auto'": {
+   "error": "nss.TWSC: temporal_mode must be rolling or legacy"
+  },
+  "TWSC|RGBS|temporal_mode='awgn'": {
+   "error": "nss.TWSC: temporal_mode must be rolling or legacy"
+  },
+  "TWSC|RGBS|temporal_mode='bogus'": {
+   "error": "nss.TWSC: temporal_mode must be rolling or legacy"
+  },
+  "TWSC|RGBS|temporal_mode='fused'": {
+   "error": "nss.TWSC: temporal_mode=fused is not supported; use rolling or legacy"
+  },
+  "TWSC|RGBS|temporal_mode='gaussian'": {
+   "error": "nss.TWSC: temporal_mode must be rolling or legacy"
+  },
+  "TWSC|RGBS|temporal_mode='legacy'": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|temporal_mode='real'": {
+   "error": "nss.TWSC: temporal_mode must be rolling or legacy"
+  },
+  "TWSC|RGBS|temporal_mode='rolling'": {
    "ok": {
     "format": "RGBS",
     "frames": 4,
@@ -19888,6 +23761,342 @@
     "width": 48
    }
   },
+  "TWSC|YUV420PS|rolling_cache_chunks=-1": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rolling_cache_chunks=0": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rolling_cache_chunks=1": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rolling_cache_chunks=1000": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rolling_cache_chunks=16": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rolling_cache_chunks=17": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rolling_cache_chunks=2": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rolling_cache_chunks=3": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rolling_cache_chunks=33": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rolling_cache_chunks=4": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rolling_cache_chunks=65": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rolling_cache_chunks=7": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rolling_cache_chunks=8": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rolling_cache_chunks=9": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rolling_cache_limit=-1": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rolling_cache_limit=0": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rolling_cache_limit=1": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rolling_cache_limit=1000": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rolling_cache_limit=16": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rolling_cache_limit=17": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rolling_cache_limit=2": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rolling_cache_limit=3": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rolling_cache_limit=33": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rolling_cache_limit=4": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rolling_cache_limit=65": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rolling_cache_limit=7": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rolling_cache_limit=8": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rolling_cache_limit=9": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rolling_chunk=-1": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rolling_chunk=0": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rolling_chunk=1": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rolling_chunk=1000": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rolling_chunk=16": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rolling_chunk=17": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rolling_chunk=2": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rolling_chunk=3": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rolling_chunk=33": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rolling_chunk=4": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rolling_chunk=65": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rolling_chunk=7": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rolling_chunk=8": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|rolling_chunk=9": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
   "TWSC|YUV420PS|search_window=-1": {
    "error": "nss: search_window outside supported range"
   },
@@ -20029,6 +24238,63 @@
    }
   },
   "TWSC|YUV420PS|sigma=pair": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|temporal_mode=''": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|temporal_mode='AUTO'": {
+   "error": "nss.TWSC: temporal_mode must be rolling or legacy"
+  },
+  "TWSC|YUV420PS|temporal_mode='RGB'": {
+   "error": "nss.TWSC: temporal_mode must be rolling or legacy"
+  },
+  "TWSC|YUV420PS|temporal_mode='UV'": {
+   "error": "nss.TWSC: temporal_mode must be rolling or legacy"
+  },
+  "TWSC|YUV420PS|temporal_mode='Y'": {
+   "error": "nss.TWSC: temporal_mode must be rolling or legacy"
+  },
+  "TWSC|YUV420PS|temporal_mode='YUV'": {
+   "error": "nss.TWSC: temporal_mode must be rolling or legacy"
+  },
+  "TWSC|YUV420PS|temporal_mode='auto'": {
+   "error": "nss.TWSC: temporal_mode must be rolling or legacy"
+  },
+  "TWSC|YUV420PS|temporal_mode='awgn'": {
+   "error": "nss.TWSC: temporal_mode must be rolling or legacy"
+  },
+  "TWSC|YUV420PS|temporal_mode='bogus'": {
+   "error": "nss.TWSC: temporal_mode must be rolling or legacy"
+  },
+  "TWSC|YUV420PS|temporal_mode='fused'": {
+   "error": "nss.TWSC: temporal_mode=fused is not supported; use rolling or legacy"
+  },
+  "TWSC|YUV420PS|temporal_mode='gaussian'": {
+   "error": "nss.TWSC: temporal_mode must be rolling or legacy"
+  },
+  "TWSC|YUV420PS|temporal_mode='legacy'": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|temporal_mode='real'": {
+   "error": "nss.TWSC: temporal_mode must be rolling or legacy"
+  },
+  "TWSC|YUV420PS|temporal_mode='rolling'": {
    "ok": {
     "format": "YUV420PS",
     "frames": 4,
@@ -21604,6 +25870,342 @@
     "width": 48
    }
   },
+  "WNNM|GRAYS|rolling_cache_chunks=-1": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|rolling_cache_chunks=0": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|rolling_cache_chunks=1": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|rolling_cache_chunks=1000": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|rolling_cache_chunks=16": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|rolling_cache_chunks=17": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|rolling_cache_chunks=2": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|rolling_cache_chunks=3": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|rolling_cache_chunks=33": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|rolling_cache_chunks=4": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|rolling_cache_chunks=65": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|rolling_cache_chunks=7": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|rolling_cache_chunks=8": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|rolling_cache_chunks=9": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|rolling_cache_limit=-1": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|rolling_cache_limit=0": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|rolling_cache_limit=1": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|rolling_cache_limit=1000": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|rolling_cache_limit=16": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|rolling_cache_limit=17": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|rolling_cache_limit=2": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|rolling_cache_limit=3": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|rolling_cache_limit=33": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|rolling_cache_limit=4": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|rolling_cache_limit=65": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|rolling_cache_limit=7": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|rolling_cache_limit=8": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|rolling_cache_limit=9": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|rolling_chunk=-1": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|rolling_chunk=0": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|rolling_chunk=1": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|rolling_chunk=1000": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|rolling_chunk=16": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|rolling_chunk=17": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|rolling_chunk=2": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|rolling_chunk=3": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|rolling_chunk=33": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|rolling_chunk=4": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|rolling_chunk=65": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|rolling_chunk=7": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|rolling_chunk=8": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|rolling_chunk=9": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
   "WNNM|GRAYS|sigma=-1.0": {
    "error": "nss: sigma must be non-negative"
   },
@@ -21648,6 +26250,63 @@
    }
   },
   "WNNM|GRAYS|sigma=pair": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|temporal_mode=''": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|temporal_mode='AUTO'": {
+   "error": "nss.WNNM: temporal_mode must be rolling or legacy"
+  },
+  "WNNM|GRAYS|temporal_mode='RGB'": {
+   "error": "nss.WNNM: temporal_mode must be rolling or legacy"
+  },
+  "WNNM|GRAYS|temporal_mode='UV'": {
+   "error": "nss.WNNM: temporal_mode must be rolling or legacy"
+  },
+  "WNNM|GRAYS|temporal_mode='Y'": {
+   "error": "nss.WNNM: temporal_mode must be rolling or legacy"
+  },
+  "WNNM|GRAYS|temporal_mode='YUV'": {
+   "error": "nss.WNNM: temporal_mode must be rolling or legacy"
+  },
+  "WNNM|GRAYS|temporal_mode='auto'": {
+   "error": "nss.WNNM: temporal_mode must be rolling or legacy"
+  },
+  "WNNM|GRAYS|temporal_mode='awgn'": {
+   "error": "nss.WNNM: temporal_mode must be rolling or legacy"
+  },
+  "WNNM|GRAYS|temporal_mode='bogus'": {
+   "error": "nss.WNNM: temporal_mode must be rolling or legacy"
+  },
+  "WNNM|GRAYS|temporal_mode='fused'": {
+   "error": "nss.WNNM: temporal_mode=fused is not supported; use rolling or legacy"
+  },
+  "WNNM|GRAYS|temporal_mode='gaussian'": {
+   "error": "nss.WNNM: temporal_mode must be rolling or legacy"
+  },
+  "WNNM|GRAYS|temporal_mode='legacy'": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|GRAYS|temporal_mode='real'": {
+   "error": "nss.WNNM: temporal_mode must be rolling or legacy"
+  },
+  "WNNM|GRAYS|temporal_mode='rolling'": {
    "ok": {
     "format": "GrayS",
     "frames": 4,
@@ -22543,6 +27202,342 @@
     "width": 48
    }
   },
+  "WNNM|RGBS|rolling_cache_chunks=-1": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|rolling_cache_chunks=0": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|rolling_cache_chunks=1": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|rolling_cache_chunks=1000": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|rolling_cache_chunks=16": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|rolling_cache_chunks=17": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|rolling_cache_chunks=2": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|rolling_cache_chunks=3": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|rolling_cache_chunks=33": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|rolling_cache_chunks=4": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|rolling_cache_chunks=65": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|rolling_cache_chunks=7": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|rolling_cache_chunks=8": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|rolling_cache_chunks=9": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|rolling_cache_limit=-1": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|rolling_cache_limit=0": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|rolling_cache_limit=1": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|rolling_cache_limit=1000": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|rolling_cache_limit=16": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|rolling_cache_limit=17": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|rolling_cache_limit=2": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|rolling_cache_limit=3": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|rolling_cache_limit=33": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|rolling_cache_limit=4": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|rolling_cache_limit=65": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|rolling_cache_limit=7": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|rolling_cache_limit=8": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|rolling_cache_limit=9": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|rolling_chunk=-1": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|rolling_chunk=0": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|rolling_chunk=1": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|rolling_chunk=1000": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|rolling_chunk=16": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|rolling_chunk=17": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|rolling_chunk=2": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|rolling_chunk=3": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|rolling_chunk=33": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|rolling_chunk=4": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|rolling_chunk=65": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|rolling_chunk=7": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|rolling_chunk=8": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|rolling_chunk=9": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
   "WNNM|RGBS|sigma=-1.0": {
    "error": "nss: sigma must be non-negative"
   },
@@ -22587,6 +27582,63 @@
    }
   },
   "WNNM|RGBS|sigma=pair": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|temporal_mode=''": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|temporal_mode='AUTO'": {
+   "error": "nss.WNNM: temporal_mode must be rolling or legacy"
+  },
+  "WNNM|RGBS|temporal_mode='RGB'": {
+   "error": "nss.WNNM: temporal_mode must be rolling or legacy"
+  },
+  "WNNM|RGBS|temporal_mode='UV'": {
+   "error": "nss.WNNM: temporal_mode must be rolling or legacy"
+  },
+  "WNNM|RGBS|temporal_mode='Y'": {
+   "error": "nss.WNNM: temporal_mode must be rolling or legacy"
+  },
+  "WNNM|RGBS|temporal_mode='YUV'": {
+   "error": "nss.WNNM: temporal_mode must be rolling or legacy"
+  },
+  "WNNM|RGBS|temporal_mode='auto'": {
+   "error": "nss.WNNM: temporal_mode must be rolling or legacy"
+  },
+  "WNNM|RGBS|temporal_mode='awgn'": {
+   "error": "nss.WNNM: temporal_mode must be rolling or legacy"
+  },
+  "WNNM|RGBS|temporal_mode='bogus'": {
+   "error": "nss.WNNM: temporal_mode must be rolling or legacy"
+  },
+  "WNNM|RGBS|temporal_mode='fused'": {
+   "error": "nss.WNNM: temporal_mode=fused is not supported; use rolling or legacy"
+  },
+  "WNNM|RGBS|temporal_mode='gaussian'": {
+   "error": "nss.WNNM: temporal_mode must be rolling or legacy"
+  },
+  "WNNM|RGBS|temporal_mode='legacy'": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|RGBS|temporal_mode='real'": {
+   "error": "nss.WNNM: temporal_mode must be rolling or legacy"
+  },
+  "WNNM|RGBS|temporal_mode='rolling'": {
    "ok": {
     "format": "RGBS",
     "frames": 4,
@@ -23482,6 +28534,342 @@
     "width": 48
    }
   },
+  "WNNM|YUV420PS|rolling_cache_chunks=-1": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|rolling_cache_chunks=0": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|rolling_cache_chunks=1": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|rolling_cache_chunks=1000": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|rolling_cache_chunks=16": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|rolling_cache_chunks=17": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|rolling_cache_chunks=2": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|rolling_cache_chunks=3": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|rolling_cache_chunks=33": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|rolling_cache_chunks=4": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|rolling_cache_chunks=65": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|rolling_cache_chunks=7": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|rolling_cache_chunks=8": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|rolling_cache_chunks=9": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|rolling_cache_limit=-1": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|rolling_cache_limit=0": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|rolling_cache_limit=1": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|rolling_cache_limit=1000": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|rolling_cache_limit=16": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|rolling_cache_limit=17": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|rolling_cache_limit=2": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|rolling_cache_limit=3": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|rolling_cache_limit=33": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|rolling_cache_limit=4": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|rolling_cache_limit=65": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|rolling_cache_limit=7": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|rolling_cache_limit=8": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|rolling_cache_limit=9": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|rolling_chunk=-1": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|rolling_chunk=0": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|rolling_chunk=1": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|rolling_chunk=1000": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|rolling_chunk=16": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|rolling_chunk=17": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|rolling_chunk=2": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|rolling_chunk=3": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|rolling_chunk=33": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|rolling_chunk=4": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|rolling_chunk=65": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|rolling_chunk=7": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|rolling_chunk=8": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|rolling_chunk=9": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
   "WNNM|YUV420PS|sigma=-1.0": {
    "error": "nss: sigma must be non-negative"
   },
@@ -23532,20 +28920,77 @@
     "height": 40,
     "width": 48
    }
+  },
+  "WNNM|YUV420PS|temporal_mode=''": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|temporal_mode='AUTO'": {
+   "error": "nss.WNNM: temporal_mode must be rolling or legacy"
+  },
+  "WNNM|YUV420PS|temporal_mode='RGB'": {
+   "error": "nss.WNNM: temporal_mode must be rolling or legacy"
+  },
+  "WNNM|YUV420PS|temporal_mode='UV'": {
+   "error": "nss.WNNM: temporal_mode must be rolling or legacy"
+  },
+  "WNNM|YUV420PS|temporal_mode='Y'": {
+   "error": "nss.WNNM: temporal_mode must be rolling or legacy"
+  },
+  "WNNM|YUV420PS|temporal_mode='YUV'": {
+   "error": "nss.WNNM: temporal_mode must be rolling or legacy"
+  },
+  "WNNM|YUV420PS|temporal_mode='auto'": {
+   "error": "nss.WNNM: temporal_mode must be rolling or legacy"
+  },
+  "WNNM|YUV420PS|temporal_mode='awgn'": {
+   "error": "nss.WNNM: temporal_mode must be rolling or legacy"
+  },
+  "WNNM|YUV420PS|temporal_mode='bogus'": {
+   "error": "nss.WNNM: temporal_mode must be rolling or legacy"
+  },
+  "WNNM|YUV420PS|temporal_mode='fused'": {
+   "error": "nss.WNNM: temporal_mode=fused is not supported; use rolling or legacy"
+  },
+  "WNNM|YUV420PS|temporal_mode='gaussian'": {
+   "error": "nss.WNNM: temporal_mode must be rolling or legacy"
+  },
+  "WNNM|YUV420PS|temporal_mode='legacy'": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "WNNM|YUV420PS|temporal_mode='real'": {
+   "error": "nss.WNNM: temporal_mode must be rolling or legacy"
+  },
+  "WNNM|YUV420PS|temporal_mode='rolling'": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
   }
  },
  "functions": {
   "BM3D": "clip:vnode;ref:vnode:opt;sigma:float[]:opt;block_size:int[]:opt;group_size:int[]:opt;block_step:int[]:opt;bm_range:int[]:opt;radius:int:opt;ps_num:int[]:opt;ps_range:int[]:opt;temporal_mode:data:opt;rolling_chunk:int:opt;rolling_cache_chunks:int:opt;rolling_cache_limit:int:opt;memory_limit_mb:int:opt;",
   "Backend": "",
   "LSSC": "clip:vnode;sigma:float[]:opt;block_size:int:opt;block_step:int:opt;radius:int:opt;memory_limit_mb:int:opt;",
-  "MCWNNM": "clip:vnode;sigma:float[]:opt;block_size:int:opt;block_step:int:opt;group_size:int:opt;bm_range:int:opt;radius:int:opt;ps_num:int:opt;ps_range:int:opt;residual:int:opt;adaptive_aggregation:int:opt;rclip:vnode:opt;admm_iter:int:opt;rho:float:opt;mu:float:opt;iters:int:opt;delta:float:opt;memory_limit_mb:int:opt;",
-  "NCSR": "clip:vnode;sigma:float[]:opt;block_size:int:opt;block_step:int:opt;group_size:int:opt;bm_range:int:opt;radius:int:opt;ps_num:int:opt;ps_range:int:opt;rclip:vnode:opt;iters:int:opt;delta:float:opt;memory_limit_mb:int:opt;",
-  "NLH": "clip:vnode;sigma:float[]:opt;block_size:int[]:opt;block_step:int[]:opt;group_size:int[]:opt;bm_range:int:opt;radius:int:opt;ps_num:int:opt;ps_range:int:opt;q:int[]:opt;rclip:vnode:opt;noise_model:data:opt;search_window:int[]:opt;basic_iters:int:opt;lambda_basic:float:opt;hard_strength:float:opt;wiener_iters:int:opt;wiener_sigma_scale:float:opt;memory_limit_mb:int:opt;",
+  "MCWNNM": "clip:vnode;sigma:float[]:opt;block_size:int:opt;block_step:int:opt;group_size:int:opt;bm_range:int:opt;radius:int:opt;ps_num:int:opt;ps_range:int:opt;residual:int:opt;adaptive_aggregation:int:opt;rclip:vnode:opt;admm_iter:int:opt;rho:float:opt;mu:float:opt;iters:int:opt;delta:float:opt;memory_limit_mb:int:opt;temporal_mode:data:opt;rolling_chunk:int:opt;rolling_cache_chunks:int:opt;rolling_cache_limit:int:opt;",
+  "NCSR": "clip:vnode;sigma:float[]:opt;block_size:int:opt;block_step:int:opt;group_size:int:opt;bm_range:int:opt;radius:int:opt;ps_num:int:opt;ps_range:int:opt;rclip:vnode:opt;iters:int:opt;delta:float:opt;memory_limit_mb:int:opt;temporal_mode:data:opt;rolling_chunk:int:opt;rolling_cache_chunks:int:opt;rolling_cache_limit:int:opt;",
+  "NLH": "clip:vnode;sigma:float[]:opt;block_size:int[]:opt;block_step:int[]:opt;group_size:int[]:opt;bm_range:int:opt;radius:int:opt;ps_num:int:opt;ps_range:int:opt;q:int[]:opt;rclip:vnode:opt;noise_model:data:opt;search_window:int[]:opt;basic_iters:int:opt;lambda_basic:float:opt;hard_strength:float:opt;wiener_iters:int:opt;wiener_sigma_scale:float:opt;memory_limit_mb:int:opt;temporal_mode:data:opt;rolling_chunk:int:opt;rolling_cache_chunks:int:opt;rolling_cache_limit:int:opt;",
   "NLM": "clip:vnode;d:int:opt;a:int:opt;s:int:opt;h:float:opt;channels:data:opt;wmode:int:opt;wref:float:opt;rclip:vnode:opt;memory_limit_mb:int:opt;",
-  "TWSC": "clip:vnode;sigma:float[]:opt;block_size:int:opt;block_step:int:opt;group_size:int:opt;bm_range:int:opt;radius:int:opt;ps_num:int:opt;ps_range:int:opt;lambda2:float:opt;rclip:vnode:opt;iters:int:opt;delta:float:opt;estimate_sigma:int:opt;search_window:int:opt;admm_iter:int:opt;rho:float:opt;mu:float:opt;tol:float:opt;memory_limit_mb:int:opt;",
+  "TWSC": "clip:vnode;sigma:float[]:opt;block_size:int:opt;block_step:int:opt;group_size:int:opt;bm_range:int:opt;radius:int:opt;ps_num:int:opt;ps_range:int:opt;lambda2:float:opt;rclip:vnode:opt;iters:int:opt;delta:float:opt;estimate_sigma:int:opt;search_window:int:opt;admm_iter:int:opt;rho:float:opt;mu:float:opt;tol:float:opt;memory_limit_mb:int:opt;temporal_mode:data:opt;rolling_chunk:int:opt;rolling_cache_chunks:int:opt;rolling_cache_limit:int:opt;",
   "VAggregate": "clip:vnode;src:vnode;radius:int:opt;planes:int[]:opt;allow_legacy:int:opt;memory_limit_mb:int:opt;",
   "Version": "",
-  "WNNM": "clip:vnode;sigma:float[]:opt;block_size:int:opt;block_step:int:opt;group_size:int:opt;bm_range:int:opt;radius:int:opt;ps_num:int:opt;ps_range:int:opt;residual:int:opt;adaptive_aggregation:int:opt;rclip:vnode:opt;memory_limit_mb:int:opt;"
+  "WNNM": "clip:vnode;sigma:float[]:opt;block_size:int:opt;block_step:int:opt;group_size:int:opt;bm_range:int:opt;radius:int:opt;ps_num:int:opt;ps_range:int:opt;residual:int:opt;adaptive_aggregation:int:opt;rclip:vnode:opt;memory_limit_mb:int:opt;temporal_mode:data:opt;rolling_chunk:int:opt;rolling_cache_chunks:int:opt;rolling_cache_limit:int:opt;"
  },
  "schema": "nssfactory.plugin_interface.v1"
 }

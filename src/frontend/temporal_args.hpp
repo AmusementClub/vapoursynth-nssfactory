@@ -11,4 +11,28 @@ TemporalMode parse_temporal_mode(const VSAPI* vsapi, const VSMap* in, int radius
 // Rolling chunk/cache arguments; only parsed once rolling mode is selected.
 RollingParams parse_rolling(const VSAPI* vsapi, const VSMap* in, int radius, const char* filter, const char* ns);
 
+// Arguments every temporal filter shares, appended to its own signature.
+#define NSS_TEMPORAL_SIGNATURE \
+    "temporal_mode:data:opt;rolling_chunk:int:opt;rolling_cache_chunks:int:opt;rolling_cache_limit:int:opt;"
+
+// Both parsers above against the filter's own radius default. `rolling` is
+// set only when the mode is rolling and radius > 0.
+struct TemporalRequest {
+    bool rolling = false;
+    RollingParams params{};
+};
+TemporalRequest parse_temporal(const VSAPI* vsapi, const VSMap* in, int default_radius, const char* filter,
+                               const char* ns);
+
+// Rolling as legacy + VAggregate: replaces the fat intermediate in out["clip"]
+// with <ns>.VAggregate(fat, src=in["clip"], radius). Does nothing when `out`
+// already carries an error.
+void aggregate_rolling(const VSAPI* vsapi, const VSMap* in, VSMap* out, VSCore* core, int default_radius,
+                       const char* filter, const char* ns);
+
+// Runs `create`, then aggregates when rolling was requested. For filters whose
+// rolling mode is legacy + VAggregate.
+void create_temporal(VSPublicFunction create, const VSMap* in, VSMap* out, VSCore* core, const VSAPI* vsapi,
+                     int default_radius, const char* filter, const char* ns);
+
 }  // namespace nss::frontend

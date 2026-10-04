@@ -73,11 +73,15 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     group_filter_install(std::move(config), out, core, vsapi);
 }
 
+void VS_CC create_temporal(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI* vsapi) {
+    nss::frontend::create_temporal(create, in, out, core, vsapi, nss::kWnnmDefaultRadius, "MCWNNM", "nss_cuda");
+}
+
 }  // namespace
 
 void register_mcwnnm(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
     static const std::string args = signature(nss::frontend::kMcwnnmSignature);
-    vspapi->registerFunction("MCWNNM", args.c_str(), "clip:vnode;", nss::checked_create<create>, nullptr, plugin);
+    vspapi->registerFunction("MCWNNM", args.c_str(), "clip:vnode;", nss::checked_create<create_temporal>, nullptr, plugin);
 }
 
 }  // namespace nss_cuda

@@ -274,6 +274,13 @@ if(VapourSynth_FOUND)
     set_tests_properties(test_plugin_interface PROPERTIES
       LABELS "plugin"
       SKIP_RETURN_CODE 77)
+    # temporal_mode="rolling" equals legacy + VAggregate for every temporal filter.
+    add_test(NAME test_temporal_rolling
+             COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_temporal_rolling.py"
+                     --plugin "$<TARGET_FILE:nss>" --native-rolling BM3D)
+    set_tests_properties(test_temporal_rolling PROPERTIES
+      LABELS "plugin"
+      SKIP_RETURN_CODE 77)
   endif()
 endif()
 

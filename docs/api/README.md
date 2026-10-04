@@ -39,9 +39,9 @@ heavier (see the per-page performance notes). All other rows are exact defaults.
   explicit sigma and treat it as known.
 - **`radius > 0` (temporal)**: the filter then returns the *weighted
   intermediate* (a taller frame stack; numerator/denominator per temporal
-  slice) for an explicit `VAggregate` call, except BM3D's experimental
-  `temporal_mode="rolling"` route which returns a normal-height result
-  directly. With `radius = 0` every filter returns a normal-height frame.
+  slice) for an explicit `VAggregate` call, unless `temporal_mode="rolling"` is
+  set, which returns a normal-height result directly (BM3D, WNNM, MCWNNM,
+  NCSR, NLH and TWSC). With `radius = 0` every filter returns a normal-height frame.
 - **`rclip` / `ref`**: an optional reference clip (same format/size) that guides
   matching; denoising still targets `clip`.
 - **`bm_range` vs `search_window`**: `search_window = 2 * bm_range + 1`.

@@ -2,6 +2,7 @@
 #pragma once
 #include <VapourSynth4.h>
 #include "nss/params/wnnm.hpp"
+#include "frontend/temporal_args.hpp"
 
 namespace nss::frontend {
 
@@ -9,7 +10,7 @@ namespace nss::frontend {
 inline constexpr const char* kWnnmSignature =
     "clip:vnode;sigma:float[]:opt;block_size:int:opt;block_step:int:opt;group_size:int:opt;"
     "bm_range:int:opt;radius:int:opt;ps_num:int:opt;ps_range:int:opt;residual:int:opt;"
-    "adaptive_aggregation:int:opt;rclip:vnode:opt;memory_limit_mb:int:opt;";
+    "adaptive_aggregation:int:opt;rclip:vnode:opt;memory_limit_mb:int:opt;" NSS_TEMPORAL_SIGNATURE;
 
 // Format and range checks for the clip described by vi. Plane-size checks run
 // after the caller has validated rclip (validate_group_planes).
