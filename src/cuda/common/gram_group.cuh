@@ -3,24 +3,34 @@
 // m x n group matrix A times an n x n matrix M derived from the Gram matrix
 // A^T A (WNNM: singular-value shrinkage; NCSR: centralized code shrinkage).
 //
-// One thread per group with fixed loop bounds, so every step has a fixed
-// order (run-to-run identical) and the n x n work stays out of global memory.
-// N is the column capacity. At N = 8 (the default group size) the Gram matrix
-// and eigenvectors live in registers; larger capacities keep them in shared
-// memory (a per-thread stack frame of that size would make the driver reserve
-// unbudgeted device memory). The image rows are streamed twice (Gram, then
-// reconstruction). Columns beyond the group's actual count are zero and
-// contribute zero singular values.
+// Columns beyond the group's actual count are zero and contribute zero
+// singular values. Every step has a fixed order, so the result is run-to-run
+// identical. The image rows are streamed twice (Gram, then reconstruction).
+//
+// Up to 8 columns (the default group size): one thread per group, with the
+// Gram matrix and eigenvectors in registers and a cyclic Jacobi sweep.
+// Above 8: one block of N threads per group, with the two N x N matrices in
+// shared memory and the round-robin parallel Jacobi of block_jacobi.cuh.
+// Thread j owns Gram row j and output column j. (One thread per group does
+// not scale there: registers cannot hold the matrices, a per-thread stack
+// frame of that size makes the driver reserve unbudgeted device memory, and
+// per-thread shared memory caps a block at a handful of threads.)
 //
 // Model requirements (a trivially copyable struct passed to the kernel):
 //   bool center() const;  // subtract each row's mean over the group
-//   template <int N> float transform(float* g, float* v, const DeviceMatch* matches, int n, int area) const;
-//     g holds the Gram matrix on entry and M on return (X = A M, row-vector
-//     convention: x_c = sum_k a_k M[k * N + c]); v is N x N workspace; the
-//     return value is the aggregation weight of the group's patches.
+//   template <int N> float finish(float* g, const float* v, const DeviceMatch* matches, int n, int area,
+//                                 bool codes) const;
+//     on entry g carries the Gram matrix's eigenvalues on its diagonal and v
+//     the eigenvectors (column i for eigenvalue i); on return g holds M
+//     (X = A M, row-vector convention: x_c = sum_k a_k M[k * N + c]), or with
+//     `codes` the factor C of M = V C, which the block kernel multiplies out
+//     across its threads; the return value is the aggregation weight of the
+//     group's patches.
 #pragma once
 
 #include "cuda/common/aggregate.hpp"
+#include "cuda/common/block_jacobi.cuh"
+#include "cuda/common/gram_shrink.cuh"
 #include "cuda/common/match.hpp"
 #include "cuda/runtime/error.hpp"
 
@@ -42,11 +52,6 @@ struct GramGroupArgs {
     AggregatePatch* patches;    // batch * group
 };
 
-template <int N>
-constexpr int gram_block_threads() {
-    return N <= 8 ? 64 : 8192 / (2 * N * N);  // 32 KiB of shared memory per block
-}
-
 template <int N, class Model>
 __global__ void gram_group_kernel(GramGroupArgs a, Model model) {
     const int r = blockIdx.x * blockDim.x + threadIdx.x;
@@ -61,10 +66,7 @@ __global__ void gram_group_kernel(GramGroupArgs a, Model model) {
         const DeviceMatch& mj = m[j < n ? j : 0];
         col[j] = a.src[mj.t] + static_cast<long long>(mj.y) * a.pitch + mj.x;
     }
-    extern __shared__ float shared[];
-    float g_local[N <= 8 ? N * N : 1], v_local[N <= 8 ? N * N : 1];
-    float* const g = N <= 8 ? g_local : shared + threadIdx.x * 2 * N * N;
-    float* const v = N <= 8 ? v_local : g + N * N;
+    float g[N * N], v[N * N];
     const bool center = model.center();
 #pragma unroll
     for (int i = 0; i < N * N; ++i) g[i] = 0.f;
@@ -93,7 +95,8 @@ __global__ void gram_group_kernel(GramGroupArgs a, Model model) {
 #pragma unroll
         for (int k = 0; k < j; ++k) g[k * N + j] = g[j * N + k];
     }
-    const float weight = model.template transform<N>(g, v, m, n, area);
+    jacobi_eigen<N>(g, v);
+    const float weight = model.template finish<N>(g, v, m, n, area, false);
     // X = A M row by row.
     for (int p = 0; p < area; ++p) {
         const int offset = (p / a.block) * a.pitch + p % a.block;
@@ -121,22 +124,92 @@ __global__ void gram_group_kernel(GramGroupArgs a, Model model) {
     }
 }
 
+// One block of N threads per group (blockIdx.x is the group).
+template <int N, class Model>
+__global__ void gram_block_kernel(GramGroupArgs a, Model model) {
+    __shared__ float g[N * N], v[N * N], cs[N + 2], weight;
+    __shared__ int flag;
+    const int r = blockIdx.x, lane = threadIdx.x;
+    const int area = a.block * a.block;
+    const int n = min(a.counts[r], a.group);
+    const DeviceMatch* m = a.matches + static_cast<long long>(r) * a.group;
+    float* x = a.values + static_cast<long long>(r) * a.group * area;
+    const float* col[N];
+#pragma unroll
+    for (int j = 0; j < N; ++j) {
+        const DeviceMatch& mj = m[j < n ? j : 0];
+        col[j] = a.src[mj.t] + static_cast<long long>(mj.y) * a.pitch + mj.x;
+    }
+    const bool center = model.center();
+    // Gram row `lane`.
+    float acc[N];
+#pragma unroll
+    for (int k = 0; k < N; ++k) acc[k] = 0.f;
+    for (int p = 0; p < area; ++p) {
+        const int offset = (p / a.block) * a.pitch + p % a.block;
+        float row[N];
+        float sum = 0.f;
+#pragma unroll
+        for (int j = 0; j < N; ++j) {
+            row[j] = j < n ? col[j][offset] : 0.f;
+            sum += row[j];
+        }
+        if (center) {
+            const float mu = sum / static_cast<float>(n);
+#pragma unroll
+            for (int j = 0; j < N; ++j) row[j] = j < n ? row[j] - mu : 0.f;
+        }
+        const float mine = row[lane];
+#pragma unroll
+        for (int k = 0; k < N; ++k) acc[k] = fmaf(mine, row[k], acc[k]);
+    }
+#pragma unroll
+    for (int k = 0; k < N; ++k) g[lane * N + k] = acc[k];
+    __syncthreads();
+    block_jacobi<float>(g, v, N, cs, &flag);
+    if (lane == 0) weight = model.template finish<N>(g, v, m, n, area, true);
+    __syncthreads();
+    // X = A M: output column `lane`, with that column of M = V C.
+    if (lane < n) {
+#pragma unroll
+        for (int k = 0; k < N; ++k) {
+            float sum = 0.f;
+#pragma unroll
+            for (int i = 0; i < N; ++i) sum = fmaf(v[k * N + i], g[i * N + lane], sum);
+            acc[k] = sum;
+        }
+        for (int p = 0; p < area; ++p) {
+            const int offset = (p / a.block) * a.pitch + p % a.block;
+            float row[N];
+            float sum = 0.f;
+#pragma unroll
+            for (int j = 0; j < N; ++j) {
+                row[j] = j < n ? col[j][offset] : 0.f;
+                sum += row[j];
+            }
+            const float mu = center ? sum / static_cast<float>(n) : 0.f;
+            float out = 0.f;
+#pragma unroll
+            for (int k = 0; k < N; ++k) out = fmaf(k < n ? row[k] - mu : 0.f, acc[k], out);
+            x[lane * area + p] = out + mu;
+        }
+    }
+    for (int j = lane; j < a.group; j += N) {
+        a.patches[static_cast<long long>(r) * a.group + j] =
+            j < n ? AggregatePatch{m[j].x, m[j].y, m[j].t, weight} : AggregatePatch{0, 0, -1, 0.f};
+    }
+}
+
 template <class Model>
 void launch_gram_groups(const GramGroupArgs& args, const Model& model, cudaStream_t stream) {
     if (args.batch <= 0) return;
-    const auto shared = [](int threads, int capacity) {
-        return capacity <= 8 ? std::size_t{0} : static_cast<std::size_t>(threads) * 2 * capacity * capacity * sizeof(float);
-    };
-    const auto blocks = [&](int threads) { return static_cast<unsigned>((args.batch + threads - 1) / threads); };
+    const unsigned batch = static_cast<unsigned>(args.batch);
     if (args.group <= 8) {
-        const int t = gram_block_threads<8>();
-        gram_group_kernel<8, Model><<<blocks(t), t, shared(t, 8), stream>>>(args, model);
+        gram_group_kernel<8, Model><<<(batch + 63) / 64, 64, 0, stream>>>(args, model);
     } else if (args.group <= 16) {
-        const int t = gram_block_threads<16>();
-        gram_group_kernel<16, Model><<<blocks(t), t, shared(t, 16), stream>>>(args, model);
+        gram_block_kernel<16, Model><<<batch, 16, 0, stream>>>(args, model);
     } else {
-        const int t = gram_block_threads<32>();  // nss::kWnnmMaxGroup
-        gram_group_kernel<32, Model><<<blocks(t), t, shared(t, 32), stream>>>(args, model);
+        gram_block_kernel<32, Model><<<batch, 32, 0, stream>>>(args, model);  // nss::kWnnmMaxGroup
     }
     NSS_CUDA_CHECK_LAUNCH();
 }

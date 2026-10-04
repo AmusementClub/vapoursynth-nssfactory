@@ -12,9 +12,9 @@ struct WnnmModel {
     int adaptive;
     __device__ bool center() const { return residual != 0; }
     template <int N>
-    __device__ float transform(float* g, float* v, const DeviceMatch*, int n, int area) const {
+    __device__ float finish(float* g, const float* v, const DeviceMatch*, int n, int area, bool codes) const {
         const float constant = 8.f * sqrtf(2.f * static_cast<float>(n)) * sigma * sigma;
-        const int kept = gram_shrink<N>(g, v, min(area, n), constant, residual ? 0 : 1);
+        const int kept = gram_shrink_spectrum<N>(g, v, min(area, n), constant, residual ? 0 : 1, codes);
         return adaptive && kept > 0 ? 1.f / static_cast<float>(kept) : 1.f;
     }
 };

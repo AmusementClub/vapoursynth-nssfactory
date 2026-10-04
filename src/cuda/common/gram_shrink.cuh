@@ -82,12 +82,16 @@ __device__ __forceinline__ void singular_order(const float* g, float* s, int* or
     }
 }
 
-// g: N x N symmetric Gram matrix (full storage), replaced by M. v: N x N
+// gram_shrink. g: N x N symmetric Gram matrix (full storage), replaced by M. v: N x N
 // workspace. rank: number of singular values that can be nonzero. Returns the
 // number of kept singular values.
+// The part of gram_shrink after the eigendecomposition: g carries the
+// eigenvalues on its diagonal and v the eigenvectors. With `codes`, g returns
+// C = diag(gain) V^T instead of M (M = V C; a block kernel forms that product
+// across its threads).
 template <int N>
-__device__ __forceinline__ int gram_shrink(float* g, float* v, int rank, float constant, int start_k) {
-    jacobi_eigen<N>(g, v);
+__device__ __forceinline__ int gram_shrink_spectrum(float* g, const float* v, int rank, float constant, int start_k,
+                                                    bool codes = false) {
     float s[N];
     int order[N];
     singular_order<N>(g, s, order);
@@ -103,6 +107,12 @@ __device__ __forceinline__ int gram_shrink(float* g, float* v, int rank, float c
         if (!(tmp > 0.f)) break;
         gain[order[kept]] = ((sv + sqrtf(tmp)) * 0.5f) / sv;
     }
+    if (codes) {
+        for (int k = 0; k < N; ++k) {
+            for (int j = 0; j < N; ++j) g[k * N + j] = gain[k] * v[j * N + k];
+        }
+        return kept;
+    }
     // M = V diag(gain) V^T.
 #pragma unroll
     for (int i = 0; i < N; ++i) {
@@ -115,6 +125,12 @@ __device__ __forceinline__ int gram_shrink(float* g, float* v, int rank, float c
         }
     }
     return kept;
+}
+
+template <int N>
+__device__ __forceinline__ int gram_shrink(float* g, float* v, int rank, float constant, int start_k) {
+    jacobi_eigen<N>(g, v);
+    return gram_shrink_spectrum<N>(g, v, rank, constant, start_k);
 }
 
 }  // namespace nss_cuda

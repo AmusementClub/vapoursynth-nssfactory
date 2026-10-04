@@ -81,5 +81,7 @@ takes the same arguments and gives the same errors as `nss.WNNM`. It adds
   Jacobi eigensolver.
   - The output is not bit-identical to the CPU, but is inside the 60 dB gate
     (86–143 dB on the frozen references).
-  - The output is run-to-run identical: one thread handles each group in a
-    fixed order, and aggregation is ordered.
+  - The output is run-to-run identical: every group is solved in a fixed
+    order, and aggregation is ordered.
+  - Groups of up to 8 patches run one thread per group. Larger groups run one
+    thread block per group with a round-robin parallel Jacobi.

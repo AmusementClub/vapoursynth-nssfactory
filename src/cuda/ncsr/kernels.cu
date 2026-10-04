@@ -10,8 +10,7 @@ struct NcsrModel {
     float sigma;
     __device__ bool center() const { return true; }
     template <int N>
-    __device__ float transform(float* g, float* v, const DeviceMatch* matches, int n, int area) const {
-        jacobi_eigen<N>(g, v);
+    __device__ float finish(float* g, const float* v, const DeviceMatch* matches, int n, int area, bool codes) const {
         float s[N];
         int order[N];
         singular_order<N>(g, s, order);
@@ -63,6 +62,10 @@ struct NcsrModel {
                 const float a = fabsf(d);
                 code[j] = j < n ? ((a > tau ? copysignf(a - tau, d) : 0.f) + mean) * inv_s : 0.f;
             }
+            if (codes) {
+                for (int j = 0; j < N; ++j) g[i * N + j] = code[j];
+                continue;
+            }
 #pragma unroll
             for (int row = 0; row < N; ++row) {
                 const float vi = v[row * N + i];
@@ -71,9 +74,10 @@ struct NcsrModel {
             }
         }
         if (!(sigma > 0.f)) {
-            // No shrinkage: the group is returned unchanged.
-#pragma unroll
-            for (int i = 0; i < N; ++i) g[i * N + i] = 1.f;
+            // No shrinkage: the group is returned unchanged (M = I, C = V^T).
+            for (int i = 0; i < N; ++i) {
+                for (int j = 0; j < N; ++j) g[i * N + j] = codes ? v[j * N + i] : (i == j ? 1.f : 0.f);
+            }
         }
         return 1.f;
     }
