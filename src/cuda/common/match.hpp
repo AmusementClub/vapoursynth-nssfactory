@@ -14,7 +14,7 @@
 
 namespace nss_cuda {
 
-inline constexpr int kMaxGroup = 64;  // == nss::kBmMaxGroup
+inline constexpr int kMaxGroup = 256;  // TWSC's group limit; the others stay within nss::kBmMaxGroup (64)
 
 struct DeviceMatch {
     int x;

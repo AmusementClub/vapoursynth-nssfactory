@@ -91,8 +91,9 @@ The plugin is being built up filter by filter. Available so far:
 - `core.nss_cuda.WNNM`, `core.nss_cuda.MCWNNM` and `core.nss_cuda.NCSR`: spatial
   and temporal (legacy fat intermediate). See `docs/api/wnnm.md`,
   `docs/api/mcwnnm.md` and `docs/api/ncsr.md`.
-- `core.nss_cuda.NLH`: given or blind sigma, Gray/YUV/RGB, and temporal (legacy
-  fat intermediate). See `docs/api/nlh.md`.
+- `core.nss_cuda.NLH` and `core.nss_cuda.TWSC`: given or blind sigma,
+  Gray/YUV/RGB, and temporal (legacy fat intermediate). See `docs/api/nlh.md`
+  and `docs/api/twsc.md`.
 - `core.nss_cuda.VAggregate`, which also accepts CPU fat intermediates
   (a host-side reduction; the device-resident temporal path is rolling).
 - `core.nss_cuda.Version()`.

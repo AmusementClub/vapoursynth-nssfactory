@@ -1,17 +1,24 @@
 // SPDX-License-Identifier: GPL-2.0-only
-// nss_cuda.NLH: parse_full_image with the "nss_cuda" prefix (D14) around a
-// device-resident full-image pipeline (the CPU nlh_image model):
-//   - upload the request window, RGB -> YUV, optional blind noise estimate,
-//   - Basic rounds over every frame of the window (mix with the input, match
-//     on the luma guide, hard threshold, per-pixel aggregation, finish),
-//   - one Wiener round for the center frame against the Basic estimate,
-//   - YUV -> RGB on the numerators, then the final frame or the fat
-//     intermediate.
-// Planes of equal geometry share matching and pixel selection; subsampled
-// chroma matches on the area-averaged luma.
+// nss_cuda.NLH and nss_cuda.TWSC: parse_full_image with the "nss_cuda" prefix
+// (D14) around a device-resident full-image pipeline (the CPU nlh_image /
+// twsc_image models). Both upload the request window, optionally estimate the
+// noise blind, iterate over every frame of the window and return the final
+// frame or the fat intermediate.
+//
+// NLH: RGB -> YUV, Basic rounds (mix with the input, match on the luma guide,
+// hard threshold, per-pixel aggregation, finish), one Wiener round for the
+// center against the Basic estimate, YUV -> RGB on the numerators. Planes of
+// equal geometry share matching and pixel selection; subsampled chroma
+// matches on the area-averaged luma.
+//
+// TWSC: rounds of joint matching over the noisy planes of equal geometry (on
+// the estimate, or on rclip), the trilateral weighted sparse coding of every
+// group, weighted aggregation and finish; the last round runs for the center
+// only.
 #include "cuda/common/aggregate.hpp"
 #include "cuda/common/match.hpp"
 #include "cuda/nlh/kernels.hpp"
+#include "cuda/twsc/kernels.hpp"
 #include "cuda/runtime/context.hpp"
 #include "cuda/runtime/frame_io.hpp"
 #include "cuda/runtime/memory.hpp"
@@ -49,7 +56,7 @@ struct Shape {
     bool wiener;
 };
 
-// Device bytes one group needs in the arena for `s` (see NlhGroupArgs).
+// Device bytes one NLH group needs in the arena for `s` (see NlhGroupArgs).
 std::size_t group_bytes(const Shape& s) {
     const std::size_t m = static_cast<std::size_t>(s.block) * s.block;
     const std::size_t matrices = static_cast<std::size_t>(s.nch) * m * s.q * s.group;
@@ -62,16 +69,24 @@ std::size_t group_bytes(const Shape& s) {
            static_cast<std::size_t>(s.group) * (sizeof(DeviceMatch) + sizeof(AggregatePatch));
 }
 
+// Device bytes one TWSC group needs in the arena (see TwscGroupArgs).
+std::size_t twsc_group_bytes(int block, int group, int nch) {
+    const std::size_t m = static_cast<std::size_t>(block) * block * nch;
+    return 2 * m * group * sizeof(float) + twsc_work_reals(static_cast<int>(m), group) * twsc_real_bytes() + sizeof(int) +
+           static_cast<std::size_t>(group) * (sizeof(DeviceMatch) + sizeof(AggregatePatch));
+}
+
 struct Slot {
     Stream stream;
     DeviceBuffer input, basic, reference, resized, num, den;  // planes of `plane_floats`
     DeviceBuffer guide_ptrs, data_ptrs, basic_ptrs;           // device pointer arrays
-    DeviceBuffer arena, totals;
+    DeviceBuffer arena, totals, stalled;
     PinnedBuffer staging;
     std::unique_ptr<OrderedAggregator> aggregator;
 };
 
-struct NlhData : nss::FullImageParams {
+struct ImageData : nss::FullImageParams {
+    nss::Model model = nss::Model::NLH;
     std::shared_ptr<nss::ResourceBudget> budget;
     nss::NodeRef node, reference;
     VSVideoInfo vi{}, output{};
@@ -82,18 +97,20 @@ struct NlhData : nss::FullImageParams {
     int width[3]{}, height[3]{};
     std::size_t plane_floats = 0, arena_bytes = 0, max_patches = 0;
     std::unique_ptr<SlotPool<Slot>> pool;
-    int radius() const { return nlh.radius; }
+    int radius() const { return model == nss::Model::TWSC ? twsc.radius : nlh.radius; }
+    const char* name() const { return model == nss::Model::TWSC ? "TWSC" : "NLH"; }
 };
 
 // Per-frame state on one slot.
 struct Frame {
-    const NlhData& d;
+    const ImageData& d;
     Slot& s;
     int count;   // frames in the request window
     int center;  // index of the output frame in it
     std::array<std::array<float, 3>, 33> sigma{};
     std::array<std::array<double, 3>, 33> units{};
     std::uint64_t groups = 0;
+    int stalled = 0;
 
     float* plane(const DeviceBuffer& buffer, int t, int c) const {
         return buffer.as<float>() + (static_cast<std::size_t>(t) * 3 + c) * d.plane_floats;
@@ -109,7 +126,7 @@ struct Frame {
 };
 
 // Planes of equal geometry starting at `first` (the CPU grouping order).
-int geometry_group(const NlhData& d, int first, std::array<bool, 3>& used, std::array<int, 3>& channels) {
+int geometry_group(const ImageData& d, int first, std::array<bool, 3>& used, std::array<int, 3>& channels) {
     int nch = 0;
     for (int c = first; c < d.planes; ++c) {
         if (!used[c] && d.width[c] == d.width[first] && d.height[c] == d.height[first]) {
@@ -130,7 +147,7 @@ void set_pointers(const DeviceBuffer& buffer, const std::vector<T*>& host, cudaS
 // Matching planes of the window for a geometry: the luma of `luma_source`
 // (reference clip when present), area-averaged for subsampled planes.
 std::vector<const float*> guides(Frame& f, const DeviceBuffer& luma_source, int width, int height) {
-    const NlhData& d = f.d;
+    const ImageData& d = f.d;
     std::vector<const float*> out(f.count);
     for (int t = 0; t < f.count; ++t) {
         const float* luma = d.reference ? f.plane(f.s.reference, t, 0) : f.plane(luma_source, t, 0);
@@ -174,7 +191,7 @@ NlhGroupArgs layout(const Frame& f, const Shape& shape, int batch, double** part
     a.values = reinterpret_cast<float*>(take(b * shape.nch * shape.group * m * sizeof(float)));
     a.den = reinterpret_cast<float*>(take(b * m * sizeof(float)));
     if (static_cast<std::size_t>(at - f.s.arena.as<std::uint8_t>()) > f.d.arena_bytes) {
-        throw std::logic_error("nss_cuda.NLH: group arena overflow");
+        throw std::logic_error("nss_cuda: group arena overflow");
     }
     a.batch = batch;
     a.block = shape.block;
@@ -185,7 +202,7 @@ NlhGroupArgs layout(const Frame& f, const Shape& shape, int batch, double** part
     return a;
 }
 
-int batch_for(const NlhData& d, const Shape& shape, int total) {
+int batch_for(const ImageData& d, const Shape& shape, int total) {
     // Alignment slack of the arena split: 16 bytes per region.
     const std::size_t fit = (d.arena_bytes - 16 * 12) / (group_bytes(shape) + 16);
     const std::size_t cap = d.max_patches / shape.group;
@@ -198,16 +215,19 @@ MatchGeometry match_geometry(int width, int height, int block, int window, int g
     return g;
 }
 
-// nss::nlh_estimate_frame_sigma on the device: fixed 8x8 / 16 / q4 / W40 /
-// step 1; planes of equal geometry share matching and pixel selection.
+// Blind noise estimate on the device: fixed 8x8 / 16 / q4 / W40 / step 1.
+// NLH (nss::nlh_estimate_frame_sigma): planes of equal geometry share the
+// luma-guided matching and pixel selection. TWSC (nss::nlh_estimate_sigma per
+// plane): every plane is matched on itself (or on its rclip plane).
 void estimate_sigma(Frame& f, int t) {
-    const NlhData& d = f.d;
+    const ImageData& d = f.d;
     Slot& s = f.s;
+    const bool own_guide = d.model == nss::Model::TWSC;
     std::array<bool, 3> used{};
     for (int first = 0; first < d.planes; ++first) {
         if (used[first]) continue;
-        std::array<int, 3> channels{};
-        const int nch = geometry_group(d, first, used, channels);
+        std::array<int, 3> channels{first, 0, 0};
+        const int nch = own_guide ? 1 : geometry_group(d, first, used, channels);
         const int width = d.width[first], height = d.height[first];
         if (width < 8 || height < 8) {
             throw std::invalid_argument("nss: blind noise estimation requires an 8x8 or larger plane");
@@ -218,9 +238,10 @@ void estimate_sigma(Frame& f, int t) {
         } search;
         const Shape shape{search.block, search.group, 4, nch, false};
         // Single-frame matching on this frame's guide.
-        const float* luma = d.reference ? f.plane(s.reference, t, 0) : f.plane(s.input, t, 0);
+        const int guide_plane = own_guide ? first : 0;
+        const float* luma = d.reference ? f.plane(s.reference, t, guide_plane) : f.plane(s.input, t, guide_plane);
         const float* guide = luma;
-        if (width != d.width[0] || height != d.height[0]) {
+        if (!own_guide && (width != d.width[0] || height != d.height[0])) {
             if (d.width[0] % width || d.height[0] % height) throw std::invalid_argument("nss: unsupported luminance guide grid");
             float* resized = s.resized.as<float>();
             nlh_area_guide(luma, d.width[0], resized, width, height, d.width[0] / width, d.height[0] / height, s.stream);
@@ -262,7 +283,7 @@ void estimate_sigma(Frame& f, int t) {
 // One Basic or Wiener round (nss::nlh_pass): groups of every reference frame
 // (Basic) or of the center (Wiener) into the slot's num/den slices.
 void run_pass(Frame& f, const DeviceBuffer& data, const nss::NlhImageOptions& o, int stage, bool wiener) {
-    const NlhData& d = f.d;
+    const ImageData& d = f.d;
     Slot& s = f.s;
     std::array<bool, 3> used{};
     for (int first = 0; first < d.planes; ++first) {
@@ -357,6 +378,160 @@ void run_pass(Frame& f, const DeviceBuffer& data, const nss::NlhImageOptions& o,
     }
 }
 
+// Splits the arena for `batch` TWSC groups.
+TwscGroupArgs twsc_layout(const Frame& f, int block, int group, int nch, int batch) {
+    const std::size_t m = static_cast<std::size_t>(block) * block * nch;
+    std::uint8_t* at = f.s.arena.as<std::uint8_t>();
+    const auto take = [&](std::size_t bytes) {
+        std::uint8_t* p = at;
+        at += (bytes + 15) & ~std::size_t{15};
+        return p;
+    };
+    TwscGroupArgs a{};
+    const std::size_t b = static_cast<std::size_t>(batch);
+    a.work = take(b * twsc_work_reals(static_cast<int>(m), group) * twsc_real_bytes());
+    a.matches = reinterpret_cast<DeviceMatch*>(take(b * group * sizeof(DeviceMatch)));
+    a.patches = reinterpret_cast<AggregatePatch*>(take(b * group * sizeof(AggregatePatch)));
+    a.counts = reinterpret_cast<int*>(take(b * sizeof(int)));
+    a.centered = reinterpret_cast<float*>(take(b * m * group * sizeof(float)));
+    a.values = reinterpret_cast<float*>(take(b * m * group * sizeof(float)));
+    if (static_cast<std::size_t>(at - f.s.arena.as<std::uint8_t>()) > f.d.arena_bytes) {
+        throw std::logic_error("nss_cuda: group arena overflow");
+    }
+    a.batch = batch;
+    a.block = block;
+    a.group = group;
+    a.nch = nch;
+    return a;
+}
+
+// nss::twsc_image: every round re-matches on the estimate (or on rclip),
+// codes the groups of every frame of the window (the last round: of the
+// center) and finishes the estimate.
+void run_twsc(Frame& f) {
+    const ImageData& d = f.d;
+    Slot& s = f.s;
+    const nss::TwscImageOptions& o = d.twsc;
+    const std::size_t window_floats = static_cast<std::size_t>(f.count) * 3 * d.plane_floats;
+    const std::size_t channel_bytes = static_cast<std::size_t>(d.max_frames) * d.plane_floats * sizeof(float);
+    NSS_CUDA_CHECK(cudaMemcpyAsync(s.basic.get(), s.input.get(), window_floats * sizeof(float),
+                                   cudaMemcpyDeviceToDevice, s.stream));
+    NSS_CUDA_CHECK(cudaMemsetAsync(s.stalled.get(), 0, sizeof(int), s.stream));
+    for (int iteration = 0; iteration < o.iterations; ++iteration) {
+        const bool last = iteration + 1 == o.iterations;
+        if (iteration > 0 && o.delta != 0) {
+            iter_regularize(s.basic.as<float>(), s.input.as<float>(), window_floats, static_cast<float>(o.delta), s.stream);
+        }
+        std::array<bool, 3> used{};
+        for (int first = 0; first < d.planes; ++first) {
+            if (used[first]) continue;
+            if (f.sigma[f.center][first] == 0) {
+                // Not coded: the finish falls back to the source.
+                NSS_CUDA_CHECK(cudaMemsetAsync(f.accum(s.num, first), 0, channel_bytes, s.stream));
+                NSS_CUDA_CHECK(cudaMemsetAsync(f.accum(s.den, first), 0, channel_bytes, s.stream));
+                continue;
+            }
+            const int width = d.width[first], height = d.height[first];
+            std::array<int, 3> channels{};
+            int nch = 0;
+            for (int c = first; c < d.planes; ++c) {
+                if (!used[c] && f.sigma[f.center][c] > 0 && d.width[c] == width && d.height[c] == height) {
+                    channels[nch++] = c;
+                    used[c] = true;
+                }
+            }
+            if (width < o.block || height < o.block) {
+                throw std::invalid_argument("nss: selected plane is smaller than block_size or invalid step");
+            }
+            // Guides: channel 0 of the unit per frame; the other channels follow
+            // at a constant plane distance.
+            const DeviceBuffer& guide_source = d.reference ? s.reference : s.basic;
+            std::vector<const float*> guide_ptr(f.count);
+            std::vector<const float*> estimate_ptr(static_cast<std::size_t>(f.count) * nch), original_ptr(estimate_ptr.size());
+            for (int t = 0; t < f.count; ++t) {
+                guide_ptr[t] = f.plane(guide_source, t, channels[0]);
+                for (int c = 0; c < nch; ++c) {
+                    estimate_ptr[t * nch + c] = f.plane(s.basic, t, channels[c]);
+                    original_ptr[t * nch + c] = f.plane(s.input, t, channels[c]);
+                }
+            }
+            set_pointers(s.guide_ptrs, guide_ptr, s.stream);
+            set_pointers(s.basic_ptrs, estimate_ptr, s.stream);
+            set_pointers(s.data_ptrs, original_ptr, s.stream);
+            const RasterGrid grid = make_raster_grid(width, height, o.block, o.step);
+            MatchGeometry geometry = match_geometry(width, height, o.block, o.window, o.group);
+            geometry.channels = nch;
+            geometry.channel_step = nch > 1 ? static_cast<long long>(channels[1] - channels[0]) * d.plane_floats : 0;
+            TemporalWindow window{};
+            window.frames = s.guide_ptrs.as<const float*>();
+            window.ntemp = f.count;
+            window.radius = o.radius;
+            window.valid_begin = 0;
+            window.valid_end = f.count;
+            window.ps_num = o.ps_num;
+            window.ps_range = o.ps_range;
+            const std::size_t per_group = twsc_group_bytes(o.block, o.group, nch) + 16;
+            const int batch = static_cast<int>(std::max<std::size_t>(
+                1, std::min({(d.arena_bytes - 16 * 8) / per_group, d.max_patches / o.group,
+                             static_cast<std::size_t>(grid.count())})));
+            bool written = false;
+            for (int t0 = last ? f.center : 0; t0 < (last ? f.center + 1 : f.count); ++t0) {
+                window.t0 = t0;
+                for (int begin = 0; begin < grid.count(); begin += batch) {
+                    const int n = std::min(batch, grid.count() - begin);
+                    TwscGroupArgs a = twsc_layout(f, o.block, o.group, nch, n);
+                    a.estimate = s.basic_ptrs.as<const float*>();
+                    a.original = s.data_ptrs.as<const float*>();
+                    a.width = width;
+                    for (int t = 0; t < f.count; ++t) {
+                        for (int c = 0; c < nch; ++c) a.sigma[t * nch + c] = f.sigma[t][channels[c]];
+                    }
+                    for (int c = 0; c < nch; ++c) a.row_sigma[c] = f.sigma[t0][channels[c]];
+                    a.residual = iteration > 0;
+                    a.lambda2 = o.lambda2;
+                    a.iterations = o.solver.iterations;
+                    a.rho = o.solver.rho;
+                    a.mu = o.solver.mu;
+                    a.tolerance = o.solver.tolerance;
+                    a.stalled = s.stalled.as<int>();
+                    {
+                        NSS_CUDA_RANGE("twsc.match");
+                        auto* matches = const_cast<DeviceMatch*>(a.matches);
+                        auto* counts = const_cast<int*>(a.counts);
+                        if (o.radius > 0 && f.count > 1) {
+                            predictive_match(geometry, window, grid, begin, n, matches, counts, s.stream);
+                        } else {
+                            spatial_match(guide_ptr[t0], geometry, grid, begin, n, matches, counts, s.stream);
+                        }
+                    }
+                    {
+                        NSS_CUDA_RANGE("twsc.solve");
+                        twsc_filter_groups(a, s.stream);
+                    }
+                    NSS_CUDA_RANGE("twsc.aggregate");
+                    const std::size_t channel_values = static_cast<std::size_t>(n) * o.group * o.block * o.block;
+                    for (int c = 0; c < nch; ++c) {
+                        const AggregateTarget target{f.accum(s.num, channels[c]), f.accum(s.den, channels[c]), width,
+                                                     height, width, f.count, d.plane_floats};
+                        s.aggregator->run(a.values + c * channel_values, a.patches, n * o.group, o.block, target, s.stream,
+                                          written);
+                    }
+                    written = true;
+                }
+                f.groups += static_cast<std::uint64_t>(grid.count());
+            }
+        }
+        if (last) break;
+        for (int t = 0; t < f.count; ++t) {
+            for (int c = 0; c < d.planes; ++c) {
+                aggregate_finish(f.accum(s.num, c, t), f.accum(s.den, c, t), f.plane(s.input, t, c), d.width[c], d.height[c],
+                                 d.width[c], f.plane(s.basic, t, c), s.stream);
+            }
+        }
+    }
+    NSS_CUDA_CHECK(cudaMemcpyAsync(&f.stalled, s.stalled.get(), sizeof(int), cudaMemcpyDeviceToHost, s.stream));
+}
+
 void diagnostic_ints(const VSAPI* api, VSMap* props, const char* key, const int* values, int count) {
     std::int64_t data[2]{values[0], count > 1 ? values[1] : 0};
     if (api->mapSetIntArray(props, key, data, count)) throw std::bad_alloc();
@@ -364,7 +539,7 @@ void diagnostic_ints(const VSAPI* api, VSMap* props, const char* key, const int*
 
 const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameContext* ctx, VSCore* core,
                         const VSAPI* api) {
-    auto& d = *static_cast<NlhData*>(instance);
+    auto& d = *static_cast<ImageData*>(instance);
     const int radius = d.radius();
     const int first = nss::host_detail::temporal_first(n, radius);
     const int last = nss::host_detail::temporal_last(n, radius, d.vi.numFrames);
@@ -376,7 +551,7 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
         return nullptr;
     }
     if (activation != arAllFramesReady) return nullptr;
-    NSS_CUDA_RANGE("nlh.frame");
+    NSS_CUDA_RANGE("image.frame");
     auto slot = d.pool->acquire();
     Slot& s = *slot;
     DeviceGuard guard(d.device.index);
@@ -427,7 +602,7 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
         }
     }
     if (d.estimate) {
-        NSS_CUDA_RANGE("nlh.estimate");
+        NSS_CUDA_RANGE("image.estimate");
         for (int t = 0; t < f.count; ++t) estimate_sigma(f, t);
     }
     const auto sigma_units = [&](int t, int c) {
@@ -435,28 +610,35 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
     };
     bool bypass = true;
     for (int c = 0; c < planes; ++c) bypass = bypass && f.sigma[f.center][c] == 0;
-    // nss::nlh_resolve_options: a bypassed center resolves from itself alone.
-    double max_sigma = 0;
-    int available = 16;
-    for (int c = 0; c < planes; ++c) {
-        const double units = sigma_units(f.center, c);
-        if (!(units >= 0) || !std::isfinite(units)) throw std::invalid_argument("nss.NLH: invalid preset sigma");
-        max_sigma = std::max(max_sigma, units);
-        for (int t = bypass ? f.center : 0; t < (bypass ? f.center + 1 : f.count); ++t) {
-            if (f.sigma[t][c] > 0) available = std::min({available, d.width[c], d.height[c]});
+    const bool twsc = d.model == nss::Model::TWSC;
+    nss::NlhImageOptions o;
+    if (!twsc) {
+        // nss::nlh_resolve_options: a bypassed center resolves from itself alone.
+        double max_sigma = 0;
+        int available = 16;
+        for (int c = 0; c < planes; ++c) {
+            const double units = sigma_units(f.center, c);
+            if (!(units >= 0) || !std::isfinite(units)) throw std::invalid_argument("nss.NLH: invalid preset sigma");
+            max_sigma = std::max(max_sigma, units);
+            for (int t = bypass ? f.center : 0; t < (bypass ? f.center + 1 : f.count); ++t) {
+                if (f.sigma[t][c] > 0) available = std::min({available, d.width[c], d.height[c]});
+            }
         }
+        o = nss::nlh_resolve_preset(max_sigma, available, d.nlh);
     }
-    const nss::NlhImageOptions o = nss::nlh_resolve_preset(max_sigma, available, d.nlh);
 
     VSFrame* dst = owned.newVideoFrame(&d.output.format, d.output.width, d.output.height, source[f.center], core);
-    nss::stamp_contribution(dst, radius, n, nss::Model::NLH, api);
+    nss::stamp_contribution(dst, radius, n, d.model, api);
     const int slices = 2 * radius + 1;
     const int rows = radius ? 2 * slices : 1;
     const int downloads = region;
     if (!bypass) {
+        if (twsc) run_twsc(f);
         const std::size_t window_bytes = static_cast<std::size_t>(f.count) * 3 * d.plane_floats * sizeof(float);
-        NSS_CUDA_CHECK(cudaMemcpyAsync(s.basic.get(), s.input.get(), window_bytes, cudaMemcpyDeviceToDevice, s.stream));
-        for (int iteration = 0; iteration < o.basic_iterations; ++iteration) {
+        if (!twsc) {
+            NSS_CUDA_CHECK(cudaMemcpyAsync(s.basic.get(), s.input.get(), window_bytes, cudaMemcpyDeviceToDevice, s.stream));
+        }
+        for (int iteration = 0; iteration < (twsc ? 0 : o.basic_iterations); ++iteration) {
             nlh_mix(s.basic.as<float>(), s.input.as<float>(), static_cast<std::size_t>(f.count) * 3 * d.plane_floats,
                     o.basic_mix, s.stream);
             run_pass(f, s.basic, o, 0, false);
@@ -467,7 +649,7 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
                 }
             }
         }
-        run_pass(f, s.input, o, 1, true);
+        if (!twsc) run_pass(f, s.input, o, 1, true);
         for (int t = 0; t < f.count && d.rgb; ++t) {
             // Shared pixel indices give all three channels identical counts.
             nlh_yuv_to_rgb(f.accum(s.num, 0, t), f.accum(s.num, 1, t), f.accum(s.num, 2, t), d.plane_floats, s.stream);
@@ -528,30 +710,37 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
     for (int c = 0; c < planes; ++c) sigmas[c] = sigma_units(f.center, c);
     if (api->mapSetFloatArray(props, "_NSSSigma", sigmas, planes) ||
         api->mapSetInt(props, "_NSSGroups", static_cast<std::int64_t>(f.groups), maReplace) ||
-        api->mapSetInt(props, "_NSSADMMMaxIterGroups", 0, maReplace) ||
+        api->mapSetInt(props, "_NSSADMMMaxIterGroups", f.stalled, maReplace) ||
         api->mapSetInt(props, "_NSSSvdDoubleGroups", 0, maReplace) ||
         api->mapSetFloat(props, "_NSSSylvesterResidual", 0, maReplace)) {
         throw std::bad_alloc();
     }
-    const int iterations[2]{o.basic_iterations, o.wiener_iterations};
-    diagnostic_ints(api, props, "_NSSBlockSize", o.block.data(), 2);
-    diagnostic_ints(api, props, "_NSSGroupSize", o.group.data(), 2);
-    diagnostic_ints(api, props, "_NSSIterations", iterations, 2);
-    diagnostic_ints(api, props, "_NSSSearchWindow", o.window.data(), 2);
-    diagnostic_ints(api, props, "_NSSBlockStep", o.step.data(), 2);
-    diagnostic_ints(api, props, "_NSSQ", o.q.data(), 2);
-    if (api->mapSetFloat(props, "_NSSLambdaBasic", o.basic_mix, maReplace) ||
-        api->mapSetFloat(props, "_NSSHardStrength", o.hard_strength, maReplace) ||
-        api->mapSetFloat(props, "_NSSHardCoefficient", nss::kNlhHardCoefficient * o.hard_strength, maReplace) ||
-        api->mapSetFloat(props, "_NSSWienerSigmaScale", o.wiener_sigma_scale, maReplace)) {
-        throw std::bad_alloc();
+    const int stages = twsc ? 1 : 2;
+    const int blocks[2]{twsc ? d.twsc.block : o.block[0], o.block[1]};
+    const int groups[2]{twsc ? d.twsc.group : o.group[0], o.group[1]};
+    const int iterations[2]{twsc ? d.twsc.iterations : o.basic_iterations, o.wiener_iterations};
+    const int windows[2]{twsc ? d.twsc.window : o.window[0], o.window[1]};
+    const int steps[2]{twsc ? d.twsc.step : o.step[0], o.step[1]};
+    diagnostic_ints(api, props, "_NSSBlockSize", blocks, stages);
+    diagnostic_ints(api, props, "_NSSGroupSize", groups, stages);
+    diagnostic_ints(api, props, "_NSSIterations", iterations, stages);
+    diagnostic_ints(api, props, "_NSSSearchWindow", windows, stages);
+    diagnostic_ints(api, props, "_NSSBlockStep", steps, stages);
+    if (!twsc) {
+        diagnostic_ints(api, props, "_NSSQ", o.q.data(), 2);
+        if (api->mapSetFloat(props, "_NSSLambdaBasic", o.basic_mix, maReplace) ||
+            api->mapSetFloat(props, "_NSSHardStrength", o.hard_strength, maReplace) ||
+            api->mapSetFloat(props, "_NSSHardCoefficient", nss::kNlhHardCoefficient * o.hard_strength, maReplace) ||
+            api->mapSetFloat(props, "_NSSWienerSigmaScale", o.wiener_sigma_scale, maReplace)) {
+            throw std::bad_alloc();
+        }
     }
     for (const VSFrame* frame : source) owned.freeFrame(frame);
     return owned.keep(dst);
 }
 
 void VS_CC freeFilter(void* instance, VSCore*, const VSAPI*) {
-    auto* d = static_cast<NlhData*>(instance);
+    auto* d = static_cast<ImageData*>(instance);
     {
         DeviceGuard guard(d->device.index);
         d->pool.reset();
@@ -559,7 +748,7 @@ void VS_CC freeFilter(void* instance, VSCore*, const VSAPI*) {
     delete d;
 }
 
-std::unique_ptr<Slot> make_slot(const NlhData& d, int staging_regions) {
+std::unique_ptr<Slot> make_slot(const ImageData& d, int staging_regions) {
     auto slot = std::make_unique<Slot>();
     const std::size_t window = static_cast<std::size_t>(d.max_frames) * d.plane_floats * sizeof(float);
     slot->input = DeviceBuffer(window * 3, d.budget);
@@ -574,22 +763,24 @@ std::unique_ptr<Slot> make_slot(const NlhData& d, int staging_regions) {
     slot->basic_ptrs = DeviceBuffer(pointers, d.budget);
     slot->arena = DeviceBuffer(d.arena_bytes, d.budget);
     slot->totals = DeviceBuffer(3 * sizeof(double), d.budget);
+    slot->stalled = DeviceBuffer(sizeof(int), d.budget);
     slot->staging = PinnedBuffer(static_cast<std::size_t>(staging_regions) * d.plane_floats * sizeof(float), d.budget);
     slot->aggregator = std::make_unique<OrderedAggregator>(d.width[0], d.height[0], d.max_frames, d.max_patches, d.budget);
     return slot;
 }
 
-void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI* api) {
-    // Same validation order and text as nss.NLH (D14).
-    auto data = std::make_unique<NlhData>();
-    NlhData& d = *data;
+void create(const VSMap* in, VSMap* out, VSCore* core, const VSAPI* api, nss::Model model) {
+    // Same validation order and text as nss.NLH / nss.TWSC (D14).
+    auto data = std::make_unique<ImageData>();
+    ImageData& d = *data;
+    d.model = model;
     d.node = nss::get_node(api, in, "clip", 0, nullptr);
     d.vi = *api->getVideoInfo(d.node);
     if (api->mapNumElements(in, "rclip") >= 0) d.reference = nss::get_node(api, in, "rclip", 0, nullptr);
     static_cast<nss::FullImageParams&>(d) = nss::frontend::parse_full_image(
-        api, in, d.vi, d.reference ? api->getVideoInfo(d.reference) : nullptr, nss::Model::NLH, "nss_cuda");
+        api, in, d.vi, d.reference ? api->getVideoInfo(d.reference) : nullptr, model, "nss_cuda");
     try {
-        nss::frontend::validate_full_image_geometry(d, d.vi, nss::Model::NLH, "nss_cuda");
+        nss::frontend::validate_full_image_geometry(d, d.vi, model, "nss_cuda");
     } catch (const std::invalid_argument& error) {
         // The shared preset resolution names the CPU plugin.
         const std::string text = error.what();
@@ -598,13 +789,16 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     }
     d.output = d.vi;
     if (d.radius()) d.output.height = nss::checked_fat_height(d.vi.height, d.radius());
-    d.backend = parse_backend_args(api, in, "NLH");
-    d.device = acquire_device(d.backend.device_id, "NLH", core, api);
+    d.backend = parse_backend_args(api, in, d.name());
+    d.device = acquire_device(d.backend.device_id, d.name(), core, api);
     d.budget = nss::current_budget();
-    d.rgb = d.vi.format.colorFamily == cfRGB;
+    const bool twsc = model == nss::Model::TWSC;
+    d.rgb = !twsc && d.vi.format.colorFamily == cfRGB;  // NLH works in YUV
     d.planes = d.vi.format.numPlanes;
     d.max_frames = std::min(2 * d.radius() + 1, d.vi.numFrames);
-    d.reference_planes = d.reference ? (d.rgb ? 3 : 1) : 0;
+    // NLH matches on the reference luma (which needs all of RGB); TWSC on
+    // every reference plane.
+    d.reference_planes = d.reference ? (twsc || d.rgb ? d.planes : 1) : 0;
     for (int c = 0; c < d.planes; ++c) {
         d.width[c] = nss::plane_width(d.vi, c);
         d.height[c] = nss::plane_height(d.vi, c);
@@ -619,14 +813,17 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     const int staging_regions = d.max_frames * (d.planes + d.reference_planes) + d.planes * rows;
     const std::size_t device_planes = static_cast<std::size_t>(d.max_frames) * (3 * 4 + (d.reference ? 3 : 0) + 1);
     const std::size_t fixed = plane_bytes * (device_planes + staging_regions) + plane_bytes * d.planes * rows;
-    // The largest group over the possible resolved shapes (block <= 16).
-    const int max_group = std::max({d.nlh.group[0], d.nlh.group[1], 16});
+    // The largest group over the possible resolved shapes (NLH: block <= 16).
+    const int max_group = twsc ? d.twsc.group : std::max({d.nlh.group[0], d.nlh.group[1], 16});
     const int max_q = std::max({d.nlh.q[0], d.nlh.q[1], 4});
-    std::size_t one_group = 0;
-    for (int block = 2; block <= 16; ++block) {
-        one_group = std::max(one_group, group_bytes(Shape{block, max_group, max_q, d.planes, true}) + 16 * 13);
+    std::size_t one_group = d.estimate ? group_bytes(Shape{8, 16, 4, d.planes, false}) + 16 * 13 : 0;
+    if (twsc) {
+        one_group = std::max(one_group, twsc_group_bytes(d.twsc.block, d.twsc.group, d.planes) + 16 * 9);
+    } else {
+        for (int block = 2; block <= 16; ++block) {
+            one_group = std::max(one_group, group_bytes(Shape{block, max_group, max_q, d.planes, true}) + 16 * 13);
+        }
     }
-    const Shape worst{16, max_group, max_q, d.planes, true};
     // Arena plus its aggregation buffers.
     const auto slot_bytes = [&](std::size_t arena) {
         return fixed + arena + arena / kArenaBytesPerPatch * OrderedAggregator::kBytesPerPatch + (1u << 16);
@@ -637,7 +834,8 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     }
     const std::size_t share = limit == SIZE_MAX ? SIZE_MAX : limit / static_cast<std::size_t>(d.backend.num_streams);
     if (share < slot_bytes(one_group)) {
-        throw std::invalid_argument("nss_cuda.NLH: memory_limit_mb is too small for this clip: each of the " +
+        throw std::invalid_argument(std::string("nss_cuda.") + d.name() +
+                                    ": memory_limit_mb is too small for this clip: each of the " +
                                     std::to_string(d.backend.num_streams) + " stream(s) needs at least " +
                                     std::to_string((slot_bytes(one_group) >> 20) + 1) + " MiB");
     }
@@ -647,7 +845,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         const double per_byte = 1.0 + static_cast<double>(OrderedAggregator::kBytesPerPatch) / kArenaBytesPerPatch;
         d.arena_bytes = std::max(one_group, static_cast<std::size_t>((share - slot_bytes(0)) / per_byte));
     }
-    d.max_patches = std::max<std::size_t>(d.arena_bytes / kArenaBytesPerPatch, worst.group);
+    d.max_patches = std::max<std::size_t>(d.arena_bytes / kArenaBytesPerPatch, max_group);
 
     {
         DeviceGuard guard(d.device.index);
@@ -657,7 +855,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     }
     const auto pattern = d.radius() ? rpGeneral : rpStrictSpatial;
     VSFilterDependency deps[2]{{d.node, pattern}, {d.reference, pattern}};
-    VSNode* node = api->createVideoFilter2("NLH", &d.output, nss::checked_frame<getFrame>, freeFilter, fmParallel, deps,
+    VSNode* node = api->createVideoFilter2(d.name(), &d.output, nss::checked_frame<getFrame>, freeFilter, fmParallel, deps,
                                           d.reference ? 2 : 1, &d, core);
     if (!node) {
         freeFilter(data.release(), core, api);
@@ -667,11 +865,23 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     api->mapConsumeNode(out, "clip", node, maAppend);
 }
 
+void VS_CC create_nlh(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI* api) {
+    create(in, out, core, api, nss::Model::NLH);
+}
+void VS_CC create_twsc(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI* api) {
+    create(in, out, core, api, nss::Model::TWSC);
+}
+
 }  // namespace
 
 void register_nlh(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
     static const std::string args = signature(nss::frontend::kNlhSignature);
-    vspapi->registerFunction("NLH", args.c_str(), "clip:vnode;", nss::checked_create<create>, nullptr, plugin);
+    vspapi->registerFunction("NLH", args.c_str(), "clip:vnode;", nss::checked_create<create_nlh>, nullptr, plugin);
+}
+
+void register_twsc(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
+    static const std::string args = signature(nss::frontend::kTwscSignature);
+    vspapi->registerFunction("TWSC", args.c_str(), "clip:vnode;", nss::checked_create<create_twsc>, nullptr, plugin);
 }
 
 }  // namespace nss_cuda
