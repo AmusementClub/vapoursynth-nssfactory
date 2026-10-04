@@ -77,32 +77,53 @@ dominant cost driver is `block_step` (positions scale as `1/step^2`), then
   usual "25/255" noise.
 - Array parameters are per-plane: `block_size=[8,16]` is legal on YUV.
 
-## CUDA (`core.nss_cuda.BM3D`)
+## CUDA (`core.nss_cuda.BM3D`, `core.nss_cuda.VAggregate`)
 
 The CUDA plugin (`libnss_cuda`, built with `-DNSS_ENABLE_CUDA=ON`) takes the
-same arguments and gives the same errors as `nss.BM3D`. It adds two
-GPU-only arguments at the end of the argument list:
+same arguments and gives the same errors as `nss.BM3D` / `nss.VAggregate`. It
+adds two GPU-only arguments at the end of the argument list:
 
 | Parameter | Default | Meaning |
 |---|---|---|
 | `device_id` | 0 | CUDA device index. |
-| `num_streams` | up to 3 | How many frames can be in flight on the device at once. The default is lowered when 3 would not fit `memory_limit_mb`. An explicit value that does not fit is a creation error. |
+| `num_streams` | up to 3 | How many frames (or rolling chunks) can be in flight on the device at once. The default is the largest count (at most 3) that fits `memory_limit_mb`, preferring one that lets a whole plane run as a single batch. An explicit value that does not fit is a creation error. `VAggregate` accepts both arguments but does not use a device. |
 
 ```python
 basic = core.nss_cuda.BM3D(clip, sigma=25)
 final = core.nss_cuda.BM3D(clip, ref=basic, sigma=25)
+# Temporal: rolling is the recommended GPU form (one call, final frames).
+temporal = core.nss_cuda.BM3D(clip, sigma=25, radius=1, temporal_mode="rolling")
+# Two-stage legacy form, kept for parity and debugging.
+fat = core.nss_cuda.BM3D(clip, sigma=25, radius=1)
+temporal = core.nss_cuda.VAggregate(fat, clip, radius=1)
 ```
 
-- **Device-resident.** Matching, collaborative filtering and aggregation all
-  run on the device; only the final plane is copied back.
+- **Device-resident.** Matching (spatial or predictive temporal), collaborative
+  filtering and aggregation all run on the device.
+  - Spatial and rolling output copy only final frames back.
+  - Legacy `radius > 0` copies back the fat intermediate, because it must
+    exist as a VS frame.
+- **Rolling.**
+  - Each chunk of frames keeps a ring of the temporal window on the device.
+  - Each center frame's contributions are added into the chunk's target
+    frames in ascending order, as the CPU does.
+  - It is bit-identical to `nss_cuda.VAggregate(nss_cuda.BM3D(..., radius=R))`.
+- **`nss_cuda.VAggregate` runs on the host.** Its inputs are already host
+  frames, and uploading 2(2R+1) planes per frame costs several times more than
+  the sum itself. It sums slices in the CPU's order and divides with IEEE
+  rounding.
+- **Interop.** The fat intermediate is a plain VS frame with versioned
+  properties, so `nss.VAggregate` and `nss_cuda.VAggregate` accept each other's
+  BM3D output. They agree within a few ulp: the CPU's fast-math division may
+  be up to 2 ulp off IEEE rounding.
 - **Numerics.** The transform math is the CPU's orthonormal 3D DCT.
   - The output is not bit-identical to the CPU, but stays within the 60 dB
     gate in `tests/data/cuda_tolerances_v1.json`.
   - The output is run-to-run identical on a given GPU, driver and build.
-    Patches are summed per pixel in the CPU's order, with no float atomics.
-- **Memory.** `memory_limit_mb` (default 1024) also caps device memory and
-  pinned staging. 4K clips run at the default with smaller internal batches.
-- **Performance.** On an RTX 5080 at 1080p GRAYS with defaults, it runs at
-  bm3dcuda's speed or slightly faster.
-- **Not yet available.** `radius > 0` (legacy intermediate and
-  `temporal_mode="rolling"`) is rejected for now.
+- **Memory.** `memory_limit_mb` (default 1024) also caps device memory, pinned
+  staging and the rolling chunk cache. 4K clips run at the default with
+  smaller internal batches.
+- **Performance.** At 1080p GRAYS with defaults on an RTX 5080:
+  - Spatial runs at bm3dcuda's speed or slightly faster.
+  - Temporal runs at about 0.85 to 0.95x bm3dcuda. It uses the CPU's
+    predictive search and deterministic aggregation.

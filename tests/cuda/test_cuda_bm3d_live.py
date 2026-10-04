@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-only
 """nss_cuda.BM3D vs nss.BM3D on small random clips for every legal
-block_size x group_size, basic and ref (Wiener) stages, Gray and RGB. Each
-case must reach the BM3D tolerance (tests/data/cuda_tolerances_v1.json) and
-be run-to-run identical. Exits 77 without VapourSynth or a CUDA device.
+block_size x group_size, basic and ref (Wiener) stages, Gray and RGB, plus
+the temporal paths (radius 1/2): legacy + VAggregate against the CPU,
+rolling identical to legacy + VAggregate on the GPU, and VAggregate across
+backends (the fat intermediate is a backend-neutral VS frame contract).
+Each case must reach the BM3D tolerance (tests/data/cuda_tolerances_v1.json)
+and be run-to-run identical. Exits 77 without VapourSynth or a CUDA device.
 
-usage: test_cuda_bm3d_live.py --cpu PATH --cuda PATH
+usage: test_cuda_bm3d_live.py --cpu PATH --cuda PATH [--quick]
+
+--quick runs a representative subset (for compute-sanitizer runs).
 """
 import argparse
 import json
@@ -24,26 +29,71 @@ BLOCKS = (1, 2, 4, 8, 12, 16, 32)
 GROUPS = (1, 2, 4, 8, 16, 32, 64)
 
 
-def make_clip(core, fmt, width, height, seed):
+def make_clip(core, fmt, width, height, seed, length=2):
     rng = np.random.default_rng(seed)
-    blank = core.std.BlankClip(width=width, height=height, format=fmt, length=2)
-    planes = []
-    for p in range(blank.format.num_planes):
-        y, x = np.mgrid[:height, :width]
-        clean = 0.5 + 0.2 * np.sin(x / (5 + p)) * np.cos(y / 7)
-        planes.append((clean + rng.normal(0, 10 / 255, clean.shape)).astype(np.float32))
+    blank = core.std.BlankClip(width=width, height=height, format=fmt, length=length)
+    frames = []
+    for t in range(length):
+        planes = []
+        for p in range(blank.format.num_planes):
+            y, x = np.mgrid[:height, :width]
+            clean = 0.5 + 0.2 * np.sin((x + 2 * t) / (5 + p)) * np.cos((y + t) / 7)
+            planes.append((clean + rng.normal(0, 10 / 255, clean.shape)).astype(np.float32))
+        frames.append(planes)
 
     def fill(n, f):
         out = f.copy()
-        for p, plane in enumerate(planes):
+        for p, plane in enumerate(frames[n]):
             np.asarray(out[p])[:] = plane
         return out
     return core.std.ModifyFrame(blank, blank, fill)
 
 
-def frame_planes(node):
-    f = node.get_frame(0)
+def frame_planes(node, n=0):
+    f = node.get_frame(n)
     return [np.array(f[p], dtype=np.float64) for p in range(f.format.num_planes)]
+
+
+def within_ulp(a, b, ulps=4):
+    return all(np.all(np.abs(x - y) <= ulps * np.spacing(np.maximum(np.abs(x), np.abs(y)).astype(np.float32)))
+               for x, y in zip(a, b))
+
+
+def temporal(core, quick, floor):
+    """Legacy/rolling/cross-backend temporal checks; returns (cases, worst, failures)."""
+    failures, worst, cases = [], float("inf"), 0
+    clips = [make_clip(core, vs.GRAYS, 64, 56, 3, length=6)]
+    if not quick:
+        clips.append(make_clip(core, vs.RGBS, 48, 40, 4, length=6))
+    for clip in clips:
+        for radius in (1, 2):
+            kw = dict(sigma=10, radius=radius, bm_range=5)
+            cpu = core.nss.VAggregate(core.nss.BM3D(clip, **kw), clip, radius=radius)
+            gpu = core.nss_cuda.VAggregate(core.nss_cuda.BM3D(clip, **kw), clip, radius=radius)
+            rolling = core.nss_cuda.BM3D(clip, temporal_mode="rolling", rolling_chunk=4, **kw)
+            mixed_a = core.nss.VAggregate(core.nss_cuda.BM3D(clip, **kw), clip, radius=radius)
+            mixed_b = core.nss_cuda.VAggregate(core.nss.BM3D(clip, **kw), clip, radius=radius)
+            for n in range(clip.num_frames):
+                label = f"temporal r{radius} {clip.format.name} frame {n}"
+                a, b = frame_planes(cpu, n), frame_planes(gpu, n)
+                value = psnr(a, b)
+                worst = min(worst, value)
+                cases += 1
+                if value < floor:
+                    failures.append(f"{label}: legacy psnr {value:.2f} < {floor}")
+                if any(not np.array_equal(x, y) for x, y in zip(b, frame_planes(rolling, n))):
+                    failures.append(f"{label}: rolling differs from legacy + VAggregate")
+                # Same fat input and summation order on both backends; the GPU
+                # divides with IEEE rounding while the CPU fast-math TU was
+                # measured up to 2 ulp off (2026-10-03), so allow a few ulp.
+                if not within_ulp(frame_planes(mixed_a, n), b):
+                    failures.append(f"{label}: nss.VAggregate(nss_cuda.BM3D) differs from nss_cuda.VAggregate by > 4 ulp")
+                if not within_ulp(frame_planes(mixed_b, n), a):
+                    failures.append(f"{label}: nss_cuda.VAggregate(nss.BM3D) differs from nss.VAggregate by > 4 ulp")
+                again = frame_planes(core.nss_cuda.VAggregate(core.nss_cuda.BM3D(clip, **kw), clip, radius=radius), n)
+                if any(not np.array_equal(x, y) for x, y in zip(b, again)):
+                    failures.append(f"{label}: not run-to-run identical")
+    return cases, worst, failures
 
 
 def psnr(a, b):
@@ -55,6 +105,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--cpu", required=True)
     parser.add_argument("--cuda", required=True)
+    parser.add_argument("--quick", action="store_true")
     args = parser.parse_args()
     core = vs.core
     core.num_threads = 4
@@ -70,8 +121,9 @@ def main():
     failures, worst, cases = [], float("inf"), 0
     gray = make_clip(core, vs.GRAYS, 72, 70, 1)
     rgb = make_clip(core, vs.RGBS, 40, 36, 2)
-    for block in BLOCKS:
-        for group in GROUPS:
+    blocks, groups = ((4, 8, 16), (1, 8, 64)) if args.quick else (BLOCKS, GROUPS)
+    for block in blocks:
+        for group in groups:
             clip = gray if block == 32 or (block + group) % 3 else rgb
             if block > min(clip.width, clip.height):
                 continue
@@ -92,8 +144,12 @@ def main():
                     failures.append(f"{label}: psnr {value:.2f} < {floor}")
                 if any(not np.array_equal(x, y) for x, y in zip(b, again)):
                     failures.append(f"{label}: not run-to-run identical")
+    t_cases, t_worst, t_failures = temporal(core, args.quick, floor)
+    cases += t_cases
+    worst = min(worst, t_worst)
+    failures += t_failures
     # Repeated create/free must not leak device memory or fail.
-    for _ in range(20):
+    for _ in range(2 if args.quick else 20):
         core.nss_cuda.BM3D(gray, sigma=5).get_frame(0)
     for line in failures:
         print("FAIL:", line)

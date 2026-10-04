@@ -103,6 +103,11 @@ def main():
     skipped = set(expect_missing)
     if "BM3D" in skipped:
         skipped.add("VAggregate")
+    # A backend without a usable device cannot create filters: check the
+    # signatures only (compile-only CI lanes) and skip the creation probes.
+    if ns != "nss" and "Backend" in functions and plugin.Backend().get("device_count", 1) == 0:
+        print(f"note: {ns} has no device; signatures checked, creation probes skipped")
+        skipped |= set(shared)
 
     def outcome(name, clip, kwargs):
         try:

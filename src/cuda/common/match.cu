@@ -19,7 +19,29 @@ constexpr int kThreads = 128;
 constexpr int kTemporalSort = 1024;
 constexpr std::size_t kSharedBudget = 48 * 1024;
 
+// Row-major sum of squared differences; every path uses this exact order.
+// Common block sizes get fully unrolled loops.
+template <int B>
+__device__ __forceinline__ float block_ssd_fixed(const float* a, int a_pitch, const float* b, int b_pitch) {
+    float sum = 0.f;
+#pragma unroll
+    for (int r = 0; r < B; ++r) {
+#pragma unroll
+        for (int c = 0; c < B; ++c) {
+            const float d = a[r * a_pitch + c] - b[r * b_pitch + c];
+            sum = fmaf(d, d, sum);
+        }
+    }
+    return sum;
+}
+
 __device__ __forceinline__ float block_ssd(const float* a, int a_pitch, const float* b, int b_pitch, int block) {
+    switch (block) {
+    case 4: return block_ssd_fixed<4>(a, a_pitch, b, b_pitch);
+    case 8: return block_ssd_fixed<8>(a, a_pitch, b, b_pitch);
+    case 16: return block_ssd_fixed<16>(a, a_pitch, b, b_pitch);
+    default: break;
+    }
     float sum = 0.f;
     for (int r = 0; r < block; ++r) {
         const float* ra = a + r * a_pitch;
@@ -116,12 +138,20 @@ __global__ void __launch_bounds__(kThreads) spatial_match_kernel(const float* pl
     write_result(dst, counts + ref, cx, cy, 0, keys, topk.filled);
 }
 
-// Warp-per-reference variant for small top-K (the common BM3D/WNNM case):
-// each warp stages its search window and candidate keys in its own shared
-// memory, then extracts the K smallest keys by K warp-wide argmin rounds.
-// The keys are a total order, so the result equals the block top-K path.
+// Warp-per-reference variants for small top-K (the common BM3D/WNNM case).
+// Each warp stages its search window in its own shared memory and keeps one
+// 4-byte sortable distance per candidate; positions are recomputed from the
+// candidate index when keys are compared, which keeps the block small enough
+// for good occupancy. The K smallest keys are extracted by K warp-wide argmin
+// rounds. Keys are a total order, so the result equals the block top-K path.
 constexpr int kWarpRefs = kThreads / 32;
 constexpr int kWarpMaxK = 16;
+constexpr unsigned kConsumed = 0xffffffffu;  // sortable_distance never returns this
+
+struct Center {
+    int x;
+    int y;
+};
 
 __device__ __forceinline__ void warp_min(MatchKey& key, int& index) {
     for (int offset = 16; offset > 0; offset >>= 1) {
@@ -134,22 +164,91 @@ __device__ __forceinline__ void warp_min(MatchKey& key, int& index) {
     }
 }
 
-__global__ void __launch_bounds__(kThreads) spatial_match_warp_kernel(const float* plane, MatchGeometry g,
-                                                                      RasterGrid grid, int ref_begin, int ref_count,
-                                                                      DeviceMatch* out, int* counts, int window_floats,
-                                                                      int key_capacity) {
-    extern __shared__ unsigned char shared[];
-    const int warp = threadIdx.x / 32;
-    const int lane = threadIdx.x % 32;
-    const int ref = blockIdx.x * kWarpRefs + warp;
-    if (ref >= ref_count) return;  // warp-uniform; no block barriers below
-    auto* keys = reinterpret_cast<MatchKey*>(shared) + warp * key_capacity;
-    float* window = reinterpret_cast<float*>(reinterpret_cast<MatchKey*>(shared) + kWarpRefs * key_capacity) +
-                    warp * window_floats;
-    const int cx = grid.x(ref_begin + ref);
-    const int cy = grid.y(ref_begin + ref);
-    DeviceMatch* dst = out + static_cast<long long>(ref) * g.group;
-    const int wanted = min(g.group, kMaxGroup) - 1;
+__device__ __forceinline__ MatchKey key_of(unsigned sortable, int t, int y, int x) {
+    return MatchKey{(static_cast<unsigned long long>(sortable) << 32) | static_cast<unsigned>(t),
+                    (static_cast<unsigned long long>(static_cast<unsigned>(y)) << 32) | static_cast<unsigned>(x)};
+}
+
+// Candidate index -> position, walked in steps of 32 (one lane's candidates)
+// without per-candidate divisions. Spatial: raster order of the clamped window.
+struct SpatialLayout {
+    int left, top, ww;
+    struct Cursor {
+        int col, row;
+    };
+    __device__ __forceinline__ Cursor begin(int idx) const { return Cursor{idx % ww, idx / ww}; }
+    __device__ __forceinline__ void advance(Cursor& c) const {
+        c.col += 32;
+        while (c.col >= ww) {
+            c.col -= ww;
+            ++c.row;
+        }
+    }
+    __device__ __forceinline__ Center at(const Cursor& c) const { return Center{left + c.col, top + c.row}; }
+};
+// Temporal layer: side x side windows around each center, center-major.
+struct LayerLayout {
+    const Center* centers;
+    int pr, side;
+    struct Cursor {
+        int center, col, row;
+    };
+    __device__ __forceinline__ Cursor begin(int idx) const {
+        const int o = idx % (side * side);
+        return Cursor{idx / (side * side), o % side, o / side};
+    }
+    __device__ __forceinline__ void advance(Cursor& c) const {
+        c.col += 32;
+        while (c.col >= side) {
+            c.col -= side;
+            if (++c.row == side) {
+                c.row = 0;
+                ++c.center;
+            }
+        }
+    }
+    __device__ __forceinline__ Center at(const Cursor& c) const {
+        const Center m = centers[c.center];
+        return Center{m.x - pr + c.col, m.y - pr + c.row};
+    }
+};
+
+// K smallest of the candidates into out[0, k) in ascending key order
+// (consumes the selected entries). Warp-uniform return value.
+template <class Layout>
+__device__ int warp_select(unsigned* sortable, int total, int lane, int k, int t, const Layout& layout,
+                           MatchKey* out) {
+    int filled = 0;
+    for (; filled < k; ++filled) {
+        MatchKey best = detail::sentinel_key();
+        int index = -1;
+        auto cursor = layout.begin(lane);
+        for (int idx = lane; idx < total; idx += 32, layout.advance(cursor)) {
+            const unsigned s = sortable[idx];
+            if (s == kConsumed) continue;
+            const Center pos = layout.at(cursor);
+            const MatchKey key = key_of(s, t, pos.y, pos.x);
+            if (detail::key_less(key, best)) {
+                best = key;
+                index = idx;
+            }
+        }
+        warp_min(best, index);
+        if (index < 0) break;
+        if (lane == 0) {
+            out[filled] = best;
+            sortable[index] = kConsumed;
+        }
+        __syncwarp();
+    }
+    return filled;
+}
+
+// Stages the spatial window and fills the sortable distances of the spatial
+// candidates of (cx, cy); returns the layout and candidate count.
+__device__ __forceinline__ int warp_spatial(const float* plane, const MatchGeometry& g, int cx, int cy, int lane,
+                                            float* window, unsigned* sortable, SpatialLayout& layout,
+                                            const float*& anchor, int& anchor_pitch) {
     const Window w = spatial_window(g, cx, cy);
     const int sw = w.right - w.left + g.block;
     const int sh = w.bottom - w.top + g.block;
@@ -157,36 +256,49 @@ __global__ void __launch_bounds__(kThreads) spatial_match_warp_kernel(const floa
         window[i] = plane[static_cast<long long>(w.top + i / sw) * g.pitch + w.left + i % sw];
     }
     __syncwarp();
-    const int ww = w.right - w.left + 1;
-    const int total = ww * (w.bottom - w.top + 1);
-    const float* anchor = window + (cy - w.top) * sw + (cx - w.left);
-    for (int idx = lane; idx < total; idx += 32) {
-        const int x = w.left + idx % ww;
-        const int y = w.top + idx / ww;
-        keys[idx] = (x == cx && y == cy)
-                        ? detail::sentinel_key()
-                        : detail::make_key(block_ssd(anchor, sw, window + (y - w.top) * sw + (x - w.left), sw, g.block),
-                                           0, y, x);
+    layout = SpatialLayout{w.left, w.top, w.right - w.left + 1};
+    anchor = window + (cy - w.top) * sw + (cx - w.left);
+    anchor_pitch = sw;
+    const int total = layout.ww * (w.bottom - w.top + 1);
+    auto cursor = layout.begin(lane);
+    for (int idx = lane; idx < total; idx += 32, layout.advance(cursor)) {
+        const Center pos = layout.at(cursor);
+        sortable[idx] = (pos.x == cx && pos.y == cy)
+                            ? kConsumed
+                            : detail::sortable_distance(block_ssd(
+                                  anchor, sw, window + (pos.y - w.top) * sw + (pos.x - w.left), sw, g.block));
     }
     __syncwarp();
-    int filled = 0;
-    for (; filled < wanted; ++filled) {
-        MatchKey best = detail::sentinel_key();
-        int index = -1;
-        for (int idx = lane; idx < total; idx += 32) {
-            if (detail::key_less(keys[idx], best)) {
-                best = keys[idx];
-                index = idx;
-            }
-        }
-        warp_min(best, index);
-        if (index < 0) break;  // fewer candidates than wanted
-        if (lane == 0) {
-            dst[1 + filled] =
-                DeviceMatch{detail::key_x(best), detail::key_y(best), detail::key_t(best), detail::key_distance(best)};
-            keys[index] = detail::sentinel_key();
-        }
-        __syncwarp();
+    return total;
+}
+
+__global__ void __launch_bounds__(kThreads) spatial_match_warp_kernel(const float* plane, MatchGeometry g,
+                                                                      RasterGrid grid, int ref_begin, int ref_count,
+                                                                      DeviceMatch* out, int* counts, int window_floats,
+                                                                      int capacity) {
+    extern __shared__ unsigned char shared[];
+    const int warp = threadIdx.x / 32;
+    const int lane = threadIdx.x % 32;
+    const int ref = blockIdx.x * kWarpRefs + warp;
+    if (ref >= ref_count) return;  // warp-uniform; only warp barriers below
+    auto* selected = reinterpret_cast<MatchKey*>(shared) + warp * kWarpMaxK;
+    auto* sortable = reinterpret_cast<unsigned*>(reinterpret_cast<MatchKey*>(shared) + kWarpRefs * kWarpMaxK) +
+                     warp * capacity;
+    float* window = reinterpret_cast<float*>(reinterpret_cast<unsigned*>(
+                        reinterpret_cast<MatchKey*>(shared) + kWarpRefs * kWarpMaxK) + kWarpRefs * capacity) +
+                    warp * window_floats;
+    const int cx = grid.x(ref_begin + ref);
+    const int cy = grid.y(ref_begin + ref);
+    DeviceMatch* dst = out + static_cast<long long>(ref) * g.group;
+    const int wanted = min(g.group, kMaxGroup) - 1;
+    SpatialLayout layout{};
+    const float* anchor = nullptr;
+    int anchor_pitch = 0;
+    const int total = warp_spatial(plane, g, cx, cy, lane, window, sortable, layout, anchor, anchor_pitch);
+    const int filled = warp_select(sortable, total, lane, wanted, 0, layout, selected);
+    for (int i = lane; i < filled; i += 32) {
+        const MatchKey& k = selected[i];
+        dst[1 + i] = DeviceMatch{detail::key_x(k), detail::key_y(k), detail::key_t(k), detail::key_distance(k)};
     }
     if (lane == 0) {
         dst[0] = DeviceMatch{cx, cy, 0, 0.f};
@@ -194,10 +306,117 @@ __global__ void __launch_bounds__(kThreads) spatial_match_warp_kernel(const floa
     }
 }
 
-struct Center {
-    int x;
-    int y;
-};
+// Predictive search for wanted - 1 <= 16 and ps_num <= 16. Per warp: a
+// 32-entry merge array (global top in [0, 16), the current layer's local top
+// in [16, 32)), a selection scratch, centers and seeds, the sortable
+// distances and the staged spatial window (which also holds the anchor).
+__global__ void __launch_bounds__(kThreads) predictive_match_warp_kernel(MatchGeometry g, TemporalWindow tw,
+                                                                         RasterGrid grid, int ref_begin,
+                                                                         int ref_count, DeviceMatch* out, int* counts,
+                                                                         int window_floats, int capacity) {
+    extern __shared__ unsigned char shared[];
+    constexpr int kSlots = kWarpMaxK;
+    const int warp = threadIdx.x / 32;
+    const int lane = threadIdx.x % 32;
+    const int ref = blockIdx.x * kWarpRefs + warp;
+    if (ref >= ref_count) return;  // warp-uniform; only warp barriers below
+    auto* key_base = reinterpret_cast<MatchKey*>(shared);
+    MatchKey* merge = key_base + warp * 3 * kSlots;
+    MatchKey* scratch = merge + 2 * kSlots;
+    auto* center_base = reinterpret_cast<Center*>(key_base + kWarpRefs * 3 * kSlots);
+    Center* centers = center_base + warp * 2 * kSlots;
+    Center* seeds = centers + kSlots;
+    auto* sortable_base = reinterpret_cast<unsigned*>(center_base + kWarpRefs * 2 * kSlots);
+    unsigned* sortable = sortable_base + warp * capacity;
+    float* window = reinterpret_cast<float*>(sortable_base + kWarpRefs * capacity) + warp * window_floats;
+
+    const int cx = grid.x(ref_begin + ref);
+    const int cy = grid.y(ref_begin + ref);
+    const int t0 = tw.t0;
+    DeviceMatch* dst = out + static_cast<long long>(ref) * g.group;
+    const int wanted = min(g.group, kMaxGroup) - 1;
+    SpatialLayout spatial{};
+    const float* anchor = nullptr;
+    int anchor_pitch = 0;
+    const int spatial_total = warp_spatial(tw.frames[t0], g, cx, cy, lane, window, sortable, spatial, anchor, anchor_pitch);
+    merge[lane] = detail::sentinel_key();  // 32 lanes cover the 32 merge entries
+    __syncwarp();
+    int global_count = warp_select(sortable, spatial_total, lane, wanted, t0, spatial, merge);
+
+    if (tw.radius > 0 && tw.ntemp > 1) {
+        const int seed_count = min(min(1 + global_count, tw.ps_num), kSlots);
+        if (lane < seed_count) {
+            seeds[lane] = lane == 0 ? Center{cx, cy} : Center{detail::key_x(merge[lane - 1]), detail::key_y(merge[lane - 1])};
+        }
+        __syncwarp();
+        const int first = max(0, tw.valid_begin);
+        const int last = tw.valid_end < 0 ? tw.ntemp : min(tw.ntemp, tw.valid_end);
+        const int local_k = min(tw.ps_num, g.group);
+        const int pr = tw.ps_range;
+        const int side = 2 * pr + 1;
+        const int max_x = g.width - g.block;
+        const int max_y = g.height - g.block;
+        const LayerLayout layer{centers, pr, side};
+        for (int sign = -1; sign <= 1; sign += 2) {
+            if (lane < seed_count) centers[lane] = seeds[lane];
+            __syncwarp();
+            int nc = seed_count;
+            for (int dt = 1; dt <= tw.radius; ++dt) {
+                const int t = t0 + sign * dt;
+                if (t < first || t >= last) break;
+                const float* plane = tw.frames[t];
+                // Union of the centers' windows: a position belongs to the
+                // first center whose window contains it.
+                const int total = nc * side * side;
+                auto cursor = layer.begin(lane);
+                for (int idx = lane; idx < total; idx += 32, layer.advance(cursor)) {
+                    const int c = cursor.center;
+                    const Center pos = layer.at(cursor);
+                    bool use = pos.x >= 0 && pos.x <= max_x && pos.y >= 0 && pos.y <= max_y;
+                    for (int e = 0; e < c && use; ++e) {
+                        use = abs(pos.x - centers[e].x) > pr || abs(pos.y - centers[e].y) > pr;
+                    }
+                    sortable[idx] = use ? detail::sortable_distance(block_ssd(
+                                              anchor, anchor_pitch,
+                                              plane + static_cast<long long>(pos.y) * g.pitch + pos.x, g.pitch, g.block))
+                                        : kConsumed;
+                }
+                __syncwarp();
+                const int local = warp_select(sortable, total, lane, local_k, t, layer, merge + kSlots);
+                if (lane >= kSlots + local) merge[lane] = detail::sentinel_key();
+                __syncwarp();
+                if (lane < local) {
+                    centers[lane] = Center{detail::key_x(merge[kSlots + lane]), detail::key_y(merge[kSlots + lane])};
+                }
+                nc = local;
+                // Global merge over the 32 lane-held keys.
+                MatchKey mine = merge[lane];
+                int merged = 0;
+                for (; merged < wanted; ++merged) {
+                    MatchKey best = mine;
+                    int index = lane;
+                    warp_min(best, index);
+                    if (best.hi == ~0ull && best.lo == ~0ull) break;
+                    if (lane == 0) scratch[merged] = best;
+                    if (lane == index) mine = detail::sentinel_key();
+                }
+                __syncwarp();
+                if (lane < kSlots) merge[lane] = lane < merged ? scratch[lane] : detail::sentinel_key();
+                __syncwarp();
+                global_count = merged;
+                if (local == 0) break;
+            }
+        }
+    }
+    for (int i = lane; i < global_count; i += 32) {
+        const MatchKey& k = merge[i];
+        dst[1 + i] = DeviceMatch{detail::key_x(k), detail::key_y(k), detail::key_t(k), detail::key_distance(k)};
+    }
+    if (lane == 0) {
+        dst[0] = DeviceMatch{cx, cy, t0, 0.f};
+        counts[ref] = 1 + global_count;
+    }
+}
 
 __global__ void __launch_bounds__(kThreads) predictive_match_kernel(MatchGeometry g, TemporalWindow tw,
                                                                     RasterGrid grid, int ref_begin, DeviceMatch* out,
@@ -346,8 +565,8 @@ void spatial_match(const float* plane, const MatchGeometry& geometry, const Rast
     const int candidates = (2 * range + 1) * (2 * range + 1);
     const int wanted = std::min(geometry.group, kMaxGroup) - 1;
     const int window_floats = (2 * range + geometry.block) * (2 * range + geometry.block);
-    const std::size_t warp_bytes =
-        kWarpRefs * (static_cast<std::size_t>(candidates) * sizeof(MatchKey) + window_floats * sizeof(float));
+    const std::size_t warp_bytes = kWarpRefs * (kWarpMaxK * sizeof(MatchKey) + candidates * sizeof(unsigned) +
+                                                window_floats * sizeof(float));
     if (wanted >= 1 && wanted <= kWarpMaxK && warp_bytes <= kSharedBudget) {
         spatial_match_warp_kernel<<<(ref_count + kWarpRefs - 1) / kWarpRefs, kThreads, warp_bytes, stream>>>(
             plane, geometry, grid, ref_begin, ref_count, out, counts, window_floats, candidates);
@@ -369,6 +588,19 @@ void spatial_match(const float* plane, const MatchGeometry& geometry, const Rast
 void predictive_match(const MatchGeometry& geometry, const TemporalWindow& window, const RasterGrid& grid,
                       int ref_begin, int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream) {
     if (ref_count <= 0) return;
+    const int range = std::max(geometry.bm_range, 0);
+    const int wanted = std::min(geometry.group, kMaxGroup) - 1;
+    const int side = 2 * window.ps_range + 1;
+    const int candidates = std::max((2 * range + 1) * (2 * range + 1), std::min(window.ps_num, kWarpMaxK) * side * side);
+    const int window_floats = (2 * range + geometry.block) * (2 * range + geometry.block);
+    const std::size_t warp_bytes = kWarpRefs * (3 * kWarpMaxK * sizeof(MatchKey) + 2 * kWarpMaxK * sizeof(Center) +
+                                                candidates * sizeof(unsigned) + window_floats * sizeof(float));
+    if (wanted >= 1 && wanted <= kWarpMaxK && window.ps_num <= kWarpMaxK && warp_bytes <= kSharedBudget) {
+        predictive_match_warp_kernel<<<(ref_count + kWarpRefs - 1) / kWarpRefs, kThreads, warp_bytes, stream>>>(
+            geometry, window, grid, ref_begin, ref_count, out, counts, window_floats, candidates);
+        NSS_CUDA_CHECK_LAUNCH();
+        return;
+    }
     predictive_match_kernel<<<ref_count, kThreads, 0, stream>>>(geometry, window, grid, ref_begin, out, counts);
     NSS_CUDA_CHECK_LAUNCH();
 }
