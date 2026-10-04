@@ -34,6 +34,10 @@ struct GroupPlane {
     bool active = false;  // false copies the plane (temporal: identity slices)
     int block = 0, group = 0, step = 0, range = 0, ps_num = 0, ps_range = 0;
     float sigma = 0.f;    // filter-defined scale, passed through to launch
+    // The filter's kernel aggregates this plane's groups itself, into
+    // GroupLaunch::fused; the driver then keeps no values or patch records
+    // for it. Single-channel, single-round filters only.
+    bool fused = false;
     // Filled by the driver:
     int width = 0, height = 0;
     std::size_t floats = 0;
@@ -55,6 +59,9 @@ struct GroupLaunch {
     float* values;              // channels * batch * group * block^2, channel-major: filtered patches
     float* scratch;             // batch * scratch_floats(plane) extra workspace, or nullptr
     AggregatePatch* patches;    // batch * group: position, slice = match t, weight; unused slots slice -1
+    // plane->fused: the accumulators of the plane (slice = match t); values
+    // and patches are then null.
+    FixedTarget fused{};
     cudaStream_t stream;
 };
 

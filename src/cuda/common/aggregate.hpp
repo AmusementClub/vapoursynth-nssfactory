@@ -6,8 +6,10 @@
 // tile with a stable radix sort keyed by tile, so each tile sums its patches
 // in patch-id order. Callers number patches in the CPU commit order (raster
 // reference index, then group position), which then is also the CPU's
-// per-pixel accumulation order. aggregate_atomic is the float-atomic
-// alternative kept for the D17 measurement; its sums depend on scheduling.
+// per-pixel accumulation order. FixedTarget is the other deterministic
+// route, for kernels that aggregate their own output: exact fixed-point sums
+// by integer atomics. aggregate_atomic is the float-atomic alternative kept
+// for the D17 measurement; its sums depend on scheduling.
 #pragma once
 
 #include "cuda/runtime/memory.hpp"
@@ -61,6 +63,24 @@ private:
     DeviceBuffer keys_in_, keys_out_, ids_in_, ids_out_, bin_begin_, bin_end_, sort_temp_;
     std::size_t sort_temp_bytes_ = 0;
 };
+
+// Accumulators for kernels that aggregate their own output (see
+// fixed_accumulate.cuh): fixed-point sums, 2^32 units per 1.0, wrapped in
+// unsigned 64-bit cells. The sums are exact integers, so they do not depend
+// on the order of the atomics. Slice s of a plane starts slice_step cells
+// after slice s - 1.
+struct FixedTarget {
+    unsigned long long* num = nullptr;
+    unsigned long long* den = nullptr;
+    int pitch = 0;               // cells per row
+    std::size_t slice_step = 0;  // cells between slices
+};
+
+// Zeroes `count` cells of num and den.
+void fixed_clear(const FixedTarget& target, std::size_t count, cudaStream_t stream);
+
+// num, den = the accumulated sums as floats, over `count` cells.
+void fixed_resolve(const FixedTarget& target, std::size_t count, float* num, float* den, cudaStream_t stream);
 
 // Adds into target (which the caller zeroes); nondeterministic summation order.
 void aggregate_atomic(const float* values, const AggregatePatch* patches, int npatch, int block,

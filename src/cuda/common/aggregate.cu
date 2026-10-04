@@ -142,6 +142,15 @@ __global__ void atomic_kernel(const float* values, const AggregatePatch* patches
     atomicAdd(target.den + offset, patch.weight);
 }
 
+__global__ void fixed_resolve_kernel(const unsigned long long* fixed_num, const unsigned long long* fixed_den,
+                                     std::size_t count, float* num, float* den) {
+    const std::size_t i = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= count) return;
+    constexpr float kUnit = 1.f / 4294967296.f;  // 1 / kFixedScale
+    num[i] = static_cast<float>(static_cast<long long>(fixed_num[i])) * kUnit;
+    den[i] = static_cast<float>(static_cast<long long>(fixed_den[i])) * kUnit;
+}
+
 __global__ void finish_kernel(const float* num, const float* den, const float* src, int width, int height, int pitch,
                               float* out) {
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -241,6 +250,18 @@ void OrderedAggregator::run(const float* values, const AggregatePatch* patches, 
             values, patches, ids_out_.as<int>(), bin_begin_.as<int>(), bin_end_.as<int>(), block, tiles_x, tiles_y,
             target, accumulate, pixel_den, den_group);
     }
+    NSS_CUDA_CHECK_LAUNCH();
+}
+
+void fixed_clear(const FixedTarget& target, std::size_t count, cudaStream_t stream) {
+    NSS_CUDA_CHECK(cudaMemsetAsync(target.num, 0, count * sizeof(unsigned long long), stream));
+    NSS_CUDA_CHECK(cudaMemsetAsync(target.den, 0, count * sizeof(unsigned long long), stream));
+}
+
+void fixed_resolve(const FixedTarget& target, std::size_t count, float* num, float* den, cudaStream_t stream) {
+    if (count == 0) return;
+    fixed_resolve_kernel<<<static_cast<unsigned>((count + 255) / 256), 256, 0, stream>>>(target.num, target.den, count,
+                                                                                      num, den);
     NSS_CUDA_CHECK_LAUNCH();
 }
 

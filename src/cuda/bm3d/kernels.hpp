@@ -30,7 +30,15 @@ struct Bm3dGroupArgs {
     float* values;              // batch * group * block^2, also the transform workspace
     float* ref_cube;            // batch * group * block^2 when ref != nullptr
     AggregatePatch* patches;    // batch * group; slice = match t, unused slots get -1
+    // Set (num != nullptr) for shapes with bm3d_fuses(): the kernel adds the
+    // weighted patches to these accumulators itself; values and patches are
+    // then unused.
+    FixedTarget fused{};
 };
+
+// Whether the kernel of this shape and stage can aggregate its own output
+// (every shape whose cube is not transformed in `values`).
+bool bm3d_fuses(int block, int group, bool wiener);
 void bm3d_filter_groups(const Bm3dGroupArgs& args, cudaStream_t stream);
 
 }  // namespace nss_cuda

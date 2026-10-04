@@ -125,6 +125,9 @@ temporal = core.nss_cuda.VAggregate(fat, clip, radius=1)
   - The output is not bit-identical to the CPU, but stays within the 60 dB
     gate in `tests/data/cuda_tolerances_v1.json`.
   - The output is run-to-run identical on a given GPU, driver and build.
+    Most shapes aggregate from inside the filter kernel with integer atomics
+    on fixed-point sums (exact, so independent of the order); the rest sort
+    their patches and sum them in a fixed order.
 - **Memory.** `memory_limit_mb` (default 1024) also caps device memory, pinned
   staging and the rolling chunk cache. 4K clips run at the default with
   smaller internal batches.

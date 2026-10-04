@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include "cuda/bm3d/kernels.hpp"
 #include "cuda/bm3d/dct_codelets.cuh"
+#include "cuda/common/fixed_accumulate.cuh"
 #include "cuda/runtime/error.hpp"
 
 #include <cstddef>
@@ -200,7 +201,7 @@ __global__ void __launch_bounds__(256) group_shape_kernel(Bm3dGroupArgs a, bool 
     constexpr int kArea = B * B, kCube = G * kArea;
     constexpr float kScale = kLineScale<B> * kLineScale<B> * kLineScale<G>;
     const int r = blockIdx.x, tid = threadIdx.x, threads = blockDim.x;
-    float* const out = a.values + static_cast<long long>(r) * kCube;
+    float* const out = a.fused.num ? nullptr : a.values + static_cast<long long>(r) * kCube;
     float* const cube = in_shared ? staged : out;
     float* const refc = !a.ref ? nullptr : in_shared ? staged + kCube : a.ref_cube + static_cast<long long>(r) * kCube;
     const DeviceMatch* m = a.matches + static_cast<long long>(r) * G;
@@ -249,6 +250,17 @@ __global__ void __launch_bounds__(256) group_shape_kernel(Bm3dGroupArgs a, bool 
     }
     transform_cube<B, G>(cube, true);
     constexpr float kUnscale = 1.f / (kScale * kScale);
+    if (a.fused.num) {  // in_shared
+        for (int i = tid; i < kCube; i += threads) {
+            const int g = i / kArea, p = i % kArea;
+            if (g >= kk) continue;
+            const long long at = m[g].t * static_cast<long long>(a.fused.slice_step) +
+                                 static_cast<long long>(m[g].y + p / B) * a.fused.pitch + m[g].x + p % B;
+            fixed_add(a.fused.num + at, weight * (cube[i] * kUnscale));
+            fixed_add(a.fused.den + at, weight);
+        }
+        return;
+    }
     if (in_shared) {
         for (int i = tid; i < kCube; i += threads) out[i] = cube[i] * kUnscale;
     } else if (kUnscale != 1.f) {
@@ -262,9 +274,13 @@ __global__ void __launch_bounds__(256) group_shape_kernel(Bm3dGroupArgs a, bool 
 
 constexpr std::size_t kCubeSharedBytes = 24 * 1024;  // per block; larger cubes stay in `values`
 
+std::size_t cube_bytes(int block, int group, bool wiener) {
+    return static_cast<std::size_t>(group) * block * block * sizeof(float) * (wiener ? 2 : 1);
+}
+
 template <int B, int G>
 void launch_shape(const Bm3dGroupArgs& args, cudaStream_t stream) {
-    const std::size_t bytes = static_cast<std::size_t>(G) * B * B * sizeof(float) * (args.ref ? 2 : 1);
+    const std::size_t bytes = cube_bytes(B, G, args.ref != nullptr);
     const bool in_shared = bytes <= kCubeSharedBytes;
     const int lines = G * B > B * B ? G * B : B * B;
     const int threads = lines >= 256 ? 256 : (lines + 31) / 32 * 32;
@@ -355,7 +371,10 @@ __device__ __forceinline__ T group_total(T value) {
     return value;
 }
 
-template <int B, int G, bool Wiener>
+// Fused: the kernel adds its weighted patches to a.fused instead of storing
+// them. A separate instantiation, so that the storing kernel's register
+// allocation is not disturbed.
+template <int B, int G, bool Wiener, bool Fused>
 __global__ void __launch_bounds__(32) group_warp_kernel(Bm3dGroupArgs a) {
     __shared__ float buffer[B * kWarpStride];
     constexpr int kLane = G * B, kCube = G * B * B, kPerWarp = 32 / B;
@@ -408,6 +427,20 @@ __global__ void __launch_bounds__(32) group_warp_kernel(Bm3dGroupArgs a) {
     for (int p = 0; p < G; ++p) dct_line_fixed<B>(v + p * B, 1, true);
     if (!live) return;
     constexpr float kUnscale = 1.f / (kScale * kScale);
+    if constexpr (Fused) {
+#pragma unroll
+        for (int p = 0; p < G; ++p) {
+            if (p >= kk) continue;
+            const long long at = m[p].t * static_cast<long long>(a.fused.slice_step) +
+                                 static_cast<long long>(m[p].y) * a.fused.pitch + m[p].x + sub;
+#pragma unroll
+            for (int row = 0; row < B; ++row) {
+                fixed_add(a.fused.num + at + row * a.fused.pitch, weight * (v[p * B + row] * kUnscale));
+                fixed_add(a.fused.den + at + row * a.fused.pitch, weight);
+            }
+        }
+        return;
+    }
     float* cube = a.values + static_cast<long long>(r) * kCube + sub;
 #pragma unroll
     for (int p = 0; p < G; ++p) {
@@ -420,19 +453,28 @@ __global__ void __launch_bounds__(32) group_warp_kernel(Bm3dGroupArgs a) {
     }
 }
 
+template <int B, int G, bool Wiener>
+void launch_warp_stage(const Bm3dGroupArgs& args, cudaStream_t stream) {
+    const unsigned blocks = static_cast<unsigned>((args.batch + 32 / B - 1) / (32 / B));
+    if (args.fused.num) {
+        group_warp_kernel<B, G, Wiener, true><<<blocks, 32, 0, stream>>>(args);
+    } else {
+        group_warp_kernel<B, G, Wiener, false><<<blocks, 32, 0, stream>>>(args);
+    }
+}
+
 template <int B, int G>
 void launch_warp(const Bm3dGroupArgs& args, cudaStream_t stream) {
-    const unsigned blocks = static_cast<unsigned>((args.batch + 32 / B - 1) / (32 / B));
     if (args.ref) {
-        group_warp_kernel<B, G, true><<<blocks, 32, 0, stream>>>(args);
+        launch_warp_stage<B, G, true>(args, stream);
     } else {
-        group_warp_kernel<B, G, false><<<blocks, 32, 0, stream>>>(args);
+        launch_warp_stage<B, G, false>(args, stream);
     }
 }
 
 template <int B, int G>
 void launch_warp_hard(const Bm3dGroupArgs& args, cudaStream_t stream) {
-    group_warp_kernel<B, G, false><<<static_cast<unsigned>((args.batch + 32 / B - 1) / (32 / B)), 32, 0, stream>>>(args);
+    launch_warp_stage<B, G, false>(args, stream);
 }
 
 // The shapes the warp kernel serves. Each was admitted on a paired
@@ -440,10 +482,24 @@ void launch_warp_hard(const Bm3dGroupArgs& args, cudaStream_t stream) {
 // for both stages. At 256 the kernel uses every register and spills a little:
 // the hard-threshold stage still wins, the Wiener stage only for 16 / 16.
 // At 512 samples per lane (8 / 64) it loses, except 16 / 32.
+constexpr bool warp_serves(int block, int group, bool wiener) {
+    switch (block * 100 + group) {
+    case 402: case 404: case 408: case 416: case 432:
+    case 802: case 804: case 808: case 816:
+    case 1602: case 1604: case 1608: case 1616:
+        return true;
+    case 464: case 832: case 1632:
+        return !wiener;
+    default:
+        return false;
+    }
+}
+
 bool launch_warps(const Bm3dGroupArgs& args, cudaStream_t stream) {
+    if (!warp_serves(args.block, args.group, args.ref != nullptr)) return false;
     switch (args.block * 100 + args.group) {
 #define NSS_WARP(B, G) case B * 100 + G: launch_warp<B, G>(args, stream); return true;
-#define NSS_WARP_HARD(B, G) case B * 100 + G: if (args.ref) return false; launch_warp_hard<B, G>(args, stream); return true;
+#define NSS_WARP_HARD(B, G) case B * 100 + G: launch_warp_hard<B, G>(args, stream); return true;
     NSS_WARP(4, 2) NSS_WARP(4, 4) NSS_WARP(4, 8) NSS_WARP(4, 16) NSS_WARP(4, 32)
     NSS_WARP(8, 2) NSS_WARP(8, 4) NSS_WARP(8, 8) NSS_WARP(8, 16)
     NSS_WARP(16, 2) NSS_WARP(16, 4) NSS_WARP(16, 8) NSS_WARP(16, 16)
@@ -455,6 +511,20 @@ bool launch_warps(const Bm3dGroupArgs& args, cudaStream_t stream) {
 }
 
 }  // namespace
+
+bool bm3d_fuses(int block, int group, bool wiener) {
+    // The warp kernel always can; the block kernel when its cube is staged in
+    // shared memory. Larger cubes are transformed in `values`.
+    // Admitted on paired measurements against ordered aggregation. The block
+    // kernel fuses whenever its cube is staged in shared memory. The warp
+    // kernel fuses except where the extra code cost more than it saved.
+    if (!warp_serves(block, group, wiener)) return cube_bytes(block, group, wiener) <= kCubeSharedBytes;
+    const int shape = block * 100 + group;
+    if (shape == 1632) return false;                 // 512 samples per lane: no registers left
+    if (shape == 1616 && !wiener) return false;      // 0.93x
+    if (shape == 816 && wiener) return false;        // 0.95x
+    return true;
+}
 
 void bm3d_filter_groups(const Bm3dGroupArgs& args, cudaStream_t stream) {
     if (args.batch <= 0) return;

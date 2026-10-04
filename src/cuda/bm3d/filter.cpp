@@ -45,6 +45,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         g.range = p.bm_range[plane];
         g.ps_num = p.ps_num[plane];
         g.ps_range = p.ps_range[plane];
+        g.fused = bm3d_fuses(g.block, g.group, config.guide != nullptr);
     }
     // The Wiener stage transforms a second cube per group.
     config.scratch_floats = [](const GroupPlane& g, bool guide) {
@@ -64,6 +65,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         args.values = l.values;
         args.ref_cube = l.guide ? l.scratch : nullptr;
         args.patches = l.patches;
+        args.fused = l.fused;
         bm3d_filter_groups(args, l.stream);
     };
     group_filter_install(std::move(config), out, core, vsapi);
