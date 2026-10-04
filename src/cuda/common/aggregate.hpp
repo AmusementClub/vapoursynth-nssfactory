@@ -48,8 +48,11 @@ public:
     // patch. accumulate=false overwrites every pixel of every slice of target;
     // accumulate=true adds this batch after the target's current sums, so
     // batches run in patch-id order keep the per-pixel summation order.
+    // With pixel_den, den += pixel_den[(patch id / den_group) * block^2 + pixel]
+    // instead of the patch weight (per-pixel counts shared by the den_group
+    // patches of one group, as NLH's pixel matrices).
     void run(const float* values, const AggregatePatch* patches, int npatch, int block, const AggregateTarget& target,
-             cudaStream_t stream, bool accumulate = false);
+             cudaStream_t stream, bool accumulate = false, const float* pixel_den = nullptr, int den_group = 1);
     // Device bytes per patch of capacity (sort keys/ids, CUB alternate buffers).
     static constexpr std::size_t kBytesPerPatch = 4 * (4 * sizeof(unsigned) + 4 * sizeof(int));
 
