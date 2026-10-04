@@ -73,3 +73,24 @@ directly; `block_step` scales positions as usual.
   deliberate, matching the authors; do not "fix" it to a large growth factor
   without quality validation.
 - No `_NSS*` frame properties; diagnostics live on NLH/TWSC.
+
+## CUDA (`core.nss_cuda.MCWNNM`)
+
+`core.nss_cuda.MCWNNM` (from `libnss_cuda`, built with `-DNSS_ENABLE_CUDA=ON`)
+takes the same arguments and gives the same errors as `nss.MCWNNM`. It adds
+`device_id` (default 0) and `num_streams` (default up to 3, fitted to
+`memory_limit_mb`) at the end of the argument list.
+
+- **Device-resident.** The joint three-channel matching, the ADMM solve of
+  every group, the aggregation and all outer rounds run on the device.
+  `radius > 0` returns the same fat intermediate as the CPU, so either
+  backend's `VAggregate` can reduce it.
+- **Numerics.** Each ADMM step shrinks through the FP32 Gram matrix with a
+  cyclic Jacobi eigensolver.
+  - The output is not bit-identical to the CPU, but is inside the 60 dB gate
+    (135–142 dB on the frozen references).
+  - One thread handles each group in a fixed order, and aggregation is
+    ordered.
+- **Memory.** The ADMM state costs about 12 KiB of device memory per group at
+  the defaults, so a 1080p frame runs in several batches unless
+  `memory_limit_mb` allows more.

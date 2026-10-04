@@ -151,6 +151,12 @@ __global__ void accumulate_slice_kernel(float* acc_num, float* acc_den, const fl
     acc_den[i] += den[i];
 }
 
+__global__ void regularize_kernel(float* x, const float* y, std::size_t count, float delta) {
+    const std::size_t i = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= count) return;
+    x[i] = fmaf(delta, y[i] - x[i], x[i]);
+}
+
 int bits_for(unsigned value) {
     int bits = 1;
     while (bits < 32 && (value >> bits) != 0) ++bits;
@@ -245,6 +251,12 @@ void accumulate_slice(float* acc_num, float* acc_den, const float* num, const fl
     if (count == 0) return;
     accumulate_slice_kernel<<<static_cast<unsigned>((count + 255) / 256), 256, 0, stream>>>(acc_num, acc_den, num, den,
                                                                                          count);
+    NSS_CUDA_CHECK_LAUNCH();
+}
+
+void iter_regularize(float* x, const float* y, std::size_t count, float delta, cudaStream_t stream) {
+    if (count == 0) return;
+    regularize_kernel<<<static_cast<unsigned>((count + 255) / 256), 256, 0, stream>>>(x, y, count, delta);
     NSS_CUDA_CHECK_LAUNCH();
 }
 

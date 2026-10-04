@@ -44,6 +44,11 @@ struct MatchGeometry {
     int block;
     int bm_range;
     int group;  // clamped to kMaxGroup
+    // Joint multi-channel matching (nss::ssd_nch): distances are the sum over
+    // `channels` planes, channel c of a frame living channel_step floats after
+    // channel c - 1.
+    int channels = 1;
+    long long channel_step = 0;
 };
 
 // References [ref_begin, ref_begin + ref_count) of the grid; out holds
