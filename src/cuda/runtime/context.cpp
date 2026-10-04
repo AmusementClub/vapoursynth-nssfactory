@@ -34,6 +34,7 @@ BackendArgs parse_backend_args(const VSAPI* vsapi, const VSMap* in, const char* 
             throw std::invalid_argument(prefix(filter) + "num_streams must be in [1, " + std::to_string(kMaxStreams) + "]");
         }
         args.num_streams = static_cast<int>(streams);
+        args.streams_explicit = true;
     }
     return args;
 }

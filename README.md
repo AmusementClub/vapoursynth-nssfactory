@@ -81,9 +81,16 @@ Install `libnss.so` into the VapourSynth plugin directory.
 
 `-DNSS_ENABLE_CUDA=ON` also builds `libnss_cuda` (namespace `nss_cuda`). It
 needs nvcc from CUDA 12.4 or newer; Windows builds use nvcc with MSVC `cl.exe`.
-The plugin is being built up filter by filter. Currently it only provides
-`core.nss_cuda.Version()` and `core.nss_cuda.Backend()`, which reports the device,
-driver/runtime versions and the support level.
+The plugin is being built up filter by filter. Available so far:
+
+- `core.nss_cuda.BM3D`, spatial only (`radius=0`, basic and `ref`/Wiener
+  stages; see `docs/api/bm3d.md`).
+- `core.nss_cuda.Version()`.
+- `core.nss_cuda.Backend()`, which reports the device, driver/runtime
+  versions and the support level.
+
+Each filter takes the same arguments as its `nss` counterpart, plus
+`device_id` and `num_streams` at the end.
 
 - **Default architectures:** native code for sm_75, sm_86, sm_89 and sm_120,
   plus compute_75 PTX. Toolkits older than 12.8 cannot target sm_120, so RTX 50

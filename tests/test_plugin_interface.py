@@ -11,8 +11,9 @@ interface change; otherwise the run must match it exactly.
 Another backend (D14) is checked against the same golden with --namespace:
 every signature must be the CPU signature followed by exactly the
 --backend-args tail, error text must match with the "nss." prefix replaced,
-and filters listed in --expect-missing may be absent (their cases, and
-VAggregate's when BM3D is absent, are skipped).
+and filters listed in --expect-missing may be absent or partial: their
+creation probes (and VAggregate's while BM3D is listed) are skipped, but a
+present listed filter's signature is still checked.
 
 usage: test_plugin_interface.py --plugin PATH [--golden FILE] [--write]
                                 [--namespace NS --backend-args A,B --expect-missing F1,F2]
@@ -169,13 +170,15 @@ def main():
         # shared filter interface (D14).
         prefix = re.compile(r"\bnss\.")
         shared = {k: v for k, v in shared.items() if k not in ("Version", "Backend")}
+        # A listed filter may be absent; when it is already present (partially
+        # implemented) its signature is still checked, only its probes skip.
         golden["functions"] = {k: v for k, v in golden["functions"].items()
-                               if k not in expect_missing and k not in ("Version", "Backend")}
+                               if (k not in expect_missing or k in shared) and k not in ("Version", "Backend")}
         golden["cases"] = {key: ({"error": prefix.sub(ns + ".", value["error"])} if "error" in value else value)
                            for key, value in golden["cases"].items() if key.split("|")[0] not in skipped}
-        missing = sorted(expect_missing & set(functions))
-        if missing:
-            print(f"note: {missing} listed in --expect-missing but present in {ns}")
+        partial = sorted(expect_missing & set(functions))
+        if partial:
+            print(f"note: {partial} present but listed in --expect-missing: signatures checked, probes skipped")
     problems = []
     if golden["functions"] != shared:
         for key in sorted(set(golden["functions"]) | set(shared)):

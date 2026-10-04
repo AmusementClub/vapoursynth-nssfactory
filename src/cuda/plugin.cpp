@@ -11,6 +11,10 @@
 #include <exception>
 #include <string>
 
+namespace nss_cuda {
+void register_bm3d(VSPlugin* plugin, const VSPLUGINAPI* vspapi);
+}  // namespace nss_cuda
+
 namespace {
 
 void VS_CC versionCreate(const VSMap*, VSMap* out, void*, VSCore*, const VSAPI* vsapi) {
@@ -65,4 +69,5 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin* plugin, const VSPLUGINAPI
         "device:int:opt;name:data:opt;compute_capability:data:opt;support:data:opt;total_memory_mb:int:opt;"
         "multiprocessors:int:opt;probe_ok:int:opt;probe_ms:float:opt;probe_error:data:opt;",
         backendCreate, nullptr, plugin);
+    nss_cuda::register_bm3d(plugin, vspapi);
 }
