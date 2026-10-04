@@ -255,6 +255,36 @@ __device__ int warp_select(unsigned* sortable, int total, int lane, int k, int t
     return filled;
 }
 
+// warp_select for a raster-ordered spatial window. There the candidate index
+// order is the (y, x) order and t is common, so (sortable distance, index)
+// packed in 64 bits is the same total order as the full key: one word to scan
+// and to reduce, and the position is rebuilt for the winner only.
+__device__ int warp_select_raster(unsigned* sortable, int total, int lane, int k, int t, const SpatialLayout& layout,
+                                  MatchKey* out) {
+    int filled = 0;
+    for (; filled < k; ++filled) {
+        unsigned long long best = ~0ull;
+        for (int idx = lane; idx < total; idx += 32) {
+            const unsigned long long key =
+                (static_cast<unsigned long long>(sortable[idx]) << 32) | static_cast<unsigned>(idx);
+            best = key < best ? key : best;
+        }
+        for (int offset = 16; offset > 0; offset >>= 1) {
+            const unsigned long long other = __shfl_xor_sync(0xffffffffu, best, offset);
+            best = other < best ? other : best;
+        }
+        const unsigned s = static_cast<unsigned>(best >> 32);
+        if (s == kConsumed) break;  // nothing left
+        const int index = static_cast<int>(best & 0xffffffffu);
+        if (lane == 0) {
+            out[filled] = key_of(s, t, layout.top + index / layout.ww, layout.left + index % layout.ww);
+            sortable[index] = kConsumed;
+        }
+        __syncwarp();
+    }
+    return filled;
+}
+
 // Stages the spatial window and fills the sortable distances of the spatial
 // candidates of (cx, cy); returns the layout and candidate count.
 __device__ __forceinline__ int warp_spatial(const float* plane, const MatchGeometry& g, int cx, int cy, int lane,
@@ -274,6 +304,33 @@ __device__ __forceinline__ int warp_spatial(const float* plane, const MatchGeome
     anchor_step = sw * sh;
     const int total = layout.ww * (w.bottom - w.top + 1);
     auto cursor = layout.begin(lane);
+    if (g.channels == 1 && g.block == 8) {
+        // The kernel is bound by shared-memory loads, two per term. Holding the
+        // reference block in registers leaves one; the terms and their order
+        // are those of block_ssd_fixed<8>.
+        float ref[64];
+#pragma unroll
+        for (int r = 0; r < 8; ++r) {
+#pragma unroll
+            for (int c = 0; c < 8; ++c) ref[r * 8 + c] = anchor[r * sw + c];
+        }
+        for (int idx = lane; idx < total; idx += 32, layout.advance(cursor)) {
+            const Center pos = layout.at(cursor);
+            const float* b = window + (pos.y - w.top) * sw + (pos.x - w.left);
+            float sum = 0.f;
+#pragma unroll
+            for (int r = 0; r < 8; ++r) {
+#pragma unroll
+                for (int c = 0; c < 8; ++c) {
+                    const float d = ref[r * 8 + c] - b[r * sw + c];
+                    sum = fmaf(d, d, sum);
+                }
+            }
+            sortable[idx] = (pos.x == cx && pos.y == cy) ? kConsumed : detail::sortable_distance(sum);
+        }
+        __syncwarp();
+        return total;
+    }
     for (int idx = lane; idx < total; idx += 32, layout.advance(cursor)) {
         const Center pos = layout.at(cursor);
         sortable[idx] = (pos.x == cx && pos.y == cy)
@@ -309,7 +366,7 @@ __global__ void __launch_bounds__(kThreads) spatial_match_warp_kernel(const floa
     const float* anchor = nullptr;
     int anchor_pitch = 0, anchor_step = 0;
     const int total = warp_spatial(plane, g, cx, cy, lane, window, sortable, layout, anchor, anchor_pitch, anchor_step);
-    const int filled = warp_select(sortable, total, lane, wanted, 0, layout, selected);
+    const int filled = warp_select_raster(sortable, total, lane, wanted, 0, layout, selected);
     for (int i = lane; i < filled; i += 32) {
         const MatchKey& k = selected[i];
         dst[1 + i] = DeviceMatch{detail::key_x(k), detail::key_y(k), detail::key_t(k), detail::key_distance(k)};
@@ -357,7 +414,7 @@ __global__ void __launch_bounds__(kThreads) predictive_match_warp_kernel(MatchGe
         warp_spatial(tw.frames[t0], g, cx, cy, lane, window, sortable, spatial, anchor, anchor_pitch, anchor_step);
     merge[lane] = detail::sentinel_key();  // 32 lanes cover the 32 merge entries
     __syncwarp();
-    int global_count = warp_select(sortable, spatial_total, lane, wanted, t0, spatial, merge);
+    int global_count = warp_select_raster(sortable, spatial_total, lane, wanted, t0, spatial, merge);
 
     if (tw.radius > 0 && tw.ntemp > 1) {
         const int seed_count = min(min(1 + global_count, tw.ps_num), kSlots);
