@@ -119,15 +119,26 @@ temporal = core.nss_cuda.VAggregate(fat, clip, radius=1)
 - **Numerics.** The transform math is the CPU's 3D DCT, as butterflies: the
   8-point ones of the CPU's fused path and the same generated codelets for
   12, 16, 32 and 64.
-  - Shapes whose group fits registers (block 4, 8 or 16 with up to 128
-    samples per lane) are filtered several groups per warp; the others run one
-    block per group with the cube in shared memory.
+  - Shapes whose group fits registers are filtered several groups per warp:
+    block 4, 8 or 16 with a group of at least 2 and up to 128 samples per
+    lane (group x block), plus 16 / 16, and 4 / 64, 8 / 32 and 16 / 32 for the
+    hard-threshold stage. The
+    others run one block per group, with the cube in shared memory when it
+    fits 24 KB and in device memory otherwise.
   - The output is not bit-identical to the CPU, but stays within the 60 dB
     gate in `tests/data/cuda_tolerances_v1.json`.
   - The output is run-to-run identical on a given GPU, driver and build.
+    Spatial filtering of most shapes aggregates from inside the filter kernel
+    with integer atomics on fixed-point sums (exact, so independent of the
+    order); temporal filtering and the remaining shapes sort their patches
+    and sum them in a fixed order.
 - **Memory.** `memory_limit_mb` (default 1024) also caps device memory, pinned
-  staging and the rolling chunk cache. 4K clips run at the default with
-  smaller internal batches.
+  staging and the rolling chunk cache. At 4K the default is enough for spatial
+  filtering in every format, and for `radius = 1` in legacy mode with GRAYS
+  (and YUV420 without `ref`); it runs with fewer streams and smaller internal
+  batches. Other 4K temporal uses need more, and the creation error names
+  the amount: about 1100 to 1500 for `radius = 1` depending on the format,
+  `ref` and the mode.
 - **Performance.** At 1080p GRAYS with defaults on an RTX 5080:
   - Spatial runs at bm3dcuda's speed or slightly faster.
   - Temporal runs at about 0.85 to 0.95x bm3dcuda. It uses the CPU's

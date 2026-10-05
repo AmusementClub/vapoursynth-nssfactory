@@ -148,7 +148,55 @@ def main():
     cases += t_cases
     worst = min(worst, t_worst)
     failures += t_failures
-    # Repeated create/free must not leak device memory or fail.
+    # Shapes that differ per plane share one slot: fused beside ordered planes, at a size where the
+    # shared buffers matter, and compared with the CPU on a small clip.
+    for fmt, w, h in ((vs.YUV420PS, 2560, 1440), (vs.YUV444PS, 1920, 1080)):
+        big = core.std.BlankClip(width=w, height=h, format=fmt, length=2)
+        for label, kw in (("4/32 + 16/16", dict(block_size=[4, 16, 16], group_size=[32, 16, 16])),
+                          ("8/32 + 16/32 final step 2", dict(ref=big, block_size=[8, 16, 16], group_size=32, block_step=2)),
+                          ("8/16 + 4/8", dict(block_size=[8, 4, 4], group_size=[16, 8, 8]))):
+            cases += 1
+            try:
+                core.nss_cuda.BM3D(big, **kw).get_frame(0)
+            except vs.Error as error:
+                failures.append(f"mixed {big.format.name} {label}: {error}")
+    yuv = make_clip(core, vs.YUV444PS, 64, 56, 5)
+    for kw in (dict(block_size=[4, 16, 16], group_size=[32, 16, 16]), dict(block_size=[8, 4, 4], group_size=[16, 8, 8])):
+        kw = dict(sigma=10, bm_range=4, **kw)
+        value = psnr(frame_planes(core.nss.BM3D(yuv, **kw)), frame_planes(core.nss_cuda.BM3D(yuv, **kw)))
+        worst = min(worst, value)
+        cases += 1
+        if value < floor:
+            failures.append(f"mixed shapes {kw}: psnr {value:.2f} < {floor}")
+    # Temporal filtering always stores and orders its patches, for every shape and both stages.
+    seq = make_clip(core, vs.GRAYS, 64, 56, 6, length=4)
+    for block, group in ((4, 8), (8, 16), (16, 16), (12, 16), (8, 32)):
+        for stage in ("basic", "final"):
+            kw = dict(sigma=10, radius=1, block_size=block, group_size=group, bm_range=4)
+            cpu_ref = core.nss.VAggregate(core.nss.BM3D(seq, **kw), seq, radius=1) if stage == "final" else None
+            gpu_ref = core.nss_cuda.BM3D(seq, temporal_mode="rolling", **kw) if stage == "final" else None
+            cpu = core.nss.VAggregate(core.nss.BM3D(seq, **kw, **(dict(ref=cpu_ref) if cpu_ref else {})), seq, radius=1)
+            gpu = core.nss_cuda.BM3D(seq, temporal_mode="rolling", **kw, **(dict(ref=gpu_ref) if gpu_ref else {}))
+            value = psnr(frame_planes(cpu, 1), frame_planes(gpu, 1))
+            worst = min(worst, value)
+            cases += 1
+            if value < floor:
+                failures.append(f"temporal b{block} g{group} {stage}: psnr {value:.2f} < {floor}")
+    # 4K must create at the default memory limit (no frames are requested). Rolling and YUV temporal
+    # Wiener need more than the default and are not in this list. Each case takes up to about 1 GiB of
+    # device memory while it exists.
+    for fmt in (vs.GRAYS, vs.YUV420PS):
+        uhd = core.std.BlankClip(width=3840, height=2160, format=fmt, length=4)
+        modes = [("spatial", {}), ("final", dict(ref=uhd)), ("r1 legacy", dict(radius=1)),
+                 ("block 4", dict(block_size=4)), ("16 / 16", dict(block_size=16, group_size=16))]
+        if fmt == vs.GRAYS:
+            modes.append(("r1 final", dict(radius=1, ref=uhd)))
+        for label, kw in modes:
+            cases += 1
+            try:
+                core.nss_cuda.BM3D(uhd, **kw)
+            except vs.Error as error:
+                failures.append(f"4K {uhd.format.name} {label}: {error}")
     for _ in range(2 if args.quick else 20):
         core.nss_cuda.BM3D(gray, sigma=5).get_frame(0)
     for line in failures:

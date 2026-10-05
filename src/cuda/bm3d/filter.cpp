@@ -45,11 +45,10 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         g.range = p.bm_range[plane];
         g.ps_num = p.ps_num[plane];
         g.ps_range = p.ps_range[plane];
+        g.fused = bm3d_fuses(g.block, g.group, config.guide != nullptr);
     }
-    // The Wiener stage transforms a second cube per group.
-    config.scratch_floats = [](const GroupPlane& g, bool guide) {
-        return guide ? static_cast<std::size_t>(g.group) * g.block * g.block : std::size_t{0};
-    };
+    // Only the shapes whose Wiener stage keeps its reference cube in device memory need scratch.
+    config.scratch_floats = [](const GroupPlane& g, bool guide) { return bm3d_scratch_floats(g.block, g.group, guide); };
     config.launch = [](const GroupLaunch& l) {
         Bm3dGroupArgs args{};
         args.src = l.src;
@@ -62,8 +61,9 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         args.group = l.plane->group;
         args.sigma = l.plane->sigma;
         args.values = l.values;
-        args.ref_cube = l.guide ? l.scratch : nullptr;
+        args.ref_cube = l.scratch;
         args.patches = l.patches;
+        args.fused = l.fused;
         bm3d_filter_groups(args, l.stream);
     };
     group_filter_install(std::move(config), out, core, vsapi);

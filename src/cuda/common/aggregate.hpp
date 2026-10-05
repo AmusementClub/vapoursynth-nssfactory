@@ -6,8 +6,10 @@
 // tile with a stable radix sort keyed by tile, so each tile sums its patches
 // in patch-id order. Callers number patches in the CPU commit order (raster
 // reference index, then group position), which then is also the CPU's
-// per-pixel accumulation order. aggregate_atomic is the float-atomic
-// alternative kept for the D17 measurement; its sums depend on scheduling.
+// per-pixel accumulation order. FixedTarget is the other deterministic
+// route, for kernels that aggregate their own output: exact fixed-point sums
+// by integer atomics. aggregate_atomic is the float-atomic alternative kept
+// for the D17 measurement; its sums depend on scheduling.
 #pragma once
 
 #include "cuda/runtime/memory.hpp"
@@ -42,8 +44,12 @@ class OrderedAggregator {
 public:
     static constexpr int kTile = 32;
     static constexpr int kMaxBlock = kTile + 1;
+    // fine_tiles: 8x8 tiles for blocks up to 8 (fewer entries tested per
+    // pixel, four times the bins); otherwise 16x16 up to 16. bin_bytes() is
+    // what the bin arrays of a given geometry take, for the caller's plan.
     OrderedAggregator(int max_width, int max_height, int max_slices, std::size_t max_patches,
-                      const std::shared_ptr<nss::ResourceBudget>& budget);
+                      const std::shared_ptr<nss::ResourceBudget>& budget, bool fine_tiles = false);
+    static std::size_t bin_bytes(int max_width, int max_height, int max_slices, bool fine_tiles);
     // values: npatch * block * block floats, patch-major, row-major inside a
     // patch. accumulate=false overwrites every pixel of every slice of target;
     // accumulate=true adds this batch after the target's current sums, so
@@ -57,10 +63,31 @@ public:
     static constexpr std::size_t kBytesPerPatch = 4 * (4 * sizeof(unsigned) + 4 * sizeof(int));
 
 private:
+    bool fine_tiles_;
     std::size_t max_bins_, max_patches_, max_entries_;
     DeviceBuffer keys_in_, keys_out_, ids_in_, ids_out_, bin_begin_, bin_end_, sort_temp_;
     std::size_t sort_temp_bytes_ = 0;
 };
+
+// Accumulators for kernels that aggregate their own output (see
+// fixed_accumulate.cuh): fixed-point sums, 2^32 units per 1.0, wrapped in
+// unsigned 64-bit cells. The sums are exact integers, so they do not depend
+// on the order of the atomics. Slice s of a plane starts slice_step cells
+// after slice s - 1. A sum wraps beyond 2^31 in magnitude and a NaN sample
+// adds nothing; both are far outside video ranges and stay deterministic.
+struct FixedTarget {
+    unsigned long long* num = nullptr;
+    unsigned long long* den = nullptr;
+    int pitch = 0;               // cells per row
+    std::size_t slice_step = 0;  // cells between slices
+};
+
+// out = den > 1e-12 ? num / den : src, straight from the accumulators of one
+// slice (aggregate_finish without the float planes).
+void fixed_finish(const FixedTarget& target, const float* src, int width, int height, float* out, cudaStream_t stream);
+
+// Zeroes `count` cells of num and den.
+void fixed_clear(const FixedTarget& target, std::size_t count, cudaStream_t stream);
 
 // Adds into target (which the caller zeroes); nondeterministic summation order.
 void aggregate_atomic(const float* values, const AggregatePatch* patches, int npatch, int block,

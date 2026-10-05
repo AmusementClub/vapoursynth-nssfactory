@@ -28,9 +28,22 @@ struct Bm3dGroupArgs {
     int group;
     float sigma;                // effective (profile-scaled) sigma
     float* values;              // batch * group * block^2, also the transform workspace
-    float* ref_cube;            // batch * group * block^2 when ref != nullptr
+    float* ref_cube;            // batch * bm3d_scratch_floats(...) when that is not 0
     AggregatePatch* patches;    // batch * group; slice = match t, unused slots get -1
+    // Set (num != nullptr) for shapes with bm3d_fuses() in spatial mode: the kernel adds the
+    // weighted patches to these accumulators itself; values and patches are
+    // then unused.
+    FixedTarget fused{};
 };
+
+// Whether the kernel of this shape and stage aggregates its own output: the
+// shapes whose cube is not transformed in `values`, less a few where a paired
+// measurement favoured ordered aggregation.
+bool bm3d_fuses(int block, int group, bool wiener);
+
+// Floats of ref_cube per group the Wiener stage of this shape needs (0 for
+// the shapes that keep the reference cube in registers or shared memory).
+std::size_t bm3d_scratch_floats(int block, int group, bool wiener);
 void bm3d_filter_groups(const Bm3dGroupArgs& args, cudaStream_t stream);
 
 }  // namespace nss_cuda

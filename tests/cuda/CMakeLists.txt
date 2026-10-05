@@ -18,6 +18,18 @@ foreach(test test_cuda_aggregate test_cuda_runtime)
   set_tests_properties(${test} PROPERTIES LABELS cuda SKIP_RETURN_CODE 77)
 endforeach()
 
+# The device DCT codelets are copies of the CPU's generated files (src/cuda
+# may not include src/cpu); regenerating one side must not leave them apart.
+foreach(n 12 16 32 64)
+  foreach(direction fwd inv)
+    add_test(NAME test_cuda_codelet_${direction}_n${n}
+             COMMAND ${CMAKE_COMMAND} -E compare_files
+                     "${PROJECT_SOURCE_DIR}/src/cpu/bm/dct_codelet_${direction}_n${n}_is8.hpp"
+                     "${PROJECT_SOURCE_DIR}/src/cuda/bm3d/dct_codelet_${direction}_n${n}_is8.hpp")
+    set_tests_properties(test_cuda_codelet_${direction}_n${n} PROPERTIES LABELS cuda)
+  endforeach()
+endforeach()
+
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(NOT Python3_Interpreter_FOUND)
   message(WARNING "Python3 interpreter unavailable: CUDA plugin tests are not registered")

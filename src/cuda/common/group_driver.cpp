@@ -51,6 +51,7 @@ struct Slot {
     std::vector<const float*> host_src_ptrs, host_ref_ptrs;
     DeviceBuffer src_ptrs, ref_ptrs;  // device arrays: window slot t -> plane pointer
     DeviceBuffer num, den;            // 2R+1 slices each
+    DeviceBuffer fixed_num, fixed_den;  // the same slices as fixed-point cells, for fused planes
     DeviceBuffer out;                 // finished plane
     DeviceBuffer acc, chunk_src;      // rolling: num/den per chunk frame, chunk source planes
     DeviceBuffer matches, counts, values, scratch, patches;
@@ -95,11 +96,50 @@ std::size_t scratch_floats(const Driver& d, const GroupPlane& p) {
     return d.scratch_floats ? d.scratch_floats(p, has_guide(d)) : 0;
 }
 
+bool any_fused(const Driver& d) {
+    for (const GroupPlane& p : d.planes) {
+        if (p.active && p.fused) return true;
+    }
+    return false;
+}
+// Some active plane goes through values, patch records and the ordered
+// aggregator into the float num/den slices.
+bool any_ordered(const Driver& d) {
+    for (const GroupPlane& p : d.planes) {
+        if (p.active && !p.fused) return true;
+    }
+    return false;
+}
+
 std::size_t per_ref_bytes(const Driver& d, const GroupPlane& p) {
+    if (p.fused) {
+        return scratch_floats(d, p) * sizeof(float) + sizeof(int) +
+               static_cast<std::size_t>(p.group) * sizeof(DeviceMatch);
+    }
     const std::size_t cube = static_cast<std::size_t>(d.channels) * p.group * p.block * p.block * sizeof(float);
     return cube + scratch_floats(d, p) * sizeof(float) + sizeof(int) +
            static_cast<std::size_t>(p.group) *
                (sizeof(DeviceMatch) + sizeof(AggregatePatch) + OrderedAggregator::kBytesPerPatch);
+}
+
+// Bytes of the slot's per-batch buffers for the planes' current batches.
+// make_slot sizes each buffer for the plane that needs it most, so with
+// planes of different shapes (or fused beside ordered) this is more than any
+// single plane's batch * per_ref_bytes.
+std::size_t slot_batch_bytes(const Driver& d) {
+    std::size_t matches = 0, counts = 0, scratch = 0, values = 0, patches = 0, sort = 0;
+    for (const GroupPlane& p : d.planes) {
+        if (!p.active) continue;
+        const std::size_t batch = static_cast<std::size_t>(p.batch);
+        matches = std::max(matches, batch * p.group * sizeof(DeviceMatch));
+        counts = std::max(counts, batch * sizeof(int));
+        scratch = std::max(scratch, batch * scratch_floats(d, p) * sizeof(float));
+        if (p.fused) continue;
+        values = std::max(values, batch * d.channels * p.group * p.block * p.block * sizeof(float));
+        patches = std::max(patches, batch * p.group * sizeof(AggregatePatch));
+        sort = std::max(sort, batch * p.group * OrderedAggregator::kBytesPerPatch);
+    }
+    return matches + counts + scratch + values + patches + sort;
 }
 
 // Staging regions: one upload per window frame and channel (src, ref), then
@@ -134,14 +174,25 @@ void plan_planes(Driver& d) {
     const std::size_t plane_bytes = d.plane_floats * sizeof(float);
     const int chunk = d.mode == GroupMode::Rolling ? d.rolling.rolling_chunk : 0;
     const std::size_t device_planes = static_cast<std::size_t>(upload_regions(d)) +
-                                      static_cast<std::size_t>(d.channels) * (2 * d.ntemp + 1 + (d.iters > 1 ? d.ntemp : 0)) +
-                                      3 * chunk;
+                                      static_cast<std::size_t>(d.channels) *
+                                          ((any_ordered(d) ? 2 * d.ntemp : 0) + 1 + (d.iters > 1 ? d.ntemp : 0)) +
+                                      3 * chunk +
+                                      // Fixed-point num and den: two float planes' worth per slice each.
+                                      (any_fused(d) ? 4 * static_cast<std::size_t>(d.ntemp) : 0);
+    int max_w = 1, max_h = 1;
+    for (const GroupPlane& p : d.planes) {
+        if (p.active && !p.fused) {
+            max_w = std::max(max_w, p.width);
+            max_h = std::max(max_h, p.height);
+        }
+    }
+    const std::size_t bins = any_ordered(d) ? OrderedAggregator::bin_bytes(max_w, max_h, d.ntemp, true) : 0;
     // Rolling also holds host chunk stores: one being built per slot, up to
     // cache_limit finished ones, and the output frames copied out of them.
     const std::size_t chunk_bytes = frame_bytes * chunk;
     const std::size_t output = d.mode == GroupMode::Rolling ? 2 * frame_bytes + chunk_bytes
                                                        : frame_bytes * (d.mode == GroupMode::Legacy ? 2 * d.ntemp : 1);
-    const std::size_t fixed = plane_bytes * device_planes + plane_bytes * d.regions + output;
+    const std::size_t fixed = plane_bytes * device_planes + plane_bytes * d.regions + output + bins;
     const std::size_t shared_cache = d.mode == GroupMode::Rolling ? chunk_bytes * d.rolling.cache_limit : 0;
     std::size_t min_batch = 0;
     for (const GroupPlane& p : d.planes) {
@@ -180,6 +231,19 @@ void plan_planes(Driver& d) {
         const std::size_t fit = std::max<std::size_t>(1, batch_bytes / per_ref_bytes(d, p));
         p.batch = static_cast<int>(std::min<std::size_t>(fit, static_cast<std::size_t>(p.grid.count())));
     }
+    // Planes of different shapes share the slot's buffers; shrink the batches
+    // until the buffers together fit what one plane alone was given.
+    for (int round = 0; round < 8 && slot_batch_bytes(d) > batch_bytes; ++round) {
+        const double scale = static_cast<double>(batch_bytes) / static_cast<double>(slot_batch_bytes(d));
+        bool changed = false;
+        for (GroupPlane& p : d.planes) {
+            if (!p.active) continue;
+            const int next = std::max(1, static_cast<int>(p.batch * scale));
+            changed = changed || next != p.batch;
+            p.batch = next;
+        }
+        if (!changed) break;
+    }
 }
 
 std::unique_ptr<Slot> make_slot(const Driver& d) {
@@ -192,14 +256,15 @@ std::unique_ptr<Slot> make_slot(const Driver& d) {
     for (const GroupPlane& p : d.planes) {
         if (!p.active) continue;
         const std::size_t batch = static_cast<std::size_t>(p.batch);
+        matches = std::max(matches, batch * p.group * sizeof(DeviceMatch));
+        counts = std::max(counts, batch * sizeof(int));
+        scratch = std::max(scratch, batch * scratch_floats(d, p) * sizeof(float));
+        if (p.fused) continue;
         max_patches = std::max(max_patches, batch * p.group);
         max_w = std::max(max_w, p.width);
         max_h = std::max(max_h, p.height);
         values = std::max(values, batch * d.channels * p.group * p.block * p.block * sizeof(float));
-        matches = std::max(matches, batch * p.group * sizeof(DeviceMatch));
-        counts = std::max(counts, batch * sizeof(int));
         patches = std::max(patches, batch * p.group * sizeof(AggregatePatch));
-        scratch = std::max(scratch, batch * scratch_floats(d, p) * sizeof(float));
     }
     for (int t = 0; t < d.ntemp; ++t) {
         slot->src_frames.emplace_back(unit_bytes, d.budget);
@@ -212,25 +277,33 @@ std::unique_ptr<Slot> make_slot(const Driver& d) {
     }
     slot->src_ptrs = DeviceBuffer(d.ntemp * sizeof(float*), d.budget);
     if (w) slot->ref_ptrs = DeviceBuffer(d.ntemp * sizeof(float*), d.budget);
-    slot->num = DeviceBuffer(unit_bytes * d.ntemp, d.budget);
-    slot->den = DeviceBuffer(unit_bytes * d.ntemp, d.budget);
+    if (any_ordered(d)) {
+        slot->num = DeviceBuffer(unit_bytes * d.ntemp, d.budget);
+        slot->den = DeviceBuffer(unit_bytes * d.ntemp, d.budget);
+    }
     slot->out = DeviceBuffer(unit_bytes, d.budget);
+    if (any_fused(d)) {
+        slot->fixed_num = DeviceBuffer(d.plane_floats * d.ntemp * sizeof(unsigned long long), d.budget);
+        slot->fixed_den = DeviceBuffer(d.plane_floats * d.ntemp * sizeof(unsigned long long), d.budget);
+    }
     if (d.mode == GroupMode::Rolling) {
         slot->acc = DeviceBuffer(plane_bytes * 2 * d.rolling.rolling_chunk, d.budget);
         slot->chunk_src = DeviceBuffer(plane_bytes * d.rolling.rolling_chunk, d.budget);
     }
     slot->matches = DeviceBuffer(matches, d.budget);
     slot->counts = DeviceBuffer(counts, d.budget);
-    slot->values = DeviceBuffer(values, d.budget);
+    if (values) slot->values = DeviceBuffer(values, d.budget);
     if (scratch) slot->scratch = DeviceBuffer(scratch, d.budget);
-    slot->patches = DeviceBuffer(patches, d.budget);
+    if (patches) slot->patches = DeviceBuffer(patches, d.budget);
     slot->staging = PinnedBuffer(plane_bytes * d.regions, d.budget);
     for (int i = 0; i < d.regions; ++i) {
         StagingRegion region{slot->staging.as<std::uint8_t>() + plane_bytes * i, nullptr};
         NSS_CUDA_CHECK(cudaEventCreateWithFlags(&region.done, cudaEventDisableTiming));
         slot->regions.push_back(region);
     }
-    slot->aggregator = std::make_unique<OrderedAggregator>(max_w, max_h, d.ntemp, max_patches, d.budget);
+    if (max_patches) {
+        slot->aggregator = std::make_unique<OrderedAggregator>(max_w, max_h, d.ntemp, max_patches, d.budget, true);
+    }
     // Spatial/legacy windows map slot t to buffer t for the slot's lifetime.
     NSS_CUDA_CHECK(cudaMemcpy(slot->src_ptrs.get(), slot->host_src_ptrs.data(), d.ntemp * sizeof(float*),
                               cudaMemcpyHostToDevice));
@@ -286,6 +359,8 @@ void filter_center(const Driver& d, Slot& s, const GroupPlane& p, int center, bo
         window.ps_num = p.ps_num;
         window.ps_range = p.ps_range;
     }
+    const FixedTarget fixed{s.fixed_num.as<unsigned long long>(), s.fixed_den.as<unsigned long long>(), p.width, p.floats};
+    if (p.fused) fixed_clear(fixed, d.ntemp * p.floats, stream);
     for (int begin = 0; begin < p.grid.count(); begin += p.batch) {
         const int count = std::min(p.batch, p.grid.count() - begin);
         {
@@ -309,14 +384,16 @@ void filter_center(const Driver& d, Slot& s, const GroupPlane& p, int center, bo
         launch.plane = &p;
         launch.channels = d.channels;
         launch.channel_step = geometry.channel_step;
-        launch.values = s.values.as<float>();
+        launch.values = p.fused ? nullptr : s.values.as<float>();
         launch.scratch = s.scratch.as<float>();
-        launch.patches = s.patches.as<AggregatePatch>();
+        launch.patches = p.fused ? nullptr : s.patches.as<AggregatePatch>();
+        if (p.fused) launch.fused = fixed;
         launch.stream = stream;
         {
             NSS_CUDA_RANGE("group.filter");
             d.launch(launch);
         }
+        if (p.fused) continue;
         NSS_CUDA_RANGE("group.aggregate");
         const std::size_t channel_values = static_cast<std::size_t>(count) * p.group * p.block * p.block;
         for (int c = 0; c < d.channels; ++c) {
@@ -409,7 +486,12 @@ const VSFrame* frame_output(Driver* d, int n, VSFrameContext* ctx, VSCore* core,
             if (!d->channel_out[c]) continue;
             if (radius == 0) {
                 const float* result = s.src_frames[0].as<float>() + c * p.floats;
-                if (!iterative(*d)) {
+                if (p.fused) {
+                    const FixedTarget fixed{s.fixed_num.as<unsigned long long>(), s.fixed_den.as<unsigned long long>(),
+                                            p.width, p.floats};
+                    fixed_finish(fixed, s.host_src_ptrs[0], p.width, p.height, s.out.as<float>(), s.stream);
+                    result = s.out.as<float>();
+                } else if (!iterative(*d)) {
                     aggregate_finish(s.num.as<float>(), s.den.as<float>(), s.host_src_ptrs[0], p.width, p.height, p.width,
                                      s.out.as<float>(), s.stream);
                     result = s.out.as<float>();
@@ -642,6 +724,15 @@ void group_filter_install(GroupFilterConfig&& config, VSMap* out, VSCore* core, 
     d->budget = nss::current_budget();
     if (d->mode == GroupMode::Rolling && iterative(*d)) {
         throw std::logic_error(prefix(*d) + "rolling mode does not support joint or multi-round filters");
+    }
+    // Fused planes finish straight from their accumulators, which the temporal
+    // outputs (fat slices, rolling sums) do not read; temporal filtering gains
+    // nothing from fusing either (it is bound by its transfers).
+    if (d->mode != GroupMode::Spatial) {
+        for (GroupPlane& p : d->planes) p.fused = false;
+    }
+    if (any_fused(*d) && iterative(*d)) {
+        throw std::logic_error(prefix(*d) + "fused aggregation does not support joint or multi-round filters");
     }
     if (d->channels > 1) {
         bool any = false;
