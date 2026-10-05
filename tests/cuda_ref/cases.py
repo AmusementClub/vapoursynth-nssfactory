@@ -192,7 +192,11 @@ def build(core, ns, clip, c):
                 value = getattr(plugin, value["$call"])(clip, **resolve(value["args"]))
             out[key] = value
         return out
-    node = getattr(plugin, c["filter"])(clip, **resolve(c["args"]))
+    args = resolve(c["args"])
+    if c["aggregate"]:
+        # The case reduces the fat intermediate itself; the device default is rolling.
+        args.setdefault("temporal_mode", "legacy")
+    node = getattr(plugin, c["filter"])(clip, **args)
     if c["aggregate"]:
         node = plugin.VAggregate(node, clip, radius=c["aggregate"])
     return node

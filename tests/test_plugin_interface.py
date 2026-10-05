@@ -60,6 +60,7 @@ def main():
     parser.add_argument("--namespace", default="nss")
     parser.add_argument("--backend-args", default="")
     parser.add_argument("--expect-missing", default="")
+    parser.add_argument("--default-temporal", choices=("legacy", "rolling"), default="legacy")
     args = parser.parse_args()
     ns = args.namespace
     backend_args = [a for a in args.backend_args.split(",") if a]
@@ -84,8 +85,13 @@ def main():
         if name == "VAggregate":
             radius = kwargs.get("radius", 1)
             radius = radius if isinstance(radius, int) and 0 <= radius <= 16 else 1
-            base = plugin.BM3D(clip, radius=radius) if radius else plugin.BM3D(clip)
+            base = plugin.BM3D(clip, radius=radius, temporal_mode="legacy") if radius else plugin.BM3D(clip)
             return plugin.VAggregate(base, clip, **kwargs)
+        # The golden records the CPU, whose default is legacy. A backend whose
+        # default is rolling is probed in legacy mode wherever the probe leaves
+        # the mode unset, and its own default is checked separately below.
+        if args.default_temporal == "rolling" and "temporal_mode:" in functions[name] and not kwargs.get("temporal_mode"):
+            kwargs = dict(kwargs, temporal_mode="legacy")
         return getattr(plugin, name)(clip, **kwargs)
 
     def cpu_signature(name):
@@ -197,6 +203,18 @@ def main():
         error = (expected or {}).get("error", "")
         return ns != "nss" and error.startswith("nss: ") and actual == {"error": ns + error[3:]}
 
+    if args.default_temporal == "rolling":
+        clip = clips["GRAYS"]
+        for name in sorted(shared):
+            if name in skipped or "temporal_mode:" not in functions[name]:
+                continue
+            try:
+                node = getattr(plugin, name)(core.std.BlankClip(clip, format=vs.RGBS) if name == "MCWNNM" else clip, radius=1)
+            except vs.Error as error:
+                problems.append(f"{name} default temporal mode: {error}")
+                continue
+            if node.height != clip.height:
+                problems.append(f"{name} default temporal mode: output height {node.height}, expected {clip.height}")
     for key in sorted(set(golden["cases"]) | set(cases)):
         if not same(golden["cases"].get(key), cases.get(key)):
             problems.append(f"{key}: {golden['cases'].get(key)} -> {cases.get(key)}")

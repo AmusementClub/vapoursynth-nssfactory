@@ -22,9 +22,7 @@ core.nss.TWSC(clip clip[, float[] sigma = 3.0, int estimate_sigma = 0,
               clip rclip = None, int iters = 12, float delta = 0.0,
               int admm_iter = 10, float rho = 0.5, float mu = 1.1,
               float tol = 1e-6,
-              int memory_limit_mb, string temporal_mode = "legacy",
-              int rolling_chunk = 4, int rolling_cache_chunks,
-              int rolling_cache_limit = 1])
+              int memory_limit_mb])
 ```
 
 ## Primary parameters
@@ -38,7 +36,7 @@ core.nss.TWSC(clip clip[, float[] sigma = 3.0, int estimate_sigma = 0,
 | `group_size` | 90 | [1, 256] | Matched patches per group. 90 follows the paper's high-quality regime; 8–16 trades quality for large speedups. |
 | `search_window` | 60 | [1, 129] | Matching window edge. `bm_range=r` means `2r+1`; passing both is an error. |
 | `iters` | 12 | [1, 64] | Outer iterations (re-match and re-solve per round). Nearly linear cost; 12 is the balanced default, 2–4 for quick work. |
-| `radius` | 0 | [0, 16] | Temporal radius. >0 returns the weighted intermediate for `VAggregate`, or the finished result with `temporal_mode="rolling"`. |
+| `radius` | 0 | [0, 16] | Temporal radius. >0 returns the weighted intermediate for `VAggregate`. |
 | `rclip` | none | clip | Reference clip guiding matching. |
 
 ## Secondary parameters
@@ -53,8 +51,6 @@ core.nss.TWSC(clip clip[, float[] sigma = 3.0, int estimate_sigma = 0,
 | `tol` | 1e-6 | > 0 | ADMM convergence tolerance (early stop). |
 | `ps_num` / `ps_range` | 2 / 4 | [1,group] / [1,64] | Predictive temporal search (`radius > 0`). `ps_num` defaults to 1 when `group_size=1` is explicit. |
 | `memory_limit_mb` | none | — | Workspace cap; fails instead of degrading. |
-| `temporal_mode` | `"legacy"` | legacy / rolling | With `radius > 0`: legacy returns the weighted intermediate for an explicit `VAggregate`; rolling returns the normalized, normal-height result directly (the same result as legacy followed by `VAggregate`). |
-| `rolling_chunk`, `rolling_cache_chunks` / `rolling_cache_limit` | 4, — / 1 | [1, 64] | Rolling chunk and cache knobs, validated in rolling mode; they only change scheduling where a device rolling path exists. |
 
 ## Diagnostics
 
@@ -100,8 +96,14 @@ takes the same arguments and gives the same errors as `nss.TWSC`. It adds
   per-group dictionary and ADMM solve, the aggregation and every round run on
   the device. `radius > 0` returns the same fat intermediate as the CPU, so
   either backend's `VAggregate` can reduce it.
-  `temporal_mode="rolling"` reduces the fat intermediate with
-  `nss_cuda.VAggregate` inside the filter.
+- **Temporal output.** With `radius > 0` the device plugin returns finished,
+  normal-height frames by default (`temporal_mode = "rolling"`): it
+  reduces the fat intermediate with `nss_cuda.VAggregate` inside the filter.
+  `temporal_mode = "legacy"` returns the fat intermediate instead, as the CPU
+  plugin does. `rolling_chunk` (default 4, range 1 to 64) and
+  `rolling_cache_limit` (default 1) set the chunk size and the number of
+  finished chunks kept; they only matter where the accumulation stays on the
+  device.
 - **Numerics.** The dictionary comes from an FP32 Jacobi eigendecomposition of
   the Gram matrix of the smaller group side, and the solver runs in FP32
   (FP64 was measured and gave the same agreement with the CPU).

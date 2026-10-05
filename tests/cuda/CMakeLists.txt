@@ -48,7 +48,8 @@ set(NSS_CUDA_PENDING_FILTERS "")
 add_test(NAME test_cuda_plugin_interface
          COMMAND ${Python3_EXECUTABLE} "${PROJECT_SOURCE_DIR}/tests/test_plugin_interface.py"
                  --plugin "${NSS_CUDA_PLUGIN}" --namespace nss_cuda
-                 --backend-args device_id,num_streams --expect-missing "${NSS_CUDA_PENDING_FILTERS}")
+                 --backend-args device_id,num_streams --expect-missing "${NSS_CUDA_PENDING_FILTERS}"
+                 --default-temporal rolling)
 set_tests_properties(test_cuda_backend test_cuda_backend_forced_jit test_cuda_plugin_interface PROPERTIES
   LABELS cuda SKIP_RETURN_CODE 77)
 # Short create/free soak over every filter (device errors, memory growth).
@@ -59,7 +60,8 @@ set_tests_properties(test_cuda_stress PROPERTIES LABELS cuda SKIP_RETURN_CODE 77
 # Rolling against legacy + VAggregate; BM3D, WNNM and single-round NCSR roll on the device.
 add_test(NAME test_cuda_temporal_rolling
          COMMAND ${Python3_EXECUTABLE} "${PROJECT_SOURCE_DIR}/tests/test_temporal_rolling.py"
-                 --plugin "${NSS_CUDA_PLUGIN}" --namespace nss_cuda --native-rolling BM3D,WNNM,NCSR)
+                 --plugin "${NSS_CUDA_PLUGIN}" --namespace nss_cuda --native-rolling BM3D,WNNM,NCSR
+                 --default-mode rolling)
 set_tests_properties(test_cuda_temporal_rolling PROPERTIES LABELS cuda SKIP_RETURN_CODE 77)
 # Live CPU-vs-GPU filter checks need the CPU plugin as the reference.
 if(TARGET nss)

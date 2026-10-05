@@ -9,7 +9,8 @@
 
 namespace nss::frontend {
 
-TemporalMode parse_temporal_mode(const VSAPI* vsapi, const VSMap* in, int radius, const char* filter, const char* ns) {
+TemporalMode parse_temporal_mode(const VSAPI* vsapi, const VSMap* in, int radius, const char* filter, const char* ns,
+                                 TemporalMode unset) {
     int mode_err = 0;
     const char* mode = vsapi->mapGetData(in, "temporal_mode", 0, &mode_err);
     std::string mode_s;
@@ -22,7 +23,9 @@ TemporalMode parse_temporal_mode(const VSAPI* vsapi, const VSMap* in, int radius
     if (mode_s == "fused") fail(ns, filter, "temporal_mode=fused is not supported; use rolling or legacy");
     if (!mode_s.empty() && mode_s != "rolling" && mode_s != "legacy")
         fail(ns, filter, "temporal_mode must be rolling or legacy");
-    return radius > 0 && mode_s == "rolling" ? TemporalMode::Rolling : TemporalMode::Legacy;
+    if (radius <= 0) return TemporalMode::Legacy;
+    if (mode_s.empty()) return unset;
+    return mode_s == "rolling" ? TemporalMode::Rolling : TemporalMode::Legacy;
 }
 
 RollingParams parse_rolling(const VSAPI* vsapi, const VSMap* in, int radius, const char* filter, const char* ns) {
@@ -42,10 +45,10 @@ RollingParams parse_rolling(const VSAPI* vsapi, const VSMap* in, int radius, con
 }
 
 TemporalRequest parse_temporal(const VSAPI* vsapi, const VSMap* in, int default_radius, const char* filter,
-                               const char* ns) {
+                               const char* ns, TemporalMode unset) {
     const int radius = map_int(vsapi, in, "radius", default_radius);
     TemporalRequest request;
-    request.rolling = parse_temporal_mode(vsapi, in, radius, filter, ns) == TemporalMode::Rolling;
+    request.rolling = parse_temporal_mode(vsapi, in, radius, filter, ns, unset) == TemporalMode::Rolling;
     if (request.rolling) request.params = parse_rolling(vsapi, in, radius, filter, ns);
     return request;
 }
@@ -74,8 +77,8 @@ void aggregate_rolling(const VSAPI* vsapi, const VSMap* in, VSMap* out, VSCore* 
 }
 
 void create_temporal(VSPublicFunction create, const VSMap* in, VSMap* out, VSCore* core, const VSAPI* vsapi,
-                     int default_radius, const char* filter, const char* ns) {
-    const TemporalRequest request = parse_temporal(vsapi, in, default_radius, filter, ns);
+                     int default_radius, const char* filter, const char* ns, TemporalMode unset) {
+    const TemporalRequest request = parse_temporal(vsapi, in, default_radius, filter, ns, unset);
     create(in, out, nullptr, core, vsapi);
     if (request.rolling) aggregate_rolling(vsapi, in, out, core, default_radius, filter, ns);
 }

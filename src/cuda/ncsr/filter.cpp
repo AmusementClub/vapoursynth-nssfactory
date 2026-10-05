@@ -15,7 +15,7 @@ namespace {
 
 void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI* vsapi) {
     // Same validation order and text as nss.NCSR (D14).
-    const auto temporal = nss::frontend::parse_temporal(vsapi, in, nss::kWnnmDefaultRadius, "NCSR", "nss_cuda");
+    const auto temporal = nss::frontend::parse_temporal(vsapi, in, nss::kWnnmDefaultRadius, "NCSR", "nss_cuda", kDefaultTemporalMode);
     GroupFilterConfig config;
     config.name = "NCSR";
     config.model = nss::Model::NCSR;

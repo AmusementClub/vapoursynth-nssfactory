@@ -69,9 +69,9 @@ def temporal(core, quick, floor):
         for radius in (1, 2):
             kw = dict(sigma=10, radius=radius, bm_range=5)
             cpu = core.nss.VAggregate(core.nss.BM3D(clip, **kw), clip, radius=radius)
-            gpu = core.nss_cuda.VAggregate(core.nss_cuda.BM3D(clip, **kw), clip, radius=radius)
-            rolling = core.nss_cuda.BM3D(clip, temporal_mode="rolling", rolling_chunk=4, **kw)
-            mixed_a = core.nss.VAggregate(core.nss_cuda.BM3D(clip, **kw), clip, radius=radius)
+            gpu = core.nss_cuda.VAggregate(core.nss_cuda.BM3D(clip, temporal_mode="legacy", **kw), clip, radius=radius)
+            rolling = core.nss_cuda.BM3D(clip, rolling_chunk=4, **kw)  # rolling is the device default
+            mixed_a = core.nss.VAggregate(core.nss_cuda.BM3D(clip, temporal_mode="legacy", **kw), clip, radius=radius)
             mixed_b = core.nss_cuda.VAggregate(core.nss.BM3D(clip, **kw), clip, radius=radius)
             for n in range(clip.num_frames):
                 label = f"temporal r{radius} {clip.format.name} frame {n}"
@@ -90,7 +90,7 @@ def temporal(core, quick, floor):
                     failures.append(f"{label}: nss.VAggregate(nss_cuda.BM3D) differs from nss_cuda.VAggregate by > 4 ulp")
                 if not within_ulp(frame_planes(mixed_b, n), a):
                     failures.append(f"{label}: nss_cuda.VAggregate(nss.BM3D) differs from nss.VAggregate by > 4 ulp")
-                again = frame_planes(core.nss_cuda.VAggregate(core.nss_cuda.BM3D(clip, **kw), clip, radius=radius), n)
+                again = frame_planes(core.nss_cuda.VAggregate(core.nss_cuda.BM3D(clip, temporal_mode="legacy", **kw), clip, radius=radius), n)
                 if any(not np.array_equal(x, y) for x, y in zip(b, again)):
                     failures.append(f"{label}: not run-to-run identical")
     return cases, worst, failures
@@ -187,10 +187,10 @@ def main():
     # device memory while it exists.
     for fmt in (vs.GRAYS, vs.YUV420PS):
         uhd = core.std.BlankClip(width=3840, height=2160, format=fmt, length=4)
-        modes = [("spatial", {}), ("final", dict(ref=uhd)), ("r1 legacy", dict(radius=1)),
+        modes = [("spatial", {}), ("final", dict(ref=uhd)), ("r1 legacy", dict(radius=1, temporal_mode="legacy")),
                  ("block 4", dict(block_size=4)), ("16 / 16", dict(block_size=16, group_size=16))]
         if fmt == vs.GRAYS:
-            modes.append(("r1 final", dict(radius=1, ref=uhd)))
+            modes.append(("r1 final", dict(radius=1, ref=uhd, temporal_mode="legacy")))
         for label, kw in modes:
             cases += 1
             try:
