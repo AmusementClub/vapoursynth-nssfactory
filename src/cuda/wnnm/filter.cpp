@@ -14,7 +14,7 @@ namespace {
 
 void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI* vsapi) {
     // Same validation order and text as nss.WNNM (D14).
-    const auto temporal = nss::frontend::parse_temporal(vsapi, in, nss::kWnnmDefaultRadius, "WNNM", "nss_cuda");
+    const auto temporal = nss::frontend::parse_temporal(vsapi, in, nss::kWnnmDefaultRadius, "WNNM", "nss_cuda", kDefaultTemporalMode);
     GroupFilterConfig config;
     config.name = "WNNM";
     config.model = nss::Model::WNNM;
@@ -69,7 +69,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
 
 void register_wnnm(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
     static const std::string args = signature(nss::frontend::kWnnmSignature);
-    vspapi->registerFunction("WNNM", args.c_str(), "clip:vnode;", nss::checked_create<create>, nullptr, plugin);
+    vspapi->registerFunction("WNNM", args.c_str(), "clip:vnode;", nss::checked_create<create, kDefaultMemoryLimitMb>, nullptr, plugin);
 }
 
 }  // namespace nss_cuda

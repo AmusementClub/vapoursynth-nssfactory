@@ -18,8 +18,6 @@ temporal = core.nss.BM3D(clip, sigma=25, radius=2)        # see radius note belo
 core.nss.BM3D(clip clip[, clip ref, float[] sigma = 3.0, int[] block_size = 8,
               int[] group_size = 8, int[] block_step, int[] bm_range = 7,
               int radius = 0, int[] ps_num, int[] ps_range = 4,
-              string temporal_mode = "legacy", int rolling_chunk = 4,
-              int rolling_cache_chunks, int rolling_cache_limit = 1,
               int memory_limit_mb])
 ```
 
@@ -36,7 +34,7 @@ Omitted `block_step` adapts to `min(8, block_size)` per plane; omitted
 | `block_step` | min(8, block) | [1, block] | Stride between reference patches. Halving it roughly quadruples positions (2D) — the main quality/speed trade. |
 | `group_size` | 8 | {1,2,4,8,16,32,64} | Maximum patches per 3D stack. More matches help at high noise; marginal at low noise. |
 | `bm_range` | 7 | [1, 64] | Search window radius (`window = 2*bm_range + 1`). Cost grows quadratically; motion/texture may justify a larger window. |
-| `radius` | 0 | [0, 16] | Temporal radius in frames. >0 switches output to the weighted intermediate for `VAggregate` (legacy), or a direct normal-height result with `temporal_mode="rolling"` (experimental). |
+| `radius` | 0 | [0, 16] | Temporal radius in frames. >0 switches output to the weighted intermediate for `VAggregate`. |
 | `ref` | none | clip | External reference clip guiding both stages' matching (paper-style two-stage usage). |
 
 ## Secondary parameters
@@ -45,9 +43,6 @@ Omitted `block_step` adapts to `min(8, block_size)` per plane; omitted
 |---|---|---|---|
 | `ps_num` | min(2, group) | [1, group] | Predictive-search seeds kept per temporal step (only used with `radius > 0`). |
 | `ps_range` | 4 | [1, 64] | Predictive-search window radius around each seed (temporal mode). |
-| `temporal_mode` | `"legacy"` | legacy / rolling | legacy = intermediate for explicit `VAggregate`; rolling = direct normalized output with rolling state. The corrected rolling route is experimental pending its paired performance gate. |
-| `rolling_chunk` | 4 | — | Frames per rolling commit batch (rolling mode only). |
-| `rolling_cache_chunks` / `rolling_cache_limit` | — / 1 | — | Rolling-mode cache control knobs. |
 | `memory_limit_mb` | none | — | Workspace cap; fails instead of degrading. |
 
 ## Algorithm and paper
@@ -70,9 +65,8 @@ dominant cost driver is `block_step` (positions scale as `1/step^2`), then
 
 ## Pitfalls
 
-- With `radius > 0` in legacy mode the output is a **taller intermediate**,
-  not a viewable frame — pipe through `core.nss.VAggregate(out, clip,
-  radius=radius)` or use `temporal_mode="rolling"`.
+- With `radius > 0` the output is a **taller intermediate**, not a viewable
+  frame — pipe it through `core.nss.VAggregate(out, clip, radius=radius)`.
 - `sigma` is in 8-bit units even though the clip is float32; 25 means the
   usual "25/255" noise.
 - Array parameters are per-plane: `block_size=[8,16]` is legal on YUV.
@@ -81,20 +75,24 @@ dominant cost driver is `block_step` (positions scale as `1/step^2`), then
 
 The CUDA plugin (`libnss_cuda`, built with `-DNSS_ENABLE_CUDA=ON`) takes the
 same arguments and gives the same errors as `nss.BM3D` / `nss.VAggregate`. It
-adds two GPU-only arguments at the end of the argument list:
+adds two GPU-only arguments at the end of the argument list. Its temporal
+arguments, shared with the CPU signature, are the ones to know on the device:
 
 | Parameter | Default | Meaning |
 |---|---|---|
+| `temporal_mode` | `"rolling"` | With `radius > 0`: `"rolling"` returns finished, normal-height frames; `"legacy"` returns the fat intermediate for `VAggregate`, as the CPU plugin does. |
+| `rolling_chunk` | 4 | Frames accumulated per rolling chunk, 1 to 64. |
+| `rolling_cache_limit` (or `rolling_cache_chunks`) | 1 | Finished chunks kept for later frame requests, 1 to 64. |
 | `device_id` | 0 | CUDA device index. |
 | `num_streams` | up to 3 | How many frames (or rolling chunks) can be in flight on the device at once. The default is the largest count (at most 3) that fits `memory_limit_mb`, preferring one that lets a whole plane run as a single batch. An explicit value that does not fit is a creation error. `VAggregate` accepts both arguments but does not use a device. |
 
 ```python
 basic = core.nss_cuda.BM3D(clip, sigma=25)
 final = core.nss_cuda.BM3D(clip, ref=basic, sigma=25)
-# Temporal: rolling is the recommended GPU form (one call, final frames).
-temporal = core.nss_cuda.BM3D(clip, sigma=25, radius=1, temporal_mode="rolling")
-# Two-stage legacy form, kept for parity and debugging.
-fat = core.nss_cuda.BM3D(clip, sigma=25, radius=1)
+# Temporal: finished frames by default (temporal_mode="rolling").
+temporal = core.nss_cuda.BM3D(clip, sigma=25, radius=1)
+# The CPU plugin's two-step form, for mixing backends or debugging.
+fat = core.nss_cuda.BM3D(clip, sigma=25, radius=1, temporal_mode="legacy")
 temporal = core.nss_cuda.VAggregate(fat, clip, radius=1)
 ```
 
@@ -132,13 +130,14 @@ temporal = core.nss_cuda.VAggregate(fat, clip, radius=1)
     with integer atomics on fixed-point sums (exact, so independent of the
     order); temporal filtering and the remaining shapes sort their patches
     and sum them in a fixed order.
-- **Memory.** `memory_limit_mb` (default 1024) also caps device memory, pinned
-  staging and the rolling chunk cache. At 4K the default is enough for spatial
-  filtering in every format, and for `radius = 1` in legacy mode with GRAYS
-  (and YUV420 without `ref`); it runs with fewer streams and smaller internal
-  batches. Other 4K temporal uses need more, and the creation error names
-  the amount: about 1100 to 1500 for `radius = 1` depending on the format,
-  `ref` and the mode.
+- **Memory.** `memory_limit_mb` (default 2048 for `nss_cuda`) also caps device
+  memory, pinned staging and the rolling chunk cache. At 4K the default is
+  enough for spatial filtering in every format, for GRAYS and YUV420 up to
+  `radius = 2` in both modes with or without `ref`, and for YUV444 and RGB at
+  `radius = 1` without `ref` (and with `ref` in legacy mode). It may run with
+  fewer streams and smaller internal batches. YUV444 and RGB need more for the
+  rest, and the creation error names the amount: about 2070 for `radius = 1`
+  with `ref`, and 2130 to 2450 for `radius = 2`.
 - **Performance.** At 1080p GRAYS with defaults on an RTX 5080:
   - Spatial runs at bm3dcuda's speed or slightly faster.
   - Temporal runs at about 0.85 to 0.95x bm3dcuda. It uses the CPU's

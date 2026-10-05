@@ -18,17 +18,17 @@ measured cost tiers and pitfalls.
 ```python
 core.nss.NLM(clip clip[, int d = 1, int a = 2, int s = 4, float h = 1.2, string channels = "AUTO", int wmode = 0, float wref = 1.0, clip rclip = None])
 
-core.nss.BM3D(clip clip[, clip ref, float[] sigma = 3.0, int[] block_size = 8, int[] group_size = 8, int[] block_step, int[] bm_range = 7, int radius = 0, int[] ps_num, int[] ps_range = 4, string temporal_mode = "legacy", int rolling_chunk = 4, int rolling_cache_chunks, int rolling_cache_limit = 1])
+core.nss.BM3D(clip clip[, clip ref, float[] sigma = 3.0, int[] block_size = 8, int[] group_size = 8, int[] block_step, int[] bm_range = 7, int radius = 0, int[] ps_num, int[] ps_range = 4])
 
-core.nss.WNNM(clip clip[, float[] sigma = 3.0, int block_size = 8, int block_step = 8, int group_size = 8, int bm_range = 7, int radius = 0, int ps_num = 2, int ps_range = 4, int residual = 0, int adaptive_aggregation = 1, clip rclip = None, string temporal_mode = "legacy", int rolling_chunk = 4, int rolling_cache_chunks, int rolling_cache_limit = 1])
+core.nss.WNNM(clip clip[, float[] sigma = 3.0, int block_size = 8, int block_step = 8, int group_size = 8, int bm_range = 7, int radius = 0, int ps_num = 2, int ps_range = 4, int residual = 0, int adaptive_aggregation = 1, clip rclip = None])
 
-core.nss.MCWNNM(clip clip[, float[] sigma = 3.0, int block_size = 8, int block_step = 8, int group_size = 8, int bm_range = 7, int radius = 0, int ps_num = 2, int ps_range = 4, int residual = 1, int adaptive_aggregation = 0, clip rclip = None, int admm_iter = 10, float rho = 3.0, float mu = 1.001, int iters = 2, float delta = 0.1, string temporal_mode = "legacy", int rolling_chunk = 4, int rolling_cache_chunks, int rolling_cache_limit = 1])
+core.nss.MCWNNM(clip clip[, float[] sigma = 3.0, int block_size = 8, int block_step = 8, int group_size = 8, int bm_range = 7, int radius = 0, int ps_num = 2, int ps_range = 4, int residual = 1, int adaptive_aggregation = 0, clip rclip = None, int admm_iter = 10, float rho = 3.0, float mu = 1.001, int iters = 2, float delta = 0.1])
 
-core.nss.TWSC(clip clip[, float[] sigma = 3.0, int estimate_sigma = 0, int block_size = 8, int block_step = 1, int group_size = 90, int search_window = 60, int bm_range, int radius = 0, int ps_num = 2, int ps_range = 4, float lambda2 = 1.0, clip rclip = None, int iters = 12, float delta = 0.0, int admm_iter = 10, float rho = 0.5, float mu = 1.1, float tol = 1e-6, int memory_limit_mb, string temporal_mode = "legacy", int rolling_chunk = 4, int rolling_cache_chunks, int rolling_cache_limit = 1])
+core.nss.TWSC(clip clip[, float[] sigma = 3.0, int estimate_sigma = 0, int block_size = 8, int block_step = 1, int group_size = 90, int search_window = 60, int bm_range, int radius = 0, int ps_num = 2, int ps_range = 4, float lambda2 = 1.0, clip rclip = None, int iters = 12, float delta = 0.0, int admm_iter = 10, float rho = 0.5, float mu = 1.1, float tol = 1e-6, int memory_limit_mb])
 
-core.nss.NLH(clip clip[, float[] sigma, string noise_model = "auto", int[] block_size, int[] block_step, int[] group_size, int[] search_window, int bm_range, int radius = 0, int ps_num = 2, int ps_range = 4, int[] q, clip rclip = None, int basic_iters, float lambda_basic, float hard_strength, int wiener_iters, float wiener_sigma_scale, int memory_limit_mb, string temporal_mode = "legacy", int rolling_chunk = 4, int rolling_cache_chunks, int rolling_cache_limit = 1])
+core.nss.NLH(clip clip[, float[] sigma, string noise_model = "auto", int[] block_size, int[] block_step, int[] group_size, int[] search_window, int bm_range, int radius = 0, int ps_num = 2, int ps_range = 4, int[] q, clip rclip = None, int basic_iters, float lambda_basic, float hard_strength, int wiener_iters, float wiener_sigma_scale, int memory_limit_mb])
 
-core.nss.NCSR(clip clip[, float[] sigma = 3.0, int block_size = 8, int block_step = 8, int group_size = 8, int bm_range = 7, int radius = 0, int ps_num = 2, int ps_range = 4, clip rclip = None, int iters = 2, float delta = 0.1, string temporal_mode = "legacy", int rolling_chunk = 4, int rolling_cache_chunks, int rolling_cache_limit = 1])
+core.nss.NCSR(clip clip[, float[] sigma = 3.0, int block_size = 8, int block_step = 8, int group_size = 8, int bm_range = 7, int radius = 0, int ps_num = 2, int ps_range = 4, clip rclip = None, int iters = 2, float delta = 0.1])
 
 core.nss.LSSC(clip clip[, float[] sigma = 3.0, int block_size = 8, int block_step = 8, int radius = 0])
 
@@ -37,12 +37,8 @@ core.nss.VAggregate(clip clip, clip src[, int radius = 0, int[] planes])
 core.nss.Version()  # returns version:data
 ```
 
-With `radius = 0`, a temporal filter returns a normal-height spatial result and `temporal_mode="rolling"`
-has no effect. With `radius > 0`, the default/`legacy` route returns the weighted intermediate for an
-explicit `VAggregate`; `temporal_mode="rolling"` returns a normalized normal-height result directly.
-BM3D's rolling route is its own experimental chunked implementation. For WNNM, MCWNNM, NCSR, NLH and TWSC,
-rolling is the legacy intermediate followed by `VAggregate` inside the filter, so the output is identical
-to the explicit chain. LSSC has no temporal mode.
+With `radius = 0`, a temporal filter returns a normal-height spatial result. With `radius > 0` it returns
+the weighted intermediate for an explicit `VAggregate` call. LSSC has no temporal mode.
 
 BM3D accepts `block_size` values 1, 2, 4, 8, 12, 16, and 32. The 12-point path is intended for
 high-noise DCT profiles; 8 remains the general-purpose default.
@@ -84,28 +80,27 @@ Install `libnss.so` into the VapourSynth plugin directory.
 needs nvcc from CUDA 12.4 or newer; Windows builds use nvcc with MSVC `cl.exe`.
 All nine filters are available:
 
-- `core.nss_cuda.BM3D`: spatial, `ref`/Wiener, and temporal (legacy fat
-  intermediate or `temporal_mode="rolling"`, which is recommended on the GPU).
-  See `docs/api/bm3d.md`.
+- `core.nss_cuda.BM3D`: spatial, `ref`/Wiener, and temporal. See
+  `docs/api/bm3d.md`.
 - `core.nss_cuda.NLM`: all channel modes, temporal `d`, and `rclip`. See
   `docs/api/nlm.md`.
 - `core.nss_cuda.WNNM`, `core.nss_cuda.MCWNNM` and `core.nss_cuda.NCSR`: spatial
-  and temporal (legacy fat intermediate or `temporal_mode="rolling"`). See `docs/api/wnnm.md`,
+  and temporal. See `docs/api/wnnm.md`,
   `docs/api/mcwnnm.md` and `docs/api/ncsr.md`.
 - `core.nss_cuda.NLH` and `core.nss_cuda.TWSC`: given or blind sigma,
-  Gray/YUV/RGB, and temporal (legacy fat intermediate or
-  `temporal_mode="rolling"`). See `docs/api/nlh.md`
+  Gray/YUV/RGB, and temporal. See `docs/api/nlh.md`
   and `docs/api/twsc.md`.
 - `core.nss_cuda.LSSC`. See `docs/api/lssc.md`.
 - `core.nss_cuda.VAggregate`, which also accepts CPU fat intermediates
-  (a host-side reduction; the device-resident temporal path is rolling).
+  (a host-side reduction).
 - `core.nss_cuda.Version()`.
 - `core.nss_cuda.Backend()`, which reports the device, driver/runtime
   versions and the support level.
 
 Each filter takes the same arguments as its `nss` counterpart, plus
 `device_id` and `num_streams` at the end, and gives the same errors under the
-`nss_cuda` name. Outputs agree with the CPU plugin to 60 dB PSNR or better
+`nss_cuda` name. The one difference in behaviour is the temporal output
+(below). Outputs agree with the CPU plugin to 60 dB PSNR or better
 (not bit-for-bit) and are identical from run to run.
 
 - **`device_id`** (default 0) selects the GPU; one filter instance uses one
@@ -113,14 +108,20 @@ Each filter takes the same arguments as its `nss` counterpart, plus
 - **`num_streams`** (default up to 3) is the number of frames an instance
   processes at once. Each stream owns its device buffers, so the default is
   lowered until the streams fit `memory_limit_mb`.
-- **`memory_limit_mb`** caps the instance's device and pinned host memory. A
-  limit that cannot hold one stream is a creation error; nothing degrades
-  silently.
-- **Temporal filtering.** `radius > 0` returns the fat intermediate for
-  `VAggregate`, as on the CPU. `temporal_mode="rolling"` returns finished
-  frames instead. BM3D, WNNM and single-round NCSR then keep the accumulation
-  on the device, which is faster; the other filters reduce the intermediate
-  with `nss_cuda.VAggregate` inside the filter.
+- **`memory_limit_mb`** (default 2048; the CPU plugin's default is 1024) caps
+  the instance's device and pinned host memory. A limit that cannot hold one
+  stream is a creation error; nothing degrades silently.
+- **Temporal filtering.** With `radius > 0` the device filters return
+  finished, normal-height frames: no `VAggregate` call is needed.
+  - BM3D, WNNM and single-round NCSR keep the temporal accumulation on the
+    device; the other filters reduce the intermediate inside the filter.
+  - `temporal_mode="legacy"` returns the fat intermediate for `VAggregate`
+    instead, exactly as the CPU plugin does; use it to mix backends or to
+    keep an existing script unchanged.
+  - The finished-frame mode needs more memory than legacy. The default
+    limit holds BM3D at 4K for Gray and YUV 4:2:0; 4:4:4 and RGB with `ref`
+    or `radius = 2` need a higher `memory_limit_mb` (the creation error names
+    the amount).
 - **Driver.** A prebuilt plugin needs a driver for the CUDA release it was
   built with (12.9 for the release packages) or newer.
 

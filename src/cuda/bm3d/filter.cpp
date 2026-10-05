@@ -19,7 +19,8 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     // Same validation order as nss.BM3D so shared errors match (D14).
     const int radius = nss::map_int(vsapi, in, "radius", 0);
     const bool rolling =
-        nss::frontend::parse_temporal_mode(vsapi, in, radius, "BM3D", "nss_cuda") == nss::TemporalMode::Rolling;
+        nss::frontend::parse_temporal_mode(vsapi, in, radius, "BM3D", "nss_cuda", kDefaultTemporalMode) ==
+        nss::TemporalMode::Rolling;
     GroupFilterConfig config;
     config.name = "BM3D";
     config.model = nss::Model::BM3D;
@@ -73,7 +74,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
 
 void register_bm3d(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
     static const std::string args = signature(nss::frontend::kBm3dSignature);
-    vspapi->registerFunction("BM3D", args.c_str(), "clip:vnode;", nss::checked_create<create>, nullptr, plugin);
+    vspapi->registerFunction("BM3D", args.c_str(), "clip:vnode;", nss::checked_create<create, kDefaultMemoryLimitMb>, nullptr, plugin);
 }
 
 }  // namespace nss_cuda

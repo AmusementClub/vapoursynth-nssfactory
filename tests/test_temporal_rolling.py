@@ -8,6 +8,7 @@ for bit; a filter with its own rolling path (--native-rolling, a comma list) is 
 --min-psnr instead. radius 0 ignores the mode.
 
 usage: test_temporal_rolling.py --plugin PATH [--namespace NS] [--native-rolling F1,F2] [--min-psnr DB]
+                                [--default-mode legacy|rolling]
 """
 import argparse
 import sys
@@ -60,6 +61,7 @@ def main():
     parser.add_argument("--namespace", default="nss")
     parser.add_argument("--native-rolling", default="")
     parser.add_argument("--min-psnr", type=float, default=80.0)
+    parser.add_argument("--default-mode", choices=("legacy", "rolling"), default="legacy")
     args = parser.parse_args()
     core = vs.core
     core.std.LoadPlugin(path=args.plugin)
@@ -73,8 +75,15 @@ def main():
         src = source(core, fmt)
         make = getattr(ns, name)
         rolling = make(src, temporal_mode="rolling", **kw)
-        chain = ns.VAggregate(make(src, **{k: v for k, v in kw.items() if k != "rolling_chunk"}), src, radius=kw["radius"])
+        chain = ns.VAggregate(make(src, temporal_mode="legacy", **{k: v for k, v in kw.items() if k != "rolling_chunk"}),
+                             src, radius=kw["radius"])
         label = f"{args.namespace}.{name} {', '.join(f'{k}={v}' for k, v in kw.items())}"
+        # With no temporal_mode the backend's default applies: fat on the CPU, finished frames on the device.
+        default = make(src, **{k: v for k, v in kw.items() if k != "rolling_chunk"})
+        expected = HEIGHT if args.default_mode == "rolling" else HEIGHT * (2 * kw["radius"] + 1) * 2
+        if default.height != expected:
+            print(f"FAIL {label}: default temporal output height {default.height}, expected {expected}")
+            failures += 1
         if (rolling.width, rolling.height, rolling.num_frames) != (WIDTH, HEIGHT, FRAMES):
             print(f"FAIL {label}: rolling output is {rolling.width}x{rolling.height}x{rolling.num_frames}")
             failures += 1

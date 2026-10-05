@@ -19,9 +19,7 @@ core.nss.MCWNNM(clip clip[, float[] sigma = 3.0, int block_size = 8,
                 int residual = 1, int adaptive_aggregation = 0,
                 clip rclip = None, int admm_iter = 10, float rho = 3.0,
                 float mu = 1.001, int iters = 2, float delta = 0.1,
-                int memory_limit_mb, string temporal_mode = "legacy",
-                int rolling_chunk = 4, int rolling_cache_chunks,
-                int rolling_cache_limit = 1])
+                int memory_limit_mb])
 ```
 
 ## Primary parameters
@@ -34,7 +32,7 @@ core.nss.MCWNNM(clip clip[, float[] sigma = 3.0, int block_size = 8,
 | `group_size` | 8 | [1, 32] | Matched patches per group. |
 | `bm_range` | 7 | [1, 64] | Search window radius. |
 | `iters` | 2 | [1, 64] | Outer re-estimation rounds (re-match on the current estimate). Round 2 costs ~another full pass; reduce to 1 for a ~2x speedup when quality allows. |
-| `radius` | 0 | [0, 16] | Temporal radius. >0 returns the weighted intermediate for `VAggregate`, or the finished result with `temporal_mode="rolling"`. |
+| `radius` | 0 | [0, 16] | Temporal radius. >0 returns the weighted intermediate for `VAggregate`. |
 | `rclip` | none | clip | Reference clip guiding matching. |
 
 ## Secondary parameters
@@ -49,8 +47,6 @@ core.nss.MCWNNM(clip clip[, float[] sigma = 3.0, int block_size = 8,
 | `adaptive_aggregation` | 0 | 0 / 1 | Residual-weighted aggregation (off by default here, unlike WNNM). |
 | `ps_num` / `ps_range` | 2 / 4 | [1,group] / [1,64] | Predictive temporal search (with `radius > 0`). |
 | `memory_limit_mb` | none | — | Workspace cap; fails instead of degrading. |
-| `temporal_mode` | `"legacy"` | legacy / rolling | With `radius > 0`: legacy returns the weighted intermediate for an explicit `VAggregate`; rolling returns the normalized, normal-height result directly (the same result as legacy followed by `VAggregate`). |
-| `rolling_chunk`, `rolling_cache_chunks` / `rolling_cache_limit` | 4, — / 1 | [1, 64] | Rolling chunk and cache knobs, validated in rolling mode; they only change scheduling where a device rolling path exists. |
 
 ## Algorithm and paper
 
@@ -89,8 +85,14 @@ takes the same arguments and gives the same errors as `nss.MCWNNM`. It adds
   every group, the aggregation and all outer rounds run on the device.
   `radius > 0` returns the same fat intermediate as the CPU, so either
   backend's `VAggregate` can reduce it.
-  `temporal_mode="rolling"` reduces the fat intermediate with
-  `nss_cuda.VAggregate` inside the filter.
+- **Temporal output.** With `radius > 0` the device plugin returns finished,
+  normal-height frames by default (`temporal_mode = "rolling"`): it
+  reduces the fat intermediate with `nss_cuda.VAggregate` inside the filter.
+  `temporal_mode = "legacy"` returns the fat intermediate instead, as the CPU
+  plugin does. `rolling_chunk` (default 4, range 1 to 64) and
+  `rolling_cache_limit` (default 1) set the chunk size and the number of
+  finished chunks kept; they only matter where the accumulation stays on the
+  device.
 - **Numerics.** Each ADMM step shrinks through the FP32 Gram matrix with a
   cyclic Jacobi eigensolver.
   - The output is not bit-identical to the CPU, but is inside the 60 dB gate

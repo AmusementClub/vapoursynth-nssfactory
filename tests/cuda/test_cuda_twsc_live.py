@@ -146,8 +146,8 @@ def main():
     for label, clip, kw in temporal:
         r = kw["radius"]
         check(label, clip, core.nss.VAggregate(core.nss.TWSC(clip, **kw), clip, radius=r),
-              core.nss_cuda.VAggregate(core.nss_cuda.TWSC(clip, **kw), clip, radius=r),
-              core.nss_cuda.VAggregate(core.nss_cuda.TWSC(clip, **kw), clip, radius=r))
+              core.nss_cuda.VAggregate(core.nss_cuda.TWSC(clip, temporal_mode="legacy", **kw), clip, radius=r),
+              core.nss_cuda.VAggregate(core.nss_cuda.TWSC(clip, temporal_mode="legacy", **kw), clip, radius=r))
     # Repeated create/free must not leak device memory or fail.
     for _ in range(2 if args.quick else 10):
         core.nss_cuda.TWSC(gray, sigma=5, **light).get_frame(0)

@@ -67,8 +67,8 @@ def main():
     light = dict(block_step=8, group_size=8, iters=2)
     builders = [
         ("BM3D", lambda: n.BM3D(gray, sigma=5)),
-        ("BM3D rolling", lambda: n.BM3D(gray, sigma=5, radius=1, temporal_mode="rolling")),
-        ("BM3D legacy", lambda: n.VAggregate(n.BM3D(gray, sigma=5, radius=1), gray, radius=1)),
+        ("BM3D rolling", lambda: n.BM3D(gray, sigma=5, radius=1)),
+        ("BM3D legacy", lambda: n.VAggregate(n.BM3D(gray, sigma=5, radius=1, temporal_mode="legacy"), gray, radius=1)),
         ("NLM", lambda: n.NLM(rgb)),
         ("WNNM", lambda: n.WNNM(gray, sigma=5)),
         ("MCWNNM", lambda: n.MCWNNM(rgb, sigma=5)),

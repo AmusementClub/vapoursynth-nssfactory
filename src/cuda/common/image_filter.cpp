@@ -876,25 +876,25 @@ void VS_CC create_nlh(const VSMap* in, VSMap* out, void*, VSCore* core, const VS
     const auto plain = [](const VSMap* i, VSMap* o, void*, VSCore* c, const VSAPI* a) {
         create(i, o, c, a, nss::Model::NLH);
     };
-    nss::frontend::create_temporal(plain, in, out, core, api, 0, "NLH", "nss_cuda");
+    nss::frontend::create_temporal(plain, in, out, core, api, 0, "NLH", "nss_cuda", kDefaultTemporalMode);
 }
 void VS_CC create_twsc(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI* api) {
     const auto plain = [](const VSMap* i, VSMap* o, void*, VSCore* c, const VSAPI* a) {
         create(i, o, c, a, nss::Model::TWSC);
     };
-    nss::frontend::create_temporal(plain, in, out, core, api, 0, "TWSC", "nss_cuda");
+    nss::frontend::create_temporal(plain, in, out, core, api, 0, "TWSC", "nss_cuda", kDefaultTemporalMode);
 }
 
 }  // namespace
 
 void register_nlh(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
     static const std::string args = signature(nss::frontend::kNlhSignature);
-    vspapi->registerFunction("NLH", args.c_str(), "clip:vnode;", nss::checked_create<create_nlh>, nullptr, plugin);
+    vspapi->registerFunction("NLH", args.c_str(), "clip:vnode;", nss::checked_create<create_nlh, kDefaultMemoryLimitMb>, nullptr, plugin);
 }
 
 void register_twsc(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
     static const std::string args = signature(nss::frontend::kTwscSignature);
-    vspapi->registerFunction("TWSC", args.c_str(), "clip:vnode;", nss::checked_create<create_twsc>, nullptr, plugin);
+    vspapi->registerFunction("TWSC", args.c_str(), "clip:vnode;", nss::checked_create<create_twsc, kDefaultMemoryLimitMb>, nullptr, plugin);
 }
 
 }  // namespace nss_cuda

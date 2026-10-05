@@ -28,13 +28,14 @@ inline void validate_group_planes(const VSVideoInfo& vi, const float* sigma, int
 // Algorithm-specific ranges are still checked by the individual factories.
 bool validate_numeric_args(const VSAPI* vsapi, const VSMap* in, VSMap* out);
 
-template <auto Create>
+// DefaultMb is the budget when memory_limit_mb is not given.
+template <auto Create, int DefaultMb = 1024>
 void VS_CC checked_create(const VSMap* in, VSMap* out, void* user_data, VSCore* core, const VSAPI* vsapi) {
     try {
         if (!validate_numeric_args(vsapi, in, out)) return;
         int error = 0;
         const auto value = vsapi->mapGetInt(in, "memory_limit_mb", 0, &error);
-        const auto megabytes = error ? 1024 : value;
+        const auto megabytes = error ? DefaultMb : value;
         if (megabytes < 1 || megabytes > 1048576)
             throw std::invalid_argument("nss: memory_limit_mb must be in [1, 1048576]");
         auto budget = std::make_shared<ResourceBudget>(checked_mul(static_cast<std::size_t>(megabytes), 1048576));

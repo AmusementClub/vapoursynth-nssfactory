@@ -69,9 +69,9 @@ def temporal(core, quick, floor):
         for radius in (1, 2):
             kw = dict(sigma=10, radius=radius, bm_range=5)
             cpu = core.nss.VAggregate(core.nss.BM3D(clip, **kw), clip, radius=radius)
-            gpu = core.nss_cuda.VAggregate(core.nss_cuda.BM3D(clip, **kw), clip, radius=radius)
-            rolling = core.nss_cuda.BM3D(clip, temporal_mode="rolling", rolling_chunk=4, **kw)
-            mixed_a = core.nss.VAggregate(core.nss_cuda.BM3D(clip, **kw), clip, radius=radius)
+            gpu = core.nss_cuda.VAggregate(core.nss_cuda.BM3D(clip, temporal_mode="legacy", **kw), clip, radius=radius)
+            rolling = core.nss_cuda.BM3D(clip, rolling_chunk=4, **kw)  # rolling is the device default
+            mixed_a = core.nss.VAggregate(core.nss_cuda.BM3D(clip, temporal_mode="legacy", **kw), clip, radius=radius)
             mixed_b = core.nss_cuda.VAggregate(core.nss.BM3D(clip, **kw), clip, radius=radius)
             for n in range(clip.num_frames):
                 label = f"temporal r{radius} {clip.format.name} frame {n}"
@@ -90,7 +90,7 @@ def temporal(core, quick, floor):
                     failures.append(f"{label}: nss.VAggregate(nss_cuda.BM3D) differs from nss_cuda.VAggregate by > 4 ulp")
                 if not within_ulp(frame_planes(mixed_b, n), a):
                     failures.append(f"{label}: nss_cuda.VAggregate(nss.BM3D) differs from nss.VAggregate by > 4 ulp")
-                again = frame_planes(core.nss_cuda.VAggregate(core.nss_cuda.BM3D(clip, **kw), clip, radius=radius), n)
+                again = frame_planes(core.nss_cuda.VAggregate(core.nss_cuda.BM3D(clip, temporal_mode="legacy", **kw), clip, radius=radius), n)
                 if any(not np.array_equal(x, y) for x, y in zip(b, again)):
                     failures.append(f"{label}: not run-to-run identical")
     return cases, worst, failures
@@ -182,15 +182,18 @@ def main():
             cases += 1
             if value < floor:
                 failures.append(f"temporal b{block} g{group} {stage}: psnr {value:.2f} < {floor}")
-    # 4K must create at the default memory limit (no frames are requested). Rolling and YUV temporal
-    # Wiener need more than the default and are not in this list. Each case takes up to about 1 GiB of
-    # device memory while it exists.
-    for fmt in (vs.GRAYS, vs.YUV420PS):
+    # 4K must create at the default memory limit (no frames are requested). 4:4:4 with ref or
+    # radius 2 needs more than the default and is not in this list. Each case takes up to about
+    # 2 GiB of device memory while it exists.
+    for fmt in (vs.GRAYS, vs.YUV420PS, vs.YUV444PS):
         uhd = core.std.BlankClip(width=3840, height=2160, format=fmt, length=4)
-        modes = [("spatial", {}), ("final", dict(ref=uhd)), ("r1 legacy", dict(radius=1)),
+        modes = [("spatial", {}), ("final", dict(ref=uhd)), ("r1 legacy", dict(radius=1, temporal_mode="legacy")),
+                 ("r1 rolling", dict(radius=1, temporal_mode="rolling")),
                  ("block 4", dict(block_size=4)), ("16 / 16", dict(block_size=16, group_size=16))]
-        if fmt == vs.GRAYS:
-            modes.append(("r1 final", dict(radius=1, ref=uhd)))
+        if fmt != vs.YUV444PS:
+            modes += [("r1 final", dict(radius=1, ref=uhd, temporal_mode="legacy")),
+                      ("r1 rolling final", dict(radius=1, ref=uhd, temporal_mode="rolling")),
+                      ("r2 rolling final", dict(radius=2, ref=uhd, temporal_mode="rolling"))]
         for label, kw in modes:
             cases += 1
             try:

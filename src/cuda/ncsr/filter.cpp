@@ -15,7 +15,7 @@ namespace {
 
 void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI* vsapi) {
     // Same validation order and text as nss.NCSR (D14).
-    const auto temporal = nss::frontend::parse_temporal(vsapi, in, nss::kWnnmDefaultRadius, "NCSR", "nss_cuda");
+    const auto temporal = nss::frontend::parse_temporal(vsapi, in, nss::kWnnmDefaultRadius, "NCSR", "nss_cuda", kDefaultTemporalMode);
     GroupFilterConfig config;
     config.name = "NCSR";
     config.model = nss::Model::NCSR;
@@ -75,7 +75,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
 
 void register_ncsr(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
     static const std::string args = signature(nss::frontend::kNcsrSignature);
-    vspapi->registerFunction("NCSR", args.c_str(), "clip:vnode;", nss::checked_create<create>, nullptr, plugin);
+    vspapi->registerFunction("NCSR", args.c_str(), "clip:vnode;", nss::checked_create<create, kDefaultMemoryLimitMb>, nullptr, plugin);
 }
 
 }  // namespace nss_cuda

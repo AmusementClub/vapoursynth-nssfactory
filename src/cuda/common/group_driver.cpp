@@ -221,7 +221,10 @@ void plan_planes(Driver& d) {
     if (limit / static_cast<std::size_t>(d.backend.num_streams) < need) {
         throw std::invalid_argument(prefix(d) + "memory_limit_mb is too small for this clip: each of the " +
                                     std::to_string(d.backend.num_streams) + " stream(s) needs at least " +
-                                    std::to_string((need >> 20) + 1) + " MiB");
+                                    std::to_string((need >> 20) + 1) + " MiB" +
+                                    (shared_cache ? ", plus " + std::to_string((shared_cache >> 20) + 1) +
+                                                        " MiB for the rolling cache"
+                                                  : ""));
     }
     const std::size_t share =
         limit == SIZE_MAX ? kBatchBytes + fixed : limit / static_cast<std::size_t>(d.backend.num_streams);

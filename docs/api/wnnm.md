@@ -17,9 +17,7 @@ core.nss.WNNM(clip clip[, float[] sigma = 3.0, int block_size = 8,
               int radius = 0, int ps_num = 2, int ps_range = 4,
               int residual = 0, int adaptive_aggregation = 1,
               clip rclip = None,
-              int memory_limit_mb, string temporal_mode = "legacy",
-              int rolling_chunk = 4, int rolling_cache_chunks,
-              int rolling_cache_limit = 1])
+              int memory_limit_mb])
 ```
 
 ## Primary parameters
@@ -31,7 +29,7 @@ core.nss.WNNM(clip clip[, float[] sigma = 3.0, int block_size = 8,
 | `block_step` | 8 | [1, block] | Reference-patch stride. The main quality/speed trade: positions scale as `1/step^2`. |
 | `group_size` | 8 | [1, 32] | Matched patches per group (SVD matrix columns). |
 | `bm_range` | 7 | [1, 64] | Search window radius (`2r+1`). |
-| `radius` | 0 | [0, 16] | Temporal radius. >0 returns the weighted intermediate for `VAggregate`, or the finished result with `temporal_mode="rolling"`. |
+| `radius` | 0 | [0, 16] | Temporal radius. >0 returns the weighted intermediate for `VAggregate`. |
 | `rclip` | none | clip | Reference clip guiding matching. |
 
 ## Secondary parameters
@@ -43,8 +41,6 @@ core.nss.WNNM(clip clip[, float[] sigma = 3.0, int block_size = 8,
 | `ps_num` | 2 | [1, group] | Predictive-search seeds per temporal step (with `radius > 0`). |
 | `ps_range` | 4 | [1, 64] | Predictive-search window radius (temporal mode). |
 | `memory_limit_mb` | none | — | Workspace cap; fails instead of degrading. |
-| `temporal_mode` | `"legacy"` | legacy / rolling | With `radius > 0`: legacy returns the weighted intermediate for an explicit `VAggregate`; rolling returns the normalized, normal-height result directly (the same result as legacy followed by `VAggregate`). |
-| `rolling_chunk`, `rolling_cache_chunks` / `rolling_cache_limit` | 4, — / 1 | [1, 64] | Rolling chunk and cache knobs, validated in rolling mode; they only change scheduling where a device rolling path exists. |
 
 ## Algorithm and paper
 
@@ -80,10 +76,16 @@ takes the same arguments and gives the same errors as `nss.WNNM`. It adds
 `memory_limit_mb`) at the end of the argument list.
 
 - **Device-resident.** Matching, the per-group SVD shrinkage and the
-  aggregation all run on the device. `radius > 0` returns the same fat
+  aggregation all run on the device. With `temporal_mode = "legacy"`, `radius > 0` returns the same fat
   intermediate as the CPU, so either backend's `VAggregate` can reduce it.
-  `temporal_mode="rolling"` keeps the temporal accumulation on the
-  device and copies back only final frames.
+- **Temporal output.** With `radius > 0` the device plugin returns finished,
+  normal-height frames by default (`temporal_mode = "rolling"`): it
+  keeps the temporal accumulation on the device and copies back only final frames.
+  `temporal_mode = "legacy"` returns the fat intermediate instead, as the CPU
+  plugin does. `rolling_chunk` (default 4, range 1 to 64) and
+  `rolling_cache_limit` (default 1) set the chunk size and the number of
+  finished chunks kept; they only matter where the accumulation stays on the
+  device.
 - **Numerics.** The SVD is taken through the FP32 Gram matrix with a cyclic
   Jacobi eigensolver.
   - The output is not bit-identical to the CPU, but is inside the 60 dB gate
