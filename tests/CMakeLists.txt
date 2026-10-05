@@ -93,6 +93,10 @@ add_executable(test_dct8 test_dct8.cpp)
 target_link_libraries(test_dct8 PRIVATE nss_cpu nss_workspace)
 target_include_directories(test_dct8 PRIVATE "${PROJECT_SOURCE_DIR}/include")
 
+add_executable(test_bm3d_fused test_bm3d_fused.cpp)
+target_link_libraries(test_bm3d_fused PRIVATE nss_cpu nss_workspace)
+target_include_directories(test_bm3d_fused PRIVATE "${PROJECT_SOURCE_DIR}/include")
+
 add_executable(test_nlm_cpu test_nlm_cpu.cpp)
 target_link_libraries(test_nlm_cpu PRIVATE nss_cpu nss_workspace)
 target_include_directories(test_nlm_cpu PRIVATE "${PROJECT_SOURCE_DIR}/include")
@@ -119,6 +123,8 @@ target_include_directories(test_aggregate PRIVATE "${PROJECT_SOURCE_DIR}/include
 
 add_test(NAME test_svd COMMAND test_svd)
 add_test(NAME test_dct8 COMMAND test_dct8)
+add_test(NAME test_bm3d_fused COMMAND test_bm3d_fused)
+set_tests_properties(test_bm3d_fused PROPERTIES SKIP_RETURN_CODE 77)
 add_test(NAME test_nlm_cpu COMMAND test_nlm_cpu)
 add_test(NAME test_nlm_stripe COMMAND test_nlm_stripe)
 add_test(NAME test_nlm_accum_range COMMAND test_nlm_accum_range)

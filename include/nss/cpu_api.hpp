@@ -188,6 +188,15 @@ void bm3d_filter_group(float* patches, int lda, int group, int k, int block, flo
 // 8x8x8 fused path: in-register FFTW 3D DCT (bm3dcpu layout), shrink, accumulate. k in [1, 8].
 void bm3d_filter8(const float* src, int sstride, const Match* matches, int k, float sigma, bool wiener,
                   const float* ref, int rstride, float* num, float* den, int dstride, int width, int height);
+// Fused group filter (load, transform, shrink, inverse, accumulate on vectors)
+// for block 4, 8, 12, 16, 32 with group 4 to 64, except 12 / 8, 16 / 64,
+// 32 / 32 and 32 / 64. Patch g is read from frame matches[g].t when
+// radius > 0 (else t0) and added to that frame's slice of num/den.
+// refs == nullptr: hard threshold. Returns false when the shape has no fused
+// kernel on the running target; with matches == nullptr it only answers that.
+bool bm3d_filter_fused(int block, int group, const float* const* srcs, const int* sstrides, const Match* matches,
+                       int k, float sigma, const float* const* refs, const int* rstrides, float* num, float* den,
+                       int dstride, int width, int height, int t0, int radius, std::size_t plane_size);
 // Width-independent 8x8x8 implementation, also directly callable by tests and
 // capability probes. Uses the same effective sigma, real k and zero padding.
 void bm3d_filter8_portable(const float* src, int sstride, const Match* matches, int k, float sigma, bool wiener,

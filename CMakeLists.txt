@@ -123,6 +123,10 @@ foreach(feature REUSE RASTER HOMOGENEOUS SCRATCH RING)
   add_compile_definitions(NSS_BM_${feature}=${enabled})
 endforeach()
 
+# Fused group filter for most shapes with block 4, 8, 12, 16, 32 and groups of 4 to 64
+# (targets of 256 bits and wider; the shape list is in src/cpu/bm/dct8.cpp). OFF keeps the direct and generic paths for those shapes.
+option(NSS_BM_FUSED_TEMPLATE "Use the fused BM3D group filter for the shapes it serves" ON)
+add_compile_definitions(NSS_BM_FUSED_TEMPLATE=$<BOOL:${NSS_BM_FUSED_TEMPLATE}>)
 option(NSS_BM_KERNEL_LAB "Build isolated BM3D SSD/DCT microkernel experiments" OFF)
 option(NSS_LSSC_EXPLORER "Build the isolated paper-track LSSC exploration library" OFF)
 option(NSS_TWSC_MIDGROUP_BATCH "Enable the FP64 G24/G32 TWSC batch path" ${NSS_HWY_X86})

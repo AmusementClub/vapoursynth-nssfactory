@@ -95,7 +95,13 @@ void process_plane_batched(const float* const* srcs, const float* const* refs, i
     }
 
     const bool fused = block == 8 && group == 8 && radius == 0;
-    const bool direct = radius == 0 && (block == 4 || block == 8 || block == 12 || block == 16) && !fused;
+    // The fused template serves the other shapes that fit vectors, spatial and temporal
+    // (NSS_BM_FUSED_TEMPLATE; false on targets narrower than 256 bits).
+    const bool fused_template = !fused && NSS_BM_FUSED_TEMPLATE &&
+                                nss::bm3d_filter_fused(block, group, nullptr, nullptr, nullptr, 0, 0.f, nullptr, nullptr,
+                                                       nullptr, nullptr, 0, 0, 0, 0, 0, 0);
+    const bool direct = radius == 0 && (block == 4 || block == 8 || block == 12 || block == 16) && !fused &&
+                        !fused_template;
     const int area = block * block;
     nss::ResourceVector<float> direct_cube;
     nss::ResourceVector<float> direct_work;
@@ -141,6 +147,16 @@ void process_plane_batched(const float* const* srcs, const float* const* refs, i
         }
 #endif
 
+        if (fused_template) {
+            for (int i = 0; i < count; ++i) {
+                const int k = counts[static_cast<std::size_t>(i)];
+                if (k <= 0) continue;
+                const nss::Match* matches = match_storage.data() + static_cast<std::size_t>(i) * nss::kBmMaxGroup;
+                (void)nss::bm3d_filter_fused(block, group, srcs, src_strides, matches, k, sigma, wiener ? refs : nullptr,
+                                             ref_strides, num, den, width, width, height, t0, radius, plane_size);
+            }
+            continue;
+        }
         if (fused) {
             for (int i = 0; i < count; ++i) {
                 const int k = counts[static_cast<std::size_t>(i)];
