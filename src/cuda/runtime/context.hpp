@@ -22,6 +22,10 @@ inline constexpr int kDefaultStreams = 3;
 // they cross back to the host. "legacy" still returns the fat intermediate.
 inline constexpr nss::TemporalMode kDefaultTemporalMode = nss::TemporalMode::Rolling;
 inline constexpr int kMaxStreams = 16;
+// memory_limit_mb when the argument is not given. For BM3D at 4K, 2048 holds
+// Gray and YUV 4:2:0 up to radius 2 with finished frames, and 4:4:4 / RGB at
+// radius 1 without ref.
+inline constexpr int kDefaultMemoryLimitMb = 2048;
 
 std::string signature(const char* shared);
 

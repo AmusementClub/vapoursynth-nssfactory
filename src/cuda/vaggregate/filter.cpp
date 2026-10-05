@@ -153,7 +153,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
 
 void register_vaggregate(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
     static const std::string args = signature(nss::frontend::kVAggregateSignature);
-    vspapi->registerFunction("VAggregate", args.c_str(), "clip:vnode;", nss::checked_create<create>, nullptr, plugin);
+    vspapi->registerFunction("VAggregate", args.c_str(), "clip:vnode;", nss::checked_create<create, kDefaultMemoryLimitMb>, nullptr, plugin);
 }
 
 }  // namespace nss_cuda

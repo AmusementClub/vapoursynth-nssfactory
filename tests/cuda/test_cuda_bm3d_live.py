@@ -182,15 +182,18 @@ def main():
             cases += 1
             if value < floor:
                 failures.append(f"temporal b{block} g{group} {stage}: psnr {value:.2f} < {floor}")
-    # 4K must create at the default memory limit (no frames are requested). Rolling and YUV temporal
-    # Wiener need more than the default and are not in this list. Each case takes up to about 1 GiB of
-    # device memory while it exists.
-    for fmt in (vs.GRAYS, vs.YUV420PS):
+    # 4K must create at the default memory limit (no frames are requested). 4:4:4 with ref or
+    # radius 2 needs more than the default and is not in this list. Each case takes up to about
+    # 2 GiB of device memory while it exists.
+    for fmt in (vs.GRAYS, vs.YUV420PS, vs.YUV444PS):
         uhd = core.std.BlankClip(width=3840, height=2160, format=fmt, length=4)
         modes = [("spatial", {}), ("final", dict(ref=uhd)), ("r1 legacy", dict(radius=1, temporal_mode="legacy")),
+                 ("r1 rolling", dict(radius=1, temporal_mode="rolling")),
                  ("block 4", dict(block_size=4)), ("16 / 16", dict(block_size=16, group_size=16))]
-        if fmt == vs.GRAYS:
-            modes.append(("r1 final", dict(radius=1, ref=uhd, temporal_mode="legacy")))
+        if fmt != vs.YUV444PS:
+            modes += [("r1 final", dict(radius=1, ref=uhd, temporal_mode="legacy")),
+                      ("r1 rolling final", dict(radius=1, ref=uhd, temporal_mode="rolling")),
+                      ("r2 rolling final", dict(radius=2, ref=uhd, temporal_mode="rolling"))]
         for label, kw in modes:
             cases += 1
             try:

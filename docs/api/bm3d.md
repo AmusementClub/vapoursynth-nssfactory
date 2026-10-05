@@ -130,13 +130,14 @@ temporal = core.nss_cuda.VAggregate(fat, clip, radius=1)
     with integer atomics on fixed-point sums (exact, so independent of the
     order); temporal filtering and the remaining shapes sort their patches
     and sum them in a fixed order.
-- **Memory.** `memory_limit_mb` (default 1024) also caps device memory, pinned
-  staging and the rolling chunk cache. At 4K the default is enough for spatial
-  filtering in every format, and for `radius = 1` in legacy mode with GRAYS
-  (and YUV420 without `ref`); it runs with fewer streams and smaller internal
-  batches. Other 4K temporal uses need more, and the creation error names
-  the amount: about 1100 to 1500 for `radius = 1` depending on the format,
-  `ref` and the mode.
+- **Memory.** `memory_limit_mb` (default 2048 for `nss_cuda`) also caps device
+  memory, pinned staging and the rolling chunk cache. At 4K the default is
+  enough for spatial filtering in every format, for GRAYS and YUV420 up to
+  `radius = 2` in both modes with or without `ref`, and for YUV444 and RGB at
+  `radius = 1` without `ref` (and with `ref` in legacy mode). It may run with
+  fewer streams and smaller internal batches. YUV444 and RGB need more for the
+  rest, and the creation error names the amount: about 2070 for `radius = 1`
+  with `ref`, and 2130 to 2450 for `radius = 2`.
 - **Performance.** At 1080p GRAYS with defaults on an RTX 5080:
   - Spatial runs at bm3dcuda's speed or slightly faster.
   - Temporal runs at about 0.85 to 0.95x bm3dcuda. It uses the CPU's

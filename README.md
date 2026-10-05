@@ -108,9 +108,9 @@ Each filter takes the same arguments as its `nss` counterpart, plus
 - **`num_streams`** (default up to 3) is the number of frames an instance
   processes at once. Each stream owns its device buffers, so the default is
   lowered until the streams fit `memory_limit_mb`.
-- **`memory_limit_mb`** caps the instance's device and pinned host memory. A
-  limit that cannot hold one stream is a creation error; nothing degrades
-  silently.
+- **`memory_limit_mb`** (default 2048; the CPU plugin's default is 1024) caps
+  the instance's device and pinned host memory. A limit that cannot hold one
+  stream is a creation error; nothing degrades silently.
 - **Temporal filtering.** With `radius > 0` the device filters return
   finished, normal-height frames: no `VAggregate` call is needed.
   - BM3D, WNNM and single-round NCSR keep the temporal accumulation on the
@@ -118,8 +118,10 @@ Each filter takes the same arguments as its `nss` counterpart, plus
   - `temporal_mode="legacy"` returns the fat intermediate for `VAggregate`
     instead, exactly as the CPU plugin does; use it to mix backends or to
     keep an existing script unchanged.
-  - The finished-frame mode needs more memory than legacy; at 4K raise
-    `memory_limit_mb` (the creation error names the amount).
+  - The finished-frame mode needs more memory than legacy. The default
+    limit holds BM3D at 4K for Gray and YUV 4:2:0; 4:4:4 and RGB with `ref`
+    or `radius = 2` need a higher `memory_limit_mb` (the creation error names
+    the amount).
 - **Driver.** A prebuilt plugin needs a driver for the CUDA release it was
   built with (12.9 for the release packages) or newer.
 

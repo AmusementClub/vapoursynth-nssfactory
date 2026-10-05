@@ -82,7 +82,7 @@ void VS_CC create_temporal(const VSMap* in, VSMap* out, void*, VSCore* core, con
 
 void register_mcwnnm(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
     static const std::string args = signature(nss::frontend::kMcwnnmSignature);
-    vspapi->registerFunction("MCWNNM", args.c_str(), "clip:vnode;", nss::checked_create<create_temporal>, nullptr, plugin);
+    vspapi->registerFunction("MCWNNM", args.c_str(), "clip:vnode;", nss::checked_create<create_temporal, kDefaultMemoryLimitMb>, nullptr, plugin);
 }
 
 }  // namespace nss_cuda
