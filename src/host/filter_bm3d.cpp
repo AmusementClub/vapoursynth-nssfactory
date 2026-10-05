@@ -100,7 +100,8 @@ void process_plane_batched(const float* const* srcs, const float* const* refs, i
     const bool fused_template = !fused && NSS_BM_FUSED_TEMPLATE &&
                                 nss::bm3d_filter_fused(block, group, nullptr, nullptr, nullptr, 0, 0.f, nullptr, nullptr,
                                                        nullptr, nullptr, 0, 0, 0, 0, 0, 0);
-    const bool direct = radius == 0 && (block == 4 || block == 8 || block == 12 || block == 16) && !fused;
+    const bool direct = radius == 0 && (block == 4 || block == 8 || block == 12 || block == 16) && !fused &&
+                        !fused_template;
     const int area = block * block;
     nss::ResourceVector<float> direct_cube;
     nss::ResourceVector<float> direct_work;

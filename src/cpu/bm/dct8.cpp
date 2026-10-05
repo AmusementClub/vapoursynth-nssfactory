@@ -1287,7 +1287,8 @@ void Bm3dFilter8(const float* src, int sstride, const Match* matches, int k, flo
 //
 // The scheme of Bm3dFilter8 (load, 3-D transform, shrink, inverse, accumulate,
 // all on vectors, no packed cube) for block 4, 8, 12, 16 and 32 with group 4
-// to 64, spatial and temporal. Vector (g * B + r) * C + c holds lanes c * L ..
+// to 64, spatial and temporal, except 12 / 8 (slower than its own path) and
+// 16 / 64, 32 / 32, 32 / 64 (not measured; they keep the generic path). Vector (g * B + r) * C + c holds lanes c * L ..
 // of row r of patch g, with L = 4 lanes for block 4 and 12 and 8 otherwise,
 // C = B / L.
 // Line transforms: the orthonormal 4-point pair, the 8-point FFTW butterflies
@@ -1570,7 +1571,8 @@ bool Bm3dFilterFused(int block, int group, const float* const* srcs, const int* 
         return true;
     NSS_FUSED(4, 4) NSS_FUSED(4, 8) NSS_FUSED(4, 16) NSS_FUSED(4, 32) NSS_FUSED(4, 64)
     NSS_FUSED(8, 4) NSS_FUSED(8, 8) NSS_FUSED(8, 16) NSS_FUSED(8, 32) NSS_FUSED(8, 64)
-    NSS_FUSED(12, 4) NSS_FUSED(12, 8) NSS_FUSED(12, 16) NSS_FUSED(12, 32) NSS_FUSED(12, 64)
+    // 12 / 8 keeps its own path: the template measured 0.95x there (C4, paired).
+    NSS_FUSED(12, 4) NSS_FUSED(12, 16) NSS_FUSED(12, 32) NSS_FUSED(12, 64)
     NSS_FUSED(16, 4) NSS_FUSED(16, 8) NSS_FUSED(16, 16) NSS_FUSED(16, 32)
     NSS_FUSED(32, 4) NSS_FUSED(32, 8) NSS_FUSED(32, 16)
 #undef NSS_FUSED

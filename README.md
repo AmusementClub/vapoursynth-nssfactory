@@ -176,9 +176,10 @@ commit, dirty status, non-ignored working-tree files, CMake identity and any
 attached plugin/input/quality/performance artifacts. A release manifest must be
 generated from the exact release source root, not from the current dirty tree.
 
-BM3D shapes other than block 8 / group 8 with block 4, 8, 12, 16 or 32 and a group of 4 to 64 use a fused group
-filter on targets of 256 bits and wider, spatial and temporal (`-DNSS_BM_FUSED_TEMPLATE=OFF` restores the
-previous paths; outputs agree to rounding and to threshold decisions within the DCT error band).
+BM3D with block 4, 8, 12, 16 or 32 and a group of 4 to 64 uses a fused group filter on targets of 256 bits and
+wider, spatial and temporal. Spatial 8 / 8 keeps its dedicated kernel, and 12 / 8, 16 / 64, 32 / 32 and 32 / 64
+keep their previous paths. `-DNSS_BM_FUSED_TEMPLATE=OFF` restores the previous paths everywhere; outputs agree
+to rounding and to threshold decisions within the DCT error band.
 
 Fresh builds select `NSS_BM_EXPERIMENT=2305`: AVX3 SortedTopK for b8 groups of
 at least 16, BM3D patch/work reuse, and rolling target-ring/direct-scratch

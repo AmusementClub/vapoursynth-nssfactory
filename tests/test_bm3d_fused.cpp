@@ -121,8 +121,9 @@ int main() {
         for (const int group : {4, 8, 16, 32, 64}) {
             const bool served = nss::bm3d_filter_fused(block, group, nullptr, nullptr, nullptr, 0, 0.f, nullptr, nullptr,
                                                        nullptr, nullptr, 0, 0, 0, 0, 0, 0);
-            // Cubes of more than 2048 vectors are not served.
-            const bool expected = !(block == 16 && group == 64) && !(block == 32 && group >= 32);
+            // 12 / 8 keeps its own path; 16 / 64, 32 / 32 and 32 / 64 keep the generic one.
+            const bool expected = !(block == 12 && group == 8) && !(block == 16 && group == 64) &&
+                                  !(block == 32 && group >= 32);
             if (served != expected) {
                 std::printf("FAIL b%d g%d: served = %d\n", block, group, served ? 1 : 0);
                 ++failures;
