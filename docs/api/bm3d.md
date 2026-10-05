@@ -84,7 +84,7 @@ arguments, shared with the CPU signature, are the ones to know on the device:
 | `rolling_chunk` | 4 | Frames accumulated per rolling chunk, 1 to 64. |
 | `rolling_cache_limit` (or `rolling_cache_chunks`) | 1 | Finished chunks kept for later frame requests, 1 to 64. |
 | `device_id` | 0 | CUDA device index. |
-| `num_streams` | 1 | How many frames (or rolling chunks) can be in flight on the device at once, 1 to 16. Each stream has its own device buffers. One stream already keeps the device busy for spatial and legacy filtering; more help the rolling mode. With `memory_limit_mb`, a value that does not fit is a creation error. `VAggregate` accepts both arguments but does not use a device. |
+| `num_streams` | 1 | How many frames (or rolling chunks) can be in flight on the device at once, 1 to 16. Each stream has its own device buffers. One stream already keeps the device busy; more add little (about 15% for the rolling mode). With `memory_limit_mb`, a value that does not fit is a creation error. `VAggregate` accepts both arguments but does not use a device. |
 
 ```python
 basic = core.nss_cuda.BM3D(clip, sigma=25)
@@ -134,12 +134,13 @@ temporal = core.nss_cuda.VAggregate(fat, clip, radius=1)
   what its plan needs and a failed device allocation is reported as the CUDA
   out-of-memory error. With `memory_limit_mb`, the value also caps device
   memory, pinned staging and the rolling chunk cache, and the filter runs
-  with smaller internal batches to fit (the output does not change). One
-  stream at 4K fits 2048 for spatial filtering in every format, for GRAYS and
-  YUV420 up to `radius = 2` in both modes with or without `ref`, and for
-  YUV444 and RGB at `radius = 1` without `ref` (and with `ref` in legacy
-  mode); YUV444 and RGB need about 2070 for `radius = 1` with `ref`, and 2130
-  to 2450 for `radius = 2`.
+  with smaller internal batches to fit (the output does not change). The
+  smallest limit one stream accepts at 4K, for GRAYS / YUV420 / YUV444 or RGB:
+  - Spatial: about 300 / 310 / 350, and 350 / 370 / 420 with `ref`.
+  - Rolling, `radius = 1`: 1280 / 1440 / 1910, and 1630 / 1780 / 2260 with `ref`.
+  - Rolling, `radius = 2`: 1600 / 1750 / 2230, and 2130 / 2290 / 2770 with `ref`.
+  - Legacy with `ref`: 990 / 1090 / 1370 at `radius = 1`, 1630 / 1790 / 2260
+    at `radius = 2`.
 - **Performance.** At 1080p GRAYS on an RTX 5080 (`num_streams=3` for temporal):
   - Spatial runs at bm3dcuda's speed or slightly faster.
   - Temporal runs at about 0.85 to 0.95x bm3dcuda. It uses the CPU's

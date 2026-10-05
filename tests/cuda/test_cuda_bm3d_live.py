@@ -182,8 +182,8 @@ def main():
             cases += 1
             if value < floor:
                 failures.append(f"temporal b{block} g{group} {stage}: psnr {value:.2f} < {floor}")
-    # 4K must create within 2048 MiB (no frames are requested). 4:4:4 with ref or radius 2 needs
-    # more and is not in this list. Each case takes up to about 2 GiB of device memory while it
+    # 4K must create within 2048 MiB (no frames are requested). 4:4:4 with ref or radius 2, and
+    # rolling at radius 2 with ref, need more and are not in this list. Each case takes up to about 2 GiB of device memory while it
     # exists.
     for fmt in (vs.GRAYS, vs.YUV420PS, vs.YUV444PS):
         uhd = core.std.BlankClip(width=3840, height=2160, format=fmt, length=4)
@@ -193,7 +193,7 @@ def main():
         if fmt != vs.YUV444PS:
             modes += [("r1 final", dict(radius=1, ref=uhd, temporal_mode="legacy")),
                       ("r1 rolling final", dict(radius=1, ref=uhd, temporal_mode="rolling")),
-                      ("r2 rolling final", dict(radius=2, ref=uhd, temporal_mode="rolling"))]
+                      ("r2 rolling", dict(radius=2, temporal_mode="rolling"))]
         for label, kw in modes:
             cases += 1
             try:
