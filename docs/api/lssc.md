@@ -65,8 +65,7 @@ and deterministic.
 
 `core.nss_cuda.LSSC` (from `libnss_cuda`, built with `-DNSS_ENABLE_CUDA=ON`)
 takes the same arguments and gives the same errors as `nss.LSSC`. It adds
-`device_id` (default 0) and `num_streams` (default up to 3, fitted to
-`memory_limit_mb`) at the end of the argument list.
+`device_id` (default 0) and `num_streams` (default 1) at the end of the argument list.
 
 - **Device-resident.** Patch packing, k-means, the dictionary (DCT atoms,
   sampled patches, one K-SVD round), the per-cluster sparse coding, the
@@ -79,7 +78,6 @@ takes the same arguments and gives the same errors as `nss.LSSC`. It adds
   - The output is not bit-identical to the CPU, but is inside the 60 dB gate
     (139–141 dB on the frozen references) and run-to-run identical.
 - **Memory.** The coefficients cost `min(256, patches)` floats per grid patch,
-  so a dense `block_step` on a large frame needs a matching
-  `memory_limit_mb`.
+  so a dense `block_step` on a large frame takes that much device memory.
 - **Speed.** The dictionary update is sequential over the atoms, so the gain
   over the CPU is small: about 1–2x the CPU plugin at 16 threads for 1080p.

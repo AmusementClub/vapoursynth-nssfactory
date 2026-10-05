@@ -108,8 +108,7 @@ stage dominates; blind estimation adds a full step-1 matching pass per frame.
 
 `core.nss_cuda.NLH` (from `libnss_cuda`, built with `-DNSS_ENABLE_CUDA=ON`)
 takes the same arguments and gives the same errors as `nss.NLH`. It adds
-`device_id` (default 0) and `num_streams` (default up to 3, fitted to
-`memory_limit_mb`) at the end of the argument list.
+`device_id` (default 0) and `num_streams` (default 1) at the end of the argument list.
 
 - **Device-resident.** The whole frame pipeline runs on the device: the
   RGB/YUV conversion, the blind noise estimate, every Basic round over the

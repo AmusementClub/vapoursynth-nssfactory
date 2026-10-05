@@ -104,7 +104,7 @@ public:
             for (std::size_t i = 0; i < resource_kinds; ++i) bytes[i] = static_cast<std::int64_t>(stats.bytes[i]);
             if (api_->mapSetIntArray(props, "_NSSResourceBytes", bytes, resource_kinds) ||
                 api_->mapSetInt(props, "_NSSResourcePeak", static_cast<std::int64_t>(stats.peak), maReplace) ||
-                api_->mapSetInt(props, "_NSSResourceLimit", static_cast<std::int64_t>(stats.limit), maReplace))
+                api_->mapSetInt(props, "_NSSResourceLimit", stats.limit == SIZE_MAX ? 0 : static_cast<std::int64_t>(stats.limit), maReplace))
                 throw std::bad_alloc();
         }
         forget(frame); return frame;

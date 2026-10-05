@@ -3,6 +3,7 @@
 
 #include <VapourSynth4.h>
 
+#include <cstdint>
 #include <string>
 #include <exception>
 #include <new>
@@ -28,17 +29,19 @@ inline void validate_group_planes(const VSVideoInfo& vi, const float* sigma, int
 // Algorithm-specific ranges are still checked by the individual factories.
 bool validate_numeric_args(const VSAPI* vsapi, const VSMap* in, VSMap* out);
 
-// DefaultMb is the budget when memory_limit_mb is not given.
+// DefaultMb is the budget when memory_limit_mb is not given; 0 means no limit.
 template <auto Create, int DefaultMb = 1024>
 void VS_CC checked_create(const VSMap* in, VSMap* out, void* user_data, VSCore* core, const VSAPI* vsapi) {
     try {
         if (!validate_numeric_args(vsapi, in, out)) return;
         int error = 0;
         const auto value = vsapi->mapGetInt(in, "memory_limit_mb", 0, &error);
+        const bool unlimited = error && DefaultMb == 0;
         const auto megabytes = error ? DefaultMb : value;
-        if (megabytes < 1 || megabytes > 1048576)
+        if (!unlimited && (megabytes < 1 || megabytes > 1048576))
             throw std::invalid_argument("nss: memory_limit_mb must be in [1, 1048576]");
-        auto budget = std::make_shared<ResourceBudget>(checked_mul(static_cast<std::size_t>(megabytes), 1048576));
+        auto budget = std::make_shared<ResourceBudget>(
+            unlimited ? SIZE_MAX : checked_mul(static_cast<std::size_t>(megabytes), 1048576));
         ResourceScope resource_scope(budget);
         Create(in, out, user_data, core, vsapi);
     } catch (const std::bad_alloc&) { vsapi->mapSetError(out, "nss: resource allocation failed during creation"); }

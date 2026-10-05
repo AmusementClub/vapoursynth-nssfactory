@@ -78,8 +78,7 @@ directly; `block_step` scales positions as usual.
 
 `core.nss_cuda.MCWNNM` (from `libnss_cuda`, built with `-DNSS_ENABLE_CUDA=ON`)
 takes the same arguments and gives the same errors as `nss.MCWNNM`. It adds
-`device_id` (default 0) and `num_streams` (default up to 3, fitted to
-`memory_limit_mb`) at the end of the argument list.
+`device_id` (default 0) and `num_streams` (default 1) at the end of the argument list.
 
 - **Device-resident.** The joint three-channel matching, the ADMM solve of
   every group, the aggregation and all outer rounds run on the device.
@@ -100,5 +99,4 @@ takes the same arguments and gives the same errors as `nss.MCWNNM`. It adds
   - One thread handles each group in a fixed order, and aggregation is
     ordered.
 - **Memory.** The ADMM state costs about 12 KiB of device memory per group at
-  the defaults, so a 1080p frame runs in several batches unless
-  `memory_limit_mb` allows more.
+  the defaults, so a 1080p frame runs in several batches.
