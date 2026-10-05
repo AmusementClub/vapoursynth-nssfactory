@@ -36,6 +36,8 @@ using nss::host_detail::temporal_slot_frame;
 // Upper bound on the per-batch group buffers; larger planes run in batches
 // and the batch also shrinks so num_streams slots fit memory_limit_mb.
 constexpr std::size_t kBatchBytes = 128u << 20;
+// Spatial and legacy frames staged at once (see plan_planes).
+constexpr std::size_t kFramesInFlight = 3;
 
 // A staging region plus an event marking when the device has finished with
 // it, so host code never overwrites bytes that are still in flight.
@@ -67,6 +69,22 @@ struct Slot {
     }
 };
 
+// Pinned staging for one frame in flight (spatial and legacy). It is leased
+// apart from the slots: a thread copies its input in before it takes a slot
+// and copies its output out after it has given the slot back, so the stream
+// works on another frame meanwhile. regions[r] is one tight plane.
+struct Staging {
+    PinnedBuffer bytes;
+    std::vector<std::uint8_t*> regions;
+    cudaEvent_t done = nullptr;  // recorded behind the frame's last download
+    Staging() = default;
+    Staging(const Staging&) = delete;
+    Staging& operator=(const Staging&) = delete;
+    ~Staging() {
+        if (done) cudaEventDestroy(done);
+    }
+};
+
 struct ChunkStore {
     int start = 0, count = 0;
     // frames[i][plane]: final plane of frame start + i (tight rows).
@@ -76,9 +94,11 @@ struct ChunkStore {
 struct Driver : GroupFilterConfig {
     std::size_t plane_floats = 0;  // largest plane (tight pitch)
     int ntemp = 1;                 // 2R+1
-    int regions = 0;               // staging regions per slot
+    int regions = 0;               // staging regions per slot (rolling) or per staging set
+    int staging_sets = 0;          // spatial and legacy: frames in flight, at least num_streams
     bool channel_out[3]{true, true, true};  // joint: channel c is written (else copied)
     std::unique_ptr<SlotPool<Slot>> pool;
+    std::unique_ptr<SlotPool<Staging>> staging;
 
     // Rolling chunk cache (LRU) and chunks being computed.
     std::mutex cache_mu;
@@ -247,6 +267,31 @@ void plan_planes(Driver& d) {
         }
         if (!changed) break;
     }
+    // Spatial and legacy: a staging set and an output frame per frame in
+    // flight. One per stream is in `fixed`; more keep a stream busy while
+    // other threads copy, as far as the limit allows. Three frames in flight
+    // saturate one stream (1080p BM3D on an RTX 5080: 454 fps with one set,
+    // 752 with two, 821 with three); beyond that the host copies only compete
+    // for memory bandwidth.
+    if (d.mode != GroupMode::Rolling) {
+        const std::size_t streams = static_cast<std::size_t>(d.backend.num_streams);
+        const std::size_t set_bytes = plane_bytes * d.regions + output;
+        std::size_t extra = std::max(streams, kFramesInFlight) - streams;
+        if (total != SIZE_MAX) {
+            const std::size_t used = streams * (fixed + slot_batch_bytes(d) / 3 * 4);
+            extra = std::min(extra, limit > used ? (limit - used) / set_bytes : 0);
+        }
+        d.staging_sets = static_cast<int>(streams + extra);
+    }
+}
+
+std::unique_ptr<Staging> make_staging(const Driver& d) {
+    auto staging = std::make_unique<Staging>();
+    const std::size_t plane_bytes = d.plane_floats * sizeof(float);
+    staging->bytes = PinnedBuffer(plane_bytes * d.regions, d.budget);
+    for (int i = 0; i < d.regions; ++i) staging->regions.push_back(staging->bytes.as<std::uint8_t>() + plane_bytes * i);
+    NSS_CUDA_CHECK(cudaEventCreateWithFlags(&staging->done, cudaEventDisableTiming));
+    return staging;
 }
 
 std::unique_ptr<Slot> make_slot(const Driver& d) {
@@ -298,8 +343,10 @@ std::unique_ptr<Slot> make_slot(const Driver& d) {
     if (values) slot->values = DeviceBuffer(values, d.budget);
     if (scratch) slot->scratch = DeviceBuffer(scratch, d.budget);
     if (patches) slot->patches = DeviceBuffer(patches, d.budget);
-    slot->staging = PinnedBuffer(plane_bytes * d.regions, d.budget);
-    for (int i = 0; i < d.regions; ++i) {
+    // Spatial and legacy frames stage through the driver's Staging sets.
+    const int regions = d.mode == GroupMode::Rolling ? d.regions : 0;
+    if (regions) slot->staging = PinnedBuffer(plane_bytes * regions, d.budget);
+    for (int i = 0; i < regions; ++i) {
         StagingRegion region{slot->staging.as<std::uint8_t>() + plane_bytes * i, nullptr};
         NSS_CUDA_CHECK(cudaEventCreateWithFlags(&region.done, cudaEventDisableTiming));
         slot->regions.push_back(region);
@@ -411,10 +458,13 @@ void filter_center(const Driver& d, Slot& s, const GroupPlane& p, int center, bo
 
 // Spatial and legacy: one output frame per call.
 const VSFrame* frame_output(Driver* d, int n, VSFrameContext* ctx, VSCore* core, const VSAPI* vsapi) {
-    // Lease the slot before allocating the output so at most num_streams
-    // output frames are charged to memory_limit_mb at any time.
-    auto slot = d->pool->acquire();
-    Slot& s = *slot;
+    // Lease the staging set before allocating the output so at most
+    // staging_sets output frames are charged to memory_limit_mb at any time.
+    auto staging = [&] {
+        NSS_CUDA_RANGE("group.staging");
+        return d->staging->acquire();
+    }();
+    Staging& g = *staging;
     DeviceGuard guard(d->device.index);
     nss::ResourceScope resource_scope(d->budget);
     nss::FrameScope frames(vsapi);
@@ -454,63 +504,106 @@ const VSFrame* frame_output(Driver* d, int n, VSFrameContext* ctx, VSCore* core,
             for (int c = 0; c < channels; ++c) identity(unit + c);
             continue;
         }
+        const auto stage = [&](int region, const VSFrame* frame, int plane) {
+            stage_plane(vsapi->getReadPtr(frame, plane), vsapi->getStride(frame, plane), row_bytes, p.height,
+                        g.regions[region]);
+        };
         int region = 0;
-        for (int t = 0; t < d->ntemp; ++t) {
-            for (int c = 0; c < channels; ++c) {
-                upload(s, region++, srcf[t], unit + c, p, s.src_frames[t].as<float>() + c * p.floats, vsapi);
-                if (w) upload(s, region++, reff[t], unit + c, p, s.ref_frames[t].as<float>() + c * p.floats, vsapi);
-            }
-        }
-        const std::size_t unit_floats = p.floats * channels;
-        for (int t = 0; t < d->ntemp && d->iters > 1; ++t) {
-            NSS_CUDA_CHECK(cudaMemcpyAsync(s.noisy_frames[t].get(), s.src_frames[t].get(), unit_floats * sizeof(float),
-                                           cudaMemcpyDeviceToDevice, s.stream));
-        }
-        for (int iter = 0; iter < d->iters; ++iter) {
-            for (int t = 0; t < d->ntemp && iter > 0; ++t) {
-                iter_regularize(s.src_frames[t].as<float>(), s.noisy_frames[t].as<float>(), unit_floats, d->delta, s.stream);
-            }
-            filter_center(*d, s, p, n, w && iter == 0);
-            if (!iterative(*d) || (radius > 0 && iter + 1 == d->iters)) break;
-            // The estimate of every window frame becomes the finished slice.
+        {
+            NSS_CUDA_RANGE("group.stage_in");
             for (int t = 0; t < d->ntemp; ++t) {
                 for (int c = 0; c < channels; ++c) {
-                    float* est = s.src_frames[t].as<float>() + c * p.floats;
-                    const std::size_t slice = (static_cast<std::size_t>(c) * d->ntemp + t) * p.floats;
-                    aggregate_finish(s.num.as<float>() + slice, s.den.as<float>() + slice, est, p.width, p.height, p.width,
-                                     est, s.stream);
+                    stage(region++, srcf[t], unit + c);
+                    if (w) stage(region++, reff[t], unit + c);
                 }
             }
         }
         // Download region of row k of channel c.
         const int rows = radius == 0 ? 1 : 2 * d->ntemp;
         const auto slot_region = [&](int c, int k) { return downloads + c * rows + k; };
-        for (int c = 0; c < channels; ++c) {
-            if (!d->channel_out[c]) continue;
-            if (radius == 0) {
-                const float* result = s.src_frames[0].as<float>() + c * p.floats;
-                if (p.fused) {
-                    const FixedTarget fixed{s.fixed_num.as<unsigned long long>(), s.fixed_den.as<unsigned long long>(),
-                                            p.width, p.floats};
-                    fixed_finish(fixed, s.host_src_ptrs[0], p.width, p.height, s.out.as<float>(), s.stream);
-                    result = s.out.as<float>();
-                } else if (!iterative(*d)) {
-                    aggregate_finish(s.num.as<float>(), s.den.as<float>(), s.host_src_ptrs[0], p.width, p.height, p.width,
-                                     s.out.as<float>(), s.stream);
-                    result = s.out.as<float>();
+        // The slot is held only while this unit's work is queued: everything
+        // the next frame queues on the stream runs after it, and the staging
+        // regions belong to this frame until its event has passed.
+        {
+            NSS_CUDA_RANGE("group.queue");
+            auto slot = d->pool->acquire();
+            Slot& s = *slot;
+            // On an error the queued copies must not outlive the leases of
+            // the staging they read and write.
+            struct Drain {
+                cudaStream_t stream;
+                bool armed = true;
+                ~Drain() {
+                    if (armed) cudaStreamSynchronize(stream);
                 }
-                download(s, slot_region(c, 0), result, p);
-            } else {
-                // Fat layout: slice sl -> num rows at 2*sl*h, den rows at (2*sl+1)*h.
-                for (int sl = 0; sl < d->ntemp; ++sl) {
-                    const std::size_t slice = (static_cast<std::size_t>(c) * d->ntemp + sl) * p.floats;
-                    download(s, slot_region(c, 2 * sl), s.num.as<float>() + slice, p);
-                    download(s, slot_region(c, 2 * sl + 1), s.den.as<float>() + slice, p);
+            } drain{s.stream};
+            region = 0;
+            for (int t = 0; t < d->ntemp; ++t) {
+                for (int c = 0; c < channels; ++c) {
+                    upload_staged(g.regions[region++], row_bytes, p.height, s.src_frames[t].as<float>() + c * p.floats,
+                                  row_bytes, s.stream);
+                    if (w) {
+                        upload_staged(g.regions[region++], row_bytes, p.height, s.ref_frames[t].as<float>() + c * p.floats,
+                                      row_bytes, s.stream);
+                    }
                 }
             }
+            const std::size_t unit_floats = p.floats * channels;
+            for (int t = 0; t < d->ntemp && d->iters > 1; ++t) {
+                NSS_CUDA_CHECK(cudaMemcpyAsync(s.noisy_frames[t].get(), s.src_frames[t].get(), unit_floats * sizeof(float),
+                                               cudaMemcpyDeviceToDevice, s.stream));
+            }
+            for (int iter = 0; iter < d->iters; ++iter) {
+                for (int t = 0; t < d->ntemp && iter > 0; ++t) {
+                    iter_regularize(s.src_frames[t].as<float>(), s.noisy_frames[t].as<float>(), unit_floats, d->delta, s.stream);
+                }
+                filter_center(*d, s, p, n, w && iter == 0);
+                if (!iterative(*d) || (radius > 0 && iter + 1 == d->iters)) break;
+                // The estimate of every window frame becomes the finished slice.
+                for (int t = 0; t < d->ntemp; ++t) {
+                    for (int c = 0; c < channels; ++c) {
+                        float* est = s.src_frames[t].as<float>() + c * p.floats;
+                        const std::size_t slice = (static_cast<std::size_t>(c) * d->ntemp + t) * p.floats;
+                        aggregate_finish(s.num.as<float>() + slice, s.den.as<float>() + slice, est, p.width, p.height, p.width,
+                                         est, s.stream);
+                    }
+                }
+            }
+            for (int c = 0; c < channels; ++c) {
+                if (!d->channel_out[c]) continue;
+                if (radius == 0) {
+                    const float* result = s.src_frames[0].as<float>() + c * p.floats;
+                    if (p.fused) {
+                        const FixedTarget fixed{s.fixed_num.as<unsigned long long>(), s.fixed_den.as<unsigned long long>(),
+                                                p.width, p.floats};
+                        fixed_finish(fixed, s.host_src_ptrs[0], p.width, p.height, s.out.as<float>(), s.stream);
+                        result = s.out.as<float>();
+                    } else if (!iterative(*d)) {
+                        aggregate_finish(s.num.as<float>(), s.den.as<float>(), s.host_src_ptrs[0], p.width, p.height, p.width,
+                                         s.out.as<float>(), s.stream);
+                        result = s.out.as<float>();
+                    }
+                    begin_download(result, row_bytes, row_bytes, p.height, g.regions[slot_region(c, 0)], s.stream);
+                } else {
+                    // Fat layout: slice sl -> num rows at 2*sl*h, den rows at (2*sl+1)*h.
+                    for (int sl = 0; sl < d->ntemp; ++sl) {
+                        const std::size_t slice = (static_cast<std::size_t>(c) * d->ntemp + sl) * p.floats;
+                        begin_download(s.num.as<float>() + slice, row_bytes, row_bytes, p.height,
+                                       g.regions[slot_region(c, 2 * sl)], s.stream);
+                        begin_download(s.den.as<float>() + slice, row_bytes, row_bytes, p.height,
+                                       g.regions[slot_region(c, 2 * sl + 1)], s.stream);
+                    }
+                }
+            }
+            NSS_CUDA_CHECK(cudaEventRecord(g.done, s.stream));
+            drain.armed = false;
         }
-        // The next plane reuses these regions; finish this plane's copies first.
-        s.stream.synchronize();
+        // The staging regions hold the result once the event has passed.
+        {
+            NSS_CUDA_RANGE("group.wait");
+            NSS_CUDA_CHECK(cudaEventSynchronize(g.done));
+        }
+        NSS_CUDA_RANGE("group.stage_out");
         for (int c = 0; c < channels; ++c) {
             if (!d->channel_out[c]) {
                 identity(unit + c);
@@ -519,7 +612,7 @@ const VSFrame* frame_output(Driver* d, int n, VSFrameContext* ctx, VSCore* core,
             auto* op = static_cast<std::uint8_t*>(static_cast<void*>(vsapi->getWritePtr(dst, unit + c)));
             const std::ptrdiff_t ds = vsapi->getStride(dst, unit + c);
             for (int k = 0; k < rows; ++k) {
-                finish_download(s.regions[slot_region(c, k)].bytes, row_bytes, p.height,
+                finish_download(g.regions[slot_region(c, k)], row_bytes, p.height,
                                 op + static_cast<std::ptrdiff_t>(k) * p.height * ds, ds);
             }
         }
@@ -711,6 +804,7 @@ void VS_CC freeFilter(void* instance, VSCore*, const VSAPI*) {
     {
         DeviceGuard guard(d->device.index);
         d->pool.reset();
+        d->staging.reset();
     }
     delete d;
 }
@@ -751,6 +845,11 @@ void group_filter_install(GroupFilterConfig&& config, VSMap* out, VSCore* core, 
     std::vector<std::unique_ptr<Slot>> slots;
     for (int i = 0; i < d->backend.num_streams; ++i) slots.push_back(make_slot(*d));
     d->pool = std::make_unique<SlotPool<Slot>>(std::move(slots));
+    if (d->staging_sets) {
+        std::vector<std::unique_ptr<Staging>> sets;
+        for (int i = 0; i < d->staging_sets; ++i) sets.push_back(make_staging(*d));
+        d->staging = std::make_unique<SlotPool<Staging>>(std::move(sets));
+    }
 
     const auto pattern = d->mode == GroupMode::Spatial ? rpStrictSpatial : rpGeneral;
     VSFilterDependency deps[2]{{d->node, pattern}, {d->guide, pattern}};

@@ -25,7 +25,16 @@ void copy_rows(const void* src, std::ptrdiff_t src_stride, void* dst, std::ptrdi
 
 void upload_plane(const void* host, std::ptrdiff_t host_stride, std::size_t row_bytes, int rows, void* staging,
                   void* device, std::size_t device_pitch, cudaStream_t stream) {
+    stage_plane(host, host_stride, row_bytes, rows, staging);
+    upload_staged(staging, row_bytes, rows, device, device_pitch, stream);
+}
+
+void stage_plane(const void* host, std::ptrdiff_t host_stride, std::size_t row_bytes, int rows, void* staging) {
     copy_rows(host, host_stride, staging, static_cast<std::ptrdiff_t>(row_bytes), row_bytes, rows);
+}
+
+void upload_staged(const void* staging, std::size_t row_bytes, int rows, void* device, std::size_t device_pitch,
+                   cudaStream_t stream) {
     NSS_CUDA_CHECK(cudaMemcpy2DAsync(device, device_pitch, staging, row_bytes, row_bytes, static_cast<std::size_t>(rows),
                                      cudaMemcpyHostToDevice, stream));
 }

@@ -14,6 +14,12 @@ namespace nss_cuda {
 void upload_plane(const void* host, std::ptrdiff_t host_stride, std::size_t row_bytes, int rows, void* staging,
                   void* device, std::size_t device_pitch, cudaStream_t stream);
 
+// The two halves of upload_plane, for callers that fill staging before they
+// hold a stream: host rows -> staging, then staging -> device on the stream.
+void stage_plane(const void* host, std::ptrdiff_t host_stride, std::size_t row_bytes, int rows, void* staging);
+void upload_staged(const void* staging, std::size_t row_bytes, int rows, void* device, std::size_t device_pitch,
+                   cudaStream_t stream);
+
 // Device (pitched) -> staging (tight), async on stream. After the stream has
 // synchronized, finish_download copies staging into the host rows.
 void begin_download(const void* device, std::size_t device_pitch, std::size_t row_bytes, int rows, void* staging,
