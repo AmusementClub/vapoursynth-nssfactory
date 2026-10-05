@@ -28,28 +28,37 @@ TemporalMode parse_temporal_mode(const VSAPI* vsapi, const VSMap* in, int radius
     return mode_s == "rolling" ? TemporalMode::Rolling : TemporalMode::Legacy;
 }
 
-RollingParams parse_rolling(const VSAPI* vsapi, const VSMap* in, int radius, const char* filter, const char* ns) {
+RollingParams parse_rolling(const VSAPI* vsapi, const VSMap* in, int radius, const char* filter, const char* ns,
+                            RollingCache cache) {
+    const bool adaptive = cache == RollingCache::Adaptive;
     RollingParams p;
     p.rolling_chunk = map_int(vsapi, in, "rolling_chunk", 4);
     int cache_limit_err = 0;
-    p.cache_limit = map_int(vsapi, in, "rolling_cache_limit", 1, &cache_limit_err);
+    p.cache_limit = map_int(vsapi, in, "rolling_cache_limit", adaptive ? 16 : 1, &cache_limit_err);
     int cache_chunks_err = 0;
-    const int cache_chunks = map_int(vsapi, in, "rolling_cache_chunks", 1, &cache_chunks_err);
-    if (!cache_chunks_err) p.cache_limit = cache_chunks;
+    p.cache_chunks = map_int(vsapi, in, "rolling_cache_chunks", 1, &cache_chunks_err);
     if (radius < 1) fail(ns, filter, "rolling mode requires radius > 0");
     if (p.rolling_chunk < 1 || p.rolling_chunk > 64) fail(ns, filter, "rolling_chunk must be in [1, 64]");
-    if (!cache_limit_err && !cache_chunks_err)
-        fail(ns, filter, "use only one of rolling_cache_limit and rolling_cache_chunks");
-    if (p.cache_limit < 1 || p.cache_limit > 64) fail(ns, filter, "rolling_cache_limit must be in [1, 64]");
+    if (!adaptive) {
+        if (!cache_limit_err && !cache_chunks_err)
+            fail(ns, filter, "use only one of rolling_cache_limit and rolling_cache_chunks");
+        if (!cache_chunks_err) p.cache_limit = p.cache_chunks;
+        p.cache_chunks = p.cache_limit;
+    } else if (cache_limit_err && !cache_chunks_err) {
+        p.cache_limit = p.cache_chunks;  // rolling_cache_chunks alone: a cache of that size
+    }
+    if (p.cache_limit < 1 || p.cache_limit > 64 || p.cache_chunks < 1 || p.cache_chunks > 64)
+        fail(ns, filter, "rolling_cache_limit must be in [1, 64]");
+    if (p.cache_limit < p.cache_chunks) fail(ns, filter, "rolling_cache_limit must be at least rolling_cache_chunks");
     return p;
 }
 
 TemporalRequest parse_temporal(const VSAPI* vsapi, const VSMap* in, int default_radius, const char* filter,
-                               const char* ns, TemporalMode unset) {
+                               const char* ns, TemporalMode unset, RollingCache cache) {
     const int radius = map_int(vsapi, in, "radius", default_radius);
     TemporalRequest request;
     request.rolling = parse_temporal_mode(vsapi, in, radius, filter, ns, unset) == TemporalMode::Rolling;
-    if (request.rolling) request.params = parse_rolling(vsapi, in, radius, filter, ns);
+    if (request.rolling) request.params = parse_rolling(vsapi, in, radius, filter, ns, cache);
     return request;
 }
 
@@ -77,8 +86,8 @@ void aggregate_rolling(const VSAPI* vsapi, const VSMap* in, VSMap* out, VSCore* 
 }
 
 void create_temporal(VSPublicFunction create, const VSMap* in, VSMap* out, VSCore* core, const VSAPI* vsapi,
-                     int default_radius, const char* filter, const char* ns, TemporalMode unset) {
-    const TemporalRequest request = parse_temporal(vsapi, in, default_radius, filter, ns, unset);
+                     int default_radius, const char* filter, const char* ns, TemporalMode unset, RollingCache cache) {
+    const TemporalRequest request = parse_temporal(vsapi, in, default_radius, filter, ns, unset, cache);
     create(in, out, nullptr, core, vsapi);
     if (request.rolling) aggregate_rolling(vsapi, in, out, core, default_radius, filter, ns);
 }

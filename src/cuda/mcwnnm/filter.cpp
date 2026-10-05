@@ -75,7 +75,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
 
 void VS_CC create_temporal(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI* vsapi) {
     nss::frontend::create_temporal(create, in, out, core, vsapi, nss::kWnnmDefaultRadius, "MCWNNM", "nss_cuda",
-                                   kDefaultTemporalMode);
+                                   kDefaultTemporalMode, kRollingCache);
 }
 
 }  // namespace

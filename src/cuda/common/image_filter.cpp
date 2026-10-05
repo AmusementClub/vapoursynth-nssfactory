@@ -876,13 +876,13 @@ void VS_CC create_nlh(const VSMap* in, VSMap* out, void*, VSCore* core, const VS
     const auto plain = [](const VSMap* i, VSMap* o, void*, VSCore* c, const VSAPI* a) {
         create(i, o, c, a, nss::Model::NLH);
     };
-    nss::frontend::create_temporal(plain, in, out, core, api, 0, "NLH", "nss_cuda", kDefaultTemporalMode);
+    nss::frontend::create_temporal(plain, in, out, core, api, 0, "NLH", "nss_cuda", kDefaultTemporalMode, kRollingCache);
 }
 void VS_CC create_twsc(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI* api) {
     const auto plain = [](const VSMap* i, VSMap* o, void*, VSCore* c, const VSAPI* a) {
         create(i, o, c, a, nss::Model::TWSC);
     };
-    nss::frontend::create_temporal(plain, in, out, core, api, 0, "TWSC", "nss_cuda", kDefaultTemporalMode);
+    nss::frontend::create_temporal(plain, in, out, core, api, 0, "TWSC", "nss_cuda", kDefaultTemporalMode, kRollingCache);
 }
 
 }  // namespace
