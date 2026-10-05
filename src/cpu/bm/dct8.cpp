@@ -1044,9 +1044,9 @@ void Bm3dCacheEpoch() {
 #if HWY_MAX_BYTES >= 32
 // FFTW 3.3.9 e10_8 / e01_8, same layout as bm3dcpu: G[g*8+r] is row r of patch g, lanes = x.
 // Unnormalized: 3D roundtrip scales by 4096. Inverse is DCT-III.
-template <bool kForward>
-HWY_INLINE void Dct8Fftw(V8 block[8]) {
-    const D8 d8;
+template <bool kForward, class DT = D8>
+HWY_INLINE void Dct8Fftw(hn::Vec<DT>* block) {
+    const DT d8;
     const auto kp414 = hn::Set(d8, 0.414213562373095048801688724209698078569671875f);
     const auto kp1847 = hn::Set(d8, 1.847759065022573512256366378793576573644833252f);
     const auto kp198 = hn::Set(d8, 0.198912367379658006911597622644676228597850501f);
@@ -1283,6 +1283,299 @@ void Bm3dFilter8(const float* src, int sstride, const Match* matches, int k, flo
 #endif
 }
 
+// --- Fused group filter for the shapes whose cube fits a stack of vectors ---
+//
+// The scheme of Bm3dFilter8 (load, 3-D transform, shrink, inverse, accumulate,
+// all on vectors, no packed cube) for block 4, 8 and 16 with group 4 to 64,
+// spatial and temporal. Vector (g * B + r) * C + c holds lanes c * L .. of row
+// r of patch g, with L = 4 lanes for block 4 and 8 otherwise, C = B / L.
+// Line transforms: the orthonormal 4-point pair, the 8-point FFTW butterflies
+// (4x the orthonormal transform) and the generated orthonormal codelets for
+// 16, 32 and 64. Same mathematics as the generic path, so the same strength;
+// only rounding differs (contracts/tolerances.json, numeric_equivalent).
+#if HWY_MAX_BYTES >= 32
+template <int N>
+constexpr float kFusedLineGain = N == 8 ? 4.f : 1.f;
+
+// Orthonormal 4-point DCT-II / DCT-III across four vectors.
+template <class DT>
+HWY_INLINE void Dct4Ortho(DT d, hn::Vec<DT>* x, bool inverse) {
+    const auto half = hn::Set(d, 0.5f);
+    const auto ka = hn::Set(d, 0.653281482438188263928322f);
+    const auto kb = hn::Set(d, 0.270598050073098492199862f);
+    if (inverse) {
+        const auto e0 = hn::Mul(half, hn::Add(x[0], x[2])), e1 = hn::Mul(half, hn::Sub(x[0], x[2]));
+        const auto o0 = hn::MulAdd(ka, x[1], hn::Mul(kb, x[3])), o1 = hn::MulSub(kb, x[1], hn::Mul(ka, x[3]));
+        x[0] = hn::Add(e0, o0);
+        x[1] = hn::Add(e1, o1);
+        x[2] = hn::Sub(e1, o1);
+        x[3] = hn::Sub(e0, o0);
+    } else {
+        const auto s03 = hn::Add(x[0], x[3]), d03 = hn::Sub(x[0], x[3]);
+        const auto s12 = hn::Add(x[1], x[2]), d12 = hn::Sub(x[1], x[2]);
+        x[0] = hn::Mul(half, hn::Add(s03, s12));
+        x[1] = hn::MulAdd(ka, d03, hn::Mul(kb, d12));
+        x[2] = hn::Mul(half, hn::Sub(s03, s12));
+        x[3] = hn::MulSub(kb, d03, hn::Mul(ka, d12));
+    }
+}
+
+// One N-point line transform across N vectors (each lane is its own line).
+template <int N, class DT>
+HWY_INLINE void FusedLine(DT d, hn::Vec<DT>* v, bool inverse) {
+    if constexpr (N == 4) {
+        Dct4Ortho(d, v, inverse);
+    } else if constexpr (N == 8) {
+        if (inverse) {
+            Dct8Fftw<false, DT>(v);
+        } else {
+            Dct8Fftw<true, DT>(v);
+        }
+    } else {
+        HWY_ALIGN float in[N * 8], out[N * 8];
+        for (int k = 0; k < N; ++k) hn::StoreU(v[k], d, in + k * 8);
+        if constexpr (N == 16) {
+            inverse ? nss_dct16_inv_is8(d, in, out) : nss_dct16_fwd_is8(d, in, out);
+        } else if constexpr (N == 32) {
+            inverse ? nss_dct32_inv_is8(d, in, out) : nss_dct32_fwd_is8(d, in, out);
+        } else {
+            inverse ? nss_dct64_inv_is8(d, in, out) : nss_dct64_fwd_is8(d, in, out);
+        }
+        for (int k = 0; k < N; ++k) v[k] = hn::LoadU(d, out + k * 8);
+    }
+}
+
+template <int B>
+struct FusedTag {
+    using D = D8;
+};
+template <>
+struct FusedTag<4> {
+    using D = D4;
+};
+
+// Transposes the B x B patch held as B rows of C vectors.
+template <int B, class DT>
+HWY_INLINE void FusedTranspose(DT d, hn::Vec<DT>* p) {
+    if constexpr (B == 4) {
+        const hn::Repartition<double, DT> dd;
+        const auto t0 = hn::BitCast(dd, hn::InterleaveLower(d, p[0], p[1]));
+        const auto t1 = hn::BitCast(dd, hn::InterleaveLower(d, p[2], p[3]));
+        const auto t2 = hn::BitCast(dd, hn::InterleaveUpper(d, p[0], p[1]));
+        const auto t3 = hn::BitCast(dd, hn::InterleaveUpper(d, p[2], p[3]));
+        p[0] = hn::BitCast(d, hn::InterleaveLower(dd, t0, t1));
+        p[1] = hn::BitCast(d, hn::InterleaveUpper(dd, t0, t1));
+        p[2] = hn::BitCast(d, hn::InterleaveLower(dd, t2, t3));
+        p[3] = hn::BitCast(d, hn::InterleaveUpper(dd, t2, t3));
+    } else if constexpr (B == 8) {
+        hn::Vec<DT> t[8];
+        Transpose8x8Vec(d, p, t);
+        for (int r = 0; r < 8; ++r) p[r] = t[r];
+    } else {  // 16: four 8 x 8 quadrants, the off-diagonal ones swapped
+        hn::Vec<DT> q[4][8], t[4][8];
+        for (int r = 0; r < 8; ++r) {
+            q[0][r] = p[r * 2];
+            q[1][r] = p[r * 2 + 1];
+            q[2][r] = p[(r + 8) * 2];
+            q[3][r] = p[(r + 8) * 2 + 1];
+        }
+        for (int k = 0; k < 4; ++k) Transpose8x8Vec(d, q[k], t[k]);
+        for (int r = 0; r < 8; ++r) {
+            p[r * 2] = t[0][r];
+            p[r * 2 + 1] = t[2][r];
+            p[(r + 8) * 2] = t[1][r];
+            p[(r + 8) * 2 + 1] = t[3][r];
+        }
+    }
+}
+
+// The B-point transform down the rows of one patch, for each of its C chunks.
+template <int B, class DT>
+HWY_INLINE void FusedRows(DT d, hn::Vec<DT>* p, bool inverse) {
+    constexpr int C = B / static_cast<int>(hn::MaxLanes(DT()));
+    if constexpr (C == 1) {
+        FusedLine<B>(d, p, inverse);
+    } else {
+        hn::Vec<DT> t[B];
+        for (int c = 0; c < C; ++c) {
+            for (int r = 0; r < B; ++r) t[r] = p[r * C + c];
+            FusedLine<B>(d, t, inverse);
+            for (int r = 0; r < B; ++r) p[r * C + c] = t[r];
+        }
+    }
+}
+
+template <int B, int G, class DT>
+HWY_INLINE void FusedTransform(DT d, hn::Vec<DT>* cube, bool inverse) {
+    constexpr int C = B / static_cast<int>(hn::MaxLanes(DT()));
+    constexpr int P = B * C;  // vectors per patch
+    const auto group_axis = [&] {
+        hn::Vec<DT> t[G];
+        for (int i = 0; i < P; ++i) {
+            for (int g = 0; g < G; ++g) t[g] = cube[g * P + i];
+            FusedLine<G>(d, t, inverse);
+            for (int g = 0; g < G; ++g) cube[g * P + i] = t[g];
+        }
+    };
+    if (inverse) group_axis();
+    for (int g = 0; g < G; ++g) {
+        FusedRows<B>(d, cube + g * P, inverse);
+        FusedTranspose<B>(d, cube + g * P);
+        FusedRows<B>(d, cube + g * P, inverse);
+    }
+    if (!inverse) group_axis();
+}
+
+template <int B, class DT>
+HWY_INLINE void FusedLoad(DT d, const float* src, int stride, int x, int y, int w, int h, hn::Vec<DT>* p) {
+    constexpr int L = static_cast<int>(hn::MaxLanes(DT())), C = B / L;
+    if (x >= 0 && y >= 0 && x + B <= w && y + B <= h) {
+        for (int r = 0; r < B; ++r) {
+            for (int c = 0; c < C; ++c) p[r * C + c] = hn::LoadU(d, src + (y + r) * stride + x + c * L);
+        }
+        return;
+    }
+    HWY_ALIGN float tmp[B];
+    for (int r = 0; r < B; ++r) {
+        const int yy = clampi8(y + r, 0, h - 1);
+        for (int c = 0; c < B; ++c) tmp[c] = src[yy * stride + clampi8(x + c, 0, w - 1)];
+        for (int c = 0; c < C; ++c) p[r * C + c] = hn::LoadU(d, tmp + c * L);
+    }
+}
+
+template <int B, class DT>
+HWY_INLINE void FusedAccumulate(DT d, float* num, float* den, int stride, int x, int y, int w, int h,
+                                const hn::Vec<DT>* p, float value_weight, float den_weight) {
+    constexpr int L = static_cast<int>(hn::MaxLanes(DT())), C = B / L;
+    if (x >= 0 && y >= 0 && x + B <= w && y + B <= h) {
+        const auto vvalue = hn::Set(d, value_weight);
+        const auto vden = hn::Set(d, den_weight);
+        for (int r = 0; r < B; ++r) {
+            for (int c = 0; c < C; ++c) {
+                float* np = num + (y + r) * stride + x + c * L;
+                float* dp = den + (y + r) * stride + x + c * L;
+                hn::StoreU(hn::MulAdd(vvalue, p[r * C + c], hn::LoadU(d, np)), d, np);
+                hn::StoreU(hn::Add(hn::LoadU(d, dp), vden), d, dp);
+            }
+        }
+        return;
+    }
+    HWY_ALIGN float tmp[B];
+    for (int r = 0; r < B; ++r) {
+        const int yy = y + r;
+        if (yy < 0 || yy >= h) continue;
+        for (int c = 0; c < C; ++c) hn::StoreU(p[r * C + c], d, tmp + c * L);
+        for (int c = 0; c < B; ++c) {
+            const int xx = x + c;
+            if (xx < 0 || xx >= w) continue;
+            num[yy * stride + xx] += value_weight * tmp[c];
+            den[yy * stride + xx] += den_weight;
+        }
+    }
+}
+
+// Hard threshold or Wiener gains over `count` vectors; the DC coefficient is
+// lane 0 of vector 0. Returns the aggregation weight.
+template <class DT>
+HWY_INLINE float FusedShrink(DT d, hn::Vec<DT>* G, const hn::Vec<DT>* R, int count, float s) {
+    const int lanes = static_cast<int>(hn::Lanes(d));
+    if (R) {
+        const auto vsig2 = hn::Set(d, s * s);
+        auto accw = hn::Zero(d);
+        for (int i = 0; i < count; ++i) {
+            const auto r2 = hn::Mul(R[i], R[i]);
+            auto w = hn::Div(r2, hn::Add(r2, vsig2));
+            if (i == 0) w = hn::IfThenElse(hn::FirstN(d, 1), hn::Set(d, 1.f), w);
+            accw = hn::MulAdd(w, w, accw);
+            G[i] = hn::Mul(G[i], w);
+        }
+        return 1.f / std::max(hn::ReduceSum(d, accw), 1e-12f);
+    }
+    const auto vthr = hn::Set(d, kBmHardLambda * s);
+    int kept = 0;
+    for (int i = 0; i < count; ++i) {
+        auto kill = hn::Lt(hn::Abs(G[i]), vthr);
+        if (i == 0) kill = hn::AndNot(hn::FirstN(d, 1), kill);
+        G[i] = hn::IfThenZeroElse(kill, G[i]);
+        kept += lanes - static_cast<int>(hn::CountTrue(d, kill));
+    }
+    return 1.f / static_cast<float>(std::max(kept, 1));
+}
+
+template <int B, int G>
+HWY_NOINLINE void FusedGroup(const float* const* srcs, const int* sstrides, const Match* matches, int k, float sigma,
+                             const float* const* refs, const int* rstrides, float* num, float* den, int dstride,
+                             int width, int height, int t0, int radius, std::size_t plane_size) {
+    using DT = typename FusedTag<B>::D;
+    const DT d;
+    constexpr int C = B / static_cast<int>(hn::MaxLanes(DT()));
+    constexpr int P = B * C, kVectors = G * P;
+    constexpr float kGain = kFusedLineGain<B> * kFusedLineGain<B> * kFusedLineGain<G>;
+    const int kk = std::min(std::max(k, 1), G);
+    const int slices = 2 * radius + 1;
+    hn::Vec<DT> cube[kVectors];
+    for (int g = 0; g < G; ++g) {
+        if (g < kk) {
+            const int t = radius > 0 ? matches[g].t : t0;
+            FusedLoad<B>(d, srcs[t], sstrides[t], matches[g].x, matches[g].y, width, height, cube + g * P);
+        } else {
+            for (int i = 0; i < P; ++i) cube[g * P + i] = hn::Zero(d);
+        }
+    }
+    FusedTransform<B, G>(d, cube, false);
+    float weight;
+    if (refs) {
+        hn::Vec<DT> ref[kVectors];
+        for (int g = 0; g < G; ++g) {
+            if (g < kk) {
+                const int t = radius > 0 ? matches[g].t : t0;
+                FusedLoad<B>(d, refs[t], rstrides[t], matches[g].x, matches[g].y, width, height, ref + g * P);
+            } else {
+                for (int i = 0; i < P; ++i) ref[g * P + i] = hn::Zero(d);
+            }
+        }
+        FusedTransform<B, G>(d, ref, false);
+        weight = FusedShrink(d, cube, ref, kVectors, sigma * kGain);
+    } else {
+        weight = FusedShrink<DT>(d, cube, nullptr, kVectors, sigma * kGain);
+    }
+    FusedTransform<B, G>(d, cube, true);
+    for (int g = 0; g < kk; ++g) {
+        const std::size_t slice =
+            radius > 0 ? static_cast<std::size_t>(std::clamp(matches[g].t - t0 + radius, 0, slices - 1)) : 0;
+        FusedAccumulate<B>(d, num + slice * plane_size, den + slice * plane_size, dstride, matches[g].x, matches[g].y,
+                           width, height, cube + g * P, weight / (kGain * kGain), weight);
+    }
+}
+#endif
+
+// Returns false when the shape has no fused kernel on this target.
+bool Bm3dFilterFused(int block, int group, const float* const* srcs, const int* sstrides, const Match* matches, int k,
+                     float sigma, const float* const* refs, const int* rstrides, float* num, float* den, int dstride,
+                     int width, int height, int t0, int radius, std::size_t plane_size) {
+#if HWY_MAX_BYTES >= 32
+    switch (block * 100 + group) {
+#define NSS_FUSED(B, G)                                                                                              \
+    case B * 100 + G:                                                                                               \
+        if (matches) {                                                                                               \
+            FusedGroup<B, G>(srcs, sstrides, matches, k, sigma, refs, rstrides, num, den, dstride, width, height,    \
+                             t0, radius, plane_size);                                                                \
+        }                                                                                                            \
+        return true;
+    NSS_FUSED(4, 4) NSS_FUSED(4, 8) NSS_FUSED(4, 16) NSS_FUSED(4, 32) NSS_FUSED(4, 64)
+    NSS_FUSED(8, 4) NSS_FUSED(8, 8) NSS_FUSED(8, 16) NSS_FUSED(8, 32) NSS_FUSED(8, 64)
+    NSS_FUSED(16, 4) NSS_FUSED(16, 8) NSS_FUSED(16, 16) NSS_FUSED(16, 32)
+#undef NSS_FUSED
+    default: break;
+    }
+#else
+    (void)block; (void)group; (void)srcs; (void)sstrides; (void)matches; (void)k; (void)sigma; (void)refs;
+    (void)rstrides; (void)num; (void)den; (void)dstride; (void)width; (void)height; (void)t0; (void)radius;
+    (void)plane_size;
+#endif
+    return false;
+}
+
 }  // namespace HWY_NAMESPACE
 }  // namespace nss
 HWY_AFTER_NAMESPACE();
@@ -1308,6 +1601,7 @@ void bm3d_cache_epoch(){HWY_DYNAMIC_DISPATCH(Bm3dCacheEpoch)();}
 #endif
 HWY_EXPORT(Bm3dFilterGroup);
 HWY_EXPORT(Bm3dFilter8);
+HWY_EXPORT(Bm3dFilterFused);
 #ifdef NSS_BM_KERNEL_LAB
 HWY_EXPORT(ResolveDctSmallLab);
 namespace detail {
@@ -1364,6 +1658,14 @@ void bm3d_filter_group_keyed(float* patches,int lda,int group,int k,int block,fl
     HWY_DYNAMIC_DISPATCH(Bm3dFilterGroup)(patches,lda,group,k,block,sigma,wiener,ref_patches,weight_out,work,NSS_AVX2_REQUESTED,keys,ref_keys);
 }
 #endif
+
+bool bm3d_filter_fused(int block, int group, const float* const* srcs, const int* sstrides, const Match* matches,
+                       int k, float sigma, const float* const* refs, const int* rstrides, float* num, float* den,
+                       int dstride, int width, int height, int t0, int radius, std::size_t plane_size) {
+    if (matches && k < 1) return true;
+    return HWY_DYNAMIC_DISPATCH(Bm3dFilterFused)(block, group, srcs, sstrides, matches, k, sigma, refs, rstrides, num,
+                                                 den, dstride, width, height, t0, radius, plane_size);
+}
 
 void bm3d_filter8(const float* src, int sstride, const Match* matches, int k, float sigma, bool wiener,
                   const float* ref, int rstride, float* num, float* den, int dstride, int width, int height) {
