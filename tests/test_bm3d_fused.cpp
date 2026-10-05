@@ -117,11 +117,13 @@ int main() {
         return 77;
     }
     int failures = 0, cases = 0;
-    for (const int block : {4, 8, 16}) {
+    for (const int block : {4, 8, 12, 16, 32}) {
         for (const int group : {4, 8, 16, 32, 64}) {
             const bool served = nss::bm3d_filter_fused(block, group, nullptr, nullptr, nullptr, 0, 0.f, nullptr, nullptr,
                                                        nullptr, nullptr, 0, 0, 0, 0, 0, 0);
-            if (served != !(block == 16 && group == 64)) {
+            // Cubes of more than 2048 vectors are not served.
+            const bool expected = !(block == 16 && group == 64) && !(block == 32 && group >= 32);
+            if (served != expected) {
                 std::printf("FAIL b%d g%d: served = %d\n", block, group, served ? 1 : 0);
                 ++failures;
             }

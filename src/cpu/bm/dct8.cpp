@@ -1286,12 +1286,13 @@ void Bm3dFilter8(const float* src, int sstride, const Match* matches, int k, flo
 // --- Fused group filter for the shapes whose cube fits a stack of vectors ---
 //
 // The scheme of Bm3dFilter8 (load, 3-D transform, shrink, inverse, accumulate,
-// all on vectors, no packed cube) for block 4, 8 and 16 with group 4 to 64,
-// spatial and temporal. Vector (g * B + r) * C + c holds lanes c * L .. of row
-// r of patch g, with L = 4 lanes for block 4 and 8 otherwise, C = B / L.
+// all on vectors, no packed cube) for block 4, 8, 12, 16 and 32 with group 4
+// to 64, spatial and temporal. Vector (g * B + r) * C + c holds lanes c * L ..
+// of row r of patch g, with L = 4 lanes for block 4 and 12 and 8 otherwise,
+// C = B / L.
 // Line transforms: the orthonormal 4-point pair, the 8-point FFTW butterflies
 // (4x the orthonormal transform) and the generated orthonormal codelets for
-// 16, 32 and 64. Same mathematics as the generic path, so the same strength;
+// 12, 16, 32 and 64. Same mathematics as the generic path, so the same strength;
 // only rounding differs (contracts/tolerances.json, numeric_equivalent).
 #if HWY_MAX_BYTES >= 32
 template <int N>
@@ -1334,7 +1335,9 @@ HWY_INLINE void FusedLine(DT d, hn::Vec<DT>* v, bool inverse) {
     } else {
         HWY_ALIGN float in[N * 8], out[N * 8];
         for (int k = 0; k < N; ++k) hn::StoreU(v[k], d, in + k * 8);
-        if constexpr (N == 16) {
+        if constexpr (N == 12) {
+            inverse ? nss_dct12_inv_is8(d, in, out) : nss_dct12_fwd_is8(d, in, out);
+        } else if constexpr (N == 16) {
             inverse ? nss_dct16_inv_is8(d, in, out) : nss_dct16_fwd_is8(d, in, out);
         } else if constexpr (N == 32) {
             inverse ? nss_dct32_inv_is8(d, in, out) : nss_dct32_fwd_is8(d, in, out);
@@ -1353,40 +1356,43 @@ template <>
 struct FusedTag<4> {
     using D = D4;
 };
+template <>
+struct FusedTag<12> {
+    using D = D4;
+};
 
-// Transposes the B x B patch held as B rows of C vectors.
+// Transposes an L x L block of L vectors (L = 4 or 8 lanes).
+template <class DT>
+HWY_INLINE void FusedTransposeBlock(DT d, const hn::Vec<DT>* in, hn::Vec<DT>* out) {
+    if constexpr (hn::MaxLanes(DT()) == 4) {
+        const hn::Repartition<double, DT> dd;
+        const auto t0 = hn::BitCast(dd, hn::InterleaveLower(d, in[0], in[1]));
+        const auto t1 = hn::BitCast(dd, hn::InterleaveLower(d, in[2], in[3]));
+        const auto t2 = hn::BitCast(dd, hn::InterleaveUpper(d, in[0], in[1]));
+        const auto t3 = hn::BitCast(dd, hn::InterleaveUpper(d, in[2], in[3]));
+        out[0] = hn::BitCast(d, hn::InterleaveLower(dd, t0, t1));
+        out[1] = hn::BitCast(d, hn::InterleaveUpper(dd, t0, t1));
+        out[2] = hn::BitCast(d, hn::InterleaveLower(dd, t2, t3));
+        out[3] = hn::BitCast(d, hn::InterleaveUpper(dd, t2, t3));
+    } else {
+        Transpose8x8Vec(d, in, out);
+    }
+}
+
+// Transposes the B x B patch held as B rows of C vectors of L lanes: the
+// L x L block (i, j) is transposed and stored as block (j, i).
 template <int B, class DT>
 HWY_INLINE void FusedTranspose(DT d, hn::Vec<DT>* p) {
-    if constexpr (B == 4) {
-        const hn::Repartition<double, DT> dd;
-        const auto t0 = hn::BitCast(dd, hn::InterleaveLower(d, p[0], p[1]));
-        const auto t1 = hn::BitCast(dd, hn::InterleaveLower(d, p[2], p[3]));
-        const auto t2 = hn::BitCast(dd, hn::InterleaveUpper(d, p[0], p[1]));
-        const auto t3 = hn::BitCast(dd, hn::InterleaveUpper(d, p[2], p[3]));
-        p[0] = hn::BitCast(d, hn::InterleaveLower(dd, t0, t1));
-        p[1] = hn::BitCast(d, hn::InterleaveUpper(dd, t0, t1));
-        p[2] = hn::BitCast(d, hn::InterleaveLower(dd, t2, t3));
-        p[3] = hn::BitCast(d, hn::InterleaveUpper(dd, t2, t3));
-    } else if constexpr (B == 8) {
-        hn::Vec<DT> t[8];
-        Transpose8x8Vec(d, p, t);
-        for (int r = 0; r < 8; ++r) p[r] = t[r];
-    } else {  // 16: four 8 x 8 quadrants, the off-diagonal ones swapped
-        hn::Vec<DT> q[4][8], t[4][8];
-        for (int r = 0; r < 8; ++r) {
-            q[0][r] = p[r * 2];
-            q[1][r] = p[r * 2 + 1];
-            q[2][r] = p[(r + 8) * 2];
-            q[3][r] = p[(r + 8) * 2 + 1];
-        }
-        for (int k = 0; k < 4; ++k) Transpose8x8Vec(d, q[k], t[k]);
-        for (int r = 0; r < 8; ++r) {
-            p[r * 2] = t[0][r];
-            p[r * 2 + 1] = t[2][r];
-            p[(r + 8) * 2] = t[1][r];
-            p[(r + 8) * 2 + 1] = t[3][r];
+    constexpr int L = static_cast<int>(hn::MaxLanes(DT())), C = B / L;
+    hn::Vec<DT> out[B * C], in[L], t[L];
+    for (int i = 0; i < C; ++i) {
+        for (int j = 0; j < C; ++j) {
+            for (int r = 0; r < L; ++r) in[r] = p[(i * L + r) * C + j];
+            FusedTransposeBlock(d, in, t);
+            for (int r = 0; r < L; ++r) out[(j * L + r) * C + i] = t[r];
         }
     }
+    for (int k = 0; k < B * C; ++k) p[k] = out[k];
 }
 
 // The B-point transform down the rows of one patch, for each of its C chunks.
@@ -1564,7 +1570,9 @@ bool Bm3dFilterFused(int block, int group, const float* const* srcs, const int* 
         return true;
     NSS_FUSED(4, 4) NSS_FUSED(4, 8) NSS_FUSED(4, 16) NSS_FUSED(4, 32) NSS_FUSED(4, 64)
     NSS_FUSED(8, 4) NSS_FUSED(8, 8) NSS_FUSED(8, 16) NSS_FUSED(8, 32) NSS_FUSED(8, 64)
+    NSS_FUSED(12, 4) NSS_FUSED(12, 8) NSS_FUSED(12, 16) NSS_FUSED(12, 32) NSS_FUSED(12, 64)
     NSS_FUSED(16, 4) NSS_FUSED(16, 8) NSS_FUSED(16, 16) NSS_FUSED(16, 32)
+    NSS_FUSED(32, 4) NSS_FUSED(32, 8) NSS_FUSED(32, 16)
 #undef NSS_FUSED
     default: break;
     }

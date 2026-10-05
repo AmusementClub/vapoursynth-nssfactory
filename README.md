@@ -176,7 +176,7 @@ commit, dirty status, non-ignored working-tree files, CMake identity and any
 attached plugin/input/quality/performance artifacts. A release manifest must be
 generated from the exact release source root, not from the current dirty tree.
 
-BM3D shapes other than block 8 / group 8 with block 4, 8 or 16 and a group of 4 to 64 use a fused group
+BM3D shapes other than block 8 / group 8 with block 4, 8, 12, 16 or 32 and a group of 4 to 64 use a fused group
 filter on targets of 256 bits and wider, spatial and temporal (`-DNSS_BM_FUSED_TEMPLATE=OFF` restores the
 previous paths; outputs agree to rounding and to threshold decisions within the DCT error band).
 

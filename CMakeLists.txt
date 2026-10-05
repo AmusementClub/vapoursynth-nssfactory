@@ -123,7 +123,7 @@ foreach(feature REUSE RASTER HOMOGENEOUS SCRATCH RING)
   add_compile_definitions(NSS_BM_${feature}=${enabled})
 endforeach()
 
-# Fused group filter for block 4, 8, 16 with groups of 4 to 64 (targets of 256
+# Fused group filter for block 4, 8, 12, 16, 32 with groups of 4 to 64 (targets of 256
 # bits and wider). OFF keeps the direct and generic paths for those shapes.
 option(NSS_BM_FUSED_TEMPLATE "Use the fused BM3D group filter for the shapes it serves" ON)
 add_compile_definitions(NSS_BM_FUSED_TEMPLATE=$<BOOL:${NSS_BM_FUSED_TEMPLATE}>)
