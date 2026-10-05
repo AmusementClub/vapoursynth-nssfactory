@@ -84,7 +84,8 @@ int correctness(int block, int slices, bool batched) {
         }
     }
     Device dev(load);
-    nss_cuda::OrderedAggregator ordered(load.width, load.height, slices, load.patches.size(), nullptr);
+    // Fine tiles (8x8 for blocks up to 8) in the batched runs, the default tiles in the others.
+    nss_cuda::OrderedAggregator ordered(load.width, load.height, slices, load.patches.size(), nullptr, batched);
     if (batched) {  // two batches in patch-id order: overwrite, then accumulate
         const int half = static_cast<int>(load.patches.size() / 2);
         ordered.run(dev.values.as<float>(), dev.patches.as<nss_cuda::AggregatePatch>(), half, block, dev.target, nullptr);

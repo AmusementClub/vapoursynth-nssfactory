@@ -122,6 +122,26 @@ std::size_t per_ref_bytes(const Driver& d, const GroupPlane& p) {
                (sizeof(DeviceMatch) + sizeof(AggregatePatch) + OrderedAggregator::kBytesPerPatch);
 }
 
+// Bytes of the slot's per-batch buffers for the planes' current batches.
+// make_slot sizes each buffer for the plane that needs it most, so with
+// planes of different shapes (or fused beside ordered) this is more than any
+// single plane's batch * per_ref_bytes.
+std::size_t slot_batch_bytes(const Driver& d) {
+    std::size_t matches = 0, counts = 0, scratch = 0, values = 0, patches = 0, sort = 0;
+    for (const GroupPlane& p : d.planes) {
+        if (!p.active) continue;
+        const std::size_t batch = static_cast<std::size_t>(p.batch);
+        matches = std::max(matches, batch * p.group * sizeof(DeviceMatch));
+        counts = std::max(counts, batch * sizeof(int));
+        scratch = std::max(scratch, batch * scratch_floats(d, p) * sizeof(float));
+        if (p.fused) continue;
+        values = std::max(values, batch * d.channels * p.group * p.block * p.block * sizeof(float));
+        patches = std::max(patches, batch * p.group * sizeof(AggregatePatch));
+        sort = std::max(sort, batch * p.group * OrderedAggregator::kBytesPerPatch);
+    }
+    return matches + counts + scratch + values + patches + sort;
+}
+
 // Staging regions: one upload per window frame and channel (src, ref), then
 // downloads (legacy: 2 * ntemp fat rows per channel; spatial: one per channel;
 // rolling: one per chunk frame).
@@ -210,6 +230,19 @@ void plan_planes(Driver& d) {
         if (!p.active) continue;
         const std::size_t fit = std::max<std::size_t>(1, batch_bytes / per_ref_bytes(d, p));
         p.batch = static_cast<int>(std::min<std::size_t>(fit, static_cast<std::size_t>(p.grid.count())));
+    }
+    // Planes of different shapes share the slot's buffers; shrink the batches
+    // until the buffers together fit what one plane alone was given.
+    for (int round = 0; round < 8 && slot_batch_bytes(d) > batch_bytes; ++round) {
+        const double scale = static_cast<double>(batch_bytes) / static_cast<double>(slot_batch_bytes(d));
+        bool changed = false;
+        for (GroupPlane& p : d.planes) {
+            if (!p.active) continue;
+            const int next = std::max(1, static_cast<int>(p.batch * scale));
+            changed = changed || next != p.batch;
+            p.batch = next;
+        }
+        if (!changed) break;
     }
 }
 
