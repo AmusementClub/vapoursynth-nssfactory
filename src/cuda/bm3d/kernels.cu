@@ -282,6 +282,7 @@ template <int B, int G>
 void launch_shape(const Bm3dGroupArgs& args, cudaStream_t stream) {
     const std::size_t bytes = cube_bytes(B, G, args.ref != nullptr);
     const bool in_shared = bytes <= kCubeSharedBytes;
+    if (args.fused.num && !in_shared) throw std::logic_error("nss_cuda: BM3D shape cannot aggregate in the kernel");
     const int lines = G * B > B * B ? G * B : B * B;
     const int threads = lines >= 256 ? 256 : (lines + 31) / 32 * 32;
     group_shape_kernel<B, G><<<args.batch, threads, in_shared ? bytes : 0, stream>>>(args, in_shared);
@@ -355,12 +356,12 @@ __device__ __forceinline__ void forward_lanes(float* v, const float* const* plan
         for (int row = 0; row < B; ++row) v[p * B + row] = p < kk ? at[row * pitch] : 0.f;
     }
 #pragma unroll
-    for (int p = 0; p < G; ++p) dct_line_fixed<B>(v + p * B, 1, false);  // rows of the patch
+    for (int p = 0; p < G; ++p) dct_line_fixed<B>(v + p * B, 1, false);  // down the lane's column
 #pragma unroll
     for (int row = 0; row < B; ++row) dct_line_fixed<G>(v + row, B, false);  // group axis
     transpose_lanes<B, G>(v, buffer, lane);
 #pragma unroll
-    for (int p = 0; p < G; ++p) dct_line_fixed<B>(v + p * B, 1, false);  // columns of the patch
+    for (int p = 0; p < G; ++p) dct_line_fixed<B>(v + p * B, 1, false);  // along the row the lane now holds
 }
 
 // Sum over the B lanes of a group (B a power of two).
@@ -512,9 +513,14 @@ bool launch_warps(const Bm3dGroupArgs& args, cudaStream_t stream) {
 
 }  // namespace
 
+std::size_t bm3d_scratch_floats(int block, int group, bool wiener) {
+    // Only the block kernel with its cubes in global memory keeps the
+    // reference cube outside the block.
+    const bool global = !warp_serves(block, group, wiener) && cube_bytes(block, group, wiener) > kCubeSharedBytes;
+    return wiener && global ? static_cast<std::size_t>(group) * block * block : 0;
+}
+
 bool bm3d_fuses(int block, int group, bool wiener) {
-    // The warp kernel always can; the block kernel when its cube is staged in
-    // shared memory. Larger cubes are transformed in `values`.
     // Admitted on paired measurements against ordered aggregation. The block
     // kernel fuses whenever its cube is staged in shared memory. The warp
     // kernel fuses except where the extra code cost more than it saved.

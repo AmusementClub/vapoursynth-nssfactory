@@ -9,16 +9,17 @@
 namespace nss_cuda {
 namespace {
 
-// Tiles are 8x8 for blocks up to 8, 16x16 up to 16 (one pixel per thread) and
-// 32x32 above. A block <= tile + 1 spans at most 2x2 tiles, and the smaller
-// the tile, the fewer entries of its bin miss a given pixel. The per-pixel
-// order (patch id) does not depend on the tile size.
+// Tiles are 16x16 for blocks up to 16 (one pixel per thread) and 32x32 above;
+// with fine tiles, 8x8 for blocks up to 8. A block <= tile + 1 spans at most
+// 2x2 tiles, and the smaller the tile, the fewer entries of its bin miss a
+// given pixel. The per-pixel order (patch id) does not depend on the tile
+// size.
 constexpr int kTinyTile = 8;
 constexpr int kSmallTile = 16;
 constexpr int kLargeTile = OrderedAggregator::kTile;
 constexpr int kTilesPerPatch = 4;
-__host__ __device__ constexpr int tile_for(int block) {
-    return block <= kTinyTile ? kTinyTile : block <= kSmallTile ? kSmallTile : kLargeTile;
+__host__ __device__ constexpr int tile_for(int block, bool fine) {
+    return fine && block <= kTinyTile ? kTinyTile : block <= kSmallTile ? kSmallTile : kLargeTile;
 }
 constexpr int kTileThreads = 256;
 template <int kTile>
@@ -142,13 +143,16 @@ __global__ void atomic_kernel(const float* values, const AggregatePatch* patches
     atomicAdd(target.den + offset, patch.weight);
 }
 
-__global__ void fixed_resolve_kernel(const unsigned long long* fixed_num, const unsigned long long* fixed_den,
-                                     std::size_t count, float* num, float* den) {
-    const std::size_t i = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    if (i >= count) return;
+__global__ void fixed_finish_kernel(const unsigned long long* fixed_num, const unsigned long long* fixed_den,
+                                    const float* src, int width, int height, int pitch, float* out) {
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= width || y >= height) return;
+    const long long i = static_cast<long long>(y) * pitch + x;
     constexpr float kUnit = 1.f / 4294967296.f;  // 1 / kFixedScale
-    num[i] = static_cast<float>(static_cast<long long>(fixed_num[i])) * kUnit;
-    den[i] = static_cast<float>(static_cast<long long>(fixed_den[i])) * kUnit;
+    const float num = static_cast<float>(static_cast<long long>(fixed_num[i])) * kUnit;
+    const float den = static_cast<float>(static_cast<long long>(fixed_den[i])) * kUnit;
+    out[i] = den > 1e-12f ? num / den : src[i];
 }
 
 __global__ void finish_kernel(const float* num, const float* den, const float* src, int width, int height, int pitch,
@@ -191,10 +195,16 @@ std::size_t sort_temp_size(std::size_t entries) {
 
 }  // namespace
 
+std::size_t OrderedAggregator::bin_bytes(int max_width, int max_height, int max_slices, bool fine_tiles) {
+    const int tile = fine_tiles ? kTinyTile : kSmallTile;
+    return 2 * sizeof(int) * (static_cast<std::size_t>((max_width + tile - 1) / tile) *
+                              ((max_height + tile - 1) / tile) * max_slices);
+}
+
 OrderedAggregator::OrderedAggregator(int max_width, int max_height, int max_slices, std::size_t max_patches,
-                                     const std::shared_ptr<nss::ResourceBudget>& budget)
-    : max_bins_(static_cast<std::size_t>((max_width + kTinyTile - 1) / kTinyTile) *
-                ((max_height + kTinyTile - 1) / kTinyTile) * max_slices),
+                                     const std::shared_ptr<nss::ResourceBudget>& budget, bool fine_tiles)
+    : fine_tiles_(fine_tiles),
+      max_bins_(bin_bytes(max_width, max_height, max_slices, fine_tiles) / (2 * sizeof(int))),
       max_patches_(max_patches), max_entries_(max_patches * kTilesPerPatch) {
     if (max_bins_ >= 0x7fffffffu || max_entries_ > static_cast<std::size_t>(INT32_MAX)) {
         throw std::invalid_argument("nss_cuda: aggregation geometry too large");
@@ -212,7 +222,7 @@ OrderedAggregator::OrderedAggregator(int max_width, int max_height, int max_slic
 void OrderedAggregator::run(const float* values, const AggregatePatch* patches, int npatch, int block,
                             const AggregateTarget& target, cudaStream_t stream, bool accumulate,
                             const float* pixel_den, int den_group) {
-    const int tile = tile_for(block);
+    const int tile = tile_for(block, fine_tiles_);
     const int tiles_x = (target.width + tile - 1) / tile;
     const int tiles_y = (target.height + tile - 1) / tile;
     const std::size_t bins = static_cast<std::size_t>(tiles_x) * tiles_y * target.slices;
@@ -258,10 +268,10 @@ void fixed_clear(const FixedTarget& target, std::size_t count, cudaStream_t stre
     NSS_CUDA_CHECK(cudaMemsetAsync(target.den, 0, count * sizeof(unsigned long long), stream));
 }
 
-void fixed_resolve(const FixedTarget& target, std::size_t count, float* num, float* den, cudaStream_t stream) {
-    if (count == 0) return;
-    fixed_resolve_kernel<<<static_cast<unsigned>((count + 255) / 256), 256, 0, stream>>>(target.num, target.den, count,
-                                                                                      num, den);
+void fixed_finish(const FixedTarget& target, const float* src, int width, int height, float* out, cudaStream_t stream) {
+    const dim3 threads(32, 8);
+    const dim3 blocks((width + 31) / 32, (height + 7) / 8);
+    fixed_finish_kernel<<<blocks, threads, 0, stream>>>(target.num, target.den, src, width, height, target.pitch, out);
     NSS_CUDA_CHECK_LAUNCH();
 }
 

@@ -24,6 +24,18 @@ if(NOT Python3_Interpreter_FOUND)
   return()
 endif()
 
+# The device DCT codelets are copies of the CPU's generated files (src/cuda
+# may not include src/cpu); regenerating one side must not leave them apart.
+foreach(n 12 16 32 64)
+  foreach(direction fwd inv)
+    add_test(NAME test_cuda_codelet_${direction}_n${n}
+             COMMAND ${CMAKE_COMMAND} -E compare_files
+                     "${PROJECT_SOURCE_DIR}/src/cpu/bm/dct_codelet_${direction}_n${n}_is8.hpp"
+                     "${PROJECT_SOURCE_DIR}/src/cuda/bm3d/dct_codelet_${direction}_n${n}_is8.hpp")
+    set_tests_properties(test_cuda_codelet_${direction}_n${n} PROPERTIES LABELS cuda)
+  endforeach()
+endforeach()
+
 set(NSS_CUDA_PLUGIN "$<TARGET_FILE:nss_cuda>")
 add_test(NAME test_cuda_backend
          COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_cuda_backend.py" --plugin "${NSS_CUDA_PLUGIN}")

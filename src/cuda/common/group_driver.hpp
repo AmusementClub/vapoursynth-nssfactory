@@ -35,8 +35,9 @@ struct GroupPlane {
     int block = 0, group = 0, step = 0, range = 0, ps_num = 0, ps_range = 0;
     float sigma = 0.f;    // filter-defined scale, passed through to launch
     // The filter's kernel aggregates this plane's groups itself, into
-    // GroupLaunch::fused; the driver then keeps no values or patch records
-    // for it. Single-channel, single-round filters only.
+    // GroupLaunch::fused; the driver then keeps no values, patch records or
+    // float sums for it. Single-channel, single-round filters only, and
+    // spatial output only: the driver clears the flag for radius > 0.
     bool fused = false;
     // Filled by the driver:
     int width = 0, height = 0;

@@ -102,6 +102,14 @@ bool any_fused(const Driver& d) {
     }
     return false;
 }
+// Some active plane goes through values, patch records and the ordered
+// aggregator into the float num/den slices.
+bool any_ordered(const Driver& d) {
+    for (const GroupPlane& p : d.planes) {
+        if (p.active && !p.fused) return true;
+    }
+    return false;
+}
 
 std::size_t per_ref_bytes(const Driver& d, const GroupPlane& p) {
     if (p.fused) {
@@ -146,16 +154,25 @@ void plan_planes(Driver& d) {
     const std::size_t plane_bytes = d.plane_floats * sizeof(float);
     const int chunk = d.mode == GroupMode::Rolling ? d.rolling.rolling_chunk : 0;
     const std::size_t device_planes = static_cast<std::size_t>(upload_regions(d)) +
-                                      static_cast<std::size_t>(d.channels) * (2 * d.ntemp + 1 + (d.iters > 1 ? d.ntemp : 0)) +
+                                      static_cast<std::size_t>(d.channels) *
+                                          ((any_ordered(d) ? 2 * d.ntemp : 0) + 1 + (d.iters > 1 ? d.ntemp : 0)) +
                                       3 * chunk +
                                       // Fixed-point num and den: two float planes' worth per slice each.
                                       (any_fused(d) ? 4 * static_cast<std::size_t>(d.ntemp) : 0);
+    int max_w = 1, max_h = 1;
+    for (const GroupPlane& p : d.planes) {
+        if (p.active && !p.fused) {
+            max_w = std::max(max_w, p.width);
+            max_h = std::max(max_h, p.height);
+        }
+    }
+    const std::size_t bins = any_ordered(d) ? OrderedAggregator::bin_bytes(max_w, max_h, d.ntemp, true) : 0;
     // Rolling also holds host chunk stores: one being built per slot, up to
     // cache_limit finished ones, and the output frames copied out of them.
     const std::size_t chunk_bytes = frame_bytes * chunk;
     const std::size_t output = d.mode == GroupMode::Rolling ? 2 * frame_bytes + chunk_bytes
                                                        : frame_bytes * (d.mode == GroupMode::Legacy ? 2 * d.ntemp : 1);
-    const std::size_t fixed = plane_bytes * device_planes + plane_bytes * d.regions + output;
+    const std::size_t fixed = plane_bytes * device_planes + plane_bytes * d.regions + output + bins;
     const std::size_t shared_cache = d.mode == GroupMode::Rolling ? chunk_bytes * d.rolling.cache_limit : 0;
     std::size_t min_batch = 0;
     for (const GroupPlane& p : d.planes) {
@@ -227,8 +244,10 @@ std::unique_ptr<Slot> make_slot(const Driver& d) {
     }
     slot->src_ptrs = DeviceBuffer(d.ntemp * sizeof(float*), d.budget);
     if (w) slot->ref_ptrs = DeviceBuffer(d.ntemp * sizeof(float*), d.budget);
-    slot->num = DeviceBuffer(unit_bytes * d.ntemp, d.budget);
-    slot->den = DeviceBuffer(unit_bytes * d.ntemp, d.budget);
+    if (any_ordered(d)) {
+        slot->num = DeviceBuffer(unit_bytes * d.ntemp, d.budget);
+        slot->den = DeviceBuffer(unit_bytes * d.ntemp, d.budget);
+    }
     slot->out = DeviceBuffer(unit_bytes, d.budget);
     if (any_fused(d)) {
         slot->fixed_num = DeviceBuffer(d.plane_floats * d.ntemp * sizeof(unsigned long long), d.budget);
@@ -249,7 +268,9 @@ std::unique_ptr<Slot> make_slot(const Driver& d) {
         NSS_CUDA_CHECK(cudaEventCreateWithFlags(&region.done, cudaEventDisableTiming));
         slot->regions.push_back(region);
     }
-    if (max_patches) slot->aggregator = std::make_unique<OrderedAggregator>(max_w, max_h, d.ntemp, max_patches, d.budget);
+    if (max_patches) {
+        slot->aggregator = std::make_unique<OrderedAggregator>(max_w, max_h, d.ntemp, max_patches, d.budget, true);
+    }
     // Spatial/legacy windows map slot t to buffer t for the slot's lifetime.
     NSS_CUDA_CHECK(cudaMemcpy(slot->src_ptrs.get(), slot->host_src_ptrs.data(), d.ntemp * sizeof(float*),
                               cudaMemcpyHostToDevice));
@@ -350,7 +371,6 @@ void filter_center(const Driver& d, Slot& s, const GroupPlane& p, int center, bo
                               p.block, target, stream, begin > 0);
         }
     }
-    if (p.fused) fixed_resolve(fixed, d.ntemp * p.floats, s.num.as<float>(), s.den.as<float>(), stream);
 }
 
 // Spatial and legacy: one output frame per call.
@@ -433,7 +453,12 @@ const VSFrame* frame_output(Driver* d, int n, VSFrameContext* ctx, VSCore* core,
             if (!d->channel_out[c]) continue;
             if (radius == 0) {
                 const float* result = s.src_frames[0].as<float>() + c * p.floats;
-                if (!iterative(*d)) {
+                if (p.fused) {
+                    const FixedTarget fixed{s.fixed_num.as<unsigned long long>(), s.fixed_den.as<unsigned long long>(),
+                                            p.width, p.floats};
+                    fixed_finish(fixed, s.host_src_ptrs[0], p.width, p.height, s.out.as<float>(), s.stream);
+                    result = s.out.as<float>();
+                } else if (!iterative(*d)) {
                     aggregate_finish(s.num.as<float>(), s.den.as<float>(), s.host_src_ptrs[0], p.width, p.height, p.width,
                                      s.out.as<float>(), s.stream);
                     result = s.out.as<float>();
@@ -666,6 +691,12 @@ void group_filter_install(GroupFilterConfig&& config, VSMap* out, VSCore* core, 
     d->budget = nss::current_budget();
     if (d->mode == GroupMode::Rolling && iterative(*d)) {
         throw std::logic_error(prefix(*d) + "rolling mode does not support joint or multi-round filters");
+    }
+    // Fused planes finish straight from their accumulators, which the temporal
+    // outputs (fat slices, rolling sums) do not read; temporal filtering gains
+    // nothing from fusing either (it is bound by its transfers).
+    if (d->mode != GroupMode::Spatial) {
+        for (GroupPlane& p : d->planes) p.fused = false;
     }
     if (any_fused(*d) && iterative(*d)) {
         throw std::logic_error(prefix(*d) + "fused aggregation does not support joint or multi-round filters");

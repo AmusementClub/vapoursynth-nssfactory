@@ -148,7 +148,20 @@ def main():
     cases += t_cases
     worst = min(worst, t_worst)
     failures += t_failures
-    # Repeated create/free must not leak device memory or fail.
+    # 4K must create at the default memory limit (no frames are requested). Rolling and YUV temporal
+    # Wiener need more than the default and are not in this list.
+    for fmt in (vs.GRAYS, vs.YUV420PS):
+        uhd = core.std.BlankClip(width=3840, height=2160, format=fmt, length=4)
+        modes = [("spatial", {}), ("final", dict(ref=uhd)), ("r1 legacy", dict(radius=1)),
+                 ("block 4", dict(block_size=4)), ("16 / 16", dict(block_size=16, group_size=16))]
+        if fmt == vs.GRAYS:
+            modes.append(("r1 final", dict(radius=1, ref=uhd)))
+        for label, kw in modes:
+            cases += 1
+            try:
+                core.nss_cuda.BM3D(uhd, **kw)
+            except vs.Error as error:
+                failures.append(f"4K {uhd.format.name} {label}: {error}")
     for _ in range(2 if args.quick else 20):
         core.nss_cuda.BM3D(gray, sigma=5).get_frame(0)
     for line in failures:
