@@ -15,24 +15,26 @@ namespace nss_cuda {
 
 // Appended to every shared k<Filter>Signature (D14).
 inline constexpr const char* kBackendSignature = "device_id:int:opt;num_streams:int:opt;";
-// Three slots hide the per-frame host staging copies behind device work
-// (1080p BM3D: 286 fps with 2, 357 with 3, 360 with 4 on an RTX 5080).
-inline constexpr int kDefaultStreams = 3;
+// One stream unless num_streams asks for more. More slots hide the per-frame
+// host staging copies behind device work (1080p BM3D: 286 fps with 2, 357
+// with 3, 360 with 4 on an RTX 5080) at one set of device buffers each.
+inline constexpr int kDefaultStreams = 1;
 // temporal_mode when the argument is not given: finished frames, so that only
 // they cross back to the host. "legacy" still returns the fat intermediate.
 inline constexpr nss::TemporalMode kDefaultTemporalMode = nss::TemporalMode::Rolling;
 inline constexpr int kMaxStreams = 16;
-// memory_limit_mb when the argument is not given. For BM3D at 4K, 2048 holds
-// Gray and YUV 4:2:0 up to radius 2 with finished frames, and 4:4:4 / RGB at
-// radius 1 without ref.
-inline constexpr int kDefaultMemoryLimitMb = 2048;
+// memory_limit_mb when the argument is not given: 0, no limit. The filter
+// then plans whole-plane batches and a device allocation that fails is
+// reported as the CUDA error. An explicit value is a hard limit that the
+// plan is fitted to.
+inline constexpr int kDefaultMemoryLimitMb = 0;
 
 std::string signature(const char* shared);
 
 struct BackendArgs {
     int device_id = 0;
     int num_streams = kDefaultStreams;
-    bool streams_explicit = false;  // default may be lowered to fit memory_limit_mb
+    bool streams_explicit = false;
 };
 // Throws std::invalid_argument("nss_cuda.<filter>: ...") on invalid values.
 BackendArgs parse_backend_args(const VSAPI* vsapi, const VSMap* in, const char* filter);

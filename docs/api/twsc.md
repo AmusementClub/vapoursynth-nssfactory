@@ -89,8 +89,7 @@ work.
 
 `core.nss_cuda.TWSC` (from `libnss_cuda`, built with `-DNSS_ENABLE_CUDA=ON`)
 takes the same arguments and gives the same errors as `nss.TWSC`. It adds
-`device_id` (default 0) and `num_streams` (default up to 3, fitted to
-`memory_limit_mb`) at the end of the argument list.
+`device_id` (default 0) and `num_streams` (default 1) at the end of the argument list.
 
 - **Device-resident.** The blind noise estimate, the joint matching, the
   per-group dictionary and ADMM solve, the aggregation and every round run on

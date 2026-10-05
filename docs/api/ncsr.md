@@ -69,8 +69,7 @@ with `1/step^2 * bm_range^2`; per-group cost scales with the PCA/SVD solve at
 
 `core.nss_cuda.NCSR` (from `libnss_cuda`, built with `-DNSS_ENABLE_CUDA=ON`)
 takes the same arguments and gives the same errors as `nss.NCSR`. It adds
-`device_id` (default 0) and `num_streams` (default up to 3, fitted to
-`memory_limit_mb`) at the end of the argument list.
+`device_id` (default 0) and `num_streams` (default 1) at the end of the argument list.
 
 - **Device-resident.** Matching, the per-group PCA and centralized shrinkage,
   the aggregation and all outer rounds run on the device. `radius > 0`

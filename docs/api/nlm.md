@@ -65,8 +65,7 @@ Cost scales with `(2a+1)^2 * (2d+1)`; `s` has a smaller linear effect.
 
 `core.nss_cuda.NLM` (from `libnss_cuda`, built with `-DNSS_ENABLE_CUDA=ON`)
 takes the same arguments and gives the same errors as `nss.NLM`. It adds
-`device_id` (default 0) and `num_streams` (default up to 3, fitted to
-`memory_limit_mb`) at the end of the argument list.
+`device_id` (default 0) and `num_streams` (default 1) at the end of the argument list.
 
 - **Device-resident.** The whole frame runs on the device: clamped distance
   maps, the (2s+1)² box sums, Welsch weights, the symmetric accumulation and

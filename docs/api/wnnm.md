@@ -72,8 +72,7 @@ Cost scales with `1/step^2` for matching plus per-group SVD work growing with
 
 `core.nss_cuda.WNNM` (from `libnss_cuda`, built with `-DNSS_ENABLE_CUDA=ON`)
 takes the same arguments and gives the same errors as `nss.WNNM`. It adds
-`device_id` (default 0) and `num_streams` (default up to 3, fitted to
-`memory_limit_mb`) at the end of the argument list.
+`device_id` (default 0) and `num_streams` (default 1) at the end of the argument list.
 
 - **Device-resident.** Matching, the per-group SVD shrinkage and the
   aggregation all run on the device. With `temporal_mode = "legacy"`, `radius > 0` returns the same fat

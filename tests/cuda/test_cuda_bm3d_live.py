@@ -182,9 +182,9 @@ def main():
             cases += 1
             if value < floor:
                 failures.append(f"temporal b{block} g{group} {stage}: psnr {value:.2f} < {floor}")
-    # 4K must create at the default memory limit (no frames are requested). 4:4:4 with ref or
-    # radius 2 needs more than the default and is not in this list. Each case takes up to about
-    # 2 GiB of device memory while it exists.
+    # 4K must create within 2048 MiB (no frames are requested). 4:4:4 with ref or radius 2 needs
+    # more and is not in this list. Each case takes up to about 2 GiB of device memory while it
+    # exists.
     for fmt in (vs.GRAYS, vs.YUV420PS, vs.YUV444PS):
         uhd = core.std.BlankClip(width=3840, height=2160, format=fmt, length=4)
         modes = [("spatial", {}), ("final", dict(ref=uhd)), ("r1 legacy", dict(radius=1, temporal_mode="legacy")),
@@ -197,9 +197,35 @@ def main():
         for label, kw in modes:
             cases += 1
             try:
-                core.nss_cuda.BM3D(uhd, **kw)
+                core.nss_cuda.BM3D(uhd, memory_limit_mb=2048, **kw)
             except vs.Error as error:
                 failures.append(f"4K {uhd.format.name} {label}: {error}")
+    # Without memory_limit_mb there is no limit (reported as 0); an explicit value is kept as given.
+    cases += 2
+    free = core.nss_cuda.BM3D(gray, sigma=5).get_frame(0).props["_NSSResourceLimit"]
+    if free != 0:
+        failures.append(f"memory limit without memory_limit_mb reported as {free}")
+    fixed = core.nss_cuda.BM3D(gray, sigma=5, memory_limit_mb=300).get_frame(0).props["_NSSResourceLimit"]
+    if fixed != 300 << 20:
+        failures.append(f"explicit memory limit reported as {fixed}")
+    # The limit only changes the streams and the internal batches, never the output: the smallest
+    # limit that creates must give the frame of the unlimited one.
+    if not args.quick:
+        wide = make_clip(core, vs.GRAYS, 1920, 1080, 7, length=3)
+        for label, kw in (("spatial", {}), ("final", dict(ref=wide)), ("16 / 16", dict(block_size=16, group_size=16)),
+                          ("r1", dict(radius=1)), ("r1 legacy", dict(radius=1, temporal_mode="legacy"))):
+            cases += 1
+            free = frame_planes(core.nss_cuda.BM3D(wide, sigma=10, **kw), 1)
+            for mb in (60, 80, 100, 130, 170, 220, 300, 400, 600, 900):
+                try:
+                    tight = frame_planes(core.nss_cuda.BM3D(wide, sigma=10, memory_limit_mb=mb, **kw), 1)
+                except vs.Error:
+                    continue
+                if any(not np.array_equal(x, y) for x, y in zip(free, tight)):
+                    failures.append(f"limit {label}: output at memory_limit_mb={mb} differs from the unlimited output")
+                break
+            else:
+                failures.append(f"limit {label}: no limit up to 900 MiB creates")
     for _ in range(2 if args.quick else 20):
         core.nss_cuda.BM3D(gray, sigma=5).get_frame(0)
     for line in failures:
