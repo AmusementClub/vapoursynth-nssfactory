@@ -527,13 +527,9 @@ std::size_t bm3d_scratch_floats(int block, int group, bool wiener) {
 bool bm3d_fuses(int block, int group, bool wiener) {
     // Admitted on paired measurements against ordered aggregation. The block
     // kernel fuses whenever its cube is staged in shared memory. The warp
-    // kernel fuses except where the extra code cost more than it saved.
+    // kernel fuses except 16 / 32 (512 samples per lane: no registers left).
     if (!warp_serves(block, group, wiener)) return cube_bytes(block, group, wiener) <= kCubeSharedBytes;
-    const int shape = block * 100 + group;
-    if (shape == 1632) return false;                 // 512 samples per lane: no registers left
-    if (shape == 1616 && !wiener) return false;      // 0.93x
-    if (shape == 816 && wiener) return false;        // 0.95x
-    return true;
+    return block * 100 + group != 1632;
 }
 
 void bm3d_filter_groups(const Bm3dGroupArgs& args, cudaStream_t stream) {

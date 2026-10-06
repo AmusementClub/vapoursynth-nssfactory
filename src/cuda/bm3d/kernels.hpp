@@ -37,8 +37,7 @@ struct Bm3dGroupArgs {
 };
 
 // Whether the kernel of this shape and stage aggregates its own output: the
-// shapes whose cube is not transformed in `values`, less a few where a paired
-// measurement favoured ordered aggregation.
+// shapes whose cube is not transformed in `values`, except 16 / 32.
 bool bm3d_fuses(int block, int group, bool wiener);
 
 // Floats of ref_cube per group the Wiener stage of this shape needs (0 for

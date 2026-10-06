@@ -157,6 +157,7 @@ temporal = core.nss_cuda.VAggregate(fat, clip, radius=1)
   bm3dcuda with the same search (measured 2026-10-06):
   - Spatial: about 1.25x with 32 VapourSynth threads (the frame transfers
     bound it); the kernels take the same time.
-  - Rolling: 1.9x at `radius = 1` and `radius = 2` with 32 threads, 1.03x
-    with one thread; it keeps the CPU's predictive search and reproducible
-    sums.
+  - Rolling, frames asked for in order: 2.7x at `radius = 1` and 3.3x at
+    `radius = 2` with 32 threads, 1.4x with one thread. Random access:
+    1.15x with one thread, 2.2x with 32. It keeps the CPU's predictive
+    search and reproducible sums.
