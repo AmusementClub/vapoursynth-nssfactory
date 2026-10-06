@@ -165,8 +165,13 @@ temporal = core.nss_cuda.VAggregate(fat, clip, radius=1)
     left for its frames are kept, so it runs `rolling_chunk` centers and
     uploads `rolling_chunk` frames instead of `rolling_chunk + 2R` and
     `rolling_chunk + 4R`. Any other chunk starts afresh. The output is the
-    same either way. Under a `memory_limit_mb` without room for the carried
-    sums every chunk starts afresh.
+    same either way.
+  - A frame is finished as soon as its last center has run, so a plane keeps
+    2R + 1 slices of sums whatever `rolling_chunk` is; the chunk's finished
+    frames wait on the device and are downloaded together.
+  - Under a `memory_limit_mb` without room for it, the planes of a clip take
+    turns on one state (each chunk then starts afresh unless the clip has one
+    plane) and finished frames are downloaded one by one.
   - Each center frame's contributions are added into the chunk's target
     frames: as exact fixed-point sums for the shapes that aggregate inside
     the filter kernel (below), in ascending order as the CPU does for the
@@ -205,12 +210,12 @@ temporal = core.nss_cuda.VAggregate(fat, clip, radius=1)
   with smaller internal batches to fit (the output does not change). The
   smallest limit one stream accepts at 4K, for GRAYS / YUV420 / YUV444 or RGB:
   - Spatial: about 350 / 370 / 420, and 420 / 430 / 480 with `ref`.
-  - Rolling, `radius = 1`: 1400 / 1560 / 2030, and 1750 / 1900 / 2380 with `ref`.
+  - Rolling, `radius = 1`: 1140 / 1300 / 1780, and 1490 / 1650 / 2130 with `ref`.
   - Rolling, `radius = 2`: 1590 / 1750 / 2220, and 2130 / 2280 / 2760 with `ref`.
   - Legacy with `ref`: 990 / 1090 / 1370 at `radius = 1`, 1630 / 1790 / 2260
     at `radius = 2`.
-  - Rolling with `final=1`: 1940 / 2090 / 2570 at `radius = 1`, 2630 / 2790 /
-    3260 at `radius = 2`.
+  - Rolling with `final=1`: 1810 / 1970 / 2440 at `radius = 1`, 2760 / 2920 /
+    3390 at `radius = 2`.
 - **Performance.** At 1080p GRAYS on an RTX 5080, one stream, against
   bm3dcuda with the same search (measured 2026-10-06):
   - Spatial: about 1.25x with 32 VapourSynth threads (the frame transfers
