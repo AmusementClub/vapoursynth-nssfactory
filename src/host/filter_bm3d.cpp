@@ -49,24 +49,41 @@ struct Bm3dBatchResult {
     float weight = 1.f;
 };
 
-void process_plane_batched(const float* const* srcs, const float* const* refs, int ntemp, int t0,
-                           const int* src_strides, const int* ref_strides, float* dst, int width, int height,
-                           int dstride, int fat_stride,
-                           float sigma, int block, int group, int step, int bm_range, int ps_num, int ps_range,
-                           int radius, bool wiener, bool emit_fat, float* scratch, int center, int frame_count
+// One plane's share of a pass over the groups: its frames, its Wiener
+// reference, and where its sums and its result go. scratch holds the plane's
+// num and den slices.
+struct Bm3dChannel {
+    const float* const* srcs;
+    const int* src_strides;
+    const float* const* refs;
+    const int* ref_strides;
+    float* dst;
+    int dstride;
+    int fat_stride;
+    float sigma;
+    float* scratch;
+};
+
+// Matches every group once on `match` and filters each channel with those
+// groups. Without chroma there is one channel and `match` is its reference;
+// with chroma (CBM3D) the channels are the planes of a 4:4:4 frame and
+// `match` is plane 0.
+void process_planes_batched(const float* const* match, const int* match_strides, const Bm3dChannel* channels,
+                            int nch, int ntemp, int t0, int width, int height,
+                            int block, int group, int step, int bm_range, int ps_num, int ps_range,
+                            int radius, bool wiener, bool emit_fat, int center, int frame_count
 #if NSS_BM_SCRATCH
-                           , bool scratch_only=false
+                            , bool scratch_only=false
 #endif
-                           ) {
+                            ) {
 #if NSS_BM_EXPERIMENT & 128
     nss::bm3d_cache_epoch();
 #endif
     const int slices = 2 * radius + 1;
     const std::size_t plane_size = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
-    float* num = scratch;
-    float* den = num + static_cast<std::size_t>(slices) * plane_size;
-    std::memset(num, 0, static_cast<std::size_t>(slices) * plane_size * sizeof(float));
-    std::memset(den, 0, static_cast<std::size_t>(slices) * plane_size * sizeof(float));
+    for (int c = 0; c < nch; ++c) {
+        std::memset(channels[c].scratch, 0, static_cast<std::size_t>(slices) * 2 * plane_size * sizeof(float));
+    }
 
     nss::SearchConfig cfg;
     cfg.block = block;
@@ -127,13 +144,13 @@ void process_plane_batched(const float* const* srcs, const float* const* refs, i
         }
         int match_rc=-2;
 #if NSS_BM_EXPERIMENT & 64
-        if(radius==0&&block>=8&&step<=4)match_rc=nss::detail::sliding_batch(refs[t0],ref_strides[t0],width,height,match_items.data(),count,match_storage.data(),nss::kBmMaxGroup,counts.data());
+        if(radius==0&&block>=8&&step<=4)match_rc=nss::detail::sliding_batch(match[t0],match_strides[t0],width,height,match_items.data(),count,match_storage.data(),nss::kBmMaxGroup,counts.data());
 #endif
         if(match_rc==-2)match_rc = radius > 0
-                                 ? nss::predictive_match_batch(refs, ref_strides, ntemp, width, height, t0, cfg,
+                                 ? nss::predictive_match_batch(match, match_strides, ntemp, width, height, t0, cfg,
                                                                match_items.data(), count, match_storage.data(),
                                                                nss::kBmMaxGroup, counts.data())
-                                 : nss::spatial_match_batch(refs[t0], ref_strides[t0], width, height,
+                                 : nss::spatial_match_batch(match[t0], match_strides[t0], width, height,
                                                             match_items.data(), count, match_storage.data(),
                                                             nss::kBmMaxGroup, counts.data());
         // Matching failures are fatal for the frame: a nonzero code identifies
@@ -147,6 +164,16 @@ void process_plane_batched(const float* const* srcs, const float* const* refs, i
         }
 #endif
 
+        for (int channel = 0; channel < nch; ++channel) {
+        // The names the single-plane code below uses, for this channel.
+        const Bm3dChannel& ch = channels[channel];
+        const float* const* srcs = ch.srcs;
+        const float* const* refs = ch.refs;
+        const int* src_strides = ch.src_strides;
+        const int* ref_strides = ch.ref_strides;
+        const float sigma = ch.sigma;
+        float* num = ch.scratch;
+        float* den = num + static_cast<std::size_t>(slices) * plane_size;
         if (fused_template) {
             for (int i = 0; i < count; ++i) {
                 const int k = counts[static_cast<std::size_t>(i)];
@@ -276,11 +303,20 @@ void process_plane_batched(const float* const* srcs, const float* const* refs, i
             }
         };
         (void)nss::host_detail::commit_prepared_chunk<Bm3dBatchResult>(jobs, begin, end, prepare, commit);
+        }
     }
 
 #if NSS_BM_SCRATCH
     if (scratch_only) return;
 #endif
+    for (int channel = 0; channel < nch; ++channel) {
+    const Bm3dChannel& ch = channels[channel];
+    const float* const* srcs = ch.srcs;
+    const int* src_strides = ch.src_strides;
+    float* dst = ch.dst;
+    const int dstride = ch.dstride, fat_stride = ch.fat_stride;
+    const float* num = ch.scratch;
+    const float* den = num + static_cast<std::size_t>(slices) * plane_size;
     if (emit_fat) {
         for (int sl = 0; sl < slices; ++sl) {
             const float* np = num + static_cast<std::size_t>(sl) * plane_size;
@@ -297,6 +333,25 @@ void process_plane_batched(const float* const* srcs, const float* const* refs, i
     } else {
         nss::aggregate_finish(dst, num, den, srcs[t0], width, height, dstride, width, src_strides[t0]);
     }
+    }
+}
+
+void process_plane_batched(const float* const* srcs, const float* const* refs, int ntemp, int t0,
+                           const int* src_strides, const int* ref_strides, float* dst, int width, int height,
+                           int dstride, int fat_stride,
+                           float sigma, int block, int group, int step, int bm_range, int ps_num, int ps_range,
+                           int radius, bool wiener, bool emit_fat, float* scratch, int center, int frame_count
+#if NSS_BM_SCRATCH
+                           , bool scratch_only=false
+#endif
+                           ) {
+    const Bm3dChannel channel{srcs, src_strides, refs, ref_strides, dst, dstride, fat_stride, sigma, scratch};
+    process_planes_batched(refs, ref_strides, &channel, 1, ntemp, t0, width, height, block, group, step, bm_range,
+                           ps_num, ps_range, radius, wiener, emit_fat, center, frame_count
+#if NSS_BM_SCRATCH
+                           , scratch_only
+#endif
+                           );
 }
 
 const VSFrame* VS_CC bm3dGetFrame(int n, int activationReason, void* instanceData, void** frameData,
@@ -354,6 +409,7 @@ const VSFrame* VS_CC bm3dGetFrame(int n, int activationReason, void* instanceDat
             nss::host_detail::temporal_identity(outp, dstride, srcp, sstride, pw, ph, d->radius);
             continue;
         }
+        if (d->chroma) continue;  // the filtered planes share one pass, below
         nss::ResourceVector<const float*> srcs(static_cast<std::size_t>(ntemp));
         nss::ResourceVector<const float*> refs(static_cast<std::size_t>(ntemp));
         nss::ResourceVector<int> src_strides(static_cast<std::size_t>(ntemp));
@@ -389,6 +445,43 @@ const VSFrame* VS_CC bm3dGetFrame(int n, int activationReason, void* instanceDat
                               fat, scratch, n, d->vi.numFrames);
         if (!fat && d->sigma[plane] != 0.f) {
             (void)srcp;
+        }
+    }
+
+    if (d->chroma) {
+        // CBM3D: groups matched on plane 0 (of ref when given), every filtered plane with those groups.
+        const std::size_t nt = static_cast<std::size_t>(ntemp);
+        nss::ResourceVector<const float*> srcs(3 * nt), refs(3 * nt);
+        nss::ResourceVector<int> src_strides(3 * nt), ref_strides(3 * nt);
+        for (int plane = 0; plane < 3; ++plane) {
+            for (std::size_t t = 0; t < nt; ++t) {
+                srcs[plane * nt + t] = reinterpret_cast<const float*>(vsapi->getReadPtr(srcf[t], plane));
+                refs[plane * nt + t] = reinterpret_cast<const float*>(vsapi->getReadPtr(reff[t], plane));
+                src_strides[plane * nt + t] = static_cast<int>(frames_owned.getStride(srcf[t], plane) / sizeof(float));
+                ref_strides[plane * nt + t] = static_cast<int>(frames_owned.getStride(reff[t], plane) / sizeof(float));
+            }
+        }
+        const int pw = d->vi.width, ph = d->vi.height;
+        const std::size_t need = nt * 2 * static_cast<std::size_t>(pw) * ph;
+        int nch = 0;
+        for (int plane = 0; plane < 3; ++plane) nch += d->sigma[plane] != 0.f;
+        float* scratch = nch ? d->ws.get(need * static_cast<std::size_t>(nch)) : nullptr;
+        Bm3dChannel channels[3];
+        nch = 0;
+        for (int plane = 0; plane < 3; ++plane) {
+            if (d->sigma[plane] == 0.f) continue;
+            const int dstride = static_cast<int>(frames_owned.getStride(dst, plane) / sizeof(float));
+            channels[nch] = Bm3dChannel{srcs.data() + plane * nt, src_strides.data() + plane * nt,
+                                        refs.data() + plane * nt, ref_strides.data() + plane * nt,
+                                        reinterpret_cast<float*>(vsapi->getWritePtr(dst, plane)), dstride, dstride,
+                                        d->sigma[plane], scratch + need * static_cast<std::size_t>(nch)};
+            ++nch;
+        }
+        if (nch) {
+            process_planes_batched(refs.data(), ref_strides.data(), channels, nch, ntemp, t0, pw, ph,
+                                   d->block_size[0], d->group_size[0], d->block_step[0], d->bm_range[0],
+                                   d->ps_num[0], d->ps_range[0], d->radius, d->ref != nullptr, fat, n,
+                                   d->vi.numFrames);
         }
     }
 
@@ -474,6 +567,104 @@ void rolling_write_plane(float* dst, int dstride, const RollingPlane& plane) {
     }
 }
 
+// CBM3D chunk: per center one pass that matches on plane 0 and filters the
+// active planes, each plane's contributions added to its target frames in
+// ascending center order (as legacy + VAggregate).
+void rolling_fill_chunk_chroma(RollingData* d, RollingChunkStore& store, int start, int count,
+                               VSFrameContext* frameCtx, const VSAPI* vsapi) {
+    nss::FrameScope frames_owned(vsapi);
+    auto& bm = d->bm;
+    const int r = bm.radius, ntemp = 2 * r + 1, nframes = bm.vi.numFrames;
+    const int w = bm.vi.width, h = bm.vi.height;
+    const std::size_t size = static_cast<std::size_t>(w) * h, nt = static_cast<std::size_t>(ntemp);
+    int planes[3], nch = 0;
+    for (int plane = 0; plane < 3; ++plane) {
+        if (bm.sigma[plane] != 0.f) planes[nch++] = plane;
+    }
+    const std::size_t fat_size = nt * 2 * size;
+    nss::ResourceVector<float> sums(static_cast<std::size_t>(nch) * count * 2 * size, 0.f);
+#if !NSS_BM_SCRATCH
+    nss::ResourceVector<float> fat(static_cast<std::size_t>(nch) * fat_size);
+#endif
+    float* scratch = nch ? bm.ws.get(static_cast<std::size_t>(nch) * fat_size) : nullptr;
+    for (int center = std::max(0, start - r);
+         nch && center <= nss::host_detail::temporal_last(start + count - 1, r, nframes); ++center) {
+        nss::ResourceVector<const VSFrame*> sf(nt), rf(nt);
+        nss::ResourceVector<const float*> sp(3 * nt), rp(3 * nt);
+        nss::ResourceVector<int> ss(3 * nt), rs(3 * nt);
+        for (std::size_t t = 0; t < nt; ++t) {
+            const int fn = nss::host_detail::temporal_slot_frame(center, static_cast<int>(t), r, nframes);
+            sf[t] = frames_owned.getFrameFilter(fn, bm.node, frameCtx);
+            rf[t] = frames_owned.getFrameFilter(fn, bm.ref ? bm.ref : bm.node, frameCtx);
+            for (int plane = 0; plane < 3; ++plane) {
+                sp[plane * nt + t] = reinterpret_cast<const float*>(vsapi->getReadPtr(sf[t], plane));
+                rp[plane * nt + t] = reinterpret_cast<const float*>(vsapi->getReadPtr(rf[t], plane));
+                ss[plane * nt + t] = static_cast<int>(frames_owned.getStride(sf[t], plane) / sizeof(float));
+                rs[plane * nt + t] = static_cast<int>(frames_owned.getStride(rf[t], plane) / sizeof(float));
+            }
+        }
+        Bm3dChannel channels[3];
+        for (int c = 0; c < nch; ++c) {
+            const int plane = planes[c];
+#if NSS_BM_SCRATCH
+            float* out = nullptr;
+#else
+            float* out = fat.data() + c * fat_size;
+#endif
+            channels[c] = Bm3dChannel{sp.data() + plane * nt, ss.data() + plane * nt, rp.data() + plane * nt,
+                                      rs.data() + plane * nt, out, w, w, bm.sigma[plane], scratch + c * fat_size};
+        }
+        process_planes_batched(rp.data(), rs.data(), channels, nch, ntemp, r, w, h, bm.block_size[0], bm.group_size[0],
+                               bm.block_step[0], bm.bm_range[0], bm.ps_num[0], bm.ps_range[0], r, bm.ref != nullptr,
+                               true, center, nframes
+#if NSS_BM_SCRATCH
+                               , true
+#endif
+                               );
+        for (int target = std::max(start, center - r);
+             target <= std::min(start + count - 1, nss::host_detail::temporal_last(center, r, nframes)); ++target) {
+            const std::size_t slice = static_cast<std::size_t>(target - center + r);
+            for (int c = 0; c < nch; ++c) {
+                float* num = sums.data() + (static_cast<std::size_t>(c) * count + (target - start)) * 2 * size;
+#if NSS_BM_SCRATCH
+                const float* plane_scratch = scratch + c * fat_size;
+                for (std::size_t i = 0; i < size; ++i) {
+                    num[i] += plane_scratch[slice * size + i];
+                    num[size + i] += plane_scratch[(nt + slice) * size + i];
+                }
+#else
+                const float* contribution = fat.data() + c * fat_size + slice * 2 * size;
+                for (std::size_t i = 0; i < 2 * size; ++i) num[i] += contribution[i];
+#endif
+            }
+        }
+        for (std::size_t t = 0; t < nt; ++t) {
+            frames_owned.freeFrame(sf[t]);
+            frames_owned.freeFrame(rf[t]);
+        }
+    }
+    for (int i = 0; i < count; ++i) {
+        const VSFrame* frame = frames_owned.getFrameFilter(start + i, bm.node, frameCtx);
+        for (int plane = 0; plane < 3; ++plane) {
+            const float* src = reinterpret_cast<const float*>(vsapi->getReadPtr(frame, plane));
+            const int stride = static_cast<int>(frames_owned.getStride(frame, plane) / sizeof(float));
+            auto& output = store.frames[i].planes[plane];
+            int c = 0;
+            while (c < nch && planes[c] != plane) ++c;
+            if (c == nch) {
+                rolling_store_plane(output, src, w, h, stride);
+                continue;
+            }
+            output.width = w;
+            output.height = h;
+            output.data.resize(size);
+            const float* num = sums.data() + (static_cast<std::size_t>(c) * count + i) * 2 * size;
+            nss::aggregate_finish(output.data.data(), num, num + size, src, w, h, w, w, stride);
+        }
+        frames_owned.freeFrame(frame);
+    }
+}
+
 bool rolling_fill_chunk(RollingData* d, RollingChunkStore& store, int start, int count, VSFrameContext* frameCtx,
                         VSCore* core, const VSAPI* vsapi) {
     (void)core;
@@ -483,6 +674,10 @@ bool rolling_fill_chunk(RollingData* d, RollingChunkStore& store, int start, int
     store.start=start; store.count=count;
     store.frames.assign(count,RollingFrameStore{});
     for(auto& frame:store.frames) frame.planes.resize(np);
+    if (bm.chroma) {
+        rolling_fill_chunk_chroma(d, store, start, count, frameCtx, vsapi);
+        return true;
+    }
     // One center's fat plus target chunk accumulators, never all centers' fats.
     for(int plane=0;plane<np;++plane) {
         const int w=nss::plane_width(bm.vi,plane), h=nss::plane_height(bm.vi,plane);

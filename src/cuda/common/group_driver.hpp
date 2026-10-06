@@ -60,8 +60,11 @@ struct GroupLaunch {
     float* values;              // channels * batch * group * block^2, channel-major: filtered patches
     float* scratch;             // batch * scratch_floats(plane) extra workspace, or nullptr
     AggregatePatch* patches;    // batch * group: position, slice = match t, weight; unused slots slice -1
+                                // (shared_match: one such array per channel, channel-major)
+    const bool* channel_active; // shared_match: channel c is filtered (else left alone, its outputs unused)
     // plane->fused: the accumulators of the plane (see FixedTarget for the
-    // slice of a match); values and patches are then null.
+    // slice of a match); values and patches are then null. Channel c of a
+    // shared_match unit starts c * fused.channel_step cells further.
     FixedTarget fused{};
     cudaStream_t stream;
 };
@@ -82,6 +85,12 @@ struct GroupFilterConfig {
     // and filtered as one unit using planes[0]'s geometry; planes[c].active
     // then only says whether channel c is written or copied from the source.
     int channels = 1;
+    // Shared groups (CBM3D): with channels == 3 and shared_match the groups
+    // are matched on channel 0 alone and every channel is then filtered on
+    // its own with them (planes[c].sigma; planes[0]'s geometry), with its own
+    // patch records and weights. Unlike joint groups this is one round per
+    // plane, so rolling output and fused aggregation remain available.
+    bool shared_match = false;
     // Outer rounds (MCWNNM, NCSR): every round after the first relaxes the
     // estimate toward the input by delta, re-matches on the estimate (the
     // guide only drives the first round) and filters the estimate again.

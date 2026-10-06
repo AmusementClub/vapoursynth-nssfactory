@@ -22,6 +22,7 @@ struct Bm3dGroupArgs {
     const float* const* ref;    // reference planes for the Wiener stage
     int pitch;                  // floats, shared by every plane
     const DeviceMatch* matches; // batch * group (group-strided)
+    long long plane_offset;     // floats from src[t] / ref[t] to the plane to filter (a channel of a unit)
     const int* counts;          // batch
     int batch;
     int block;

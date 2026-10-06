@@ -169,7 +169,9 @@ struct Driver : GroupFilterConfig {
 
 bool has_guide(const Driver& d) { return d.guide != nullptr; }
 // Joint or multi-round filters keep their estimate in the window frames.
-bool iterative(const Driver& d) { return d.channels > 1 || d.iters > 1; }
+bool iterative(const Driver& d) { return (d.channels > 1 && !d.shared_match) || d.iters > 1; }
+// Patch record arrays per batch: one, or one per channel of a shared_match unit.
+std::size_t patch_sets(const Driver& d) { return d.shared_match ? static_cast<std::size_t>(d.channels) : 1; }
 std::string prefix(const Driver& d) { return "nss_cuda." + d.name + ": "; }
 
 std::size_t scratch_floats(const Driver& d, const GroupPlane& p) {
@@ -199,7 +201,7 @@ std::size_t per_ref_bytes(const Driver& d, const GroupPlane& p) {
     const std::size_t cube = static_cast<std::size_t>(d.channels) * p.group * p.block * p.block * sizeof(float);
     return cube + scratch_floats(d, p) * sizeof(float) + sizeof(int) +
            static_cast<std::size_t>(p.group) *
-               (sizeof(DeviceMatch) + sizeof(AggregatePatch) + OrderedAggregator::kBytesPerPatch);
+               (sizeof(DeviceMatch) + patch_sets(d) * sizeof(AggregatePatch) + OrderedAggregator::kBytesPerPatch);
 }
 
 // Bytes of the slot's per-batch buffers for the planes' current batches.
@@ -216,7 +218,7 @@ std::size_t slot_batch_bytes(const Driver& d) {
         scratch = std::max(scratch, batch * scratch_floats(d, p) * sizeof(float));
         if (p.fused) continue;
         values = std::max(values, batch * d.channels * p.group * p.block * p.block * sizeof(float));
-        patches = std::max(patches, batch * p.group * sizeof(AggregatePatch));
+        patches = std::max(patches, batch * p.group * patch_sets(d) * sizeof(AggregatePatch));
         sort = std::max(sort, batch * p.group * OrderedAggregator::kBytesPerPatch);
     }
     return matches + counts + scratch + values + patches + sort;
@@ -229,7 +231,8 @@ int roll_slices(const Driver& d) { return d.rolling.rolling_chunk + (d.roll_carr
 // Pinned bytes of one rolling staging set: every active plane's uploads at
 // its own size, or one plane's at the largest size for planes that take turns.
 std::size_t roll_staging_bytes(const Driver& d, bool together) {
-    const std::size_t uploads = static_cast<std::size_t>(d.rolling.rolling_chunk + 4 * d.radius) * (d.guide ? 2 : 1);
+    const std::size_t uploads =
+        static_cast<std::size_t>(d.rolling.rolling_chunk + 4 * d.radius) * (d.guide ? 2 : 1) * d.channels;
     if (!together) return d.plane_floats * sizeof(float) * uploads;
     std::size_t bytes = 0;
     for (const GroupPlane& p : d.planes) {
@@ -249,7 +252,7 @@ int active_planes(const Driver& d) {
 std::size_t roll_bytes(const Driver& d, bool per_plane) {
     const std::size_t k = roll_slices(d), clips = has_guide(d) ? 2 : 1;
     const auto planes = [&](bool fused, bool ordered) {
-        return d.ntemp * clips + k + (fused ? 4 * k : 0) + (ordered ? 2 * k : 0);
+        return (d.ntemp * clips + k + (fused ? 4 * k : 0) + (ordered ? 2 * k : 0)) * static_cast<std::size_t>(d.channels);
     };
     if (!per_plane) {
         return active_planes(d) ? d.plane_floats * sizeof(float) * planes(any_fused(d), any_ordered(d)) : 0;
@@ -303,7 +306,7 @@ void plan_planes(Driver& d) {
     const std::size_t device_planes = (rolling ? 0 : static_cast<std::size_t>(upload_regions(d))) +
                                       static_cast<std::size_t>(d.channels) *
                                           ((any_ordered(d) ? 2 * d.ntemp : 0) + 1 + (d.iters > 1 ? d.ntemp : 0)) +
-                                      (any_fused(d) ? (rolling ? 2 : 6) : 0);
+                                      (any_fused(d) ? 2 + (rolling ? 0 : 4 * static_cast<std::size_t>(d.channels)) : 0);
     const std::size_t total = d.budget ? d.budget->snapshot().limit : SIZE_MAX;
     int max_w = 1, max_h = 1;
     for (const GroupPlane& p : d.planes) {
@@ -447,7 +450,7 @@ std::unique_ptr<Staging> make_staging(const Driver& d) {
             NSS_CUDA_CHECK(cudaEventCreateWithFlags(&staging->plane_done[plane], cudaEventDisableTiming));
             staging->roll_base[plane] = at;
             staging->roll_step[plane] = (d.roll_together ? p.floats : d.plane_floats) * sizeof(float);
-            if (d.roll_together) at += staging->roll_step[plane] * chunk_uploads(d);
+            if (d.roll_together) at += staging->roll_step[plane] * chunk_uploads(d) * d.channels;
         }
         return staging;
     }
@@ -473,7 +476,7 @@ std::unique_ptr<Slot> make_slot(const Driver& d) {
         max_w = std::max(max_w, p.width);
         max_h = std::max(max_h, p.height);
         values = std::max(values, batch * d.channels * p.group * p.block * p.block * sizeof(float));
-        patches = std::max(patches, batch * p.group * sizeof(AggregatePatch));
+        patches = std::max(patches, batch * p.group * patch_sets(d) * sizeof(AggregatePatch));
     }
     const bool rolling = d.mode == GroupMode::Rolling;
     for (int t = 0; t < d.ntemp && !rolling; ++t) {
@@ -494,7 +497,8 @@ std::unique_ptr<Slot> make_slot(const Driver& d) {
             if (!p.active) continue;
             RollState& r = slot->roll[d.roll_state[plane]];
             if (!r.src_frames.empty()) continue;  // the shared state, sized below for every plane
-            const std::size_t bytes = (shared ? d.plane_floats : p.floats) * sizeof(float);
+            // A unit of several channels keeps them side by side in every buffer.
+            const std::size_t bytes = (shared ? d.plane_floats : p.floats) * sizeof(float) * d.channels;
             for (int t = 0; t < d.ntemp; ++t) {
                 r.src_frames.emplace_back(bytes, d.budget);
                 r.src_ptrs.push_back(r.src_frames.back().as<float>());
@@ -522,8 +526,8 @@ std::unique_ptr<Slot> make_slot(const Driver& d) {
     slot->out = DeviceBuffer(unit_bytes, d.budget);
     if (any_fused(d)) {
         if (!rolling) {
-            slot->fixed_num = DeviceBuffer(d.plane_floats * sizeof(unsigned long long), d.budget);
-            slot->fixed_den = DeviceBuffer(d.plane_floats * sizeof(unsigned long long), d.budget);
+            slot->fixed_num = DeviceBuffer(d.plane_floats * d.channels * sizeof(unsigned long long), d.budget);
+            slot->fixed_den = DeviceBuffer(d.plane_floats * d.channels * sizeof(unsigned long long), d.budget);
         }
         slot->fixed_rows = DeviceBuffer(d.plane_floats * sizeof(unsigned long long), d.budget);
     }
@@ -562,7 +566,7 @@ void filter_center(const Driver& d, Slot& s, const GroupPlane& p, int center, bo
     const bool w = has_guide(d);
     const int radius = d.radius;
     MatchGeometry geometry{p.width, p.height, p.width, p.block, p.range, p.group};
-    geometry.channels = d.channels;
+    geometry.channels = d.shared_match ? 1 : d.channels;
     geometry.channel_step = static_cast<long long>(p.floats);
     TemporalWindow window{};
     if (radius > 0) {
@@ -575,10 +579,10 @@ void filter_center(const Driver& d, Slot& s, const GroupPlane& p, int center, bo
         window.ps_num = p.ps_num;
         window.ps_range = p.ps_range;
     }
-    const FixedTarget fixed = rolling ? *rolling
-                                      : FixedTarget{s.fixed_num.as<unsigned long long>(),
-                                                    s.fixed_den.as<unsigned long long>(), p.width, p.floats};
-    if (p.fused && !rolling) fixed_clear(fixed, p.floats, stream);
+    FixedTarget fixed{s.fixed_num.as<unsigned long long>(), s.fixed_den.as<unsigned long long>(), p.width, p.floats};
+    fixed.channel_step = p.floats;
+    if (rolling) fixed = *rolling;
+    if (p.fused && !rolling) fixed_clear(fixed, p.floats * d.channels, stream);
     for (int begin = 0; begin < p.grid.count(); begin += p.batch) {
         const int count = std::min(p.batch, p.grid.count() - begin);
         {
@@ -605,6 +609,7 @@ void filter_center(const Driver& d, Slot& s, const GroupPlane& p, int center, bo
         launch.values = p.fused ? nullptr : s.values.as<float>();
         launch.scratch = s.scratch.as<float>();
         launch.patches = p.fused ? nullptr : s.patches.as<AggregatePatch>();
+        launch.channel_active = d.channel_out;
         if (p.fused) launch.fused = fixed;
         launch.stream = stream;
         {
@@ -618,8 +623,11 @@ void filter_center(const Driver& d, Slot& s, const GroupPlane& p, int center, bo
             const AggregateTarget target{s.num.as<float>() + c * d.ntemp * p.floats,
                                          s.den.as<float>() + c * d.ntemp * p.floats,
                                          p.width, p.height, p.width, d.ntemp, p.floats};
-            s.aggregator->run(s.values.as<float>() + c * channel_values, s.patches.as<AggregatePatch>(), count * p.group,
-                              p.block, target, stream, begin > 0);
+            if (d.shared_match && !d.channel_out[c]) continue;
+            const AggregatePatch* patches =
+                s.patches.as<AggregatePatch>() + (d.shared_match ? static_cast<std::size_t>(c) * count * p.group : 0);
+            s.aggregator->run(s.values.as<float>() + c * channel_values, patches, count * p.group, p.block, target, stream,
+                              begin > 0);
         }
     }
 }
@@ -741,15 +749,19 @@ const VSFrame* frame_output(Driver* d, int n, VSFrameContext* ctx, VSCore* core,
                 if (!d->channel_out[c]) continue;
                 if (radius == 0) {
                     const float* result = s.src_frames[0].as<float>() + c * p.floats;
+                    // s.out is reused for every channel: its download is
+                    // stream-ordered before the next finish overwrites it.
+                    const std::size_t channel = static_cast<std::size_t>(c) * p.floats;
                     if (p.fused) {
-                        const FixedTarget fixed{s.fixed_num.as<unsigned long long>(), s.fixed_den.as<unsigned long long>(),
-                                                p.width, p.floats};
-                        fixed_finish(fixed, p.block, s.host_src_ptrs[0], p.width, p.height,
+                        const FixedTarget fixed{s.fixed_num.as<unsigned long long>() + channel,
+                                                s.fixed_den.as<unsigned long long>() + channel, p.width, p.floats};
+                        fixed_finish(fixed, p.block, s.host_src_ptrs[0] + channel, p.width, p.height,
                                      s.fixed_rows.as<unsigned long long>(), s.out.as<float>(), s.stream);
                         result = s.out.as<float>();
                     } else if (!iterative(*d)) {
-                        aggregate_finish(s.num.as<float>(), s.den.as<float>(), s.host_src_ptrs[0], p.width, p.height, p.width,
-                                         s.out.as<float>(), s.stream);
+                        aggregate_finish(s.num.as<float>() + channel, s.den.as<float>() + channel,
+                                         s.host_src_ptrs[0] + channel, p.width, p.height, p.width, s.out.as<float>(),
+                                         s.stream);
                         result = s.out.as<float>();
                     }
                     begin_download(result, row_bytes, row_bytes, p.height, g.regions[slot_region(c, 0)], s.stream);
@@ -909,22 +921,30 @@ void queue_plane(Driver& d, RollTurn& turn, int plane, int start, int count, Chu
             if (armed) cudaStreamSynchronize(stream);
         }
     } drain{s.stream};
+    // Every buffer of the state holds the unit's channels one after the
+    // other: a frame's planes, and k ring cells per channel of the sums and
+    // of chunk_src.
+    const int channels = d.channels;
+    const std::size_t ring_floats = static_cast<std::size_t>(k) * p.floats;
     float* acc_num = r.acc.as<float>();
-    float* acc_den = p.fused ? nullptr : acc_num + p.floats * k;
+    float* acc_den = p.fused ? nullptr : acc_num + ring_floats * channels;
     // Logical slice i is frame start + i, in ring cell (start + i) % k.
     FixedTarget fixed{r.fixed_num.as<unsigned long long>(), r.fixed_den.as<unsigned long long>(), p.width, p.floats};
     fixed.slices = std::min(k, nframes - start);
     fixed.slice_first = start % k;
     fixed.slice_ring = k;
+    fixed.channel_step = ring_floats;
     if (!turn.carry) std::fill(r.resident.begin(), r.resident.end(), -1);
     // The carried frames keep their sums; the others start from zero.
     for (int f = turn.carry ? start + 2 * radius : start; f < start + k; ++f) {
-        const std::size_t cell = static_cast<std::size_t>(f % k) * p.floats;
-        if (p.fused) {
-            fixed_clear(FixedTarget{fixed.num + cell, fixed.den + cell}, p.floats, s.stream);
-        } else {
-            NSS_CUDA_CHECK(cudaMemsetAsync(acc_num + cell, 0, p.floats * sizeof(float), s.stream));
-            NSS_CUDA_CHECK(cudaMemsetAsync(acc_den + cell, 0, p.floats * sizeof(float), s.stream));
+        for (int c = 0; c < channels; ++c) {
+            const std::size_t cell = c * ring_floats + static_cast<std::size_t>(f % k) * p.floats;
+            if (p.fused) {
+                fixed_clear(FixedTarget{fixed.num + cell, fixed.den + cell}, p.floats, s.stream);
+            } else {
+                NSS_CUDA_CHECK(cudaMemsetAsync(acc_num + cell, 0, p.floats * sizeof(float), s.stream));
+                NSS_CUDA_CHECK(cudaMemsetAsync(acc_den + cell, 0, p.floats * sizeof(float), s.stream));
+            }
         }
     }
     std::size_t staged = 0;
@@ -937,18 +957,21 @@ void queue_plane(Driver& d, RollTurn& turn, int plane, int start, int count, Chu
                 if (staged >= turn.uploads.size() || turn.uploads[staged] != fn) {
                     throw std::logic_error(prefix(d) + "rolling plan and device state disagree");
                 }
-                upload_staged(base + staged * clips * step, row_bytes, p.height, r.src_frames[ring].get(), row_bytes,
-                              s.stream);
-                if (w) {
-                    upload_staged(base + (staged * clips + 1) * step, row_bytes, p.height, r.ref_frames[ring].get(),
-                                  row_bytes, s.stream);
+                for (int c = 0; c < channels; ++c) {
+                    float* frame = r.src_frames[ring].as<float>() + c * p.floats;
+                    upload_staged(base + (staged * clips * channels + c) * step, row_bytes, p.height, frame, row_bytes,
+                                  s.stream);
+                    if (w) {
+                        upload_staged(base + ((staged * clips + 1) * channels + c) * step, row_bytes, p.height,
+                                      r.ref_frames[ring].as<float>() + c * p.floats, row_bytes, s.stream);
+                    }
+                    if (fn >= start && fn < start + k) {
+                        NSS_CUDA_CHECK(cudaMemcpyAsync(
+                            r.chunk_src.as<float>() + c * ring_floats + static_cast<std::size_t>(fn % k) * p.floats, frame,
+                            p.floats * sizeof(float), cudaMemcpyDeviceToDevice, s.stream));
+                    }
                 }
                 ++staged;
-                if (fn >= start && fn < start + k) {
-                    NSS_CUDA_CHECK(cudaMemcpyAsync(r.chunk_src.as<float>() + static_cast<std::size_t>(fn % k) * p.floats,
-                                                   r.src_frames[ring].get(), p.floats * sizeof(float),
-                                                   cudaMemcpyDeviceToDevice, s.stream));
-                }
                 r.resident[ring] = fn;
             }
             sp[t] = r.src_ptrs[ring];
@@ -969,25 +992,31 @@ void queue_plane(Driver& d, RollTurn& turn, int plane, int start, int count, Chu
         // order, within a chunk and from one chunk to the next.
         for (int target = std::max(start, center - radius);
              !p.fused && target <= std::min(start + k - 1, temporal_last(center, radius, nframes)); ++target) {
-            const int slice = target - center + radius;
-            const std::size_t cell = static_cast<std::size_t>(target % k) * p.floats;
-            accumulate_slice(acc_num + cell, acc_den + cell, s.num.as<float>() + slice * p.floats,
-                             s.den.as<float>() + slice * p.floats, p.floats, s.stream);
+            for (int c = 0; c < channels; ++c) {
+                if (!d.channel_out[c]) continue;
+                const std::size_t slice = (static_cast<std::size_t>(c) * d.ntemp + (target - center + radius)) * p.floats;
+                const std::size_t cell = c * ring_floats + static_cast<std::size_t>(target % k) * p.floats;
+                accumulate_slice(acc_num + cell, acc_den + cell, s.num.as<float>() + slice, s.den.as<float>() + slice,
+                                 p.floats, s.stream);
+            }
         }
     }
     for (int i = 0; i < count; ++i) {
-        // s.out is reused for every frame: the download is stream-ordered
-        // before the next finish overwrites it.
-        const std::size_t cell = static_cast<std::size_t>((start + i) % k) * p.floats;
-        const float* source = r.chunk_src.as<float>() + cell;
-        if (p.fused) {
-            fixed_finish(FixedTarget{fixed.num + cell, fixed.den + cell, p.width, p.floats}, p.block, source,
-                         p.width, p.height, s.fixed_rows.as<unsigned long long>(), s.out.as<float>(), s.stream);
-        } else {
-            aggregate_finish(acc_num + cell, acc_den + cell, source, p.width, p.height, p.width,
-                             s.out.as<float>(), s.stream);
+        for (int c = 0; c < channels; ++c) {
+            if (!d.channel_out[c]) continue;
+            // s.out is reused for every frame and channel: the download is
+            // stream-ordered before the next finish overwrites it.
+            const std::size_t cell = c * ring_floats + static_cast<std::size_t>((start + i) % k) * p.floats;
+            const float* source = r.chunk_src.as<float>() + cell;
+            if (p.fused) {
+                fixed_finish(FixedTarget{fixed.num + cell, fixed.den + cell, p.width, p.floats}, p.block, source,
+                             p.width, p.height, s.fixed_rows.as<unsigned long long>(), s.out.as<float>(), s.stream);
+            } else {
+                aggregate_finish(acc_num + cell, acc_den + cell, source, p.width, p.height, p.width,
+                                 s.out.as<float>(), s.stream);
+            }
+            begin_download(s.out.get(), row_bytes, row_bytes, p.height, store->plane(i, plane + c), s.stream);
         }
-        begin_download(s.out.get(), row_bytes, row_bytes, p.height, store->plane(i, plane), s.stream);
     }
     NSS_CUDA_CHECK(cudaEventRecord(event, s.stream));
     drain.armed = false;
@@ -1024,13 +1053,14 @@ std::shared_ptr<ChunkStore> compute_chunk(Driver* d, int start, int count, VSFra
     if (!store->bytes.get()) store->bytes = PinnedBuffer(d->frame_bytes * d->rolling.rolling_chunk, d->budget);
 
     const int clips = w ? 2 : 1;
+    // A unit of several channels is planes[0]; its channels that are not
+    // written are copied like the planes of an inactive unit.
+    const bool unit = d->channels > 1;
     std::vector<int> active;
     for (int plane = 0; plane < d->vi.format.numPlanes; ++plane) {
         const GroupPlane& p = d->planes[plane];
-        if (p.active) {
-            active.push_back(plane);
-            continue;
-        }
+        if (p.active && !(unit && plane > 0)) active.push_back(plane);
+        if (unit ? d->planes[0].active && d->channel_out[plane] : p.active) continue;
         const std::size_t row_bytes = static_cast<std::size_t>(p.width) * sizeof(float);
         for (int i = 0; i < count; ++i) {
             const VSFrame* f = frames.getFrameFilter(start + i, d->node, ctx);
@@ -1071,14 +1101,19 @@ std::shared_ptr<ChunkStore> compute_chunk(Driver* d, int start, int count, VSFra
                 const RollTurn& turn = *turns[j];
                 for (std::size_t i = 0; i < turn.uploads.size(); ++i) {
                     const int fn = turn.uploads[i];
+                    const std::size_t channels = static_cast<std::size_t>(d->channels);
                     const VSFrame* f = frames.getFrameFilter(fn, d->node, ctx);
-                    stage_plane(vsapi->getReadPtr(f, plane), vsapi->getStride(f, plane), row_bytes, p.height,
-                                base + i * clips * region);
+                    for (std::size_t c = 0; c < channels; ++c) {
+                        stage_plane(vsapi->getReadPtr(f, plane + c), vsapi->getStride(f, plane + c), row_bytes, p.height,
+                                    base + (i * clips * channels + c) * region);
+                    }
                     frames.freeFrame(f);
                     if (w) {
                         const VSFrame* rf = frames.getFrameFilter(fn, d->guide, ctx);
-                        stage_plane(vsapi->getReadPtr(rf, plane), vsapi->getStride(rf, plane), row_bytes, p.height,
-                                    base + (i * clips + 1) * region);
+                        for (std::size_t c = 0; c < channels; ++c) {
+                            stage_plane(vsapi->getReadPtr(rf, plane + c), vsapi->getStride(rf, plane + c), row_bytes,
+                                        p.height, base + ((i * clips + 1) * channels + c) * region);
+                        }
                         frames.freeFrame(rf);
                     }
                 }

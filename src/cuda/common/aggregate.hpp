@@ -95,6 +95,9 @@ struct FixedTarget {
     int slices = 1;
     int slice_first = 0;
     int slice_ring = 1;
+    // Cells from one channel's slices to the next (units of several channels;
+    // a kernel is handed one channel's num and den).
+    std::size_t channel_step = 0;
 };
 
 // out = den > 1e-12 ? num / den : src, straight from the accumulators of one

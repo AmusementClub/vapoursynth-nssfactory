@@ -129,6 +129,50 @@ def temporal(core, quick, floor):
     return cases, worst, failures
 
 
+def chroma(core, quick, floor):
+    """chroma=1 (CBM3D) against the CPU; returns (cases, worst, failures)."""
+    failures, worst, cases = [], float("inf"), 0
+    clip = make_clip(core, vs.YUV444PS, 64, 56, 9, length=7)
+    gpu_bm3d, cpu_bm3d = core.nss_cuda.BM3D, core.nss.BM3D
+    shapes = [dict(), dict(sigma=[0, 10, 10])]
+    if not quick:
+        # Fused and ordered shapes, warp and block kernels, a plane left alone.
+        shapes += [dict(block_size=4), dict(block_size=16, group_size=16), dict(block_size=16, group_size=32),
+                   dict(block_size=12, group_size=4), dict(group_size=16, block_step=3), dict(sigma=[10, 0, 7])]
+    for extra in shapes:
+        kw = dict(dict(sigma=10, chroma=1), **extra)
+        label = f"chroma {extra}"
+        gpu, cpu = gpu_bm3d(clip, **kw), cpu_bm3d(clip, **kw)
+        pairs = [("basic", gpu, cpu), ("final", gpu_bm3d(clip, ref=gpu, **kw), cpu_bm3d(clip, ref=cpu, **kw))]
+        separate = frame_planes(gpu_bm3d(clip, **dict(kw, chroma=0)), 1)
+        got = frame_planes(gpu, 1)
+        if not np.array_equal(got[0], separate[0]):
+            failures.append(f"{label}: plane 0 differs from the separate filter")
+        if any(not np.array_equal(x, y) for x, y in zip(got, frame_planes(gpu_bm3d(clip, **kw), 1))):
+            failures.append(f"{label}: not run-to-run identical")
+        for radius in (1, 2):
+            t = dict(kw, radius=radius)
+            legacy = core.nss_cuda.VAggregate(gpu_bm3d(clip, temporal_mode="legacy", **t), clip, radius=radius)
+            rolling = gpu_bm3d(clip, rolling_chunk=3, **t)
+            fresh = gpu_bm3d(clip, rolling_chunk=3, **t)
+            backwards = {n: frame_planes(fresh, n) for n in reversed(range(clip.num_frames))}
+            pairs.append((f"r{radius} legacy", legacy, core.nss.VAggregate(cpu_bm3d(clip, **t), clip, radius=radius)))
+            for n in range(clip.num_frames):
+                rolled = frame_planes(rolling, n)
+                if not within_ulp(rolled, frame_planes(legacy, n), ulps=32):
+                    failures.append(f"{label} r{radius} frame {n}: rolling differs from legacy + VAggregate by > 32 ulp")
+                if any(not np.array_equal(x, y) for x, y in zip(rolled, backwards[n])):
+                    failures.append(f"{label} r{radius} frame {n}: chunks that carry on differ from chunks that start afresh")
+        for name, a, b in pairs:
+            for n in (0, 3):
+                value = psnr(frame_planes(a, n), frame_planes(b, n))
+                worst = min(worst, value)
+                cases += 1
+                if value < floor:
+                    failures.append(f"{label} {name} frame {n}: psnr {value:.2f} < {floor}")
+    return cases, worst, failures
+
+
 def psnr(a, b):
     mse = sum(float(np.sum((x - y) ** 2)) for x, y in zip(a, b)) / sum(x.size for x in a)
     return float("inf") if mse == 0 else 10 * np.log10(1 / mse)
@@ -178,6 +222,10 @@ def main():
                 if any(not np.array_equal(x, y) for x, y in zip(b, again)):
                     failures.append(f"{label}: not run-to-run identical")
     t_cases, t_worst, t_failures = temporal(core, args.quick, floor)
+    cases += t_cases
+    worst = min(worst, t_worst)
+    failures += t_failures
+    t_cases, t_worst, t_failures = chroma(core, args.quick, floor)
     cases += t_cases
     worst = min(worst, t_worst)
     failures += t_failures

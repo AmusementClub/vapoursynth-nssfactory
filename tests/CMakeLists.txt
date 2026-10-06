@@ -287,6 +287,13 @@ if(VapourSynth_FOUND)
     set_tests_properties(test_temporal_rolling PROPERTIES
       LABELS "plugin"
       SKIP_RETURN_CODE 77)
+    # BM3D chroma=1 (CBM3D): shared groups from plane 0.
+    add_test(NAME test_bm3d_chroma
+             COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_bm3d_chroma.py"
+                     --plugin "$<TARGET_FILE:nss>")
+    set_tests_properties(test_bm3d_chroma PROPERTIES
+      LABELS "plugin"
+      SKIP_RETURN_CODE 77)
   endif()
 endif()
 
