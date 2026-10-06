@@ -30,9 +30,9 @@ struct Bm3dGroupArgs {
     float* values;              // batch * group * block^2, also the transform workspace
     float* ref_cube;            // batch * bm3d_scratch_floats(...) when that is not 0
     AggregatePatch* patches;    // batch * group; slice = match t, unused slots get -1
-    // Set (num != nullptr) for shapes with bm3d_fuses() in spatial mode: the kernel adds the
-    // weighted patches to these accumulators itself; values and patches are
-    // then unused.
+    // Set (num != nullptr) for shapes with bm3d_fuses(), except for legacy
+    // output: the kernel adds the weighted patches to these accumulators
+    // itself; values and patches are then unused.
     FixedTarget fused{};
 };
 

@@ -254,10 +254,12 @@ __global__ void __launch_bounds__(256) group_shape_kernel(Bm3dGroupArgs a, bool 
         for (int i = tid; i < kCube; i += threads) {
             const int g = i / kArea, p = i % kArea;
             if (g >= kk) continue;
-            const long long at = m[g].t * static_cast<long long>(a.fused.slice_step) +
+            const int slice = fixed_slice(a.fused, m[g].t);
+            if (slice < 0) continue;
+            const long long at = slice * static_cast<long long>(a.fused.slice_step) +
                                  static_cast<long long>(m[g].y + p / B) * a.fused.pitch + m[g].x + p % B;
-            fixed_add(a.fused.num + at, weight * (cube[i] * kUnscale));
-            fixed_add(a.fused.den + at, weight);
+            fixed_add(a.fused.num, at, weight * (cube[i] * kUnscale));
+            if (p == 0) fixed_add(a.fused.den, at, weight);
         }
         return;
     }
@@ -432,13 +434,15 @@ __global__ void __launch_bounds__(32) group_warp_kernel(Bm3dGroupArgs a) {
 #pragma unroll
         for (int p = 0; p < G; ++p) {
             if (p >= kk) continue;
-            const long long at = m[p].t * static_cast<long long>(a.fused.slice_step) +
+            const int slice = fixed_slice(a.fused, m[p].t);
+            if (slice < 0) continue;
+            const long long at = slice * static_cast<long long>(a.fused.slice_step) +
                                  static_cast<long long>(m[p].y) * a.fused.pitch + m[p].x + sub;
 #pragma unroll
             for (int row = 0; row < B; ++row) {
-                fixed_add(a.fused.num + at + row * a.fused.pitch, weight * (v[p * B + row] * kUnscale));
-                fixed_add(a.fused.den + at + row * a.fused.pitch, weight);
+                fixed_add(a.fused.num, at + row * a.fused.pitch, weight * (v[p * B + row] * kUnscale));
             }
+            if (sub == 0) fixed_add(a.fused.den, at, weight);
         }
         return;
     }

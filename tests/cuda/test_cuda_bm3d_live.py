@@ -3,7 +3,7 @@
 """nss_cuda.BM3D vs nss.BM3D on small random clips for every legal
 block_size x group_size, basic and ref (Wiener) stages, Gray and RGB, plus
 the temporal paths (radius 1/2): legacy + VAggregate against the CPU,
-rolling identical to legacy + VAggregate on the GPU, and VAggregate across
+rolling within rounding of legacy + VAggregate on the GPU, and VAggregate across
 backends (the fat intermediate is a backend-neutral VS frame contract).
 Each case must reach the BM3D tolerance (tests/data/cuda_tolerances_v1.json)
 and be run-to-run identical. Exits 77 without VapourSynth or a CUDA device.
@@ -71,6 +71,7 @@ def temporal(core, quick, floor):
             cpu = core.nss.VAggregate(core.nss.BM3D(clip, **kw), clip, radius=radius)
             gpu = core.nss_cuda.VAggregate(core.nss_cuda.BM3D(clip, temporal_mode="legacy", **kw), clip, radius=radius)
             rolling = core.nss_cuda.BM3D(clip, rolling_chunk=4, **kw)  # rolling is the device default
+            rolling_again = core.nss_cuda.BM3D(clip, rolling_chunk=4, **kw)
             mixed_a = core.nss.VAggregate(core.nss_cuda.BM3D(clip, temporal_mode="legacy", **kw), clip, radius=radius)
             mixed_b = core.nss_cuda.VAggregate(core.nss.BM3D(clip, **kw), clip, radius=radius)
             for n in range(clip.num_frames):
@@ -81,8 +82,14 @@ def temporal(core, quick, floor):
                 cases += 1
                 if value < floor:
                     failures.append(f"{label}: legacy psnr {value:.2f} < {floor}")
-                if any(not np.array_equal(x, y) for x, y in zip(b, frame_planes(rolling, n))):
-                    failures.append(f"{label}: rolling differs from legacy + VAggregate")
+                # Rolling adds its patches as exact fixed-point sums, legacy as
+                # float sums per center: the same terms, rounded differently
+                # (8 ulp measured, 2026-10-06).
+                rolled = frame_planes(rolling, n)
+                if not within_ulp(rolled, b, ulps=32):
+                    failures.append(f"{label}: rolling differs from legacy + VAggregate by > 32 ulp")
+                if any(not np.array_equal(x, y) for x, y in zip(rolled, frame_planes(rolling_again, n))):
+                    failures.append(f"{label}: rolling not run-to-run identical")
                 # Same fat input and summation order on both backends; the GPU
                 # divides with IEEE rounding while the CPU fast-math TU was
                 # measured up to 2 ulp off (2026-10-03), so allow a few ulp.
