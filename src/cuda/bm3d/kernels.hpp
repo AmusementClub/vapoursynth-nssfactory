@@ -22,6 +22,7 @@ struct Bm3dGroupArgs {
     const float* const* ref;    // reference planes for the Wiener stage
     int pitch;                  // floats, shared by every plane
     const DeviceMatch* matches; // batch * group (group-strided)
+    long long plane_offset;     // floats from src[t] / ref[t] to the plane to filter (a channel of a unit)
     const int* counts;          // batch
     int batch;
     int block;
@@ -30,15 +31,14 @@ struct Bm3dGroupArgs {
     float* values;              // batch * group * block^2, also the transform workspace
     float* ref_cube;            // batch * bm3d_scratch_floats(...) when that is not 0
     AggregatePatch* patches;    // batch * group; slice = match t, unused slots get -1
-    // Set (num != nullptr) for shapes with bm3d_fuses() in spatial mode: the kernel adds the
-    // weighted patches to these accumulators itself; values and patches are
-    // then unused.
+    // Set (num != nullptr) for shapes with bm3d_fuses(), except for legacy
+    // output: the kernel adds the weighted patches to these accumulators
+    // itself; values and patches are then unused.
     FixedTarget fused{};
 };
 
 // Whether the kernel of this shape and stage aggregates its own output: the
-// shapes whose cube is not transformed in `values`, less a few where a paired
-// measurement favoured ordered aggregation.
+// shapes whose cube is not transformed in `values`, except 16 / 32.
 bool bm3d_fuses(int block, int group, bool wiener);
 
 // Floats of ref_cube per group the Wiener stage of this shape needs (0 for

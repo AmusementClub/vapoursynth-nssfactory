@@ -18,7 +18,7 @@ measured cost tiers and pitfalls.
 ```python
 core.nss.NLM(clip clip[, int d = 1, int a = 2, int s = 4, float h = 1.2, string channels = "AUTO", int wmode = 0, float wref = 1.0, clip rclip = None])
 
-core.nss.BM3D(clip clip[, clip ref, float[] sigma = 3.0, int[] block_size = 8, int[] group_size = 8, int[] block_step, int[] bm_range = 7, int radius = 0, int[] ps_num, int[] ps_range = 4])
+core.nss.BM3D(clip clip[, clip ref, float[] sigma = 3.0, int[] block_size = 8, int[] group_size = 8, int[] block_step, int[] bm_range = 7, int radius = 0, int[] ps_num, int[] ps_range = 4, int chroma = 0])
 
 core.nss.WNNM(clip clip[, float[] sigma = 3.0, int block_size = 8, int block_step = 8, int group_size = 8, int bm_range = 7, int radius = 0, int ps_num = 2, int ps_range = 4, int residual = 0, int adaptive_aggregation = 1, clip rclip = None])
 
@@ -80,8 +80,8 @@ Install `libnss.so` into the VapourSynth plugin directory.
 needs nvcc from CUDA 12.4 or newer; Windows builds use nvcc with MSVC `cl.exe`.
 All nine filters are available:
 
-- `core.nss_cuda.BM3D`: spatial, `ref`/Wiener, and temporal. See
-  `docs/api/bm3d.md`.
+- `core.nss_cuda.BM3D`: spatial, `ref`/Wiener, temporal, and `chroma`
+  (CBM3D). See `docs/api/bm3d.md`.
 - `core.nss_cuda.NLM`: all channel modes, temporal `d`, and `rclip`. See
   `docs/api/nlm.md`.
 - `core.nss_cuda.WNNM`, `core.nss_cuda.MCWNNM` and `core.nss_cuda.NCSR`: spatial
@@ -125,6 +125,12 @@ Each filter takes the same arguments as its `nss` counterpart, plus
     instead, exactly as the CPU plugin does; use it to mix backends or to
     keep an existing script unchanged.
   - The finished-frame mode needs more memory than legacy.
+  - It works in chunks of `rolling_chunk` frames and keeps finished chunks
+    for later requests: `rolling_cache_chunks` at first (default 1), growing
+    to `rolling_cache_limit` (default 16) when requests jump between
+    positions. Sequential rendering, a chained second stage and a temporal
+    filter downstream compute each chunk once. Fully random access costs a
+    chunk per miss; `temporal_mode="legacy"` does not depend on the order.
 - **Driver.** A prebuilt plugin needs a driver for the CUDA release it was
   built with (12.9 for the release packages) or newer.
 

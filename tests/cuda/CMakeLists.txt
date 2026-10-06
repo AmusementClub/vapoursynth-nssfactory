@@ -49,7 +49,7 @@ add_test(NAME test_cuda_plugin_interface
          COMMAND ${Python3_EXECUTABLE} "${PROJECT_SOURCE_DIR}/tests/test_plugin_interface.py"
                  --plugin "${NSS_CUDA_PLUGIN}" --namespace nss_cuda
                  --backend-args device_id,num_streams --expect-missing "${NSS_CUDA_PENDING_FILTERS}"
-                 --default-temporal rolling)
+                 --default-temporal rolling --rolling-cache adaptive)
 set_tests_properties(test_cuda_backend test_cuda_backend_forced_jit test_cuda_plugin_interface PROPERTIES
   LABELS cuda SKIP_RETURN_CODE 77)
 # Short create/free soak over every filter (device errors, memory growth).

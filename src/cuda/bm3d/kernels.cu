@@ -211,7 +211,8 @@ __global__ void __launch_bounds__(256) group_shape_kernel(Bm3dGroupArgs a, bool 
         const int g = i / kArea, p = i % kArea;
         float v = 0.f, rv = 0.f;
         if (g < kk) {
-            const long long offset = static_cast<long long>(m[g].y + p / B) * a.pitch + m[g].x + p % B;
+            const long long offset =
+                a.plane_offset + static_cast<long long>(m[g].y + p / B) * a.pitch + m[g].x + p % B;
             v = a.src[m[g].t][offset];
             if (refc) rv = a.ref[m[g].t][offset];
         }
@@ -250,14 +251,16 @@ __global__ void __launch_bounds__(256) group_shape_kernel(Bm3dGroupArgs a, bool 
     }
     transform_cube<B, G>(cube, true);
     constexpr float kUnscale = 1.f / (kScale * kScale);
-    if (a.fused.num) {  // in_shared
+    if (a.fused.num) {  // the cube is in shared memory (launch_shape)
         for (int i = tid; i < kCube; i += threads) {
             const int g = i / kArea, p = i % kArea;
             if (g >= kk) continue;
-            const long long at = m[g].t * static_cast<long long>(a.fused.slice_step) +
+            const int slice = fixed_slice(a.fused, m[g].t);
+            if (slice < 0) continue;
+            const long long at = slice * static_cast<long long>(a.fused.slice_step) +
                                  static_cast<long long>(m[g].y + p / B) * a.fused.pitch + m[g].x + p % B;
-            fixed_add(a.fused.num + at, weight * (cube[i] * kUnscale));
-            fixed_add(a.fused.den + at, weight);
+            fixed_add(a.fused.num, at, weight * (cube[i] * kUnscale));
+            if (p == 0) fixed_add(a.fused.den, at, weight);
         }
         return;
     }
@@ -345,13 +348,13 @@ __device__ __forceinline__ void transpose_lanes(float* v, float* buffer, int lan
 // return the lane is the row frequency and the index within a patch the
 // column frequency: the DC coefficient is v[0] of sub-lane 0.
 template <int B, int G>
-__device__ __forceinline__ void forward_lanes(float* v, const float* const* planes, const DeviceMatch* m, int kk,
-                                              int pitch, float* buffer, int lane) {
+__device__ __forceinline__ void forward_lanes(float* v, const float* const* planes, long long plane_offset,
+                                              const DeviceMatch* m, int kk, int pitch, float* buffer, int lane) {
     const int sub = lane % B;
 #pragma unroll
     for (int p = 0; p < G; ++p) {
         const DeviceMatch& mp = m[p < kk ? p : 0];
-        const float* at = planes[mp.t] + static_cast<long long>(mp.y) * pitch + mp.x + sub;
+        const float* at = planes[mp.t] + plane_offset + static_cast<long long>(mp.y) * pitch + mp.x + sub;
 #pragma unroll
         for (int row = 0; row < B; ++row) v[p * B + row] = p < kk ? at[row * pitch] : 0.f;
     }
@@ -393,7 +396,7 @@ __global__ void __launch_bounds__(32) group_warp_kernel(Bm3dGroupArgs a) {
         // registers transform the noisy cube.
         __shared__ float gains[32 * kLane];
         float* gain = gains + lane * kLane;
-        forward_lanes<B, G>(v, a.ref, m, kk, a.pitch, buffer, lane);
+        forward_lanes<B, G>(v, a.ref, a.plane_offset, m, kk, a.pitch, buffer, lane);
         const float sig2 = kScale * kScale * a.sigma * a.sigma;
         float w2 = 0.f;
 #pragma unroll
@@ -404,11 +407,11 @@ __global__ void __launch_bounds__(32) group_warp_kernel(Bm3dGroupArgs a) {
             w2 = fmaf(w, w, w2);
         }
         weight = 1.f / fmaxf(group_total<B>(w2), 1e-12f);
-        forward_lanes<B, G>(v, a.src, m, kk, a.pitch, buffer, lane);
+        forward_lanes<B, G>(v, a.src, a.plane_offset, m, kk, a.pitch, buffer, lane);
 #pragma unroll
         for (int i = 0; i < kLane; ++i) v[i] *= gain[i];
     } else {
-        forward_lanes<B, G>(v, a.src, m, kk, a.pitch, buffer, lane);
+        forward_lanes<B, G>(v, a.src, a.plane_offset, m, kk, a.pitch, buffer, lane);
         const float thr = kScale * kHardLambda * a.sigma;
         int kept = 0;
 #pragma unroll
@@ -432,13 +435,15 @@ __global__ void __launch_bounds__(32) group_warp_kernel(Bm3dGroupArgs a) {
 #pragma unroll
         for (int p = 0; p < G; ++p) {
             if (p >= kk) continue;
-            const long long at = m[p].t * static_cast<long long>(a.fused.slice_step) +
+            const int slice = fixed_slice(a.fused, m[p].t);
+            if (slice < 0) continue;
+            const long long at = slice * static_cast<long long>(a.fused.slice_step) +
                                  static_cast<long long>(m[p].y) * a.fused.pitch + m[p].x + sub;
 #pragma unroll
             for (int row = 0; row < B; ++row) {
-                fixed_add(a.fused.num + at + row * a.fused.pitch, weight * (v[p * B + row] * kUnscale));
-                fixed_add(a.fused.den + at + row * a.fused.pitch, weight);
+                fixed_add(a.fused.num, at + row * a.fused.pitch, weight * (v[p * B + row] * kUnscale));
             }
+            if (sub == 0) fixed_add(a.fused.den, at, weight);
         }
         return;
     }
@@ -523,13 +528,9 @@ std::size_t bm3d_scratch_floats(int block, int group, bool wiener) {
 bool bm3d_fuses(int block, int group, bool wiener) {
     // Admitted on paired measurements against ordered aggregation. The block
     // kernel fuses whenever its cube is staged in shared memory. The warp
-    // kernel fuses except where the extra code cost more than it saved.
+    // kernel fuses except 16 / 32 (512 samples per lane: no registers left).
     if (!warp_serves(block, group, wiener)) return cube_bytes(block, group, wiener) <= kCubeSharedBytes;
-    const int shape = block * 100 + group;
-    if (shape == 1632) return false;                 // 512 samples per lane: no registers left
-    if (shape == 1616 && !wiener) return false;      // 0.93x
-    if (shape == 816 && wiener) return false;        // 0.95x
-    return true;
+    return block * 100 + group != 1632;
 }
 
 void bm3d_filter_groups(const Bm3dGroupArgs& args, cudaStream_t stream) {

@@ -14,7 +14,7 @@ namespace {
 
 void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI* vsapi) {
     // Same validation order and text as nss.WNNM (D14).
-    const auto temporal = nss::frontend::parse_temporal(vsapi, in, nss::kWnnmDefaultRadius, "WNNM", "nss_cuda", kDefaultTemporalMode);
+    const auto temporal = nss::frontend::parse_temporal(vsapi, in, nss::kWnnmDefaultRadius, "WNNM", "nss_cuda", kDefaultTemporalMode, kRollingCache);
     GroupFilterConfig config;
     config.name = "WNNM";
     config.model = nss::Model::WNNM;

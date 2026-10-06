@@ -14,8 +14,17 @@ namespace nss_cuda {
 // 2^-32, and sums up to 2^31 in magnitude fit.
 constexpr float kFixedScale = 4294967296.f;
 
-__device__ __forceinline__ void fixed_add(unsigned long long* cell, float value) {
-    atomicAdd(cell, static_cast<unsigned long long>(__float2ll_rn(value * kFixedScale)));
+// Ring cell of the slice of a patch of window slot t, or -1 when the target
+// has none for it.
+__device__ __forceinline__ int fixed_slice(const FixedTarget& target, int t) {
+    const int slice = t + target.slice_base;
+    if (static_cast<unsigned>(slice) >= static_cast<unsigned>(target.slices)) return -1;
+    const int cell = slice + target.slice_first;
+    return cell < target.slice_ring ? cell : cell - target.slice_ring;
+}
+
+__device__ __forceinline__ void fixed_add(unsigned long long* cells, long long at, float value) {
+    atomicAdd(cells + at, static_cast<unsigned long long>(__float2ll_rn(value * kFixedScale)));
 }
 
 }  // namespace nss_cuda

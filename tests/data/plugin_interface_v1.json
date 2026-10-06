@@ -250,6 +250,71 @@
     "width": 48
    }
   },
+  "BM3D|GRAYS|chroma=-1": {
+   "error": "nss.BM3D: chroma must be 0 or 1"
+  },
+  "BM3D|GRAYS|chroma=0": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|GRAYS|chroma=1": {
+   "error": "nss.BM3D: chroma requires a YUV 4:4:4 clip"
+  },
+  "BM3D|GRAYS|chroma=1000": {
+   "error": "nss.BM3D: chroma must be 0 or 1"
+  },
+  "BM3D|GRAYS|chroma=16": {
+   "error": "nss.BM3D: chroma must be 0 or 1"
+  },
+  "BM3D|GRAYS|chroma=17": {
+   "error": "nss.BM3D: chroma must be 0 or 1"
+  },
+  "BM3D|GRAYS|chroma=2": {
+   "error": "nss.BM3D: chroma must be 0 or 1"
+  },
+  "BM3D|GRAYS|chroma=3": {
+   "error": "nss.BM3D: chroma must be 0 or 1"
+  },
+  "BM3D|GRAYS|chroma=33": {
+   "error": "nss.BM3D: chroma must be 0 or 1"
+  },
+  "BM3D|GRAYS|chroma=4": {
+   "error": "nss.BM3D: chroma must be 0 or 1"
+  },
+  "BM3D|GRAYS|chroma=65": {
+   "error": "nss.BM3D: chroma must be 0 or 1"
+  },
+  "BM3D|GRAYS|chroma=7": {
+   "error": "nss.BM3D: chroma must be 0 or 1"
+  },
+  "BM3D|GRAYS|chroma=8": {
+   "error": "nss.BM3D: chroma must be 0 or 1"
+  },
+  "BM3D|GRAYS|chroma=9": {
+   "error": "nss.BM3D: chroma must be 0 or 1"
+  },
+  "BM3D|GRAYS|combo:block_size=[8, 3, 3],chroma=1": {
+   "error": "nss.BM3D: chroma requires a YUV 4:4:4 clip"
+  },
+  "BM3D|GRAYS|combo:block_size=[8, 4, 4],chroma=1": {
+   "error": "nss.BM3D: chroma requires a YUV 4:4:4 clip"
+  },
+  "BM3D|GRAYS|combo:chroma=1": {
+   "error": "nss.BM3D: chroma requires a YUV 4:4:4 clip"
+  },
+  "BM3D|GRAYS|combo:chroma=1,radius=1,temporal_mode='legacy'": {
+   "error": "nss.BM3D: chroma requires a YUV 4:4:4 clip"
+  },
+  "BM3D|GRAYS|combo:chroma=1,radius=1,temporal_mode='rolling'": {
+   "error": "nss.BM3D: chroma requires a YUV 4:4:4 clip"
+  },
+  "BM3D|GRAYS|combo:chroma=1,sigma=[0, 3, 3]": {
+   "error": "nss.BM3D: chroma requires a YUV 4:4:4 clip"
+  },
   "BM3D|GRAYS|combo:radius=1,rolling_cache_chunks=0,temporal_mode='rolling'": {
    "error": "nss.BM3D: rolling_cache_limit must be in [1, 64]"
   },
@@ -1598,6 +1663,71 @@
     "width": 48
    }
   },
+  "BM3D|RGBS|chroma=-1": {
+   "error": "nss.BM3D: chroma must be 0 or 1"
+  },
+  "BM3D|RGBS|chroma=0": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|RGBS|chroma=1": {
+   "error": "nss.BM3D: chroma requires a YUV 4:4:4 clip"
+  },
+  "BM3D|RGBS|chroma=1000": {
+   "error": "nss.BM3D: chroma must be 0 or 1"
+  },
+  "BM3D|RGBS|chroma=16": {
+   "error": "nss.BM3D: chroma must be 0 or 1"
+  },
+  "BM3D|RGBS|chroma=17": {
+   "error": "nss.BM3D: chroma must be 0 or 1"
+  },
+  "BM3D|RGBS|chroma=2": {
+   "error": "nss.BM3D: chroma must be 0 or 1"
+  },
+  "BM3D|RGBS|chroma=3": {
+   "error": "nss.BM3D: chroma must be 0 or 1"
+  },
+  "BM3D|RGBS|chroma=33": {
+   "error": "nss.BM3D: chroma must be 0 or 1"
+  },
+  "BM3D|RGBS|chroma=4": {
+   "error": "nss.BM3D: chroma must be 0 or 1"
+  },
+  "BM3D|RGBS|chroma=65": {
+   "error": "nss.BM3D: chroma must be 0 or 1"
+  },
+  "BM3D|RGBS|chroma=7": {
+   "error": "nss.BM3D: chroma must be 0 or 1"
+  },
+  "BM3D|RGBS|chroma=8": {
+   "error": "nss.BM3D: chroma must be 0 or 1"
+  },
+  "BM3D|RGBS|chroma=9": {
+   "error": "nss.BM3D: chroma must be 0 or 1"
+  },
+  "BM3D|RGBS|combo:block_size=[8, 3, 3],chroma=1": {
+   "error": "nss.BM3D: chroma requires a YUV 4:4:4 clip"
+  },
+  "BM3D|RGBS|combo:block_size=[8, 4, 4],chroma=1": {
+   "error": "nss.BM3D: chroma requires a YUV 4:4:4 clip"
+  },
+  "BM3D|RGBS|combo:chroma=1": {
+   "error": "nss.BM3D: chroma requires a YUV 4:4:4 clip"
+  },
+  "BM3D|RGBS|combo:chroma=1,radius=1,temporal_mode='legacy'": {
+   "error": "nss.BM3D: chroma requires a YUV 4:4:4 clip"
+  },
+  "BM3D|RGBS|combo:chroma=1,radius=1,temporal_mode='rolling'": {
+   "error": "nss.BM3D: chroma requires a YUV 4:4:4 clip"
+  },
+  "BM3D|RGBS|combo:chroma=1,sigma=[0, 3, 3]": {
+   "error": "nss.BM3D: chroma requires a YUV 4:4:4 clip"
+  },
   "BM3D|RGBS|combo:radius=1,rolling_cache_chunks=0,temporal_mode='rolling'": {
    "error": "nss.BM3D: rolling_cache_limit must be in [1, 64]"
   },
@@ -2945,6 +3075,71 @@
     "height": 40,
     "width": 48
    }
+  },
+  "BM3D|YUV420PS|chroma=-1": {
+   "error": "nss.BM3D: chroma must be 0 or 1"
+  },
+  "BM3D|YUV420PS|chroma=0": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|YUV420PS|chroma=1": {
+   "error": "nss.BM3D: chroma requires a YUV 4:4:4 clip"
+  },
+  "BM3D|YUV420PS|chroma=1000": {
+   "error": "nss.BM3D: chroma must be 0 or 1"
+  },
+  "BM3D|YUV420PS|chroma=16": {
+   "error": "nss.BM3D: chroma must be 0 or 1"
+  },
+  "BM3D|YUV420PS|chroma=17": {
+   "error": "nss.BM3D: chroma must be 0 or 1"
+  },
+  "BM3D|YUV420PS|chroma=2": {
+   "error": "nss.BM3D: chroma must be 0 or 1"
+  },
+  "BM3D|YUV420PS|chroma=3": {
+   "error": "nss.BM3D: chroma must be 0 or 1"
+  },
+  "BM3D|YUV420PS|chroma=33": {
+   "error": "nss.BM3D: chroma must be 0 or 1"
+  },
+  "BM3D|YUV420PS|chroma=4": {
+   "error": "nss.BM3D: chroma must be 0 or 1"
+  },
+  "BM3D|YUV420PS|chroma=65": {
+   "error": "nss.BM3D: chroma must be 0 or 1"
+  },
+  "BM3D|YUV420PS|chroma=7": {
+   "error": "nss.BM3D: chroma must be 0 or 1"
+  },
+  "BM3D|YUV420PS|chroma=8": {
+   "error": "nss.BM3D: chroma must be 0 or 1"
+  },
+  "BM3D|YUV420PS|chroma=9": {
+   "error": "nss.BM3D: chroma must be 0 or 1"
+  },
+  "BM3D|YUV420PS|combo:block_size=[8, 3, 3],chroma=1": {
+   "error": "nss.BM3D: chroma requires a YUV 4:4:4 clip"
+  },
+  "BM3D|YUV420PS|combo:block_size=[8, 4, 4],chroma=1": {
+   "error": "nss.BM3D: chroma requires a YUV 4:4:4 clip"
+  },
+  "BM3D|YUV420PS|combo:chroma=1": {
+   "error": "nss.BM3D: chroma requires a YUV 4:4:4 clip"
+  },
+  "BM3D|YUV420PS|combo:chroma=1,radius=1,temporal_mode='legacy'": {
+   "error": "nss.BM3D: chroma requires a YUV 4:4:4 clip"
+  },
+  "BM3D|YUV420PS|combo:chroma=1,radius=1,temporal_mode='rolling'": {
+   "error": "nss.BM3D: chroma requires a YUV 4:4:4 clip"
+  },
+  "BM3D|YUV420PS|combo:chroma=1,sigma=[0, 3, 3]": {
+   "error": "nss.BM3D: chroma requires a YUV 4:4:4 clip"
   },
   "BM3D|YUV420PS|combo:radius=1,rolling_cache_chunks=0,temporal_mode='rolling'": {
    "error": "nss.BM3D: rolling_cache_limit must be in [1, 64]"
@@ -28980,7 +29175,7 @@
   }
  },
  "functions": {
-  "BM3D": "clip:vnode;ref:vnode:opt;sigma:float[]:opt;block_size:int[]:opt;group_size:int[]:opt;block_step:int[]:opt;bm_range:int[]:opt;radius:int:opt;ps_num:int[]:opt;ps_range:int[]:opt;temporal_mode:data:opt;rolling_chunk:int:opt;rolling_cache_chunks:int:opt;rolling_cache_limit:int:opt;memory_limit_mb:int:opt;",
+  "BM3D": "clip:vnode;ref:vnode:opt;sigma:float[]:opt;block_size:int[]:opt;group_size:int[]:opt;block_step:int[]:opt;bm_range:int[]:opt;radius:int:opt;ps_num:int[]:opt;ps_range:int[]:opt;chroma:int:opt;temporal_mode:data:opt;rolling_chunk:int:opt;rolling_cache_chunks:int:opt;rolling_cache_limit:int:opt;memory_limit_mb:int:opt;",
   "Backend": "",
   "LSSC": "clip:vnode;sigma:float[]:opt;block_size:int:opt;block_step:int:opt;radius:int:opt;memory_limit_mb:int:opt;",
   "MCWNNM": "clip:vnode;sigma:float[]:opt;block_size:int:opt;block_step:int:opt;group_size:int:opt;bm_range:int:opt;radius:int:opt;ps_num:int:opt;ps_range:int:opt;residual:int:opt;adaptive_aggregation:int:opt;rclip:vnode:opt;admm_iter:int:opt;rho:float:opt;mu:float:opt;iters:int:opt;delta:float:opt;memory_limit_mb:int:opt;temporal_mode:data:opt;rolling_chunk:int:opt;rolling_cache_chunks:int:opt;rolling_cache_limit:int:opt;",

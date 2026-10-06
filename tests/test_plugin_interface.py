@@ -61,6 +61,7 @@ def main():
     parser.add_argument("--backend-args", default="")
     parser.add_argument("--expect-missing", default="")
     parser.add_argument("--default-temporal", choices=("legacy", "rolling"), default="legacy")
+    parser.add_argument("--rolling-cache", choices=("fixed", "adaptive"), default="fixed")
     args = parser.parse_args()
     ns = args.namespace
     backend_args = [a for a in args.backend_args.split(",") if a]
@@ -142,7 +143,10 @@ def main():
                  for r in (1, 2)
                  for extra in ({}, *({k: v} for k in ("rolling_chunk", "rolling_cache_chunks", "rolling_cache_limit")
                                      for v in (0, 1, 4, 64, 65)),
-                               dict(rolling_cache_chunks=2, rolling_cache_limit=2))],
+                               dict(rolling_cache_chunks=2, rolling_cache_limit=2))] +
+                [dict(chroma=1, **extra)
+                 for extra in ({}, dict(radius=1, temporal_mode="legacy"), dict(radius=1, temporal_mode="rolling"),
+                               dict(sigma=[0, 3, 3]), dict(block_size=[8, 4, 4]), dict(block_size=[8, 3, 3]))],
         "TWSC": [dict(sigma=3, estimate_sigma=1), dict(bm_range=3, search_window=9), dict(block_size=4),
                  dict(block_size=4, block_step=8), dict(group_size=1), dict(group_size=1, ps_num=2),
                  dict(group_size=4, ps_num=8), dict(estimate_sigma=1, radius=1), dict(sigma=[3, 0, 3]),
@@ -215,6 +219,21 @@ def main():
                 continue
             if node.height != clip.height:
                 problems.append(f"{name} default temporal mode: output height {node.height}, expected {clip.height}")
+    if args.rolling_cache == "adaptive":
+        # The golden records the CPU, where the two cache arguments name one
+        # value. An adaptive backend takes both (start and growth limit).
+        both = "use only one of rolling_cache_limit and rolling_cache_chunks"
+        for key in sorted(cases):
+            if both in (golden["cases"].get(key) or {}).get("error", ""):
+                if "ok" not in cases[key]:
+                    problems.append(f"{key}: adaptive cache arguments rejected: {cases[key]}")
+                cases[key] = golden["cases"][key]  # checked above; not a difference
+        try:
+            plugin.BM3D(clips["GRAYS"], radius=1, temporal_mode="rolling", rolling_cache_chunks=4, rolling_cache_limit=2)
+            problems.append("rolling_cache_limit below rolling_cache_chunks accepted")
+        except vs.Error as error:
+            if "rolling_cache_limit must be at least rolling_cache_chunks" not in str(error):
+                problems.append(f"rolling_cache_limit below rolling_cache_chunks: {error}")
     for key in sorted(set(golden["cases"]) | set(cases)):
         if not same(golden["cases"].get(key), cases.get(key)):
             problems.append(f"{key}: {golden['cases'].get(key)} -> {cases.get(key)}")
