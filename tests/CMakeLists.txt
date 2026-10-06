@@ -301,6 +301,13 @@ if(VapourSynth_FOUND)
     set_tests_properties(test_bm3d_final PROPERTIES
       LABELS "plugin"
       SKIP_RETURN_CODE 77)
+    # BM3D rolling: carried chunks equal legacy + VAggregate in any order of requests.
+    add_test(NAME test_bm3d_rolling_carry
+             COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_bm3d_rolling_carry.py"
+                     --plugin "$<TARGET_FILE:nss>")
+    set_tests_properties(test_bm3d_rolling_carry PROPERTIES
+      LABELS "plugin"
+      SKIP_RETURN_CODE 77)
   endif()
 endif()
 

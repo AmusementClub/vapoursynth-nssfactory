@@ -520,12 +520,23 @@ struct RollingChunkStore {
     nss::ResourceVector<RollingFrameStore> frames;
 };
 
+// What the centers of one chunk added to the frames of the next (the first
+// `targets` frames from `start`): per plane, num and den of each frame. The
+// next chunk in order carries on from it instead of running those centers again.
+struct RollingCarry {
+    int start = -1;
+    int targets = 0;
+    std::shared_ptr<nss::ResourceAccount> account;
+    std::array<nss::ResourceVector<float>, 3> sums;
+};
+
 struct RollingData {
     Bm3dData bm;
     int rolling_chunk = 4;
     int cache_limit = 1;
     std::mutex cache_mu;
     std::mutex compute_mu;
+    std::unique_ptr<RollingCarry> carry;  // guarded by compute_mu
     std::list<std::shared_ptr<const RollingChunkStore>> cache;
 };
 
@@ -582,13 +593,54 @@ void rolling_fill_chunk_chroma(RollingData* d, RollingChunkStore& store, int sta
         if (bm.sigma[plane] != 0.f) planes[nch++] = plane;
     }
     const std::size_t fat_size = nt * 2 * size;
-    nss::ResourceVector<float> sums(static_cast<std::size_t>(nch) * count * 2 * size, 0.f);
+    // As rolling_fill_chunk_carried: a ring of 2r + 1 target frames per
+    // channel, carried on from the chunk before and left for the one behind.
+    const int last = nss::host_detail::temporal_last(start + count - 1, r, nframes);
+    const RollingCarry* from = nch && d->carry && d->carry->start == start ? d->carry.get() : nullptr;
+    const int first = from ? nss::host_detail::temporal_last(start - 1, r, nframes) + 1 : std::max(0, start - r);
+    const int carry_first = start + count;
+    const int carry_targets = nch ? std::max(0, std::min(last + r, nframes - 1) - carry_first + 1) : 0;
+    nss::ResourceVector<float> sums(static_cast<std::size_t>(nch) * nt * 2 * size, 0.f);
+    auto slot = [&](int c, int target) {
+        return sums.data() + (static_cast<std::size_t>(c) * nt + static_cast<std::size_t>(target % ntemp)) * 2 * size;
+    };
+    for (int c = 0; from && c < nch; ++c) {
+        for (int i = 0; i < from->targets; ++i) {
+            std::copy_n(from->sums[c].data() + static_cast<std::size_t>(i) * 2 * size, 2 * size, slot(c, start + i));
+        }
+    }
+    int next_output = start;
+    // Finishes the frames of the chunk whose last center is at or before `center`.
+    auto finish = [&](int center) {
+        while (next_output < start + count && nss::host_detail::temporal_last(next_output, r, nframes) <= center) {
+            const VSFrame* frame = frames_owned.getFrameFilter(next_output, bm.node, frameCtx);
+            for (int plane = 0; plane < 3; ++plane) {
+                const float* src = reinterpret_cast<const float*>(vsapi->getReadPtr(frame, plane));
+                const int stride = static_cast<int>(frames_owned.getStride(frame, plane) / sizeof(float));
+                auto& output = store.frames[next_output - start].planes[plane];
+                int c = 0;
+                while (c < nch && planes[c] != plane) ++c;
+                if (c == nch) {
+                    rolling_store_plane(output, src, w, h, stride);
+                    continue;
+                }
+                output.width = w;
+                output.height = h;
+                output.data.resize(size);
+                float* num = slot(c, next_output);
+                nss::aggregate_finish(output.data.data(), num, num + size, src, w, h, w, w, stride);
+                std::fill_n(num, 2 * size, 0.f);
+            }
+            frames_owned.freeFrame(frame);
+            ++next_output;
+        }
+    };
+    finish(first - 1);
 #if !NSS_BM_SCRATCH
     nss::ResourceVector<float> fat(static_cast<std::size_t>(nch) * fat_size);
 #endif
     float* scratch = nch ? bm.ws.get(static_cast<std::size_t>(nch) * fat_size) : nullptr;
-    for (int center = std::max(0, start - r);
-         nch && center <= nss::host_detail::temporal_last(start + count - 1, r, nframes); ++center) {
+    for (int center = first; nch && center <= last; ++center) {
         nss::ResourceVector<const VSFrame*> sf(nt), rf(nt);
         nss::ResourceVector<const float*> sp(3 * nt), rp(3 * nt);
         nss::ResourceVector<int> ss(3 * nt), rs(3 * nt);
@@ -621,11 +673,12 @@ void rolling_fill_chunk_chroma(RollingData* d, RollingChunkStore& store, int sta
                                , true
 #endif
                                );
+        // Also the frames behind the chunk: the next chunk carries on from them.
         for (int target = std::max(start, center - r);
-             target <= std::min(start + count - 1, nss::host_detail::temporal_last(center, r, nframes)); ++target) {
+             target <= nss::host_detail::temporal_last(center, r, nframes); ++target) {
             const std::size_t slice = static_cast<std::size_t>(target - center + r);
             for (int c = 0; c < nch; ++c) {
-                float* num = sums.data() + (static_cast<std::size_t>(c) * count + (target - start)) * 2 * size;
+                float* num = slot(c, target);
 #if NSS_BM_SCRATCH
                 const float* plane_scratch = scratch + c * fat_size;
                 for (std::size_t i = 0; i < size; ++i) {
@@ -642,28 +695,155 @@ void rolling_fill_chunk_chroma(RollingData* d, RollingChunkStore& store, int sta
             frames_owned.freeFrame(sf[t]);
             frames_owned.freeFrame(rf[t]);
         }
+        finish(center);
     }
-    for (int i = 0; i < count; ++i) {
-        const VSFrame* frame = frames_owned.getFrameFilter(start + i, bm.node, frameCtx);
-        for (int plane = 0; plane < 3; ++plane) {
-            const float* src = reinterpret_cast<const float*>(vsapi->getReadPtr(frame, plane));
-            const int stride = static_cast<int>(frames_owned.getStride(frame, plane) / sizeof(float));
-            auto& output = store.frames[i].planes[plane];
-            int c = 0;
-            while (c < nch && planes[c] != plane) ++c;
-            if (c == nch) {
-                rolling_store_plane(output, src, w, h, stride);
-                continue;
+    finish(last);
+    std::unique_ptr<RollingCarry> next;
+    if (carry_targets > 0) {
+        next = std::make_unique<RollingCarry>();
+        next->start = carry_first;
+        next->targets = carry_targets;
+        next->account = nss::make_resource_account(nss::ResourceKind::Cached);
+        nss::ResourceScope carry_scope(bm.budget, next->account);
+        for (int c = 0; c < nch; ++c) {
+            next->sums[c] = nss::ResourceVector<float>(static_cast<std::size_t>(carry_targets) * 2 * size);
+            for (int i = 0; i < carry_targets; ++i) {
+                std::copy_n(slot(c, carry_first + i), 2 * size, next->sums[c].data() + static_cast<std::size_t>(i) * 2 * size);
             }
-            output.width = w;
-            output.height = h;
-            output.data.resize(size);
-            const float* num = sums.data() + (static_cast<std::size_t>(c) * count + i) * 2 * size;
-            nss::aggregate_finish(output.data.data(), num, num + size, src, w, h, w, w, stride);
         }
-        frames_owned.freeFrame(frame);
     }
+    d->carry = std::move(next);
 }
+
+#if NSS_BM_RING
+// A chunk with a ring of 2r + 1 target frames per plane. Every target takes
+// its centers in ascending order, as legacy + VAggregate adds them, whether
+// the first of them ran in this chunk or in the one before: a chunk that
+// follows the last one computed starts behind that chunk's centers with the
+// sums it left, and every chunk leaves the sums of the frames behind it.
+void rolling_fill_chunk_carried(RollingData* d, RollingChunkStore& store, int start, int count,
+                                VSFrameContext* frameCtx, const VSAPI* vsapi) {
+    nss::FrameScope frames_owned(vsapi);
+    auto& bm = d->bm;
+    const int r = bm.radius, ntemp = 2 * r + 1, nframes = bm.vi.numFrames, np = bm.vi.format.numPlanes;
+    const int last = nss::host_detail::temporal_last(start + count - 1, r, nframes);
+    const RollingCarry* from = d->carry && d->carry->start == start ? d->carry.get() : nullptr;
+    const int first = from ? nss::host_detail::temporal_last(start - 1, r, nframes) + 1 : std::max(0, start - r);
+    const int carry_first = start + count;
+    const int carry_targets = std::max(0, std::min(last + r, nframes - 1) - carry_first + 1);
+    std::unique_ptr<RollingCarry> next;
+    if (carry_targets > 0) {
+        next = std::make_unique<RollingCarry>();
+        next->start = carry_first;
+        next->targets = carry_targets;
+        next->account = nss::make_resource_account(nss::ResourceKind::Cached);
+    }
+    for (int plane = 0; plane < np; ++plane) {
+        const int w = nss::plane_width(bm.vi, plane), h = nss::plane_height(bm.vi, plane);
+        const std::size_t size = static_cast<std::size_t>(w) * h;
+        if (!bm.sigma[plane]) {
+            for (int i = 0; i < count; ++i) {
+                const VSFrame* frame = frames_owned.getFrameFilter(start + i, bm.node, frameCtx);
+                const float* src = reinterpret_cast<const float*>(vsapi->getReadPtr(frame, plane));
+                const int stride = static_cast<int>(frames_owned.getStride(frame, plane) / sizeof(float));
+                rolling_store_plane(store.frames[i].planes[plane], src, w, h, stride);
+                frames_owned.freeFrame(frame);
+            }
+            continue;
+        }
+        // Target T adds into slot T % ntemp; a slot is zero when its target starts.
+        nss::ResourceVector<float> sums(static_cast<std::size_t>(ntemp) * 2 * size, 0.f);
+        auto slot = [&](int target) { return sums.data() + static_cast<std::size_t>(target % ntemp) * 2 * size; };
+        if (from) {
+            for (int i = 0; i < from->targets; ++i) {
+                std::copy_n(from->sums[plane].data() + static_cast<std::size_t>(i) * 2 * size, 2 * size, slot(start + i));
+            }
+        }
+        int next_output = start;
+        // Finishes the frames of the chunk whose last center is at or before `center`.
+        auto finish = [&](int center) {
+            while (next_output < start + count && nss::host_detail::temporal_last(next_output, r, nframes) <= center) {
+                const VSFrame* frame = frames_owned.getFrameFilter(next_output, bm.node, frameCtx);
+                const float* src = reinterpret_cast<const float*>(vsapi->getReadPtr(frame, plane));
+                const int stride = static_cast<int>(frames_owned.getStride(frame, plane) / sizeof(float));
+                auto& output = store.frames[next_output - start].planes[plane];
+                output.width = w;
+                output.height = h;
+                output.data.resize(size);
+                float* num = slot(next_output);
+                nss::aggregate_finish(output.data.data(), num, num + size, src, w, h, w, w, stride);
+                std::fill_n(num, 2 * size, 0.f);
+                frames_owned.freeFrame(frame);
+                ++next_output;
+            }
+        };
+        finish(first - 1);
+#if NSS_BM_SCRATCH
+        nss::ResourceVector<float> fat;
+#else
+        nss::ResourceVector<float> fat(ntemp * 2 * size);
+#endif
+        const int block = bm.block_size[plane], group = bm.group_size[plane];
+        float* scratch = bm.ws.get(ntemp * 2 * size
+#if !NSS_BM_REUSE
+                                   + nss::bm3d_filter_work_floats(group, block) +
+                                   group * block * block * (bm.ref ? 2u : 1u) + 64
+#endif
+        );
+        for (int center = first; center <= last; ++center) {
+            nss::ResourceVector<const VSFrame*> sf(ntemp), rf(ntemp);
+            nss::ResourceVector<const float*> sp(ntemp), rp(ntemp);
+            nss::ResourceVector<int> ss(ntemp), rs(ntemp);
+            for (int t = 0; t < ntemp; ++t) {
+                const int fn = nss::host_detail::temporal_slot_frame(center, t, r, nframes);
+                sf[t] = frames_owned.getFrameFilter(fn, bm.node, frameCtx);
+                rf[t] = frames_owned.getFrameFilter(fn, bm.ref ? bm.ref : bm.node, frameCtx);
+                sp[t] = reinterpret_cast<const float*>(vsapi->getReadPtr(sf[t], plane));
+                rp[t] = reinterpret_cast<const float*>(vsapi->getReadPtr(rf[t], plane));
+                ss[t] = static_cast<int>(frames_owned.getStride(sf[t], plane) / sizeof(float));
+                rs[t] = static_cast<int>(frames_owned.getStride(rf[t], plane) / sizeof(float));
+            }
+            process_plane_batched(sp.data(), rp.data(), ntemp, r, ss.data(), rs.data(), fat.data(), w, h, w, w,
+                                  bm.sigma[plane], block, group, bm.block_step[plane], bm.bm_range[plane],
+                                  bm.ps_num[plane], bm.ps_range[plane], r, bm.ref != nullptr, true, scratch, center,
+                                  nframes
+#if NSS_BM_SCRATCH
+                                  , true
+#endif
+            );
+            // Also the frames behind the chunk: the next chunk carries on from them.
+            for (int target = std::max(start, center - r);
+                 target <= nss::host_detail::temporal_last(center, r, nframes); ++target) {
+                const int slice = target - center + r;
+                float* num = slot(target);
+#if NSS_BM_SCRATCH
+                for (std::size_t i = 0; i < size; ++i) {
+                    num[i] += scratch[slice * size + i];
+                    num[size + i] += scratch[(ntemp + slice) * size + i];
+                }
+#else
+                const float* contribution = fat.data() + slice * 2 * size;
+                for (std::size_t i = 0; i < 2 * size; ++i) num[i] += contribution[i];
+#endif
+            }
+            for (int t = 0; t < ntemp; ++t) {
+                frames_owned.freeFrame(sf[t]);
+                frames_owned.freeFrame(rf[t]);
+            }
+            finish(center);
+        }
+        if (next) {
+            nss::ResourceScope carry_scope(bm.budget, next->account);
+            next->sums[plane] = nss::ResourceVector<float>(static_cast<std::size_t>(carry_targets) * 2 * size);
+            for (int i = 0; i < carry_targets; ++i) {
+                std::copy_n(slot(carry_first + i), 2 * size,
+                            next->sums[plane].data() + static_cast<std::size_t>(i) * 2 * size);
+            }
+        }
+    }
+    d->carry = std::move(next);
+}
+#endif
 
 bool rolling_fill_chunk(RollingData* d, RollingChunkStore& store, int start, int count, VSFrameContext* frameCtx,
                         VSCore* core, const VSAPI* vsapi) {
@@ -678,6 +858,10 @@ bool rolling_fill_chunk(RollingData* d, RollingChunkStore& store, int start, int
         rolling_fill_chunk_chroma(d, store, start, count, frameCtx, vsapi);
         return true;
     }
+#if NSS_BM_RING
+    rolling_fill_chunk_carried(d, store, start, count, frameCtx, vsapi);
+    return true;
+#endif
     // One center's fat plus target chunk accumulators, never all centers' fats.
     for(int plane=0;plane<np;++plane) {
         const int w=nss::plane_width(bm.vi,plane), h=nss::plane_height(bm.vi,plane);
