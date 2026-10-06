@@ -125,6 +125,12 @@ Each filter takes the same arguments as its `nss` counterpart, plus
     instead, exactly as the CPU plugin does; use it to mix backends or to
     keep an existing script unchanged.
   - The finished-frame mode needs more memory than legacy.
+  - It works in chunks of `rolling_chunk` frames and keeps finished chunks
+    for later requests: `rolling_cache_chunks` at first (default 1), growing
+    to `rolling_cache_limit` (default 16) when requests jump between
+    positions. Sequential rendering, a chained second stage and a temporal
+    filter downstream compute each chunk once. Fully random access costs a
+    chunk per miss; `temporal_mode="legacy"` does not depend on the order.
 - **Driver.** A prebuilt plugin needs a driver for the CUDA release it was
   built with (12.9 for the release packages) or newer.
 

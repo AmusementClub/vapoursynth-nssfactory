@@ -19,6 +19,7 @@
 #include <array>
 #include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <list>
 #include <memory>
 #include <mutex>
@@ -71,10 +72,32 @@ struct Staging {
     }
 };
 
+// Pinned blocks for chunk stores, reused so that a chunk neither allocates
+// nor faults in fresh pages. A block goes back when its chunk is dropped.
+struct StorePool {
+    std::mutex mu;
+    std::vector<PinnedBuffer> free;
+};
+
+// The finished frames of one chunk. The device downloads straight into it.
 struct ChunkStore {
     int start = 0, count = 0;
-    // frames[i][plane]: final plane of frame start + i (tight rows).
-    std::vector<std::array<nss::ResourceVector<float>, 3>> frames;
+    PinnedBuffer bytes;  // rolling_chunk frames, each its planes back to back (tight rows)
+    std::size_t frame_bytes = 0;
+    std::array<std::size_t, 3> plane_offset{};
+    std::shared_ptr<StorePool> pool;
+    // Final plane of frame start + i.
+    float* plane(int i, int p) const {
+        return reinterpret_cast<float*>(bytes.as<std::uint8_t>() + i * frame_bytes + plane_offset[p]);
+    }
+    ChunkStore() = default;
+    ChunkStore(const ChunkStore&) = delete;
+    ChunkStore& operator=(const ChunkStore&) = delete;
+    ~ChunkStore() {
+        if (!pool || !bytes.get()) return;
+        std::lock_guard lock(pool->mu);
+        pool->free.push_back(std::move(bytes));
+    }
 };
 
 struct Driver : GroupFilterConfig {
@@ -86,7 +109,15 @@ struct Driver : GroupFilterConfig {
     std::unique_ptr<SlotPool<Slot>> pool;
     std::unique_ptr<SlotPool<Staging>> staging;
 
-    // Rolling chunk cache (LRU) and chunks being computed.
+    // Rolling chunk cache (LRU) and chunks being computed. The cache holds
+    // cache_size chunks and grows to cache_cap when chunks it dropped are
+    // asked for again (two such misses per step).
+    std::shared_ptr<StorePool> stores;
+    std::size_t frame_bytes = 0;
+    std::array<std::size_t, 3> plane_offset{};
+    int cache_size = 1, cache_cap = 1;
+    std::deque<int> dropped;  // starts of recently dropped chunks
+    int dropped_hits = 0;
     std::mutex cache_mu;
     std::condition_variable cache_cv;
     std::list<std::shared_ptr<const ChunkStore>> cache;
@@ -152,8 +183,7 @@ std::size_t slot_batch_bytes(const Driver& d) {
 // Spatial and legacy: one upload per window frame and channel; one download
 // per channel (spatial) or 2 * ntemp fat rows per channel (legacy).
 // Rolling: one upload per frame a chunk reads (the chunk and 2 * radius
-// frames on each side); the chunk's downloads reuse the first of them, which
-// the stream has read by then.
+// frames on each side); the results go straight into the chunk store.
 int upload_regions(const Driver& d) { return d.ntemp * d.channels * (has_guide(d) ? 2 : 1); }
 int chunk_window(const Driver& d) { return d.rolling.rolling_chunk + 4 * d.radius; }
 int chunk_uploads(const Driver& d) { return chunk_window(d) * (has_guide(d) ? 2 : 1); }
@@ -171,6 +201,7 @@ void plan_planes(Driver& d) {
         p.height = nss::plane_height(d.vi, plane);
         p.floats = static_cast<std::size_t>(p.width) * p.height;
         d.plane_floats = std::max(d.plane_floats, p.floats);
+        d.plane_offset[plane] = frame_bytes;
         frame_bytes += p.floats * sizeof(float);
         if (!p.active) continue;
         p.group = std::min(p.group, kMaxGroup);
@@ -202,7 +233,9 @@ void plan_planes(Driver& d) {
     const std::size_t output = d.mode == GroupMode::Rolling ? 2 * frame_bytes + chunk_bytes
                                                        : frame_bytes * (d.mode == GroupMode::Legacy ? 2 * d.ntemp : 1);
     const std::size_t fixed = plane_bytes * device_planes + plane_bytes * d.regions + output + bins;
-    const std::size_t shared_cache = d.mode == GroupMode::Rolling ? chunk_bytes * d.rolling.cache_limit : 0;
+    d.frame_bytes = frame_bytes;
+    // The cache starts at cache_chunks; what it may grow to is settled below.
+    const std::size_t shared_cache = d.mode == GroupMode::Rolling ? chunk_bytes * d.rolling.cache_chunks : 0;
     std::size_t min_batch = 0;
     for (const GroupPlane& p : d.planes) {
         if (p.active) min_batch = std::max(min_batch, std::min<std::size_t>(p.grid.count(), 1024) * per_ref_bytes(d, p));
@@ -274,6 +307,15 @@ void plan_planes(Driver& d) {
         extra = std::min(extra, limit > used ? (limit - used) / set_bytes : 0);
     }
     d.staging_sets = static_cast<int>(streams + extra);
+    d.cache_size = d.rolling.cache_chunks;
+    d.cache_cap = d.rolling.cache_limit;
+    if (d.mode == GroupMode::Rolling && total != SIZE_MAX) {
+        // Under a limit the cache grows only into what the plan leaves over.
+        const std::size_t used = streams * (fixed + slot_batch_bytes(d) / 3 * 4) + extra * set_bytes;
+        const std::size_t spare = limit > used ? (limit - used) / chunk_bytes : 0;
+        d.cache_cap = static_cast<int>(
+            std::min<std::size_t>(d.rolling.cache_limit, d.rolling.cache_chunks + spare));
+    }
 }
 
 std::unique_ptr<Staging> make_staging(const Driver& d) {
@@ -605,7 +647,17 @@ std::shared_ptr<ChunkStore> compute_chunk(Driver* d, int start, int count, VSFra
     auto store = std::make_shared<ChunkStore>();
     store->start = start;
     store->count = count;
-    store->frames.resize(count);
+    store->frame_bytes = d->frame_bytes;
+    store->plane_offset = d->plane_offset;
+    store->pool = d->stores;
+    {
+        std::lock_guard lock(d->stores->mu);
+        if (!d->stores->free.empty()) {
+            store->bytes = std::move(d->stores->free.back());
+            d->stores->free.pop_back();
+        }
+    }
+    if (!store->bytes.get()) store->bytes = PinnedBuffer(d->frame_bytes * d->rolling.rolling_chunk, d->budget);
 
     // Every frame a center of this chunk reads: region (fn - first_frame) per clip.
     const int first_frame = std::max(0, start - 2 * radius);
@@ -617,10 +669,8 @@ std::shared_ptr<ChunkStore> compute_chunk(Driver* d, int start, int count, VSFra
         if (!p.active) {
             for (int i = 0; i < count; ++i) {
                 const VSFrame* f = frames.getFrameFilter(start + i, d->node, ctx);
-                auto& out = store->frames[i][plane];
-                out.resize(p.floats);
-                vsh::bitblt(out.data(), row_bytes, vsapi->getReadPtr(f, plane), vsapi->getStride(f, plane), row_bytes,
-                            p.height);
+                vsh::bitblt(store->plane(i, plane), row_bytes, vsapi->getReadPtr(f, plane), vsapi->getStride(f, plane),
+                            row_bytes, p.height);
                 frames.freeFrame(f);
             }
             continue;
@@ -706,22 +756,15 @@ std::shared_ptr<ChunkStore> compute_chunk(Driver* d, int start, int count, VSFra
                 // before the next finish overwrites it.
                 aggregate_finish(acc_num + i * p.floats, acc_den + i * p.floats, s.chunk_src.as<float>() + i * p.floats,
                                  p.width, p.height, p.width, s.out.as<float>(), s.stream);
-                // Every upload is ahead of this on the stream, so region i is free again.
-                begin_download(s.out.get(), row_bytes, row_bytes, p.height, g.regions[i], s.stream);
+                begin_download(s.out.get(), row_bytes, row_bytes, p.height, store->plane(i, plane), s.stream);
             }
             NSS_CUDA_CHECK(cudaEventRecord(g.done, s.stream));
             drain.armed = false;
         }
-        {
-            NSS_CUDA_RANGE("group.wait");
-            NSS_CUDA_CHECK(cudaEventSynchronize(g.done));
-        }
-        NSS_CUDA_RANGE("group.stage_out");
-        for (int i = 0; i < count; ++i) {
-            auto& out = store->frames[i][plane];
-            out.resize(p.floats);
-            finish_download(g.regions[i], row_bytes, p.height, out.data(), row_bytes);
-        }
+        // The store holds this plane once the event has passed; the staging
+        // regions are free for the next plane then.
+        NSS_CUDA_RANGE("group.wait");
+        NSS_CUDA_CHECK(cudaEventSynchronize(g.done));
     }
     return store;
 }
@@ -740,11 +783,22 @@ std::shared_ptr<const ChunkStore> rolling_chunk(Driver* d, int start, int count,
         if (!d->computing.count(start)) break;
         d->cache_cv.wait(lock);  // another thread is computing this chunk
     }
+    // A miss on a chunk the cache dropped recently: after two of them the
+    // cache keeps one more chunk, up to cache_cap.
+    if (d->cache_size < d->cache_cap) {
+        const auto again = std::find(d->dropped.begin(), d->dropped.end(), start);
+        if (again != d->dropped.end()) {
+            d->dropped.erase(again);
+            if (++d->dropped_hits >= 2) {
+                d->dropped_hits = 0;
+                ++d->cache_size;
+            }
+        }
+    }
     d->computing.insert(start);
     lock.unlock();
     std::shared_ptr<ChunkStore> computed;
     try {
-        nss::ResourceScope chunk_scope(d->budget, nss::make_resource_account(nss::ResourceKind::Cached));
         computed = compute_chunk(d, start, count, ctx, vsapi);
     } catch (...) {
         lock.lock();
@@ -755,7 +809,11 @@ std::shared_ptr<const ChunkStore> rolling_chunk(Driver* d, int start, int count,
     lock.lock();
     d->computing.erase(start);
     d->cache.push_front(computed);
-    while (static_cast<int>(d->cache.size()) > d->rolling.cache_limit) d->cache.pop_back();
+    while (static_cast<int>(d->cache.size()) > d->cache_size) {
+        d->dropped.push_back(d->cache.back()->start);
+        d->cache.pop_back();
+    }
+    while (d->dropped.size() > static_cast<std::size_t>(std::max(8, 2 * d->cache_cap))) d->dropped.pop_front();
     d->cache_cv.notify_all();
     return computed;
 }
@@ -796,12 +854,11 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
     VSFrame* dst = frames.newVideoFrame(&d->vi.format, d->vi.width, d->vi.height, src, core);
     nss::stamp_contribution(dst, 0, n, d->model, vsapi);
     frames.freeFrame(src);
-    const auto& local = chunk->frames[n - chunk->start];
     for (int plane = 0; plane < d->vi.format.numPlanes; ++plane) {
         const GroupPlane& p = d->planes[plane];
         const std::size_t row_bytes = static_cast<std::size_t>(p.width) * sizeof(float);
-        vsh::bitblt(vsapi->getWritePtr(dst, plane), vsapi->getStride(dst, plane), local[plane].data(), row_bytes,
-                    row_bytes, p.height);
+        vsh::bitblt(vsapi->getWritePtr(dst, plane), vsapi->getStride(dst, plane),
+                    chunk->plane(n - chunk->start, plane), row_bytes, row_bytes, p.height);
     }
     return frames.keep(dst);
 }
@@ -812,6 +869,8 @@ void VS_CC freeFilter(void* instance, VSCore*, const VSAPI*) {
         DeviceGuard guard(d->device.index);
         d->pool.reset();
         d->staging.reset();
+        d->cache.clear();
+        d->stores.reset();
     }
     delete d;
 }
@@ -849,6 +908,7 @@ void group_filter_install(GroupFilterConfig&& config, VSMap* out, VSCore* core, 
     }
     DeviceGuard guard(d->device.index);
     plan_planes(*d);
+    d->stores = std::make_shared<StorePool>();
     std::vector<std::unique_ptr<Slot>> slots;
     for (int i = 0; i < d->backend.num_streams; ++i) slots.push_back(make_slot(*d));
     d->pool = std::make_unique<SlotPool<Slot>>(std::move(slots));
