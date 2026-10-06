@@ -70,6 +70,51 @@
   "BM3D|GRAYS|block_size=pair": {
    "error": "nss.BM3D: block_size must be one of 1, 2, 4, 8, 12, 16, 32"
   },
+  "BM3D|GRAYS|block_size_basic=-1": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|GRAYS|block_size_basic=0": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|GRAYS|block_size_basic=1": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|GRAYS|block_size_basic=1000": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|GRAYS|block_size_basic=16": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|GRAYS|block_size_basic=17": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|GRAYS|block_size_basic=2": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|GRAYS|block_size_basic=3": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|GRAYS|block_size_basic=33": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|GRAYS|block_size_basic=4": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|GRAYS|block_size_basic=65": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|GRAYS|block_size_basic=7": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|GRAYS|block_size_basic=8": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|GRAYS|block_size_basic=9": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|GRAYS|block_size_basic=pair": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
   "BM3D|GRAYS|block_step=-1": {
    "error": "nss.BM3D: block_step must be in [1, block_size]"
   },
@@ -303,7 +348,29 @@
   "BM3D|GRAYS|combo:block_size=[8, 4, 4],chroma=1": {
    "error": "nss.BM3D: chroma requires a YUV 4:4:4 clip"
   },
+  "BM3D|GRAYS|combo:block_size_basic=4,block_step=8,final=1": {
+   "error": "nss.BM3D: block_step must be in [1, block_size_basic]"
+  },
+  "BM3D|GRAYS|combo:block_size_basic=4,final=1": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|GRAYS|combo:block_size_basic=[8, 3],final=1": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
   "BM3D|GRAYS|combo:chroma=1": {
+   "error": "nss.BM3D: chroma requires a YUV 4:4:4 clip"
+  },
+  "BM3D|GRAYS|combo:chroma=1,final=1": {
    "error": "nss.BM3D: chroma requires a YUV 4:4:4 clip"
   },
   "BM3D|GRAYS|combo:chroma=1,radius=1,temporal_mode='legacy'": {
@@ -314,6 +381,68 @@
   },
   "BM3D|GRAYS|combo:chroma=1,sigma=[0, 3, 3]": {
    "error": "nss.BM3D: chroma requires a YUV 4:4:4 clip"
+  },
+  "BM3D|GRAYS|combo:final=1": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|GRAYS|combo:final=1,group_size_basic=16": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|GRAYS|combo:final=1,group_size_basic=2,ps_num=4": {
+   "error": "nss.BM3D: ps_num must be in [1, group_size_basic]"
+  },
+  "BM3D|GRAYS|combo:final=1,group_size_basic=3": {
+   "error": "nss.BM3D: group_size_basic must be one of 1, 2, 4, 8, 16, 32, 64"
+  },
+  "BM3D|GRAYS|combo:final=1,radius=1": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 240,
+    "width": 48
+   }
+  },
+  "BM3D|GRAYS|combo:final=1,radius=1,rolling_chunk=2,temporal_mode='rolling'": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|GRAYS|combo:final=1,radius=1,temporal_mode='legacy'": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 240,
+    "width": 48
+   }
+  },
+  "BM3D|GRAYS|combo:final=1,sigma_basic=5": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|GRAYS|combo:final=1,sigma_basic=[5, 0, 4]": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
   },
   "BM3D|GRAYS|combo:radius=1,rolling_cache_chunks=0,temporal_mode='rolling'": {
    "error": "nss.BM3D: rolling_cache_limit must be in [1, 64]"
@@ -525,6 +654,58 @@
     "width": 48
    }
   },
+  "BM3D|GRAYS|final=-1": {
+   "error": "nss.BM3D: final must be 0 or 1"
+  },
+  "BM3D|GRAYS|final=0": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|GRAYS|final=1": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|GRAYS|final=1000": {
+   "error": "nss.BM3D: final must be 0 or 1"
+  },
+  "BM3D|GRAYS|final=16": {
+   "error": "nss.BM3D: final must be 0 or 1"
+  },
+  "BM3D|GRAYS|final=17": {
+   "error": "nss.BM3D: final must be 0 or 1"
+  },
+  "BM3D|GRAYS|final=2": {
+   "error": "nss.BM3D: final must be 0 or 1"
+  },
+  "BM3D|GRAYS|final=3": {
+   "error": "nss.BM3D: final must be 0 or 1"
+  },
+  "BM3D|GRAYS|final=33": {
+   "error": "nss.BM3D: final must be 0 or 1"
+  },
+  "BM3D|GRAYS|final=4": {
+   "error": "nss.BM3D: final must be 0 or 1"
+  },
+  "BM3D|GRAYS|final=65": {
+   "error": "nss.BM3D: final must be 0 or 1"
+  },
+  "BM3D|GRAYS|final=7": {
+   "error": "nss.BM3D: final must be 0 or 1"
+  },
+  "BM3D|GRAYS|final=8": {
+   "error": "nss.BM3D: final must be 0 or 1"
+  },
+  "BM3D|GRAYS|final=9": {
+   "error": "nss.BM3D: final must be 0 or 1"
+  },
   "BM3D|GRAYS|group_size=-1": {
    "error": "nss.BM3D: group_size must be one of 1, 2, 4, 8, 16, 32, 64"
   },
@@ -594,6 +775,51 @@
   },
   "BM3D|GRAYS|group_size=pair": {
    "error": "nss.BM3D: group_size must be one of 1, 2, 4, 8, 16, 32, 64"
+  },
+  "BM3D|GRAYS|group_size_basic=-1": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|GRAYS|group_size_basic=0": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|GRAYS|group_size_basic=1": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|GRAYS|group_size_basic=1000": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|GRAYS|group_size_basic=16": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|GRAYS|group_size_basic=17": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|GRAYS|group_size_basic=2": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|GRAYS|group_size_basic=3": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|GRAYS|group_size_basic=33": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|GRAYS|group_size_basic=4": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|GRAYS|group_size_basic=65": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|GRAYS|group_size_basic=7": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|GRAYS|group_size_basic=8": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|GRAYS|group_size_basic=9": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|GRAYS|group_size_basic=pair": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
   },
   "BM3D|GRAYS|memory_limit_mb=-1": {
    "error": "nss: memory_limit_mb must be in [1, 1048576]"
@@ -1356,6 +1582,27 @@
     "width": 48
    }
   },
+  "BM3D|GRAYS|sigma_basic=-1.0": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|GRAYS|sigma_basic=0.0": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|GRAYS|sigma_basic=0.5": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|GRAYS|sigma_basic=1.0": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|GRAYS|sigma_basic=1000.0": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|GRAYS|sigma_basic=3.0": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|GRAYS|sigma_basic=pair": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
   "BM3D|GRAYS|temporal_mode=''": {
    "ok": {
     "format": "GrayS",
@@ -1482,6 +1729,51 @@
   },
   "BM3D|RGBS|block_size=pair": {
    "error": "nss.BM3D: block_size must be one of 1, 2, 4, 8, 12, 16, 32"
+  },
+  "BM3D|RGBS|block_size_basic=-1": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|RGBS|block_size_basic=0": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|RGBS|block_size_basic=1": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|RGBS|block_size_basic=1000": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|RGBS|block_size_basic=16": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|RGBS|block_size_basic=17": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|RGBS|block_size_basic=2": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|RGBS|block_size_basic=3": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|RGBS|block_size_basic=33": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|RGBS|block_size_basic=4": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|RGBS|block_size_basic=65": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|RGBS|block_size_basic=7": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|RGBS|block_size_basic=8": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|RGBS|block_size_basic=9": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|RGBS|block_size_basic=pair": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
   },
   "BM3D|RGBS|block_step=-1": {
    "error": "nss.BM3D: block_step must be in [1, block_size]"
@@ -1716,7 +2008,24 @@
   "BM3D|RGBS|combo:block_size=[8, 4, 4],chroma=1": {
    "error": "nss.BM3D: chroma requires a YUV 4:4:4 clip"
   },
+  "BM3D|RGBS|combo:block_size_basic=4,block_step=8,final=1": {
+   "error": "nss.BM3D: block_step must be in [1, block_size_basic]"
+  },
+  "BM3D|RGBS|combo:block_size_basic=4,final=1": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|RGBS|combo:block_size_basic=[8, 3],final=1": {
+   "error": "nss.BM3D: block_size_basic must be one of 1, 2, 4, 8, 12, 16, 32"
+  },
   "BM3D|RGBS|combo:chroma=1": {
+   "error": "nss.BM3D: chroma requires a YUV 4:4:4 clip"
+  },
+  "BM3D|RGBS|combo:chroma=1,final=1": {
    "error": "nss.BM3D: chroma requires a YUV 4:4:4 clip"
   },
   "BM3D|RGBS|combo:chroma=1,radius=1,temporal_mode='legacy'": {
@@ -1727,6 +2036,68 @@
   },
   "BM3D|RGBS|combo:chroma=1,sigma=[0, 3, 3]": {
    "error": "nss.BM3D: chroma requires a YUV 4:4:4 clip"
+  },
+  "BM3D|RGBS|combo:final=1": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|RGBS|combo:final=1,group_size_basic=16": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|RGBS|combo:final=1,group_size_basic=2,ps_num=4": {
+   "error": "nss.BM3D: ps_num must be in [1, group_size_basic]"
+  },
+  "BM3D|RGBS|combo:final=1,group_size_basic=3": {
+   "error": "nss.BM3D: group_size_basic must be one of 1, 2, 4, 8, 16, 32, 64"
+  },
+  "BM3D|RGBS|combo:final=1,radius=1": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 240,
+    "width": 48
+   }
+  },
+  "BM3D|RGBS|combo:final=1,radius=1,rolling_chunk=2,temporal_mode='rolling'": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|RGBS|combo:final=1,radius=1,temporal_mode='legacy'": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 240,
+    "width": 48
+   }
+  },
+  "BM3D|RGBS|combo:final=1,sigma_basic=5": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|RGBS|combo:final=1,sigma_basic=[5, 0, 4]": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
   },
   "BM3D|RGBS|combo:radius=1,rolling_cache_chunks=0,temporal_mode='rolling'": {
    "error": "nss.BM3D: rolling_cache_limit must be in [1, 64]"
@@ -1938,6 +2309,58 @@
     "width": 48
    }
   },
+  "BM3D|RGBS|final=-1": {
+   "error": "nss.BM3D: final must be 0 or 1"
+  },
+  "BM3D|RGBS|final=0": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|RGBS|final=1": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|RGBS|final=1000": {
+   "error": "nss.BM3D: final must be 0 or 1"
+  },
+  "BM3D|RGBS|final=16": {
+   "error": "nss.BM3D: final must be 0 or 1"
+  },
+  "BM3D|RGBS|final=17": {
+   "error": "nss.BM3D: final must be 0 or 1"
+  },
+  "BM3D|RGBS|final=2": {
+   "error": "nss.BM3D: final must be 0 or 1"
+  },
+  "BM3D|RGBS|final=3": {
+   "error": "nss.BM3D: final must be 0 or 1"
+  },
+  "BM3D|RGBS|final=33": {
+   "error": "nss.BM3D: final must be 0 or 1"
+  },
+  "BM3D|RGBS|final=4": {
+   "error": "nss.BM3D: final must be 0 or 1"
+  },
+  "BM3D|RGBS|final=65": {
+   "error": "nss.BM3D: final must be 0 or 1"
+  },
+  "BM3D|RGBS|final=7": {
+   "error": "nss.BM3D: final must be 0 or 1"
+  },
+  "BM3D|RGBS|final=8": {
+   "error": "nss.BM3D: final must be 0 or 1"
+  },
+  "BM3D|RGBS|final=9": {
+   "error": "nss.BM3D: final must be 0 or 1"
+  },
   "BM3D|RGBS|group_size=-1": {
    "error": "nss.BM3D: group_size must be one of 1, 2, 4, 8, 16, 32, 64"
   },
@@ -2007,6 +2430,51 @@
   },
   "BM3D|RGBS|group_size=pair": {
    "error": "nss.BM3D: group_size must be one of 1, 2, 4, 8, 16, 32, 64"
+  },
+  "BM3D|RGBS|group_size_basic=-1": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|RGBS|group_size_basic=0": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|RGBS|group_size_basic=1": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|RGBS|group_size_basic=1000": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|RGBS|group_size_basic=16": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|RGBS|group_size_basic=17": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|RGBS|group_size_basic=2": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|RGBS|group_size_basic=3": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|RGBS|group_size_basic=33": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|RGBS|group_size_basic=4": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|RGBS|group_size_basic=65": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|RGBS|group_size_basic=7": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|RGBS|group_size_basic=8": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|RGBS|group_size_basic=9": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|RGBS|group_size_basic=pair": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
   },
   "BM3D|RGBS|memory_limit_mb=-1": {
    "error": "nss: memory_limit_mb must be in [1, 1048576]"
@@ -2769,6 +3237,27 @@
     "width": 48
    }
   },
+  "BM3D|RGBS|sigma_basic=-1.0": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|RGBS|sigma_basic=0.0": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|RGBS|sigma_basic=0.5": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|RGBS|sigma_basic=1.0": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|RGBS|sigma_basic=1000.0": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|RGBS|sigma_basic=3.0": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|RGBS|sigma_basic=pair": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
   "BM3D|RGBS|temporal_mode=''": {
    "ok": {
     "format": "RGBS",
@@ -2895,6 +3384,51 @@
   },
   "BM3D|YUV420PS|block_size=pair": {
    "error": "nss.BM3D: block_size must be one of 1, 2, 4, 8, 12, 16, 32"
+  },
+  "BM3D|YUV420PS|block_size_basic=-1": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|YUV420PS|block_size_basic=0": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|YUV420PS|block_size_basic=1": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|YUV420PS|block_size_basic=1000": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|YUV420PS|block_size_basic=16": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|YUV420PS|block_size_basic=17": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|YUV420PS|block_size_basic=2": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|YUV420PS|block_size_basic=3": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|YUV420PS|block_size_basic=33": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|YUV420PS|block_size_basic=4": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|YUV420PS|block_size_basic=65": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|YUV420PS|block_size_basic=7": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|YUV420PS|block_size_basic=8": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|YUV420PS|block_size_basic=9": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|YUV420PS|block_size_basic=pair": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
   },
   "BM3D|YUV420PS|block_step=-1": {
    "error": "nss.BM3D: block_step must be in [1, block_size]"
@@ -3129,7 +3663,24 @@
   "BM3D|YUV420PS|combo:block_size=[8, 4, 4],chroma=1": {
    "error": "nss.BM3D: chroma requires a YUV 4:4:4 clip"
   },
+  "BM3D|YUV420PS|combo:block_size_basic=4,block_step=8,final=1": {
+   "error": "nss.BM3D: block_step must be in [1, block_size_basic]"
+  },
+  "BM3D|YUV420PS|combo:block_size_basic=4,final=1": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|YUV420PS|combo:block_size_basic=[8, 3],final=1": {
+   "error": "nss.BM3D: block_size_basic must be one of 1, 2, 4, 8, 12, 16, 32"
+  },
   "BM3D|YUV420PS|combo:chroma=1": {
+   "error": "nss.BM3D: chroma requires a YUV 4:4:4 clip"
+  },
+  "BM3D|YUV420PS|combo:chroma=1,final=1": {
    "error": "nss.BM3D: chroma requires a YUV 4:4:4 clip"
   },
   "BM3D|YUV420PS|combo:chroma=1,radius=1,temporal_mode='legacy'": {
@@ -3140,6 +3691,68 @@
   },
   "BM3D|YUV420PS|combo:chroma=1,sigma=[0, 3, 3]": {
    "error": "nss.BM3D: chroma requires a YUV 4:4:4 clip"
+  },
+  "BM3D|YUV420PS|combo:final=1": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|YUV420PS|combo:final=1,group_size_basic=16": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|YUV420PS|combo:final=1,group_size_basic=2,ps_num=4": {
+   "error": "nss.BM3D: ps_num must be in [1, group_size_basic]"
+  },
+  "BM3D|YUV420PS|combo:final=1,group_size_basic=3": {
+   "error": "nss.BM3D: group_size_basic must be one of 1, 2, 4, 8, 16, 32, 64"
+  },
+  "BM3D|YUV420PS|combo:final=1,radius=1": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 240,
+    "width": 48
+   }
+  },
+  "BM3D|YUV420PS|combo:final=1,radius=1,rolling_chunk=2,temporal_mode='rolling'": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|YUV420PS|combo:final=1,radius=1,temporal_mode='legacy'": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 240,
+    "width": 48
+   }
+  },
+  "BM3D|YUV420PS|combo:final=1,sigma_basic=5": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|YUV420PS|combo:final=1,sigma_basic=[5, 0, 4]": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
   },
   "BM3D|YUV420PS|combo:radius=1,rolling_cache_chunks=0,temporal_mode='rolling'": {
    "error": "nss.BM3D: rolling_cache_limit must be in [1, 64]"
@@ -3351,6 +3964,58 @@
     "width": 48
    }
   },
+  "BM3D|YUV420PS|final=-1": {
+   "error": "nss.BM3D: final must be 0 or 1"
+  },
+  "BM3D|YUV420PS|final=0": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|YUV420PS|final=1": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM3D|YUV420PS|final=1000": {
+   "error": "nss.BM3D: final must be 0 or 1"
+  },
+  "BM3D|YUV420PS|final=16": {
+   "error": "nss.BM3D: final must be 0 or 1"
+  },
+  "BM3D|YUV420PS|final=17": {
+   "error": "nss.BM3D: final must be 0 or 1"
+  },
+  "BM3D|YUV420PS|final=2": {
+   "error": "nss.BM3D: final must be 0 or 1"
+  },
+  "BM3D|YUV420PS|final=3": {
+   "error": "nss.BM3D: final must be 0 or 1"
+  },
+  "BM3D|YUV420PS|final=33": {
+   "error": "nss.BM3D: final must be 0 or 1"
+  },
+  "BM3D|YUV420PS|final=4": {
+   "error": "nss.BM3D: final must be 0 or 1"
+  },
+  "BM3D|YUV420PS|final=65": {
+   "error": "nss.BM3D: final must be 0 or 1"
+  },
+  "BM3D|YUV420PS|final=7": {
+   "error": "nss.BM3D: final must be 0 or 1"
+  },
+  "BM3D|YUV420PS|final=8": {
+   "error": "nss.BM3D: final must be 0 or 1"
+  },
+  "BM3D|YUV420PS|final=9": {
+   "error": "nss.BM3D: final must be 0 or 1"
+  },
   "BM3D|YUV420PS|group_size=-1": {
    "error": "nss.BM3D: group_size must be one of 1, 2, 4, 8, 16, 32, 64"
   },
@@ -3420,6 +4085,51 @@
   },
   "BM3D|YUV420PS|group_size=pair": {
    "error": "nss.BM3D: group_size must be one of 1, 2, 4, 8, 16, 32, 64"
+  },
+  "BM3D|YUV420PS|group_size_basic=-1": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|YUV420PS|group_size_basic=0": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|YUV420PS|group_size_basic=1": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|YUV420PS|group_size_basic=1000": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|YUV420PS|group_size_basic=16": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|YUV420PS|group_size_basic=17": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|YUV420PS|group_size_basic=2": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|YUV420PS|group_size_basic=3": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|YUV420PS|group_size_basic=33": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|YUV420PS|group_size_basic=4": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|YUV420PS|group_size_basic=65": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|YUV420PS|group_size_basic=7": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|YUV420PS|group_size_basic=8": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|YUV420PS|group_size_basic=9": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|YUV420PS|group_size_basic=pair": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
   },
   "BM3D|YUV420PS|memory_limit_mb=-1": {
    "error": "nss: memory_limit_mb must be in [1, 1048576]"
@@ -4181,6 +4891,27 @@
     "height": 40,
     "width": 48
    }
+  },
+  "BM3D|YUV420PS|sigma_basic=-1.0": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|YUV420PS|sigma_basic=0.0": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|YUV420PS|sigma_basic=0.5": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|YUV420PS|sigma_basic=1.0": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|YUV420PS|sigma_basic=1000.0": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|YUV420PS|sigma_basic=3.0": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
+  },
+  "BM3D|YUV420PS|sigma_basic=pair": {
+   "error": "nss.BM3D: sigma_basic, block_size_basic and group_size_basic require final=1"
   },
   "BM3D|YUV420PS|temporal_mode=''": {
    "ok": {
@@ -29175,7 +29906,7 @@
   }
  },
  "functions": {
-  "BM3D": "clip:vnode;ref:vnode:opt;sigma:float[]:opt;block_size:int[]:opt;group_size:int[]:opt;block_step:int[]:opt;bm_range:int[]:opt;radius:int:opt;ps_num:int[]:opt;ps_range:int[]:opt;chroma:int:opt;temporal_mode:data:opt;rolling_chunk:int:opt;rolling_cache_chunks:int:opt;rolling_cache_limit:int:opt;memory_limit_mb:int:opt;",
+  "BM3D": "clip:vnode;ref:vnode:opt;sigma:float[]:opt;block_size:int[]:opt;group_size:int[]:opt;block_step:int[]:opt;bm_range:int[]:opt;radius:int:opt;ps_num:int[]:opt;ps_range:int[]:opt;chroma:int:opt;final:int:opt;sigma_basic:float[]:opt;block_size_basic:int[]:opt;group_size_basic:int[]:opt;temporal_mode:data:opt;rolling_chunk:int:opt;rolling_cache_chunks:int:opt;rolling_cache_limit:int:opt;memory_limit_mb:int:opt;",
   "Backend": "",
   "LSSC": "clip:vnode;sigma:float[]:opt;block_size:int:opt;block_step:int:opt;radius:int:opt;memory_limit_mb:int:opt;",
   "MCWNNM": "clip:vnode;sigma:float[]:opt;block_size:int:opt;block_step:int:opt;group_size:int:opt;bm_range:int:opt;radius:int:opt;ps_num:int:opt;ps_range:int:opt;residual:int:opt;adaptive_aggregation:int:opt;rclip:vnode:opt;admm_iter:int:opt;rho:float:opt;mu:float:opt;iters:int:opt;delta:float:opt;memory_limit_mb:int:opt;temporal_mode:data:opt;rolling_chunk:int:opt;rolling_cache_chunks:int:opt;rolling_cache_limit:int:opt;",

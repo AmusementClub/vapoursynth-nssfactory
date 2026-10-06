@@ -952,6 +952,17 @@ void VS_CC bm3dCreate(const VSMap* in, VSMap* out, void* userData, VSCore* core,
     const int radius = nss::map_int(vsapi, in, "radius", 0);
     const bool rolling =
         nss::frontend::parse_temporal_mode(vsapi, in, radius, "BM3D", "nss") == nss::TemporalMode::Rolling;
+    if (nss::map_int(vsapi, in, "final", 0) != 0) {
+        // Both stages: validate the whole call, then chain two nodes (the CPU has no transfer to save).
+        const nss::NodeRef clip = nss::get_node(vsapi, in, "clip", 0, nullptr);
+        int no_ref = 0;
+        const nss::NodeRef ref = nss::get_node(vsapi, in, "ref", 0, &no_ref);
+        (void)nss::frontend::parse_bm3d(vsapi, in, *vsapi->getVideoInfo(clip),
+                                        no_ref ? nullptr : vsapi->getVideoInfo(ref), "nss");
+        if (rolling) (void)nss::frontend::parse_rolling(vsapi, in, radius, "BM3D", "nss");
+        nss::frontend::bm3d_two_nodes(vsapi, in, out, core, "nss");
+        return;
+    }
     if (rolling) {
         VSNode* node = create_rolling_bm3d(in, core, vsapi, out);
         if (node) {

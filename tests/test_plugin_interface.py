@@ -146,7 +146,13 @@ def main():
                                dict(rolling_cache_chunks=2, rolling_cache_limit=2))] +
                 [dict(chroma=1, **extra)
                  for extra in ({}, dict(radius=1, temporal_mode="legacy"), dict(radius=1, temporal_mode="rolling"),
-                               dict(sigma=[0, 3, 3]), dict(block_size=[8, 4, 4]), dict(block_size=[8, 3, 3]))],
+                               dict(sigma=[0, 3, 3]), dict(block_size=[8, 4, 4]), dict(block_size=[8, 3, 3]))] +
+                [dict(final=1, **extra)
+                 for extra in ({}, dict(sigma_basic=5), dict(sigma_basic=[5, 0, 4]), dict(block_size_basic=4),
+                               dict(block_size_basic=[8, 3]), dict(group_size_basic=16), dict(group_size_basic=3),
+                               dict(block_size_basic=4, block_step=8), dict(group_size_basic=2, ps_num=4),
+                               dict(radius=1), dict(radius=1, temporal_mode="legacy"),
+                               dict(radius=1, temporal_mode="rolling", rolling_chunk=2), dict(chroma=1))],
         "TWSC": [dict(sigma=3, estimate_sigma=1), dict(bm_range=3, search_window=9), dict(block_size=4),
                  dict(block_size=4, block_step=8), dict(group_size=1), dict(group_size=1, ps_num=2),
                  dict(group_size=4, ps_num=8), dict(estimate_sigma=1, radius=1), dict(sigma=[3, 0, 3]),
