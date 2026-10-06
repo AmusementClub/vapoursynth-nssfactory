@@ -52,7 +52,12 @@ struct RollState {
     DeviceBuffer chunk_src;             // source planes, for pixels no patch covers
     DeviceBuffer acc;                   // ordered planes: K num slices, then K den slices
     DeviceBuffer fixed_num, fixed_den;  // fused planes: K slices each
-    std::vector<int> resident;          // frame in each window buffer (the chunk at turn owns it)
+    // Two stages: the first stage's sums, one slice per window frame (frame f
+    // in cell f % (2R+1)), and its estimates in ref_frames. The source ring
+    // then has 4R+1 buffers (the first stage runs 2R centers ahead) and there
+    // is no chunk_src (a frame is finished while its source is still held).
+    DeviceBuffer basic_acc, basic_num, basic_den;
+    std::vector<int> resident;          // frame in each source buffer (the chunk at turn owns it)
     // Guarded by Driver::roll_mu. Chunks take a ticket when they are planned
     // and run in ticket order, so a plan can rely on the chunks before it.
     int plane = -1;
@@ -244,17 +249,40 @@ std::size_t slot_batch_bytes(const Driver& d) {
 // chunk, the 2R frames behind it that its last centers already add to.
 int roll_slices(const Driver& d) { return d.rolling.rolling_chunk + (d.roll_carry ? 2 * d.radius : 0); }
 
+// Frames a rolling chunk reads on each side of itself, and the buffers of a
+// state's source ring. The first of two stages reaches 2R further.
+int roll_reach(const Driver& d) { return (d.two_stage ? 4 : 2) * d.radius; }
+int src_ring(const Driver& d) { return d.two_stage ? 4 * d.radius + 1 : d.ntemp; }
+
 // Pinned bytes of one rolling staging set: every active plane's uploads at
 // its own size, or one plane's at the largest size for planes that take turns.
 std::size_t roll_staging_bytes(const Driver& d, bool together) {
     const std::size_t uploads =
-        static_cast<std::size_t>(d.rolling.rolling_chunk + 4 * d.radius) * (d.guide ? 2 : 1) * d.channels;
+        static_cast<std::size_t>(d.rolling.rolling_chunk + 2 * roll_reach(d)) * (d.guide ? 2 : 1) * d.channels;
     if (!together) return d.plane_floats * sizeof(float) * uploads;
     std::size_t bytes = 0;
     for (const GroupPlane& p : d.planes) {
         if (p.active) bytes += p.floats * sizeof(float) * uploads;
     }
     return bytes;
+}
+
+// The sums a rolling state keeps for plane `plane`, or for every plane (-1,
+// the state the planes share).
+struct RollNeeds {
+    bool fused = false, ordered = false, basic_fused = false, basic_ordered = false;
+};
+RollNeeds roll_needs(const Driver& d, int plane) {
+    RollNeeds needs;
+    for (int i = 0; i < 3; ++i) {
+        if (plane >= 0 && i != plane) continue;
+        const GroupPlane& p = d.planes[i];
+        const GroupPlane& b = d.basic[i];
+        if (!p.active) continue;
+        (p.fused ? needs.fused : needs.ordered) = true;
+        if (d.two_stage && b.active) (b.fused ? needs.basic_fused : needs.basic_ordered) = true;
+    }
+    return needs;
 }
 
 int active_planes(const Driver& d) {
@@ -266,16 +294,17 @@ int active_planes(const Driver& d) {
 // Device bytes of the rolling states of one slot: one per active plane, or
 // one that every plane uses in turn.
 std::size_t roll_bytes(const Driver& d, bool per_plane) {
-    const std::size_t k = roll_slices(d), clips = has_guide(d) ? 2 : 1;
-    const auto planes = [&](bool fused, bool ordered) {
-        return (d.ntemp * clips + k + (fused ? 4 * k : 0) + (ordered ? 2 * k : 0)) * static_cast<std::size_t>(d.channels);
+    const std::size_t k = roll_slices(d), nt = d.ntemp;
+    const auto planes = [&](const RollNeeds& n) {
+        const std::size_t frames = src_ring(d) + (has_guide(d) ? nt : 0) + (d.two_stage ? 0 : k);
+        const std::size_t sums = (n.fused ? 4 * k : 0) + (n.ordered ? 2 * k : 0) + (n.basic_fused ? 4 * nt : 0) +
+                                 (n.basic_ordered ? 2 * nt : 0);
+        return (frames + sums) * static_cast<std::size_t>(d.channels);
     };
-    if (!per_plane) {
-        return active_planes(d) ? d.plane_floats * sizeof(float) * planes(any_fused(d), any_ordered(d)) : 0;
-    }
+    if (!per_plane) return active_planes(d) ? d.plane_floats * sizeof(float) * planes(roll_needs(d, -1)) : 0;
     std::size_t bytes = 0;
-    for (const GroupPlane& p : d.planes) {
-        if (p.active) bytes += p.floats * sizeof(float) * planes(p.fused, !p.fused);
+    for (int plane = 0; plane < 3; ++plane) {
+        if (d.planes[plane].active) bytes += d.planes[plane].floats * sizeof(float) * planes(roll_needs(d, plane));
     }
     return bytes;
 }
@@ -289,7 +318,7 @@ std::size_t roll_bytes(const Driver& d, bool per_plane) {
 int upload_regions(const Driver& d) { return d.ntemp * d.channels * (guide_clip(d) ? 2 : 1); }
 // Window frames a spatial or legacy slot holds (the guide's too when the first stage makes them).
 int device_frames(const Driver& d) { return d.ntemp * d.channels * (has_guide(d) ? 2 : 1); }
-int chunk_window(const Driver& d) { return d.rolling.rolling_chunk + 4 * d.radius; }
+int chunk_window(const Driver& d) { return d.rolling.rolling_chunk + 2 * roll_reach(d); }
 int chunk_uploads(const Driver& d) { return chunk_window(d) * (guide_clip(d) ? 2 : 1); }
 int staging_regions(const Driver& d) {
     if (d.mode == GroupMode::Rolling) return chunk_uploads(d);
@@ -519,22 +548,28 @@ std::unique_ptr<Slot> make_slot(const Driver& d) {
             if (!r.src_frames.empty()) continue;  // the shared state, sized below for every plane
             // A unit of several channels keeps them side by side in every buffer.
             const std::size_t bytes = (shared ? d.plane_floats : p.floats) * sizeof(float) * d.channels;
-            for (int t = 0; t < d.ntemp; ++t) {
+            const RollNeeds needs = roll_needs(d, shared ? -1 : plane);
+            for (int t = 0; t < src_ring(d); ++t) {
                 r.src_frames.emplace_back(bytes, d.budget);
                 r.src_ptrs.push_back(r.src_frames.back().as<float>());
-                if (w) {
-                    r.ref_frames.emplace_back(bytes, d.budget);
-                    r.ref_ptrs.push_back(r.ref_frames.back().as<float>());
-                }
             }
-            r.chunk_src = DeviceBuffer(bytes * k, d.budget);
-            if (shared ? any_ordered(d) : !p.fused) r.acc = DeviceBuffer(bytes * 2 * k, d.budget);
-            if (shared ? any_fused(d) : p.fused) {
+            for (int t = 0; t < d.ntemp && w; ++t) {
+                r.ref_frames.emplace_back(bytes, d.budget);
+                r.ref_ptrs.push_back(r.ref_frames.back().as<float>());
+            }
+            if (!d.two_stage) r.chunk_src = DeviceBuffer(bytes * k, d.budget);
+            if (needs.ordered) r.acc = DeviceBuffer(bytes * 2 * k, d.budget);
+            if (needs.fused) {
                 r.fixed_num = DeviceBuffer(bytes * 2 * k, d.budget);
                 r.fixed_den = DeviceBuffer(bytes * 2 * k, d.budget);
             }
-            r.resident.assign(d.ntemp, -1);
-            r.promised.assign(d.ntemp, -1);
+            if (needs.basic_ordered) r.basic_acc = DeviceBuffer(bytes * 2 * d.ntemp, d.budget);
+            if (needs.basic_fused) {
+                r.basic_num = DeviceBuffer(bytes * 2 * d.ntemp, d.budget);
+                r.basic_den = DeviceBuffer(bytes * 2 * d.ntemp, d.budget);
+            }
+            r.resident.assign(src_ring(d), -1);
+            r.promised.assign(src_ring(d), -1);
         }
     }
     slot->src_ptrs = DeviceBuffer(d.ntemp * sizeof(float*), d.budget);
@@ -851,6 +886,35 @@ const VSFrame* frame_output(Driver* d, int n, VSFrameContext* ctx, VSCore* core,
     return frames.keep(dst);
 }
 
+// The work of a two-stage chunk, in the order the stream runs it. For each
+// second-stage center f the first stage is brought far enough: its estimates
+// up to frame f + R, each of which needs its centers up to R further (and
+// those their source frames another R on). A chunk frame is finished as soon
+// as its last center has run, while the source ring still holds it.
+// v.basic_center(center, next): a first-stage center; frames before `next`
+// are finished, so what the center adds to them is dropped.
+// v.basic_frame(frame): finish that estimate. v.final_center(center).
+// v.output(frame). A chunk that carries on resumes where the one before it
+// stopped, which follows from its start alone.
+template <class Visitor>
+void walk_two_stage(const Driver& d, int start, int count, bool carry, Visitor&& v) {
+    const int radius = d.radius, last = d.vi.numFrames - 1;
+    const int last_center = std::min(start + count - 1 + radius, last);
+    const int first_center = carry ? std::min(start + radius, last_center + 1) : std::max(0, start - radius);
+    int frame = carry ? std::min(start - 1 + 2 * radius, last) + 1 : std::max(0, first_center - radius);
+    int center = carry ? std::min(start - 1 + 3 * radius, last) + 1 : std::max(0, frame - radius);
+    int out = start;
+    for (int f = first_center; f <= last_center; ++f) {
+        for (; frame <= std::min(f + radius, last); ++frame) {
+            for (; center <= std::min(frame + radius, last); ++center) v.basic_center(center, frame);
+            v.basic_frame(frame);
+        }
+        v.final_center(f);
+        for (; out < start + count && std::min(out + radius, last) <= f; ++out) v.output(out);
+    }
+    for (; out < start + count; ++out) v.output(out);
+}
+
 // One plane of one chunk on a rolling slot: planned (and given its turn) at
 // construction, run between enter() and leave(). A chunk that follows the
 // last one planned for a state carries on from it; any other starts afresh.
@@ -888,18 +952,33 @@ struct RollTurn {
         state = &slot->roll[index];
         // Everything that can throw comes before the state changes: a ticket
         // that nobody holds would stop the chunks behind it.
-        std::vector<int> promised = carry ? state->promised : std::vector<int>(d.ntemp, -1);
+        const int ring = src_ring(d);
+        std::vector<int> promised = carry ? state->promised : std::vector<int>(ring, -1);
         last_center = temporal_last(start + count - 1, radius, nframes);
         first_center = carry ? std::min(start + radius, last_center + 1) : std::max(0, start - radius);
         uploads.reserve(static_cast<std::size_t>(chunk_window(d)));
-        for (int center = first_center; center <= last_center; ++center) {
+        // The source frames come with the centers that read them first: the
+        // first stage's with two stages.
+        const auto window = [&](int center) {
             for (int t = 0; t < d.ntemp; ++t) {
                 const int fn = temporal_slot_frame(center, t, radius, nframes);
-                if (promised[fn % d.ntemp] != fn) {
+                if (promised[fn % ring] != fn) {
                     uploads.push_back(fn);
-                    promised[fn % d.ntemp] = fn;
+                    promised[fn % ring] = fn;
                 }
             }
+        };
+        if (d.two_stage) {
+            struct Plan {
+                decltype(window)& stage;
+                void basic_center(int center, int) { stage(center); }
+                void basic_frame(int) {}
+                void final_center(int) {}
+                void output(int) {}
+            };
+            walk_two_stage(d, start, count, carry, Plan{window});
+        } else {
+            for (int center = first_center; center <= last_center; ++center) window(center);
         }
         state->promised.swap(promised);
         if (!carry) ++state->chain;
@@ -1069,6 +1148,194 @@ void queue_plane(Driver& d, RollTurn& turn, int plane, int start, int count, Chu
     turn.leave();
 }
 
+// queue_plane for two stages (see walk_two_stage).
+void queue_two_stage(Driver& d, RollTurn& turn, int plane, int start, int count, ChunkStore& store,
+                     const std::uint8_t* base, std::size_t step, cudaEvent_t event) {
+    const GroupPlane& p = d.planes[plane];
+    const GroupPlane& b = d.basic[plane];
+    const std::size_t row_bytes = static_cast<std::size_t>(p.width) * sizeof(float);
+    const int radius = d.radius, nframes = d.vi.numFrames, nt = d.ntemp;
+    const int channels = d.channels, ring = src_ring(d), k = roll_slices(d);
+    NSS_CUDA_RANGE("group.queue");
+    turn.enter();
+    Slot& s = *turn.slot;
+    RollState& r = *turn.state;
+    struct Drain {
+        cudaStream_t stream;
+        bool armed = true;
+        ~Drain() {
+            if (armed) cudaStreamSynchronize(stream);
+        }
+    } drain{s.stream};
+    // Channel-major buffers, as queue_plane: k ring cells per channel of the
+    // second stage's sums, 2R+1 per channel of the first stage's.
+    const std::size_t ring_floats = static_cast<std::size_t>(k) * p.floats;
+    const std::size_t basic_floats = static_cast<std::size_t>(nt) * p.floats;
+    float* acc_num = r.acc.as<float>();
+    float* acc_den = p.fused ? nullptr : acc_num + ring_floats * channels;
+    float* basic_acc_num = r.basic_acc.as<float>();
+    float* basic_acc_den = !b.active || b.fused ? nullptr : basic_acc_num + basic_floats * channels;
+    FixedTarget fixed{r.fixed_num.as<unsigned long long>(), r.fixed_den.as<unsigned long long>(), p.width, p.floats};
+    fixed.slices = std::min(k, nframes - start);
+    fixed.slice_first = start % k;
+    fixed.slice_ring = k;
+    fixed.channel_step = ring_floats;
+    FixedTarget basic{r.basic_num.as<unsigned long long>(), r.basic_den.as<unsigned long long>(), p.width, p.floats};
+    basic.slice_ring = nt;
+    basic.channel_step = basic_floats;
+    const auto clear_basic = [&](int cell_index) {
+        for (int c = 0; c < channels && b.active; ++c) {
+            if (!d.basic_out[c]) continue;
+            const std::size_t cell = c * basic_floats + static_cast<std::size_t>(cell_index) * p.floats;
+            if (b.fused) {
+                fixed_clear(FixedTarget{basic.num + cell, basic.den + cell}, p.floats, s.stream);
+            } else {
+                NSS_CUDA_CHECK(cudaMemsetAsync(basic_acc_num + cell, 0, p.floats * sizeof(float), s.stream));
+                NSS_CUDA_CHECK(cudaMemsetAsync(basic_acc_den + cell, 0, p.floats * sizeof(float), s.stream));
+            }
+        }
+    };
+    if (!turn.carry) {
+        std::fill(r.resident.begin(), r.resident.end(), -1);
+        for (int cell = 0; cell < nt; ++cell) clear_basic(cell);
+    }
+    for (int f = turn.carry ? start + 2 * radius : start; f < start + k; ++f) {
+        for (int c = 0; c < channels; ++c) {
+            const std::size_t cell = c * ring_floats + static_cast<std::size_t>(f % k) * p.floats;
+            if (p.fused) {
+                fixed_clear(FixedTarget{fixed.num + cell, fixed.den + cell}, p.floats, s.stream);
+            } else {
+                NSS_CUDA_CHECK(cudaMemsetAsync(acc_num + cell, 0, p.floats * sizeof(float), s.stream));
+                NSS_CUDA_CHECK(cudaMemsetAsync(acc_den + cell, 0, p.floats * sizeof(float), s.stream));
+            }
+        }
+    }
+    struct Run {
+        Driver& d;
+        Slot& s;
+        RollState& r;
+        const RollTurn& turn;
+        const GroupPlane& p;
+        const GroupPlane& b;
+        ChunkStore& store;
+        const std::uint8_t* base;
+        std::size_t step, row_bytes, ring_floats, basic_floats;
+        int plane, start, radius, nframes, nt, channels, ring, k;
+        float *acc_num, *acc_den, *basic_acc_num, *basic_acc_den;
+        FixedTarget fixed, basic;
+        decltype(clear_basic)& clear;
+        std::size_t staged = 0;
+        std::vector<const float*> sp, rp;
+
+        // The device's window of `center`: source frames, and the estimates for the second stage.
+        void point(int center, bool estimates) {
+            for (int t = 0; t < nt; ++t) {
+                const int fn = temporal_slot_frame(center, t, radius, nframes);
+                sp[t] = r.src_ptrs[fn % ring];
+                if (estimates) rp[t] = r.ref_ptrs[fn % nt];
+            }
+            // Pageable sources: staged before cudaMemcpyAsync returns, and
+            // stream-ordered after the previous center's kernels.
+            NSS_CUDA_CHECK(cudaMemcpyAsync(s.src_ptrs.get(), sp.data(), nt * sizeof(float*), cudaMemcpyHostToDevice,
+                                           s.stream));
+            if (estimates) {
+                NSS_CUDA_CHECK(cudaMemcpyAsync(s.ref_ptrs.get(), rp.data(), nt * sizeof(float*), cudaMemcpyHostToDevice,
+                                               s.stream));
+            }
+        }
+        void basic_center(int center, int next) {
+            for (int t = 0; t < nt; ++t) {
+                const int fn = temporal_slot_frame(center, t, radius, nframes);
+                if (r.resident[fn % ring] == fn) continue;
+                if (staged >= turn.uploads.size() || turn.uploads[staged] != fn) {
+                    throw std::logic_error(prefix(d) + "rolling plan and device state disagree");
+                }
+                for (int c = 0; c < channels; ++c) {
+                    upload_staged(base + (staged * channels + c) * step, row_bytes, p.height,
+                                  r.src_frames[fn % ring].as<float>() + c * p.floats, row_bytes, s.stream);
+                }
+                ++staged;
+                r.resident[fn % ring] = fn;
+            }
+            if (!b.active) return;
+            point(center, false);
+            // Logical slice i is frame next + i, in ring cell (next + i) % (2R+1).
+            basic.slices = std::min(nt, nframes - next);
+            basic.slice_first = next % nt;
+            basic.slice_base = center - radius - next;
+            filter_center(d, s, b, center, false, &basic);
+            for (int target = std::max(next, center - radius);
+                 !b.fused && target <= temporal_last(center, radius, nframes); ++target) {
+                for (int c = 0; c < channels; ++c) {
+                    if (!d.basic_out[c]) continue;
+                    const std::size_t slice = (static_cast<std::size_t>(c) * nt + (target - center + radius)) * p.floats;
+                    const std::size_t cell = c * basic_floats + static_cast<std::size_t>(target % nt) * p.floats;
+                    accumulate_slice(basic_acc_num + cell, basic_acc_den + cell, s.num.as<float>() + slice,
+                                     s.den.as<float>() + slice, p.floats, s.stream);
+                }
+            }
+        }
+        void basic_frame(int frame) {
+            for (int c = 0; c < channels; ++c) {
+                const float* source = r.src_frames[frame % ring].as<float>() + c * p.floats;
+                float* estimate = r.ref_frames[frame % nt].as<float>() + c * p.floats;
+                const std::size_t cell = c * basic_floats + static_cast<std::size_t>(frame % nt) * p.floats;
+                if (!b.active || !d.basic_out[c]) {
+                    // A channel the first stage leaves alone: its estimate is the source.
+                    NSS_CUDA_CHECK(cudaMemcpyAsync(estimate, source, p.floats * sizeof(float), cudaMemcpyDeviceToDevice,
+                                                   s.stream));
+                } else if (b.fused) {
+                    fixed_finish(FixedTarget{basic.num + cell, basic.den + cell, p.width, p.floats}, b.block, source,
+                                 p.width, p.height, s.fixed_rows.as<unsigned long long>(), estimate, s.stream);
+                } else {
+                    aggregate_finish(basic_acc_num + cell, basic_acc_den + cell, source, p.width, p.height, p.width,
+                                     estimate, s.stream);
+                }
+            }
+            clear(frame % nt);  // the cell is the next frame's from here on
+        }
+        void final_center(int center) {
+            point(center, true);
+            fixed.slice_base = center - radius - start;
+            filter_center(d, s, p, center, true, &fixed);
+            for (int target = std::max(start, center - radius);
+                 !p.fused && target <= std::min(start + k - 1, temporal_last(center, radius, nframes)); ++target) {
+                for (int c = 0; c < channels; ++c) {
+                    if (!d.channel_out[c]) continue;
+                    const std::size_t slice = (static_cast<std::size_t>(c) * nt + (target - center + radius)) * p.floats;
+                    const std::size_t cell = c * ring_floats + static_cast<std::size_t>(target % k) * p.floats;
+                    accumulate_slice(acc_num + cell, acc_den + cell, s.num.as<float>() + slice, s.den.as<float>() + slice,
+                                     p.floats, s.stream);
+                }
+            }
+        }
+        void output(int frame) {
+            for (int c = 0; c < channels; ++c) {
+                if (!d.channel_out[c]) continue;
+                // s.out is reused: the download is stream-ordered before the next finish.
+                const std::size_t cell = c * ring_floats + static_cast<std::size_t>(frame % k) * p.floats;
+                const float* source = r.src_frames[frame % ring].as<float>() + c * p.floats;
+                if (p.fused) {
+                    fixed_finish(FixedTarget{fixed.num + cell, fixed.den + cell, p.width, p.floats}, p.block, source,
+                                 p.width, p.height, s.fixed_rows.as<unsigned long long>(), s.out.as<float>(), s.stream);
+                } else {
+                    aggregate_finish(acc_num + cell, acc_den + cell, source, p.width, p.height, p.width, s.out.as<float>(),
+                                     s.stream);
+                }
+                begin_download(s.out.get(), row_bytes, row_bytes, p.height, store.plane(frame - start, plane + c),
+                               s.stream);
+            }
+        }
+    };
+    Run run{d, s, r, turn, p, b, store, base, step, row_bytes, ring_floats, basic_floats, plane, start, radius, nframes, nt,
+            channels, ring, k, acc_num, acc_den, basic_acc_num, basic_acc_den, fixed, basic, clear_basic, 0,
+            std::vector<const float*>(nt), std::vector<const float*>(nt)};
+    walk_two_stage(d, start, count, turn.carry, run);
+    NSS_CUDA_CHECK(cudaEventRecord(event, s.stream));
+    drain.armed = false;
+    turn.leave();
+}
+
 // Rolling: compute the chunk [start, start + count). The frames it reads are
 // staged before a slot is taken and the results are copied out after it has
 // been given back, as for a spatial frame.
@@ -1081,7 +1348,7 @@ std::shared_ptr<ChunkStore> compute_chunk(Driver* d, int start, int count, VSFra
     DeviceGuard guard(d->device.index);
     const int radius = d->radius;
     const int nframes = d->vi.numFrames;
-    const bool w = has_guide(*d);
+    const bool w = guide_clip(*d);
     nss::FrameScope frames(vsapi);
     auto store = std::make_shared<ChunkStore>();
     store->start = start;
@@ -1169,8 +1436,8 @@ std::shared_ptr<ChunkStore> compute_chunk(Driver* d, int start, int count, VSFra
         pending.streams.reserve(step);
         for (std::size_t j = 0; j < step; ++j) {
             const int plane = active[first + j];
-            queue_plane(*d, *turns[j], plane, start, count, *store, g.roll_base[plane], g.roll_step[plane],
-                        g.plane_done[plane]);
+            (d->two_stage ? queue_two_stage : queue_plane)(*d, *turns[j], plane, start, count, *store, g.roll_base[plane],
+                                                           g.roll_step[plane], g.plane_done[plane]);
             pending.streams.push_back(turns[j]->slot->stream);
         }
         // The store holds these planes once their events have passed; the
@@ -1245,8 +1512,8 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
             // be evicted before arAllFramesReady.
             const int start = n / d->rolling.rolling_chunk * d->rolling.rolling_chunk;
             const int count = std::min(d->rolling.rolling_chunk, nframes - start);
-            first = std::max(0, start - 2 * d->radius);
-            last = temporal_last(start + count - 1, 2 * d->radius, nframes);
+            first = std::max(0, start - roll_reach(*d));
+            last = temporal_last(start + count - 1, roll_reach(*d), nframes);
         }
         for (int i = first; i <= last; ++i) {
             vsapi->requestFrameFilter(i, d->node, ctx);

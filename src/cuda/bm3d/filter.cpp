@@ -33,8 +33,8 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     const nss::Bm3dParams p = nss::frontend::parse_bm3d(vsapi, in, config.vi, ref_vi, "nss_cuda");
     if (rolling) config.rolling = nss::frontend::parse_rolling(vsapi, in, p.radius, "BM3D", "nss_cuda", kRollingCache);
     // final: the driver keeps the first stage's estimate on the device for
-    // spatial output. Temporal output still chains two nodes.
-    if (p.final && p.radius > 0) {
+    // spatial and rolling output. The legacy intermediate chains two nodes.
+    if (p.final && p.radius > 0 && !rolling) {
         (void)parse_backend_args(vsapi, in, "BM3D");
         nss::frontend::bm3d_two_nodes(vsapi, in, out, core, "nss_cuda");
         return;
