@@ -22,6 +22,9 @@ inline constexpr int kDefaultStreams = 1;
 // temporal_mode when the argument is not given: finished frames, so that only
 // they cross back to the host. "legacy" still returns the fat intermediate.
 inline constexpr nss::TemporalMode kDefaultTemporalMode = nss::TemporalMode::Rolling;
+// The rolling chunk cache starts at rolling_cache_chunks and grows to
+// rolling_cache_limit when dropped chunks are asked for again.
+inline constexpr nss::RollingCache kRollingCache = nss::RollingCache::Adaptive;
 inline constexpr int kMaxStreams = 16;
 // memory_limit_mb when the argument is not given: 0, no limit. The filter
 // then plans whole-plane batches and a device allocation that fails is

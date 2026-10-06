@@ -82,7 +82,8 @@ arguments, shared with the CPU signature, are the ones to know on the device:
 |---|---|---|
 | `temporal_mode` | `"rolling"` | With `radius > 0`: `"rolling"` returns finished, normal-height frames; `"legacy"` returns the fat intermediate for `VAggregate`, as the CPU plugin does. |
 | `rolling_chunk` | 4 | Frames accumulated per rolling chunk, 1 to 64. |
-| `rolling_cache_limit` (or `rolling_cache_chunks`) | 1 | Finished chunks kept for later frame requests, 1 to 64. |
+| `rolling_cache_chunks` | 1 | Finished chunks kept for later frame requests at first, 1 to 64. Given alone, the cache stays at this size. |
+| `rolling_cache_limit` | 16 | What the cache may grow to, 1 to 64 and at least `rolling_cache_chunks`. It keeps one more chunk each time two requests miss on chunks it dropped recently, so alternating between positions settles after a few misses. Under `memory_limit_mb` it grows only into what the limit leaves. (On the CPU the two arguments name one fixed size.) |
 | `device_id` | 0 | CUDA device index. |
 | `num_streams` | 1 | How many frames (or rolling chunks) can be in flight on the device at once, 1 to 16. Each stream has its own device buffers. One stream already keeps the device busy; more add little (about 15% for the rolling mode). With `memory_limit_mb`, a value that does not fit is a creation error. `VAggregate` accepts both arguments but does not use a device. |
 

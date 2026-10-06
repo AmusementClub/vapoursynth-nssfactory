@@ -100,9 +100,9 @@ takes the same arguments and gives the same errors as `nss.TWSC`. It adds
   reduces the fat intermediate with `nss_cuda.VAggregate` inside the filter.
   `temporal_mode = "legacy"` returns the fat intermediate instead, as the CPU
   plugin does. `rolling_chunk` (default 4, range 1 to 64) and
-  `rolling_cache_limit` (default 1) set the chunk size and the number of
-  finished chunks kept; they only matter where the accumulation stays on the
-  device.
+  `rolling_cache_chunks` / `rolling_cache_limit` (defaults 1 and 16) set the
+  chunk size and the number of finished chunks kept at first and at most; they
+  only matter where the accumulation stays on the device.
 - **Numerics.** The dictionary comes from an FP32 Jacobi eigendecomposition of
   the Gram matrix of the smaller group side, and the solver runs in FP32
   (FP64 was measured and gave the same agreement with the CPU).

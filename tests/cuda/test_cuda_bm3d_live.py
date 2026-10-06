@@ -168,6 +168,19 @@ def main():
         cases += 1
         if value < floor:
             failures.append(f"mixed shapes {kw}: psnr {value:.2f} < {floor}")
+    # Rolling serves any request order from its chunk cache: jumping between chunks must give the
+    # frames of a sequential pass, with the cache fixed at one chunk and when it grows.
+    hop = make_clip(core, vs.GRAYS, 64, 56, 8, length=14)
+    straight = core.nss_cuda.BM3D(hop, sigma=10, radius=1, bm_range=4, rolling_chunk=4)
+    expected = [frame_planes(straight, n) for n in range(hop.num_frames)]
+    order = (0, 8, 1, 9, 4, 12, 0, 8, 13, 5, 1, 9, 2, 10, 3, 11, 6, 7)
+    for label, kw in (("one chunk", dict(rolling_cache_chunks=1)), ("growing", {}), ("limit 2", dict(rolling_cache_limit=2))):
+        cases += 1
+        node = core.nss_cuda.BM3D(hop, sigma=10, radius=1, bm_range=4, rolling_chunk=4, **kw)
+        for n in order:
+            if any(not np.array_equal(x, y) for x, y in zip(frame_planes(node, n), expected[n])):
+                failures.append(f"rolling cache {label}: frame {n} differs after jumping between chunks")
+                break
     # Temporal filtering always stores and orders its patches, for every shape and both stages.
     seq = make_clip(core, vs.GRAYS, 64, 56, 6, length=4)
     for block, group in ((4, 8), (8, 16), (16, 16), (12, 16), (8, 32)):

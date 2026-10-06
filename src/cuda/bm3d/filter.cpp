@@ -31,7 +31,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     if (err) config.guide = nullptr;
     const VSVideoInfo* ref_vi = config.guide ? vsapi->getVideoInfo(config.guide) : nullptr;
     const nss::Bm3dParams p = nss::frontend::parse_bm3d(vsapi, in, config.vi, ref_vi, "nss_cuda");
-    if (rolling) config.rolling = nss::frontend::parse_rolling(vsapi, in, p.radius, "BM3D", "nss_cuda");
+    if (rolling) config.rolling = nss::frontend::parse_rolling(vsapi, in, p.radius, "BM3D", "nss_cuda", kRollingCache);
     config.radius = p.radius;
     config.mode = rolling ? GroupMode::Rolling : GroupMode::Legacy;
     config.backend = parse_backend_args(vsapi, in, "BM3D");
