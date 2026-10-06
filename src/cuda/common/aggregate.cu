@@ -143,15 +143,29 @@ __global__ void atomic_kernel(const float* values, const AggregatePatch* patches
     atomicAdd(target.den + offset, patch.weight);
 }
 
-__global__ void fixed_finish_kernel(const unsigned long long* fixed_num, const unsigned long long* fixed_den,
+// rows[y][x]: the weights of the patches of row y that cover column x.
+__global__ void fixed_rows_kernel(const unsigned long long* corner, int block, int width, int height, int pitch,
+                                  unsigned long long* rows) {
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= width || y >= height) return;
+    const unsigned long long* at = corner + static_cast<long long>(y) * pitch + x;
+    unsigned long long sum = 0;
+    for (int j = 0; j < block && j <= x; ++j) sum += at[-j];
+    rows[static_cast<long long>(y) * pitch + x] = sum;
+}
+
+__global__ void fixed_finish_kernel(const unsigned long long* fixed_num, const unsigned long long* rows, int block,
                                     const float* src, int width, int height, int pitch, float* out) {
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
     const int y = blockIdx.y * blockDim.y + threadIdx.y;
     if (x >= width || y >= height) return;
     const long long i = static_cast<long long>(y) * pitch + x;
+    unsigned long long weight = 0;
+    for (int k = 0; k < block && k <= y; ++k) weight += rows[i - static_cast<long long>(k) * pitch];
     constexpr float kUnit = 1.f / 4294967296.f;  // 1 / kFixedScale
     const float num = static_cast<float>(static_cast<long long>(fixed_num[i])) * kUnit;
-    const float den = static_cast<float>(static_cast<long long>(fixed_den[i])) * kUnit;
+    const float den = static_cast<float>(static_cast<long long>(weight)) * kUnit;
     out[i] = den > 1e-12f ? num / den : src[i];
 }
 
@@ -268,10 +282,13 @@ void fixed_clear(const FixedTarget& target, std::size_t count, cudaStream_t stre
     NSS_CUDA_CHECK(cudaMemsetAsync(target.den, 0, count * sizeof(unsigned long long), stream));
 }
 
-void fixed_finish(const FixedTarget& target, const float* src, int width, int height, float* out, cudaStream_t stream) {
+void fixed_finish(const FixedTarget& target, int block, const float* src, int width, int height,
+                  unsigned long long* rows, float* out, cudaStream_t stream) {
     const dim3 threads(32, 8);
     const dim3 blocks((width + 31) / 32, (height + 7) / 8);
-    fixed_finish_kernel<<<blocks, threads, 0, stream>>>(target.num, target.den, src, width, height, target.pitch, out);
+    fixed_rows_kernel<<<blocks, threads, 0, stream>>>(target.den, block, width, height, target.pitch, rows);
+    NSS_CUDA_CHECK_LAUNCH();
+    fixed_finish_kernel<<<blocks, threads, 0, stream>>>(target.num, rows, block, src, width, height, target.pitch, out);
     NSS_CUDA_CHECK_LAUNCH();
 }
 

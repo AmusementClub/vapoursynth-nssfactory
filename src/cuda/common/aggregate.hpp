@@ -72,19 +72,33 @@ private:
 // Accumulators for kernels that aggregate their own output (see
 // fixed_accumulate.cuh): fixed-point sums, 2^32 units per 1.0, wrapped in
 // unsigned 64-bit cells. The sums are exact integers, so they do not depend
-// on the order of the atomics. Slice s of a plane starts slice_step cells
+// on the order of the atomics. num takes weight * value at every pixel of a
+// patch. den takes the weight once, at the patch's top-left pixel: every
+// pixel of a patch has the same weight, so the den of a pixel is the sum of
+// those cells over the block x block positions that cover it, which
+// fixed_finish takes. That halves the atomics and the memory they touch (the
+// kernels are bound by it), and the integer sums stay exact.
+// Slice s of a plane starts slice_step cells
 // after slice s - 1. A sum wraps beyond 2^31 in magnitude and a NaN sample
 // adds nothing; both are far outside video ranges and stay deterministic.
+// A patch of window slot t goes to slice t + slice_base and is dropped when
+// that is outside [0, slices): the rolling driver keeps one slice per frame
+// of its chunk and drops what a center contributes to other frames.
 struct FixedTarget {
     unsigned long long* num = nullptr;
     unsigned long long* den = nullptr;
     int pitch = 0;               // cells per row
     std::size_t slice_step = 0;  // cells between slices
+    int slice_base = 0;
+    int slices = 1;
 };
 
 // out = den > 1e-12 ? num / den : src, straight from the accumulators of one
-// slice (aggregate_finish without the float planes).
-void fixed_finish(const FixedTarget& target, const float* src, int width, int height, float* out, cudaStream_t stream);
+// slice (aggregate_finish without the float planes) for patches of
+// block x block pixels. rows is scratch of width * height cells (pitch as
+// the target).
+void fixed_finish(const FixedTarget& target, int block, const float* src, int width, int height,
+                  unsigned long long* rows, float* out, cudaStream_t stream);
 
 // Zeroes `count` cells of num and den.
 void fixed_clear(const FixedTarget& target, std::size_t count, cudaStream_t stream);

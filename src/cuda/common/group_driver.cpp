@@ -48,9 +48,11 @@ struct Slot {
     std::vector<const float*> host_src_ptrs, host_ref_ptrs;
     DeviceBuffer src_ptrs, ref_ptrs;  // device arrays: window slot t -> plane pointer
     DeviceBuffer num, den;            // 2R+1 slices each
-    DeviceBuffer fixed_num, fixed_den;  // the same slices as fixed-point cells, for fused planes
+    // Fused planes: fixed-point cells, one slice (spatial) or one per chunk frame (rolling).
+    DeviceBuffer fixed_num, fixed_den;
+    DeviceBuffer fixed_rows;          // fixed_finish scratch, one slice
     DeviceBuffer out;                 // finished plane
-    DeviceBuffer acc, chunk_src;      // rolling: num/den per chunk frame, chunk source planes
+    DeviceBuffer acc, chunk_src;      // rolling: num/den per chunk frame (ordered planes), chunk source planes
     DeviceBuffer matches, counts, values, scratch, patches;
     std::unique_ptr<OrderedAggregator> aggregator;
 };
@@ -184,6 +186,9 @@ std::size_t slot_batch_bytes(const Driver& d) {
 // per channel (spatial) or 2 * ntemp fat rows per channel (legacy).
 // Rolling: one upload per frame a chunk reads (the chunk and 2 * radius
 // frames on each side); the results go straight into the chunk store.
+// Slices of the fixed-point accumulators of a fused plane.
+int fixed_slices(const Driver& d) { return d.mode == GroupMode::Rolling ? d.rolling.rolling_chunk : 1; }
+
 int upload_regions(const Driver& d) { return d.ntemp * d.channels * (has_guide(d) ? 2 : 1); }
 int chunk_window(const Driver& d) { return d.rolling.rolling_chunk + 4 * d.radius; }
 int chunk_uploads(const Driver& d) { return chunk_window(d) * (has_guide(d) ? 2 : 1); }
@@ -216,9 +221,9 @@ void plan_planes(Driver& d) {
     const std::size_t device_planes = static_cast<std::size_t>(upload_regions(d)) +
                                       static_cast<std::size_t>(d.channels) *
                                           ((any_ordered(d) ? 2 * d.ntemp : 0) + 1 + (d.iters > 1 ? d.ntemp : 0)) +
-                                      3 * chunk +
-                                      // Fixed-point num and den: two float planes' worth per slice each.
-                                      (any_fused(d) ? 4 * static_cast<std::size_t>(d.ntemp) : 0);
+                                      (any_ordered(d) ? 3 : 1) * chunk +
+                                      // Fixed-point num and den: two float planes' worth per slice each, and the finish scratch.
+                                      (any_fused(d) ? 4 * static_cast<std::size_t>(fixed_slices(d)) + 2 : 0);
     int max_w = 1, max_h = 1;
     for (const GroupPlane& p : d.planes) {
         if (p.active && !p.fused) {
@@ -364,11 +369,12 @@ std::unique_ptr<Slot> make_slot(const Driver& d) {
     }
     slot->out = DeviceBuffer(unit_bytes, d.budget);
     if (any_fused(d)) {
-        slot->fixed_num = DeviceBuffer(d.plane_floats * d.ntemp * sizeof(unsigned long long), d.budget);
-        slot->fixed_den = DeviceBuffer(d.plane_floats * d.ntemp * sizeof(unsigned long long), d.budget);
+        slot->fixed_num = DeviceBuffer(d.plane_floats * fixed_slices(d) * sizeof(unsigned long long), d.budget);
+        slot->fixed_den = DeviceBuffer(d.plane_floats * fixed_slices(d) * sizeof(unsigned long long), d.budget);
+        slot->fixed_rows = DeviceBuffer(d.plane_floats * sizeof(unsigned long long), d.budget);
     }
     if (d.mode == GroupMode::Rolling) {
-        slot->acc = DeviceBuffer(plane_bytes * 2 * d.rolling.rolling_chunk, d.budget);
+        if (any_ordered(d)) slot->acc = DeviceBuffer(plane_bytes * 2 * d.rolling.rolling_chunk, d.budget);
         slot->chunk_src = DeviceBuffer(plane_bytes * d.rolling.rolling_chunk, d.budget);
     }
     slot->matches = DeviceBuffer(matches, d.budget);
@@ -396,8 +402,12 @@ std::unique_ptr<Slot> make_slot(const Driver& d) {
 // All groups of one center into the slot's num/den slices (ntemp of them per
 // channel, channel-major). The device pointer arrays map window slot t to the
 // plane of frame temporal_slot_frame(center, t). Matching runs on the guide
-// when match_guide is set, otherwise on the source/estimate frames.
-void filter_center(const Driver& d, Slot& s, const GroupPlane& p, int center, bool match_guide) {
+// when match_guide is set, otherwise on the source/estimate frames. A fused
+// plane adds to the slot's fixed-point slices instead: the one spatial slice,
+// or the chunk's `slices` frames (slice_base maps window slot 0 to its chunk
+// frame; the caller clears them once per chunk).
+void filter_center(const Driver& d, Slot& s, const GroupPlane& p, int center, bool match_guide, int slice_base = 0,
+                   int slices = 1) {
     cudaStream_t stream = s.stream;
     const bool w = has_guide(d);
     const int radius = d.radius;
@@ -415,8 +425,9 @@ void filter_center(const Driver& d, Slot& s, const GroupPlane& p, int center, bo
         window.ps_num = p.ps_num;
         window.ps_range = p.ps_range;
     }
-    const FixedTarget fixed{s.fixed_num.as<unsigned long long>(), s.fixed_den.as<unsigned long long>(), p.width, p.floats};
-    if (p.fused) fixed_clear(fixed, d.ntemp * p.floats, stream);
+    const FixedTarget fixed{s.fixed_num.as<unsigned long long>(), s.fixed_den.as<unsigned long long>(), p.width, p.floats,
+                            slice_base, slices};
+    if (p.fused && d.mode != GroupMode::Rolling) fixed_clear(fixed, p.floats, stream);
     for (int begin = 0; begin < p.grid.count(); begin += p.batch) {
         const int count = std::min(p.batch, p.grid.count() - begin);
         {
@@ -582,7 +593,8 @@ const VSFrame* frame_output(Driver* d, int n, VSFrameContext* ctx, VSCore* core,
                     if (p.fused) {
                         const FixedTarget fixed{s.fixed_num.as<unsigned long long>(), s.fixed_den.as<unsigned long long>(),
                                                 p.width, p.floats};
-                        fixed_finish(fixed, s.host_src_ptrs[0], p.width, p.height, s.out.as<float>(), s.stream);
+                        fixed_finish(fixed, p.block, s.host_src_ptrs[0], p.width, p.height,
+                                     s.fixed_rows.as<unsigned long long>(), s.out.as<float>(), s.stream);
                         result = s.out.as<float>();
                     } else if (!iterative(*d)) {
                         aggregate_finish(s.num.as<float>(), s.den.as<float>(), s.host_src_ptrs[0], p.width, p.height, p.width,
@@ -704,8 +716,14 @@ std::shared_ptr<ChunkStore> compute_chunk(Driver* d, int start, int count, VSFra
                 }
             } drain{s.stream};
             float* acc_num = s.acc.as<float>();
-            float* acc_den = acc_num + p.floats * count;
-            NSS_CUDA_CHECK(cudaMemsetAsync(acc_num, 0, p.floats * 2 * count * sizeof(float), s.stream));
+            float* acc_den = p.fused ? nullptr : acc_num + p.floats * count;
+            const FixedTarget fixed{s.fixed_num.as<unsigned long long>(), s.fixed_den.as<unsigned long long>(), p.width,
+                                    p.floats};
+            if (p.fused) {
+                fixed_clear(fixed, p.floats * count, s.stream);
+            } else {
+                NSS_CUDA_CHECK(cudaMemsetAsync(acc_num, 0, p.floats * 2 * count * sizeof(float), s.stream));
+            }
             // Device ring: frame f lives in window buffer f % ntemp; the distinct
             // frames of one window never collide. resident[i] is the frame held.
             std::vector<int> resident(d->ntemp, -1);
@@ -742,9 +760,11 @@ std::shared_ptr<ChunkStore> compute_chunk(Driver* d, int start, int count, VSFra
                     NSS_CUDA_CHECK(cudaMemcpyAsync(s.ref_ptrs.get(), rp.data(), d->ntemp * sizeof(float*),
                                                    cudaMemcpyHostToDevice, s.stream));
                 }
-                filter_center(*d, s, p, center, w);
+                // Window slot t of this center is frame center - radius + t.
+                filter_center(*d, s, p, center, w, center - radius - start, count);
                 for (int target = std::max(start, center - radius);
-                     target <= std::min(start + count - 1, temporal_last(center, radius, nframes)); ++target) {
+                     !p.fused && target <= std::min(start + count - 1, temporal_last(center, radius, nframes));
+                     ++target) {
                     const int slice = target - center + radius;
                     accumulate_slice(acc_num + (target - start) * p.floats, acc_den + (target - start) * p.floats,
                                      s.num.as<float>() + slice * p.floats, s.den.as<float>() + slice * p.floats, p.floats,
@@ -754,8 +774,15 @@ std::shared_ptr<ChunkStore> compute_chunk(Driver* d, int start, int count, VSFra
             for (int i = 0; i < count; ++i) {
                 // s.out is reused for every frame: the download is stream-ordered
                 // before the next finish overwrites it.
-                aggregate_finish(acc_num + i * p.floats, acc_den + i * p.floats, s.chunk_src.as<float>() + i * p.floats,
-                                 p.width, p.height, p.width, s.out.as<float>(), s.stream);
+                const float* source = s.chunk_src.as<float>() + i * p.floats;
+                if (p.fused) {
+                    fixed_finish(FixedTarget{fixed.num + i * p.floats, fixed.den + i * p.floats, p.width, p.floats}, p.block,
+                                 source, p.width, p.height, s.fixed_rows.as<unsigned long long>(), s.out.as<float>(),
+                                 s.stream);
+                } else {
+                    aggregate_finish(acc_num + i * p.floats, acc_den + i * p.floats, source, p.width, p.height, p.width,
+                                     s.out.as<float>(), s.stream);
+                }
                 begin_download(s.out.get(), row_bytes, row_bytes, p.height, store->plane(i, plane), s.stream);
             }
             NSS_CUDA_CHECK(cudaEventRecord(g.done, s.stream));
@@ -888,10 +915,9 @@ void group_filter_install(GroupFilterConfig&& config, VSMap* out, VSCore* core, 
     if (d->mode == GroupMode::Rolling && iterative(*d)) {
         throw std::logic_error(prefix(*d) + "rolling mode does not support joint or multi-round filters");
     }
-    // Fused planes finish straight from their accumulators, which the temporal
-    // outputs (fat slices, rolling sums) do not read; temporal filtering gains
-    // nothing from fusing either (it is bound by its transfers).
-    if (d->mode != GroupMode::Spatial) {
+    // Fused planes finish straight from their accumulators; the legacy output
+    // is the float slices of each center.
+    if (d->mode == GroupMode::Legacy) {
         for (GroupPlane& p : d->planes) p.fused = false;
     }
     if (any_fused(*d) && iterative(*d)) {

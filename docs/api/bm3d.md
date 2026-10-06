@@ -105,8 +105,12 @@ temporal = core.nss_cuda.VAggregate(fat, clip, radius=1)
 - **Rolling.**
   - Each chunk of frames keeps a ring of the temporal window on the device.
   - Each center frame's contributions are added into the chunk's target
-    frames in ascending order, as the CPU does.
-  - It is bit-identical to `nss_cuda.VAggregate(nss_cuda.BM3D(..., radius=R))`.
+    frames: as exact fixed-point sums for the shapes that aggregate inside
+    the filter kernel (below), in ascending order as the CPU does for the
+    rest.
+  - It agrees with `nss_cuda.VAggregate(nss_cuda.BM3D(..., radius=R,
+    temporal_mode="legacy"))` to rounding (8 ulp measured) for the former
+    shapes and bit for bit for the latter.
 - **`nss_cuda.VAggregate` runs on the host.** Its inputs are already host
   frames, and uploading 2(2R+1) planes per frame costs several times more than
   the sum itself. It sums slices in the CPU's order and divides with IEEE
@@ -127,22 +131,25 @@ temporal = core.nss_cuda.VAggregate(fat, clip, radius=1)
   - The output is not bit-identical to the CPU, but stays within the 60 dB
     gate in `tests/data/cuda_tolerances_v1.json`.
   - The output is run-to-run identical on a given GPU, driver and build.
-    Spatial filtering of most shapes aggregates from inside the filter kernel
-    with integer atomics on fixed-point sums (exact, so independent of the
-    order); temporal filtering and the remaining shapes sort their patches
-    and sum them in a fixed order.
+    Spatial and rolling filtering of most shapes aggregates from inside the
+    filter kernel with integer atomics on fixed-point sums (exact, so
+    independent of the order); legacy temporal output and the remaining
+    shapes sort their patches and sum them in a fixed order.
 - **Memory.** `nss_cuda` has no default `memory_limit_mb`: the filter takes
   what its plan needs and a failed device allocation is reported as the CUDA
   out-of-memory error. With `memory_limit_mb`, the value also caps device
   memory, pinned staging and the rolling chunk cache, and the filter runs
   with smaller internal batches to fit (the output does not change). The
   smallest limit one stream accepts at 4K, for GRAYS / YUV420 / YUV444 or RGB:
-  - Spatial: about 300 / 310 / 350, and 350 / 370 / 420 with `ref`.
-  - Rolling, `radius = 1`: 1280 / 1440 / 1910, and 1630 / 1780 / 2260 with `ref`.
-  - Rolling, `radius = 2`: 1600 / 1750 / 2230, and 2130 / 2290 / 2770 with `ref`.
+  - Spatial: about 350 / 370 / 420, and 420 / 430 / 480 with `ref`.
+  - Rolling, `radius = 1`: 1400 / 1560 / 2030, and 1750 / 1900 / 2380 with `ref`.
+  - Rolling, `radius = 2`: 1590 / 1750 / 2220, and 2130 / 2280 / 2760 with `ref`.
   - Legacy with `ref`: 990 / 1090 / 1370 at `radius = 1`, 1630 / 1790 / 2260
     at `radius = 2`.
-- **Performance.** At 1080p GRAYS on an RTX 5080 (`num_streams=3` for temporal):
-  - Spatial runs at bm3dcuda's speed or slightly faster.
-  - Temporal runs at about 0.85 to 0.95x bm3dcuda. It uses the CPU's
-    predictive search and deterministic aggregation.
+- **Performance.** At 1080p GRAYS on an RTX 5080, one stream, against
+  bm3dcuda with the same search (measured 2026-10-06):
+  - Spatial: about 1.25x with 32 VapourSynth threads (the frame transfers
+    bound it); the kernels take the same time.
+  - Rolling: 1.9x at `radius = 1` and `radius = 2` with 32 threads, 1.03x
+    with one thread; it keeps the CPU's predictive search and reproducible
+    sums.
