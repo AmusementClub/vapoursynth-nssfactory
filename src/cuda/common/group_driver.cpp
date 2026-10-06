@@ -36,15 +36,9 @@ using nss::host_detail::temporal_slot_frame;
 // Upper bound on the per-batch group buffers; larger planes run in batches
 // and the batch also shrinks so num_streams slots fit memory_limit_mb.
 constexpr std::size_t kBatchBytes = 128u << 20;
-// Spatial and legacy frames staged at once (see plan_planes).
+// Frames (spatial, legacy) or chunks (rolling) staged at once (see plan_planes).
 constexpr std::size_t kFramesInFlight = 3;
-
-// A staging region plus an event marking when the device has finished with
-// it, so host code never overwrites bytes that are still in flight.
-struct StagingRegion {
-    std::uint8_t* bytes = nullptr;
-    cudaEvent_t done = nullptr;
-};
+constexpr std::size_t kChunksPerStream = 3;
 
 struct Slot {
     Stream stream;
@@ -57,22 +51,14 @@ struct Slot {
     DeviceBuffer out;                 // finished plane
     DeviceBuffer acc, chunk_src;      // rolling: num/den per chunk frame, chunk source planes
     DeviceBuffer matches, counts, values, scratch, patches;
-    PinnedBuffer staging;
-    std::vector<StagingRegion> regions;
     std::unique_ptr<OrderedAggregator> aggregator;
-    Slot() = default;
-    Slot(const Slot&) = delete;
-    Slot& operator=(const Slot&) = delete;
-    ~Slot() {
-        for (auto& r : regions)
-            if (r.done) cudaEventDestroy(r.done);
-    }
 };
 
-// Pinned staging for one frame in flight (spatial and legacy). It is leased
-// apart from the slots: a thread copies its input in before it takes a slot
-// and copies its output out after it has given the slot back, so the stream
-// works on another frame meanwhile. regions[r] is one tight plane.
+// Pinned staging for one frame (spatial, legacy) or one chunk (rolling) in
+// flight. It is leased apart from the slots: a thread copies its input in
+// before it takes a slot and copies its output out after it has given the
+// slot back, so the stream works on another frame meanwhile. regions[r] is
+// one tight plane.
 struct Staging {
     PinnedBuffer bytes;
     std::vector<std::uint8_t*> regions;
@@ -94,8 +80,8 @@ struct ChunkStore {
 struct Driver : GroupFilterConfig {
     std::size_t plane_floats = 0;  // largest plane (tight pitch)
     int ntemp = 1;                 // 2R+1
-    int regions = 0;               // staging regions per slot (rolling) or per staging set
-    int staging_sets = 0;          // spatial and legacy: frames in flight, at least num_streams
+    int regions = 0;               // staging regions per staging set
+    int staging_sets = 0;          // frames or chunks in flight, at least num_streams
     bool channel_out[3]{true, true, true};  // joint: channel c is written (else copied)
     std::unique_ptr<SlotPool<Slot>> pool;
     std::unique_ptr<SlotPool<Staging>> staging;
@@ -162,15 +148,18 @@ std::size_t slot_batch_bytes(const Driver& d) {
     return matches + counts + scratch + values + patches + sort;
 }
 
-// Staging regions: one upload per window frame and channel (src, ref), then
-// downloads (legacy: 2 * ntemp fat rows per channel; spatial: one per channel;
-// rolling: one per chunk frame).
+// Staging regions: the uploads (src, ref), then the downloads.
+// Spatial and legacy: one upload per window frame and channel; one download
+// per channel (spatial) or 2 * ntemp fat rows per channel (legacy).
+// Rolling: one upload per frame a chunk reads (the chunk and 2 * radius
+// frames on each side); the chunk's downloads reuse the first of them, which
+// the stream has read by then.
 int upload_regions(const Driver& d) { return d.ntemp * d.channels * (has_guide(d) ? 2 : 1); }
+int chunk_window(const Driver& d) { return d.rolling.rolling_chunk + 4 * d.radius; }
+int chunk_uploads(const Driver& d) { return chunk_window(d) * (has_guide(d) ? 2 : 1); }
 int staging_regions(const Driver& d) {
-    const int downloads = d.mode == GroupMode::Legacy    ? 2 * d.ntemp * d.channels
-                          : d.mode == GroupMode::Rolling ? d.rolling.rolling_chunk
-                                                         : d.channels;
-    return upload_regions(d) + downloads;
+    if (d.mode == GroupMode::Rolling) return chunk_uploads(d);
+    return upload_regions(d) + (d.mode == GroupMode::Legacy ? 2 * d.ntemp : 1) * d.channels;
 }
 
 void plan_planes(Driver& d) {
@@ -267,22 +256,24 @@ void plan_planes(Driver& d) {
         }
         if (!changed) break;
     }
-    // Spatial and legacy: a staging set and an output frame per frame in
+    // A staging set and the output it feeds per frame (or rolling chunk) in
     // flight. One per stream is in `fixed`; more keep a stream busy while
     // other threads copy, as far as the limit allows. Three frames in flight
     // saturate one stream (1080p BM3D on an RTX 5080: 454 fps with one set,
     // 752 with two, 821 with three); beyond that the host copies only compete
-    // for memory bandwidth.
-    if (d.mode != GroupMode::Rolling) {
-        const std::size_t streams = static_cast<std::size_t>(d.backend.num_streams);
-        const std::size_t set_bytes = plane_bytes * d.regions + output;
-        std::size_t extra = std::max(streams, kFramesInFlight) - streams;
-        if (total != SIZE_MAX) {
-            const std::size_t used = streams * (fixed + slot_batch_bytes(d) / 3 * 4);
-            extra = std::min(extra, limit > used ? (limit - used) / set_bytes : 0);
-        }
-        d.staging_sets = static_cast<int>(streams + extra);
+    // for memory bandwidth. A rolling chunk stages all its frames before its
+    // device work starts, so each stream needs chunks ahead of it (radius 1,
+    // one stream: 173 fps with one set, 302 with two, 308 with four; three
+    // streams: 303, 304 with four, 344 with nine).
+    const std::size_t streams = static_cast<std::size_t>(d.backend.num_streams);
+    const std::size_t set_bytes = plane_bytes * d.regions + output;
+    std::size_t extra = d.mode == GroupMode::Rolling ? (kChunksPerStream - 1) * streams
+                                                     : std::max(streams, kFramesInFlight) - streams;
+    if (total != SIZE_MAX) {
+        const std::size_t used = streams * (fixed + slot_batch_bytes(d) / 3 * 4);
+        extra = std::min(extra, limit > used ? (limit - used) / set_bytes : 0);
     }
+    d.staging_sets = static_cast<int>(streams + extra);
 }
 
 std::unique_ptr<Staging> make_staging(const Driver& d) {
@@ -343,14 +334,6 @@ std::unique_ptr<Slot> make_slot(const Driver& d) {
     if (values) slot->values = DeviceBuffer(values, d.budget);
     if (scratch) slot->scratch = DeviceBuffer(scratch, d.budget);
     if (patches) slot->patches = DeviceBuffer(patches, d.budget);
-    // Spatial and legacy frames stage through the driver's Staging sets.
-    const int regions = d.mode == GroupMode::Rolling ? d.regions : 0;
-    if (regions) slot->staging = PinnedBuffer(plane_bytes * regions, d.budget);
-    for (int i = 0; i < regions; ++i) {
-        StagingRegion region{slot->staging.as<std::uint8_t>() + plane_bytes * i, nullptr};
-        NSS_CUDA_CHECK(cudaEventCreateWithFlags(&region.done, cudaEventDisableTiming));
-        slot->regions.push_back(region);
-    }
     if (max_patches) {
         slot->aggregator = std::make_unique<OrderedAggregator>(max_w, max_h, d.ntemp, max_patches, d.budget, true);
     }
@@ -366,25 +349,6 @@ std::unique_ptr<Slot> make_slot(const Driver& d) {
     // for it: without this, the first kernels can read the arrays unset.
     NSS_CUDA_CHECK(cudaDeviceSynchronize());
     return slot;
-}
-
-// Upload one VS plane into a device plane through staging region r.
-void upload(Slot& s, int r, const VSFrame* frame, int plane, const GroupPlane& p, void* device, const VSAPI* vsapi) {
-    StagingRegion& region = s.regions[r];
-    NSS_CUDA_CHECK(cudaEventSynchronize(region.done));
-    const std::size_t row_bytes = static_cast<std::size_t>(p.width) * sizeof(float);
-    upload_plane(vsapi->getReadPtr(frame, plane), vsapi->getStride(frame, plane), row_bytes, p.height, region.bytes,
-                 device, row_bytes, s.stream);
-    NSS_CUDA_CHECK(cudaEventRecord(region.done, s.stream));
-}
-
-// Queue a device plane into staging region r (complete after a stream sync).
-void download(Slot& s, int r, const void* device, const GroupPlane& p) {
-    StagingRegion& region = s.regions[r];
-    NSS_CUDA_CHECK(cudaEventSynchronize(region.done));
-    const std::size_t row_bytes = static_cast<std::size_t>(p.width) * sizeof(float);
-    begin_download(device, row_bytes, row_bytes, p.height, region.bytes, s.stream);
-    NSS_CUDA_CHECK(cudaEventRecord(region.done, s.stream));
 }
 
 // All groups of one center into the slot's num/den slices (ntemp of them per
@@ -624,10 +588,15 @@ const VSFrame* frame_output(Driver* d, int n, VSFrameContext* ctx, VSCore* core,
     return frames.keep(dst);
 }
 
-// Rolling: compute the chunk [start, start + count) on one slot.
+// Rolling: compute the chunk [start, start + count). The frames it reads are
+// staged before a slot is taken and the results are copied out after it has
+// been given back, as for a spatial frame.
 std::shared_ptr<ChunkStore> compute_chunk(Driver* d, int start, int count, VSFrameContext* ctx, const VSAPI* vsapi) {
-    auto slot = d->pool->acquire();
-    Slot& s = *slot;
+    auto staging = [&] {
+        NSS_CUDA_RANGE("group.staging");
+        return d->staging->acquire();
+    }();
+    Staging& g = *staging;
     DeviceGuard guard(d->device.index);
     const int radius = d->radius;
     const int nframes = d->vi.numFrames;
@@ -638,7 +607,10 @@ std::shared_ptr<ChunkStore> compute_chunk(Driver* d, int start, int count, VSFra
     store->count = count;
     store->frames.resize(count);
 
-    const int first_download = upload_regions(*d);
+    // Every frame a center of this chunk reads: region (fn - first_frame) per clip.
+    const int first_frame = std::max(0, start - 2 * radius);
+    const int last_frame = temporal_last(start + count - 1, 2 * radius, nframes);
+    const int clips = w ? 2 : 1;
     for (int plane = 0; plane < d->vi.format.numPlanes; ++plane) {
         const GroupPlane& p = d->planes[plane];
         const std::size_t row_bytes = static_cast<std::size_t>(p.width) * sizeof(float);
@@ -653,67 +625,102 @@ std::shared_ptr<ChunkStore> compute_chunk(Driver* d, int start, int count, VSFra
             }
             continue;
         }
-        float* acc_num = s.acc.as<float>();
-        float* acc_den = acc_num + p.floats * count;
-        NSS_CUDA_CHECK(cudaMemsetAsync(acc_num, 0, p.floats * 2 * count * sizeof(float), s.stream));
-        // Device ring: frame f lives in window buffer f % ntemp; the distinct
-        // frames of one window never collide. resident[i] is the frame held.
-        std::vector<int> resident(d->ntemp, -1);
-        const int first_center = std::max(0, start - radius);
-        const int last_center = temporal_last(start + count - 1, radius, nframes);
-        std::vector<const float*> sp(d->ntemp), rp(d->ntemp);
-        for (int center = first_center; center <= last_center; ++center) {
-            for (int t = 0; t < d->ntemp; ++t) {
-                const int fn = temporal_slot_frame(center, t, radius, nframes);
-                const int ring = fn % d->ntemp;
-                if (resident[ring] != fn) {
-                    const VSFrame* f = frames.getFrameFilter(fn, d->node, ctx);
-                    upload(s, ring * (w ? 2 : 1), f, plane, p, s.src_frames[ring].get(), vsapi);
-                    frames.freeFrame(f);
-                    if (w) {
-                        const VSFrame* rf = frames.getFrameFilter(fn, d->guide, ctx);
-                        upload(s, ring * 2 + 1, rf, plane, p, s.ref_frames[ring].get(), vsapi);
-                        frames.freeFrame(rf);
-                    }
-                    if (fn >= start && fn < start + count) {
-                        NSS_CUDA_CHECK(cudaMemcpyAsync(s.chunk_src.as<float>() + (fn - start) * p.floats,
-                                                       s.src_frames[ring].get(), p.floats * sizeof(float),
-                                                       cudaMemcpyDeviceToDevice, s.stream));
-                    }
-                    resident[ring] = fn;
+        {
+            NSS_CUDA_RANGE("group.stage_in");
+            for (int fn = first_frame; fn <= last_frame; ++fn) {
+                const int region = (fn - first_frame) * clips;
+                const VSFrame* f = frames.getFrameFilter(fn, d->node, ctx);
+                stage_plane(vsapi->getReadPtr(f, plane), vsapi->getStride(f, plane), row_bytes, p.height,
+                            g.regions[region]);
+                frames.freeFrame(f);
+                if (w) {
+                    const VSFrame* rf = frames.getFrameFilter(fn, d->guide, ctx);
+                    stage_plane(vsapi->getReadPtr(rf, plane), vsapi->getStride(rf, plane), row_bytes, p.height,
+                                g.regions[region + 1]);
+                    frames.freeFrame(rf);
                 }
-                sp[t] = s.host_src_ptrs[ring];
-                if (w) rp[t] = s.host_ref_ptrs[ring];
             }
-            // Pageable sources: staged before cudaMemcpyAsync returns, and
-            // stream-ordered after the previous center's kernels.
-            NSS_CUDA_CHECK(cudaMemcpyAsync(s.src_ptrs.get(), sp.data(), d->ntemp * sizeof(float*),
-                                           cudaMemcpyHostToDevice, s.stream));
-            if (w) {
-                NSS_CUDA_CHECK(cudaMemcpyAsync(s.ref_ptrs.get(), rp.data(), d->ntemp * sizeof(float*),
+        }
+        // The slot is held only while this plane's work is queued (see frame_output).
+        {
+            NSS_CUDA_RANGE("group.queue");
+            auto slot = d->pool->acquire();
+            Slot& s = *slot;
+            struct Drain {
+                cudaStream_t stream;
+                bool armed = true;
+                ~Drain() {
+                    if (armed) cudaStreamSynchronize(stream);
+                }
+            } drain{s.stream};
+            float* acc_num = s.acc.as<float>();
+            float* acc_den = acc_num + p.floats * count;
+            NSS_CUDA_CHECK(cudaMemsetAsync(acc_num, 0, p.floats * 2 * count * sizeof(float), s.stream));
+            // Device ring: frame f lives in window buffer f % ntemp; the distinct
+            // frames of one window never collide. resident[i] is the frame held.
+            std::vector<int> resident(d->ntemp, -1);
+            const int first_center = std::max(0, start - radius);
+            const int last_center = temporal_last(start + count - 1, radius, nframes);
+            std::vector<const float*> sp(d->ntemp), rp(d->ntemp);
+            for (int center = first_center; center <= last_center; ++center) {
+                for (int t = 0; t < d->ntemp; ++t) {
+                    const int fn = temporal_slot_frame(center, t, radius, nframes);
+                    const int ring = fn % d->ntemp;
+                    if (resident[ring] != fn) {
+                        const int region = (fn - first_frame) * clips;
+                        upload_staged(g.regions[region], row_bytes, p.height, s.src_frames[ring].get(), row_bytes,
+                                      s.stream);
+                        if (w) {
+                            upload_staged(g.regions[region + 1], row_bytes, p.height, s.ref_frames[ring].get(),
+                                          row_bytes, s.stream);
+                        }
+                        if (fn >= start && fn < start + count) {
+                            NSS_CUDA_CHECK(cudaMemcpyAsync(s.chunk_src.as<float>() + (fn - start) * p.floats,
+                                                           s.src_frames[ring].get(), p.floats * sizeof(float),
+                                                           cudaMemcpyDeviceToDevice, s.stream));
+                        }
+                        resident[ring] = fn;
+                    }
+                    sp[t] = s.host_src_ptrs[ring];
+                    if (w) rp[t] = s.host_ref_ptrs[ring];
+                }
+                // Pageable sources: staged before cudaMemcpyAsync returns, and
+                // stream-ordered after the previous center's kernels.
+                NSS_CUDA_CHECK(cudaMemcpyAsync(s.src_ptrs.get(), sp.data(), d->ntemp * sizeof(float*),
                                                cudaMemcpyHostToDevice, s.stream));
+                if (w) {
+                    NSS_CUDA_CHECK(cudaMemcpyAsync(s.ref_ptrs.get(), rp.data(), d->ntemp * sizeof(float*),
+                                                   cudaMemcpyHostToDevice, s.stream));
+                }
+                filter_center(*d, s, p, center, w);
+                for (int target = std::max(start, center - radius);
+                     target <= std::min(start + count - 1, temporal_last(center, radius, nframes)); ++target) {
+                    const int slice = target - center + radius;
+                    accumulate_slice(acc_num + (target - start) * p.floats, acc_den + (target - start) * p.floats,
+                                     s.num.as<float>() + slice * p.floats, s.den.as<float>() + slice * p.floats, p.floats,
+                                     s.stream);
+                }
             }
-            filter_center(*d, s, p, center, w);
-            for (int target = std::max(start, center - radius);
-                 target <= std::min(start + count - 1, temporal_last(center, radius, nframes)); ++target) {
-                const int slice = target - center + radius;
-                accumulate_slice(acc_num + (target - start) * p.floats, acc_den + (target - start) * p.floats,
-                                 s.num.as<float>() + slice * p.floats, s.den.as<float>() + slice * p.floats, p.floats,
-                                 s.stream);
+            for (int i = 0; i < count; ++i) {
+                // s.out is reused for every frame: the download is stream-ordered
+                // before the next finish overwrites it.
+                aggregate_finish(acc_num + i * p.floats, acc_den + i * p.floats, s.chunk_src.as<float>() + i * p.floats,
+                                 p.width, p.height, p.width, s.out.as<float>(), s.stream);
+                // Every upload is ahead of this on the stream, so region i is free again.
+                begin_download(s.out.get(), row_bytes, row_bytes, p.height, g.regions[i], s.stream);
             }
+            NSS_CUDA_CHECK(cudaEventRecord(g.done, s.stream));
+            drain.armed = false;
         }
-        for (int i = 0; i < count; ++i) {
-            // s.out is reused for every frame: the download is stream-ordered
-            // before the next finish overwrites it.
-            aggregate_finish(acc_num + i * p.floats, acc_den + i * p.floats, s.chunk_src.as<float>() + i * p.floats,
-                        p.width, p.height, p.width, s.out.as<float>(), s.stream);
-            download(s, first_download + i, s.out.get(), p);
+        {
+            NSS_CUDA_RANGE("group.wait");
+            NSS_CUDA_CHECK(cudaEventSynchronize(g.done));
         }
-        s.stream.synchronize();
+        NSS_CUDA_RANGE("group.stage_out");
         for (int i = 0; i < count; ++i) {
             auto& out = store->frames[i][plane];
             out.resize(p.floats);
-            finish_download(s.regions[first_download + i].bytes, row_bytes, p.height, out.data(), row_bytes);
+            finish_download(g.regions[i], row_bytes, p.height, out.data(), row_bytes);
         }
     }
     return store;

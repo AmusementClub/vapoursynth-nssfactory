@@ -106,12 +106,11 @@ Each filter takes the same arguments as its `nss` counterpart, plus
 - **`device_id`** (default 0) selects the GPU; one filter instance uses one
   device.
 - **`num_streams`** (default 1, up to 16) is the number of frames an instance
-  processes at once. Each stream owns its device buffers. Spatial and legacy
-  filtering copy up to three frames to and from the host around one stream,
-  which keeps the device busy for the fast filters (1080p BM3D on an RTX
-  5080: about 790 fps with one stream and with three). More streams still
-  raise the throughput of the finished-frame temporal mode (about 200 to 340
-  fps at `radius = 1` from one to three).
+  processes at once. Each stream owns its device buffers. The host copies of
+  several frames (or temporal chunks) run around one stream, which keeps the
+  device busy for the fast filters: 1080p BM3D on an RTX 5080 runs at about
+  790 fps with one stream and with three, and at `radius = 1` at about 310
+  fps with one and 350 with three.
 - **`memory_limit_mb`** has no default in `nss_cuda`: without it the filter
   takes what its plan needs, and a device allocation that fails is reported
   as the CUDA out-of-memory error. With it, the value caps the instance's
