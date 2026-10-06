@@ -250,7 +250,7 @@ __global__ void __launch_bounds__(256) group_shape_kernel(Bm3dGroupArgs a, bool 
     }
     transform_cube<B, G>(cube, true);
     constexpr float kUnscale = 1.f / (kScale * kScale);
-    if (a.fused.num) {  // in_shared
+    if (a.fused.num) {  // the cube is in shared memory (launch_shape)
         for (int i = tid; i < kCube; i += threads) {
             const int g = i / kArea, p = i % kArea;
             if (g >= kk) continue;

@@ -210,35 +210,39 @@ std::size_t slot_batch_bytes(const Driver& d) {
     return matches + counts + scratch + values + patches + sort;
 }
 
-// Staging regions: the uploads (src, ref), then the downloads.
-// Spatial and legacy: one upload per window frame and channel; one download
-// per channel (spatial) or 2 * ntemp fat rows per channel (legacy).
-// Rolling: one upload per frame a chunk reads (the chunk and 2 * radius
-// frames on each side); the results go straight into the chunk store.
 // Slices of a rolling plane's sums: the chunk and, to carry on from chunk to
 // chunk, the 2R frames behind it that its last centers already add to.
 int roll_slices(const Driver& d) { return d.rolling.rolling_chunk + (d.roll_carry ? 2 * d.radius : 0); }
 
-// Device bytes of the rolling states of one slot: one per active plane, or
-// one that every plane uses in turn (then only a single-plane clip carries).
-std::size_t roll_bytes(const Driver& d, bool per_plane) {
-    const std::size_t k = roll_slices(d), clips = has_guide(d) ? 2 : 1;
-    const auto planes = [&](bool fused, bool ordered) {
-        return d.ntemp * clips + k + (fused ? 4 * k : 0) + (ordered ? 2 * k : 0);
-    };
-    if (!per_plane) return d.plane_floats * sizeof(float) * planes(any_fused(d), any_ordered(d));
-    std::size_t bytes = 0;
-    for (const GroupPlane& p : d.planes) {
-        if (p.active) bytes += p.floats * sizeof(float) * planes(p.fused, !p.fused);
-    }
-    return bytes;
-}
 int active_planes(const Driver& d) {
     int n = 0;
     for (const GroupPlane& p : d.planes) n += p.active;
     return n;
 }
 
+// Device bytes of the rolling states of one slot: one per active plane, or
+// one that every plane uses in turn.
+std::size_t roll_bytes(const Driver& d, bool per_plane) {
+    const std::size_t k = roll_slices(d), clips = has_guide(d) ? 2 : 1;
+    const auto planes = [&](bool fused, bool ordered) {
+        return d.ntemp * clips + k + (fused ? 4 * k : 0) + (ordered ? 2 * k : 0);
+    };
+    if (!per_plane) {
+        return active_planes(d) ? d.plane_floats * sizeof(float) * planes(any_fused(d), any_ordered(d)) : 0;
+    }
+    std::size_t bytes = 0;
+    for (const GroupPlane& p : d.planes) {
+        if (p.active) bytes += p.floats * sizeof(float) * planes(p.fused, !p.fused);
+    }
+    return bytes;
+}
+
+// Staging regions: the uploads (src, ref), then the downloads.
+// Spatial and legacy: one upload per window frame and channel; one download
+// per channel (spatial) or 2 * ntemp fat rows per channel (legacy).
+// Rolling: one upload per frame a chunk that starts afresh reads (the chunk
+// and 2 * radius frames on each side); the results go straight into the
+// chunk store.
 int upload_regions(const Driver& d) { return d.ntemp * d.channels * (has_guide(d) ? 2 : 1); }
 int chunk_window(const Driver& d) { return d.rolling.rolling_chunk + 4 * d.radius; }
 int chunk_uploads(const Driver& d) { return chunk_window(d) * (has_guide(d) ? 2 : 1); }
@@ -311,8 +315,14 @@ void plan_planes(Driver& d) {
         const auto fits = [&](bool planes) {
             return limit / streams >= fixed_base + roll_bytes(d, planes) + min_batch * 4 / 3;
         };
-        per_plane = per_plane && fits(true);
-        if (!per_plane && !fits(false)) d.roll_carry = false;
+        // Planes that take turns on one state do not find their own chunk
+        // before them, so the carried slices would be spent for nothing.
+        if (per_plane && !fits(true)) {
+            per_plane = false;
+            d.roll_carry = false;
+        } else if (!per_plane && !fits(false)) {
+            d.roll_carry = false;
+        }
     }
     d.roll_states = 0;
     d.roll_state.assign(3, 0);
@@ -778,23 +788,25 @@ struct RollTurn {
         carry = slot && (backlog(slot) < kCarryBacklog || backlog(idle) >= backlog(slot));
         if (!carry) slot = idle;
         state = &slot->roll[index];
-        if (!carry) {
-            ++state->chain;
-            std::fill(state->promised.begin(), state->promised.end(), -1);
-        }
-        ticket = state->issued++;
-        chain = state->chain;
+        // Everything that can throw comes before the state changes: a ticket
+        // that nobody holds would stop the chunks behind it.
+        std::vector<int> promised = carry ? state->promised : std::vector<int>(d.ntemp, -1);
         last_center = temporal_last(start + count - 1, radius, nframes);
         first_center = carry ? std::min(start + radius, last_center + 1) : std::max(0, start - radius);
+        uploads.reserve(static_cast<std::size_t>(chunk_window(d)));
         for (int center = first_center; center <= last_center; ++center) {
             for (int t = 0; t < d.ntemp; ++t) {
                 const int fn = temporal_slot_frame(center, t, radius, nframes);
-                if (state->promised[fn % d.ntemp] != fn) {
+                if (promised[fn % d.ntemp] != fn) {
                     uploads.push_back(fn);
-                    state->promised[fn % d.ntemp] = fn;
+                    promised[fn % d.ntemp] = fn;
                 }
             }
         }
+        state->promised.swap(promised);
+        if (!carry) ++state->chain;
+        ticket = state->issued++;
+        chain = state->chain;
         state->plane = plane;
         state->next_start = start + count;
     }
@@ -824,7 +836,7 @@ private:
             std::lock_guard lock(d.roll_mu);
             if (failed) {
                 state->failed_chain = chain;
-                state->next_start = -1;
+                if (state->chain == chain) state->next_start = -1;
             }
             if (entered) slot->in_use = false;
             ++state->serving;

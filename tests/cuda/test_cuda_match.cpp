@@ -244,6 +244,21 @@ int main() {
     image_case(64, 56, 8, 16, 6, 21, 1, 5, 4, 2, 3, false, stats);
     image_case(64, 56, 8, 64, 8, 21, 2, 3, 1, 1, 20, false, stats);
     image_case(64, 56, 4, 200, 8, 25, 1, 3, 2, 1, 100, false, stats);
+    // Lane kernels: several overlapping windows per layer, ps_num equal to
+    // the group, two columns per lane (block 16, 8 lanes), parts (block 4
+    // and 8 with 16 and 32 lanes) and the largest group they take.
+    image_case(64, 56, 8, 8, 6, 15, 1, 5, 2, 2, 8, false, stats);
+    image_case(64, 56, 4, 4, 5, 15, 1, 3, 1, 1, 4, false, stats);
+    image_case(64, 56, 16, 8, 7, 15, 1, 3, 1, 1, 4, false, stats);
+    image_case(64, 56, 16, 16, 7, 15, 1, 5, 2, 2, 6, false, stats);
+    image_case(64, 56, 4, 16, 5, 21, 1, 3, 1, 1, 12, false, stats);
+    image_case(64, 56, 8, 33, 6, 21, 1, 3, 1, 1, 20, false, stats);
+    image_case(64, 56, 16, 33, 9, 21, 1, 3, 0, 1, 5, false, stats);
+    for (const bool flat : {false, true}) {
+        temporal_case(71, 66, 16, 8, 6, 7, 1, 1, 3, flat, stats);
+        temporal_case(71, 66, 16, 16, 6, 7, 2, 2, 5, flat, stats);
+        temporal_case(71, 66, 4, 8, 5, 7, 2, 0, 9, flat, stats);
+    }
     std::printf("test_cuda_match: %ld refs, %ld entries, %ld near-tie flips, %d failures\n", stats.refs, stats.entries,
                 stats.flips, failures);
     if (stats.flips * 100 > stats.entries) {
