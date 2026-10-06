@@ -211,7 +211,8 @@ __global__ void __launch_bounds__(256) group_shape_kernel(Bm3dGroupArgs a, bool 
         const int g = i / kArea, p = i % kArea;
         float v = 0.f, rv = 0.f;
         if (g < kk) {
-            const long long offset = static_cast<long long>(m[g].y + p / B) * a.pitch + m[g].x + p % B;
+            const long long offset =
+                a.plane_offset + static_cast<long long>(m[g].y + p / B) * a.pitch + m[g].x + p % B;
             v = a.src[m[g].t][offset];
             if (refc) rv = a.ref[m[g].t][offset];
         }
@@ -347,13 +348,13 @@ __device__ __forceinline__ void transpose_lanes(float* v, float* buffer, int lan
 // return the lane is the row frequency and the index within a patch the
 // column frequency: the DC coefficient is v[0] of sub-lane 0.
 template <int B, int G>
-__device__ __forceinline__ void forward_lanes(float* v, const float* const* planes, const DeviceMatch* m, int kk,
-                                              int pitch, float* buffer, int lane) {
+__device__ __forceinline__ void forward_lanes(float* v, const float* const* planes, long long plane_offset,
+                                              const DeviceMatch* m, int kk, int pitch, float* buffer, int lane) {
     const int sub = lane % B;
 #pragma unroll
     for (int p = 0; p < G; ++p) {
         const DeviceMatch& mp = m[p < kk ? p : 0];
-        const float* at = planes[mp.t] + static_cast<long long>(mp.y) * pitch + mp.x + sub;
+        const float* at = planes[mp.t] + plane_offset + static_cast<long long>(mp.y) * pitch + mp.x + sub;
 #pragma unroll
         for (int row = 0; row < B; ++row) v[p * B + row] = p < kk ? at[row * pitch] : 0.f;
     }
@@ -395,7 +396,7 @@ __global__ void __launch_bounds__(32) group_warp_kernel(Bm3dGroupArgs a) {
         // registers transform the noisy cube.
         __shared__ float gains[32 * kLane];
         float* gain = gains + lane * kLane;
-        forward_lanes<B, G>(v, a.ref, m, kk, a.pitch, buffer, lane);
+        forward_lanes<B, G>(v, a.ref, a.plane_offset, m, kk, a.pitch, buffer, lane);
         const float sig2 = kScale * kScale * a.sigma * a.sigma;
         float w2 = 0.f;
 #pragma unroll
@@ -406,11 +407,11 @@ __global__ void __launch_bounds__(32) group_warp_kernel(Bm3dGroupArgs a) {
             w2 = fmaf(w, w, w2);
         }
         weight = 1.f / fmaxf(group_total<B>(w2), 1e-12f);
-        forward_lanes<B, G>(v, a.src, m, kk, a.pitch, buffer, lane);
+        forward_lanes<B, G>(v, a.src, a.plane_offset, m, kk, a.pitch, buffer, lane);
 #pragma unroll
         for (int i = 0; i < kLane; ++i) v[i] *= gain[i];
     } else {
-        forward_lanes<B, G>(v, a.src, m, kk, a.pitch, buffer, lane);
+        forward_lanes<B, G>(v, a.src, a.plane_offset, m, kk, a.pitch, buffer, lane);
         const float thr = kScale * kHardLambda * a.sigma;
         int kept = 0;
 #pragma unroll

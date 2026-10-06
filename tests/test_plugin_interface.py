@@ -143,7 +143,10 @@ def main():
                  for r in (1, 2)
                  for extra in ({}, *({k: v} for k in ("rolling_chunk", "rolling_cache_chunks", "rolling_cache_limit")
                                      for v in (0, 1, 4, 64, 65)),
-                               dict(rolling_cache_chunks=2, rolling_cache_limit=2))],
+                               dict(rolling_cache_chunks=2, rolling_cache_limit=2))] +
+                [dict(chroma=1, **extra)
+                 for extra in ({}, dict(radius=1, temporal_mode="legacy"), dict(radius=1, temporal_mode="rolling"),
+                               dict(sigma=[0, 3, 3]), dict(block_size=[8, 4, 4]), dict(block_size=[8, 3, 3]))],
         "TWSC": [dict(sigma=3, estimate_sigma=1), dict(bm_range=3, search_window=9), dict(block_size=4),
                  dict(block_size=4, block_step=8), dict(group_size=1), dict(group_size=1, ps_num=2),
                  dict(group_size=4, ps_num=8), dict(estimate_sigma=1, radius=1), dict(sigma=[3, 0, 3]),

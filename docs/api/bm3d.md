@@ -10,6 +10,7 @@ against.
 out = core.nss.BM3D(clip, sigma=25)                       # spatial default
 fine = core.nss.BM3D(clip, sigma=25, block_size=8, block_step=4, bm_range=10)
 temporal = core.nss.BM3D(clip, sigma=25, radius=2)        # see radius note below
+color = core.nss.BM3D(yuv444, sigma=[25, 15, 15], chroma=1)  # CBM3D: groups from luma
 ```
 
 ## Signature
@@ -17,7 +18,7 @@ temporal = core.nss.BM3D(clip, sigma=25, radius=2)        # see radius note belo
 ```python
 core.nss.BM3D(clip clip[, clip ref, float[] sigma = 3.0, int[] block_size = 8,
               int[] group_size = 8, int[] block_step, int[] bm_range = 7,
-              int radius = 0, int[] ps_num, int[] ps_range = 4,
+              int radius = 0, int[] ps_num, int[] ps_range = 4, int chroma = 0,
               int memory_limit_mb])
 ```
 
@@ -36,6 +37,7 @@ Omitted `block_step` adapts to `min(8, block_size)` per plane; omitted
 | `bm_range` | 7 | [1, 64] | Search window radius (`window = 2*bm_range + 1`). Cost grows quadratically; motion/texture may justify a larger window. |
 | `radius` | 0 | [0, 16] | Temporal radius in frames. >0 switches output to the weighted intermediate for `VAggregate`. |
 | `ref` | none | clip | External reference clip guiding both stages' matching (paper-style two-stage usage). |
+| `chroma` | 0 | {0, 1} | CBM3D for YUV 4:4:4 clips: groups are matched on plane 0 only (of `ref` when given) and all three planes are filtered with them. See "Color (CBM3D)". |
 
 ## Secondary parameters
 
@@ -44,6 +46,29 @@ Omitted `block_step` adapts to `min(8, block_size)` per plane; omitted
 | `ps_num` | min(2, group) | [1, group] | Predictive-search seeds kept per temporal step (only used with `radius > 0`). |
 | `ps_range` | 4 | [1, 64] | Predictive-search window radius around each seed (temporal mode). |
 | `memory_limit_mb` | none | — | Workspace cap; fails instead of degrading. |
+
+## Color (CBM3D)
+
+With `chroma=1` the filter follows the color variant of the paper (Dabov, Foi,
+Katkovnik & Egiazarian, *Color Image Denoising via Sparse 3D Collaborative
+Filtering with Grouping Constraint in Luminance-Chrominance Space*, ICIP 2007):
+the groups are found on the luminance plane, where the structure is strongest,
+and each plane is collaboratively filtered with those same groups.
+
+- The clip must be YUV 4:4:4. The filter does not convert color: give it
+  YUV or an opponent space stored as YUV, and convert back afterwards.
+- Matching runs on plane 0 of `ref` when a `ref` is given, of `clip` otherwise.
+  In the second stage each plane's Wiener gains come from the same plane of
+  `ref`.
+- `block_size`, `group_size`, `block_step`, `bm_range`, `ps_num` and
+  `ps_range` take their first value for all planes. `sigma` stays per plane.
+- A plane with `sigma = 0` is copied. Plane 0 still provides the groups, so
+  `sigma=[0, s, s]` filters the chroma planes under luma's guidance.
+- Plane 0 is filtered exactly as without `chroma`; planes 1 and 2 differ.
+- `radius > 0`, `ref` and both temporal modes work as usual.
+
+It matches once instead of three times, so it is also faster wherever the
+matching is a large part of the work.
 
 ## Algorithm and paper
 
@@ -161,3 +186,7 @@ temporal = core.nss_cuda.VAggregate(fat, clip, radius=1)
     `radius = 2` with 32 threads, 1.4x with one thread. Random access:
     1.15x with one thread, 2.2x with 32. It keeps the CPU's predictive
     search and reproducible sums.
+  - `chroma=1` at YUV444: 243 fps spatial (separate planes 286: the host
+    copies bound both, and three planes per frame go less evenly), 238 fps
+    at `radius = 1` (separate 222) and 229 at `radius = 2` (separate 179).
+    bm3dcuda with `chroma=True`: 200, 94 and 65.

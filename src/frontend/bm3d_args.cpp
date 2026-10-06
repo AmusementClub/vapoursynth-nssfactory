@@ -35,6 +35,23 @@ Bm3dParams parse_bm3d(const VSAPI* vsapi, const VSMap* in, const VSVideoInfo& vi
     map_int_array(vsapi, in, "ps_range", p.ps_range, np, kBmDefaultPsRange);
     p.radius = map_int(vsapi, in, "radius", 0);
     if (p.radius < 0 || p.radius > kBmMaxRadius) fail(ns, "BM3D", "radius must be in [0, 16]");
+    const int chroma = map_int(vsapi, in, "chroma", 0);
+    if (chroma != 0 && chroma != 1) fail(ns, "BM3D", "chroma must be 0 or 1");
+    p.chroma = chroma != 0;
+    if (p.chroma) {
+        if (vi.format.colorFamily != cfYUV || vi.format.subSamplingW != 0 || vi.format.subSamplingH != 0) {
+            fail(ns, "BM3D", "chroma requires a YUV 4:4:4 clip");
+        }
+        // One set of groups, found on plane 0, serves the three planes.
+        for (int i = 1; i < np; ++i) {
+            p.block_size[i] = p.block_size[0];
+            p.group_size[i] = p.group_size[0];
+            p.block_step[i] = p.block_step[0];
+            p.bm_range[i] = p.bm_range[0];
+            p.ps_num[i] = p.ps_num[0];
+            p.ps_range[i] = p.ps_range[0];
+        }
+    }
     for (int i = 0; i < np; ++i) {
         if (!bm_allowed_block(p.block_size[i])) fail(ns, "BM3D", "block_size must be one of 1, 2, 4, 8, 12, 16, 32");
         if (!bm_allowed_group(p.group_size[i])) fail(ns, "BM3D", "group_size must be one of 1, 2, 4, 8, 16, 32, 64");

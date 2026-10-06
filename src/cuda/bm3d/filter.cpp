@@ -50,6 +50,14 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     }
     // Only the shapes whose Wiener stage keeps its reference cube in device memory need scratch.
     config.scratch_floats = [](const GroupPlane& g, bool guide) { return bm3d_scratch_floats(g.block, g.group, guide); };
+    if (p.chroma) {
+        // CBM3D: one unit of three planes, groups matched on plane 0. Plane 0
+        // carries the geometry, which the frontend made the same for all.
+        config.channels = 3;
+        config.shared_match = true;
+    }
+    // One plane, or with chroma each filtered plane of the unit in turn: its
+    // own sigma (l.plane[c] is planes[c]), values, patch records and sums.
     config.launch = [](const GroupLaunch& l) {
         Bm3dGroupArgs args{};
         args.src = l.src;
@@ -60,12 +68,22 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         args.batch = l.batch;
         args.block = l.plane->block;
         args.group = l.plane->group;
-        args.sigma = l.plane->sigma;
-        args.values = l.values;
         args.ref_cube = l.scratch;
-        args.patches = l.patches;
-        args.fused = l.fused;
-        bm3d_filter_groups(args, l.stream);
+        const std::size_t patches = static_cast<std::size_t>(l.batch) * l.plane->group;
+        const std::size_t values = patches * l.plane->block * l.plane->block;
+        for (int c = 0; c < l.channels; ++c) {
+            if (l.channels > 1 && !l.channel_active[c]) continue;
+            args.plane_offset = c * l.channel_step;
+            args.sigma = l.plane[c].sigma;
+            args.values = l.values ? l.values + c * values : nullptr;
+            args.patches = l.patches ? l.patches + c * patches : nullptr;
+            args.fused = l.fused;
+            if (args.fused.num) {
+                args.fused.num += c * l.fused.channel_step;
+                args.fused.den += c * l.fused.channel_step;
+            }
+            bm3d_filter_groups(args, l.stream);
+        }
     };
     group_filter_install(std::move(config), out, core, vsapi);
 }
