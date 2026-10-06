@@ -32,7 +32,9 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     const VSVideoInfo* ref_vi = config.guide ? vsapi->getVideoInfo(config.guide) : nullptr;
     const nss::Bm3dParams p = nss::frontend::parse_bm3d(vsapi, in, config.vi, ref_vi, "nss_cuda");
     if (rolling) config.rolling = nss::frontend::parse_rolling(vsapi, in, p.radius, "BM3D", "nss_cuda", kRollingCache);
-    if (p.final) {
+    // final: the driver keeps the first stage's estimate on the device for
+    // spatial output. Temporal output still chains two nodes.
+    if (p.final && p.radius > 0) {
         (void)parse_backend_args(vsapi, in, "BM3D");
         nss::frontend::bm3d_two_nodes(vsapi, in, out, core, "nss_cuda");
         return;
@@ -51,8 +53,19 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         g.range = p.bm_range[plane];
         g.ps_num = p.ps_num[plane];
         g.ps_range = p.ps_range[plane];
-        g.fused = bm3d_fuses(g.block, g.group, config.guide != nullptr);
+        g.fused = bm3d_fuses(g.block, g.group, config.guide != nullptr || p.final);
+        if (!p.final) continue;
+        GroupPlane& b = config.basic[plane];
+        b = g;
+        b.sigma = p.sigma_basic[plane];
+        b.active = b.sigma != 0.f;
+        b.block = p.block_size_basic[plane];
+        b.group = p.group_size_basic[plane];
+        b.step = p.block_step_basic[plane];
+        b.ps_num = p.ps_num_basic[plane];
+        b.fused = bm3d_fuses(b.block, b.group, false);
     }
+    config.two_stage = p.final;
     // Only the shapes whose Wiener stage keeps its reference cube in device memory need scratch.
     config.scratch_floats = [](const GroupPlane& g, bool guide) { return bm3d_scratch_floats(g.block, g.group, guide); };
     if (p.chroma) {
