@@ -254,6 +254,18 @@ int main() {
     image_case(64, 56, 4, 16, 5, 21, 1, 3, 1, 1, 12, false, stats);
     image_case(64, 56, 8, 33, 6, 21, 1, 3, 1, 1, 20, false, stats);
     image_case(64, 56, 16, 33, 9, 21, 1, 3, 0, 1, 5, false, stats);
+    // Blocks 1, 2, 12 (lanes without a column) and 32 (one reference per warp).
+    for (const bool flat : {false, true}) {
+        for (const int block : {1, 2, 32}) {
+            for (const int group : {2, 8, 16, 32}) spatial_case(97, 83, block, group, std::min(block, 3), 7, flat, stats);
+        }
+        spatial_case(97, 83, 12, 33, 5, 9, flat, stats);
+        temporal_case(71, 66, 12, 8, 5, 7, 1, 1, 3, flat, stats);
+        temporal_case(71, 66, 12, 16, 5, 7, 2, 0, 9, flat, stats);
+        temporal_case(71, 66, 2, 8, 2, 7, 1, 1, 3, flat, stats);
+        temporal_case(71, 66, 1, 16, 1, 5, 1, 1, 3, flat, stats);
+        temporal_case(71, 66, 32, 8, 9, 7, 1, 1, 3, flat, stats);
+    }
     for (const bool flat : {false, true}) {
         temporal_case(71, 66, 16, 8, 6, 7, 1, 1, 3, flat, stats);
         temporal_case(71, 66, 16, 16, 6, 7, 2, 2, 5, flat, stats);
