@@ -72,6 +72,11 @@ def temporal(core, quick, floor):
             gpu = core.nss_cuda.VAggregate(core.nss_cuda.BM3D(clip, temporal_mode="legacy", **kw), clip, radius=radius)
             rolling = core.nss_cuda.BM3D(clip, rolling_chunk=4, **kw)  # rolling is the device default
             rolling_again = core.nss_cuda.BM3D(clip, rolling_chunk=4, **kw)
+            # Chunks asked for in order carry on from one another on the device; asked for backwards each one
+            # starts afresh. Chunks of 2 make several of them in this short clip.
+            carried = core.nss_cuda.BM3D(clip, rolling_chunk=2, **kw)
+            fresh = core.nss_cuda.BM3D(clip, rolling_chunk=2, **kw)
+            backwards = {n: frame_planes(fresh, n) for n in reversed(range(clip.num_frames))}
             mixed_a = core.nss.VAggregate(core.nss_cuda.BM3D(clip, temporal_mode="legacy", **kw), clip, radius=radius)
             mixed_b = core.nss_cuda.VAggregate(core.nss.BM3D(clip, **kw), clip, radius=radius)
             for n in range(clip.num_frames):
@@ -90,6 +95,8 @@ def temporal(core, quick, floor):
                     failures.append(f"{label}: rolling differs from legacy + VAggregate by > 32 ulp")
                 if any(not np.array_equal(x, y) for x, y in zip(rolled, frame_planes(rolling_again, n))):
                     failures.append(f"{label}: rolling not run-to-run identical")
+                if any(not np.array_equal(x, y) for x, y in zip(frame_planes(carried, n), backwards[n])):
+                    failures.append(f"{label}: rolling chunks that carry on differ from chunks that start afresh")
                 # Same fat input and summation order on both backends; the GPU
                 # divides with IEEE rounding while the CPU fast-math TU was
                 # measured up to 2 ulp off (2026-10-03), so allow a few ulp.
