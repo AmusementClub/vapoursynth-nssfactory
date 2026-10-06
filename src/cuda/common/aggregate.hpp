@@ -81,9 +81,11 @@ private:
 // Slice s of a plane starts slice_step cells
 // after slice s - 1. A sum wraps beyond 2^31 in magnitude and a NaN sample
 // adds nothing; both are far outside video ranges and stay deterministic.
-// A patch of window slot t goes to slice t + slice_base and is dropped when
-// that is outside [0, slices): the rolling driver keeps one slice per frame
-// of its chunk and drops what a center contributes to other frames.
+// A patch of window slot t goes to logical slice t + slice_base and is
+// dropped when that is outside [0, slices). The slices are a ring of
+// slice_ring cells starting at slice_first: the rolling driver keeps one per
+// frame from its chunk's first on, and drops what a center adds to earlier
+// frames.
 struct FixedTarget {
     unsigned long long* num = nullptr;
     unsigned long long* den = nullptr;
@@ -91,6 +93,8 @@ struct FixedTarget {
     std::size_t slice_step = 0;  // cells between slices
     int slice_base = 0;
     int slices = 1;
+    int slice_first = 0;
+    int slice_ring = 1;
 };
 
 // out = den > 1e-12 ? num / den : src, straight from the accumulators of one

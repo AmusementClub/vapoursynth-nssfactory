@@ -506,15 +506,19 @@ __global__ void __launch_bounds__(kThreads) predictive_match_warp_kernel(MatchGe
     }
 }
 
-// Lane-group variants for one channel and at most L matches (the common
-// BM3D / WNNM / NCSR shape). L lanes serve one reference, 32 / L references
-// share a warp, and everything stays in registers. Lane j owns the columns
-// j, j + L, ... of the block; a shuffle tree totals the lanes' sums, and the
-// lanes hold the reference's best L candidates in ascending key order (lane
-// 0 the best). A candidate enters by shifting the entries behind it one lane
-// up. A window is scanned column by column, so that the next candidate is
-// the block one row down: each lane keeps its B rows in registers and reads
-// one new row per candidate. The loops are the same for every reference (the
+// Lane-group variants for one channel and at most L matches. L lanes serve
+// one reference, 32 / L references share a warp, and everything stays in
+// registers. The lanes hold the reference's best L candidates in ascending
+// key order (lane 0 the best); a candidate enters by shifting the entries
+// behind it one lane up.
+// - L <= B: lane j owns the columns j, j + L, ... of the block and a shuffle
+//   tree over the L lanes totals a candidate.
+// - L > B: the lanes form L / B parts of B lanes. Each part takes a column
+//   of its own (lane j the block column j % B), so L / B candidates are
+//   summed at once and then entered one after the other.
+// A window is scanned column by column, so that the next candidate is the
+// block one row down: each lane keeps its B rows in registers and reads one
+// new row per candidate. The loops are the same for every reference (the
 // unclamped window; positions outside the plane never enter), so the warp
 // never diverges.
 //
@@ -544,15 +548,22 @@ __device__ __forceinline__ DeviceMatch lane_match(unsigned long long key, int t)
     return DeviceMatch{static_cast<int>(at & 0xffffu), static_cast<int>(at >> 16), t, __uint_as_float(bits)};
 }
 
-// The lane's terms of the reference block, row-major: ref[row * (B / L) + c].
+// Block columns a lane owns, and candidates summed at once.
+template <int B, int L>
+constexpr int kLaneCols = L <= B ? B / L : 1;
+template <int B, int L>
+constexpr int kLaneParts = L <= B ? 1 : L / B;
+
+// The lane's terms of the reference block, row-major: ref[row * kLaneCols + c].
 template <int B, int L>
 __device__ __forceinline__ void lane_reference(const float* plane, const MatchGeometry& g, int cx, int cy, int sub,
                                                float* ref) {
-    const float* at = plane + static_cast<long long>(cy) * g.pitch + cx + sub;
+    constexpr int kCols = kLaneCols<B, L>;
+    const float* at = plane + static_cast<long long>(cy) * g.pitch + cx + sub % B;
 #pragma unroll
     for (int row = 0; row < B; ++row) {
 #pragma unroll
-        for (int c = 0; c < B / L; ++c) ref[row * (B / L) + c] = at[row * g.pitch + c * L];
+        for (int c = 0; c < kCols; ++c) ref[row * kCols + c] = at[row * g.pitch + c * L];
     }
 }
 
@@ -567,13 +578,14 @@ __device__ __forceinline__ void lane_scan(const float* plane, const MatchGeometr
                                           bool enabled, unsigned skip, int lane, const float* ref,
                                           unsigned long long& held) {
     const int sub = lane % L;
-    static_assert(B % L == 0, "a lane owns whole columns");
-    constexpr int kCols = B / L;
+    static_assert(L <= B ? B % L == 0 : L % B == 0, "lanes own whole columns, or parts whole blocks");
+    constexpr int kCols = kLaneCols<B, L>, kParts = kLaneParts<B, L>;
     const int max_x = g.width - B, max_y = g.height - B, last_row = g.height - 1;
     const int bottom = my + hi;
-    for (int x = mx - lo; x <= mx + hi; ++x) {
-        const bool col_ok = enabled && x >= 0 && x <= max_x;
-        const float* col = plane + min(max(x, 0), max_x) + sub;
+    for (int x0 = mx - lo; x0 <= mx + hi; x0 += kParts) {
+        const int x = x0 + sub / B;  // this part's column
+        const bool col_ok = enabled && x >= 0 && x <= max_x && x <= mx + hi;
+        const float* col = plane + min(max(x, 0), max_x) + sub % B;
         // v[c * B + slot]: the rows of the current block, as a ring. Before
         // phase i, row y + k is in slot (i + 1 + k) % B for k < B - 1.
         float v[kCols * B];
@@ -600,23 +612,29 @@ __device__ __forceinline__ void lane_scan(const float* plane, const MatchGeometr
                         sum = fmaf(d, d, sum);
                     }
                 }
-                // The same value on every lane of the reference: the tree
+                // The same value on every lane of the candidate: the tree
                 // adds the same pairs on each of them.
 #pragma unroll
-                for (int offset = 1; offset < L; offset <<= 1) sum += __shfl_xor_sync(kAllLanes, sum, offset, L);
+                for (int offset = 1; offset < (L < B ? L : B); offset <<= 1) {
+                    sum += __shfl_xor_sync(kAllLanes, sum, offset);
+                }
                 const unsigned at = lane_position(x, y);
                 const bool ok = col_ok && y >= 0 && y <= max_y && at != skip;
-                const unsigned long long key =
+                const unsigned long long mine =
                     ok ? static_cast<unsigned long long>(min(__float_as_uint(sum), kLaneInfinity)) << 32 | at
                        : kLaneEmpty;
-                bool enters = key < held;
-                if constexpr (Dedupe) {
-                    // Every lane takes part in the ballot: not behind `enters`.
-                    const int same = lanes_set<L>(__ballot_sync(kAllLanes, held == key), lane);
-                    enters = enters && same == 0;
+#pragma unroll
+                for (int part = 0; part < kParts; ++part) {
+                    const unsigned long long key = kParts == 1 ? mine : __shfl_sync(kAllLanes, mine, part * B, L);
+                    bool enters = key < held;
+                    if constexpr (Dedupe) {
+                        // Every lane takes part in the ballot: not behind `enters`.
+                        const int same = lanes_set<L>(__ballot_sync(kAllLanes, held == key), lane);
+                        enters = enters && same == 0;
+                    }
+                    const unsigned long long pre = __shfl_up_sync(kAllLanes, held, 1, L);
+                    if (enters) held = (sub == 0 || !(key < pre)) ? key : pre;
                 }
-                const unsigned long long pre = __shfl_up_sync(kAllLanes, held, 1, L);
-                if (enters) held = (sub == 0 || !(key < pre)) ? key : pre;
                 ++y;
             }
         }
@@ -633,7 +651,7 @@ __global__ void __launch_bounds__(32 * kLaneWarps) spatial_match_lane_kernel(con
     const int rr = live ? r : ref_count - 1;  // idle lanes mirror the last reference and store nothing
     const int cx = grid.x(ref_begin + rr);
     const int cy = grid.y(ref_begin + rr);
-    float ref[B * B / L];
+    float ref[B * kLaneCols<B, L>];
     lane_reference<B, L>(plane, g, cx, cy, sub, ref);
     unsigned long long held = kLaneEmpty;
     lane_scan<B, L, false>(plane, g, cx, cy, g.lo(), g.hi(), true, lane_position(cx, cy), lane, ref, held);
@@ -663,7 +681,7 @@ __global__ void __launch_bounds__(32 * kLaneWarps) predictive_match_lane_kernel(
     const int cy = grid.y(ref_begin + rr);
     const int t0 = tw.t0;
     const int wanted = g.group - 1;
-    float ref[B * B / L];
+    float ref[B * kLaneCols<B, L>];
     lane_reference<B, L>(tw.frames[t0], g, cx, cy, sub, ref);
     unsigned long long held = kLaneEmpty;
     lane_scan<B, L, false>(tw.frames[t0], g, cx, cy, g.lo(), g.hi(), true, lane_position(cx, cy), lane, ref, held);
@@ -725,11 +743,43 @@ __global__ void __launch_bounds__(32 * kLaneWarps) predictive_match_lane_kernel(
     }
 }
 
-// The shapes the lane kernels serve.
-constexpr int lane_group(const MatchGeometry& g) {
-    if (g.channels != 1 || g.block != 8 || g.group < 2 || g.group > 9) return 0;
+// Lanes per reference for the shapes the lane kernels serve (0: none): the
+// fewest of 8, 16 and 32 that hold the matches and the layer's best.
+int lane_group(const MatchGeometry& g, int ps_num) {
+    if (g.channels != 1 || g.group < 2) return 0;
+    if (g.block != 4 && g.block != 8 && g.block != 16) return 0;
     if (g.width > kLaneMaxCoordinate || g.height > kLaneMaxCoordinate) return 0;
-    return 8;
+    const int need = std::max(g.group - 1, ps_num);
+    return need <= 8 ? 8 : need <= 16 ? 16 : need <= 32 ? 32 : 0;
+}
+
+template <int B, int L>
+void launch_lane(const float* plane, const MatchGeometry& g, const TemporalWindow* tw, const RasterGrid& grid,
+                 int ref_begin, int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream) {
+    const int per_block = kLaneWarps * (32 / L);
+    const int blocks = (ref_count + per_block - 1) / per_block;
+    if (tw) {
+        predictive_match_lane_kernel<B, L><<<blocks, 32 * kLaneWarps, 0, stream>>>(g, *tw, grid, ref_begin, ref_count,
+                                                                                   out, counts);
+    } else {
+        spatial_match_lane_kernel<B, L><<<blocks, 32 * kLaneWarps, 0, stream>>>(plane, g, grid, ref_begin, ref_count,
+                                                                                out, counts);
+    }
+}
+
+bool launch_lanes(const float* plane, const MatchGeometry& g, const TemporalWindow* tw, const RasterGrid& grid,
+                  int ref_begin, int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream) {
+    switch (g.block * 100 + lane_group(g, tw ? tw->ps_num : 0)) {
+#define NSS_LANE(B, L) \
+    case B * 100 + L: launch_lane<B, L>(plane, g, tw, grid, ref_begin, ref_count, out, counts, stream); break;
+    NSS_LANE(4, 8) NSS_LANE(4, 16) NSS_LANE(4, 32)
+    NSS_LANE(8, 8) NSS_LANE(8, 16) NSS_LANE(8, 32)
+    NSS_LANE(16, 8) NSS_LANE(16, 16) NSS_LANE(16, 32)
+#undef NSS_LANE
+    default: return false;
+    }
+    NSS_CUDA_CHECK_LAUNCH();
+    return true;
 }
 
 // K bounds the group size and ps_num (64 for the BM3D family, 256 for TWSC).
@@ -879,13 +929,7 @@ RasterGrid make_raster_grid(int width, int height, int block, int step) {
 void spatial_match(const float* plane, const MatchGeometry& geometry, const RasterGrid& grid, int ref_begin,
                    int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream) {
     if (ref_count <= 0) return;
-    if (lane_group(geometry) == 8) {
-        const int per_block = kLaneWarps * 4;
-        spatial_match_lane_kernel<8, 8><<<(ref_count + per_block - 1) / per_block, 32 * kLaneWarps, 0, stream>>>(
-            plane, geometry, grid, ref_begin, ref_count, out, counts);
-        NSS_CUDA_CHECK_LAUNCH();
-        return;
-    }
+    if (launch_lanes(plane, geometry, nullptr, grid, ref_begin, ref_count, out, counts, stream)) return;
     const int span = geometry.lo() + geometry.hi();
     const int candidates = (span + 1) * (span + 1);
     const int wanted = std::min(geometry.group, kMaxGroup) - 1;
@@ -914,13 +958,7 @@ void spatial_match(const float* plane, const MatchGeometry& geometry, const Rast
 void predictive_match(const MatchGeometry& geometry, const TemporalWindow& window, const RasterGrid& grid,
                       int ref_begin, int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream) {
     if (ref_count <= 0) return;
-    if (lane_group(geometry) == 8 && window.ps_num <= 8) {
-        const int per_block = kLaneWarps * 4;
-        predictive_match_lane_kernel<8, 8><<<(ref_count + per_block - 1) / per_block, 32 * kLaneWarps, 0, stream>>>(
-            geometry, window, grid, ref_begin, ref_count, out, counts);
-        NSS_CUDA_CHECK_LAUNCH();
-        return;
-    }
+    if (launch_lanes(nullptr, geometry, &window, grid, ref_begin, ref_count, out, counts, stream)) return;
     const int span = geometry.lo() + geometry.hi();
     const int wanted = std::min(geometry.group, kMaxGroup) - 1;
     const int side = 2 * window.ps_range + 1;

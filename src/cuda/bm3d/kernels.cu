@@ -250,7 +250,7 @@ __global__ void __launch_bounds__(256) group_shape_kernel(Bm3dGroupArgs a, bool 
     }
     transform_cube<B, G>(cube, true);
     constexpr float kUnscale = 1.f / (kScale * kScale);
-    if (a.fused.num) {  // in_shared
+    if (a.fused.num) {  // the cube is in shared memory (launch_shape)
         for (int i = tid; i < kCube; i += threads) {
             const int g = i / kArea, p = i % kArea;
             if (g >= kk) continue;
@@ -527,13 +527,9 @@ std::size_t bm3d_scratch_floats(int block, int group, bool wiener) {
 bool bm3d_fuses(int block, int group, bool wiener) {
     // Admitted on paired measurements against ordered aggregation. The block
     // kernel fuses whenever its cube is staged in shared memory. The warp
-    // kernel fuses except where the extra code cost more than it saved.
+    // kernel fuses except 16 / 32 (512 samples per lane: no registers left).
     if (!warp_serves(block, group, wiener)) return cube_bytes(block, group, wiener) <= kCubeSharedBytes;
-    const int shape = block * 100 + group;
-    if (shape == 1632) return false;                 // 512 samples per lane: no registers left
-    if (shape == 1616 && !wiener) return false;      // 0.93x
-    if (shape == 816 && wiener) return false;        // 0.95x
-    return true;
+    return block * 100 + group != 1632;
 }
 
 void bm3d_filter_groups(const Bm3dGroupArgs& args, cudaStream_t stream) {
