@@ -104,6 +104,13 @@ temporal = core.nss_cuda.VAggregate(fat, clip, radius=1)
     exist as a VS frame.
 - **Rolling.**
   - Each chunk of frames keeps a ring of the temporal window on the device.
+  - A chunk that follows the one its stream ran last carries on from it: the
+    window frames stay on the device and the sums that the earlier centers
+    left for its frames are kept, so it runs `rolling_chunk` centers and
+    uploads `rolling_chunk` frames instead of `rolling_chunk + 2R` and
+    `rolling_chunk + 4R`. Any other chunk starts afresh. The output is the
+    same either way. Under a `memory_limit_mb` without room for the carried
+    sums every chunk starts afresh.
   - Each center frame's contributions are added into the chunk's target
     frames: as exact fixed-point sums for the shapes that aggregate inside
     the filter kernel (below), in ascending order as the CPU does for the
@@ -150,6 +157,7 @@ temporal = core.nss_cuda.VAggregate(fat, clip, radius=1)
   bm3dcuda with the same search (measured 2026-10-06):
   - Spatial: about 1.25x with 32 VapourSynth threads (the frame transfers
     bound it); the kernels take the same time.
-  - Rolling: 1.9x at `radius = 1` and `radius = 2` with 32 threads, 1.03x
-    with one thread; it keeps the CPU's predictive search and reproducible
-    sums.
+  - Rolling, frames asked for in order: 2.7x at `radius = 1` and 3.3x at
+    `radius = 2` with 32 threads, 1.4x with one thread. Random access:
+    1.15x with one thread, 2.2x with 32. It keeps the CPU's predictive
+    search and reproducible sums.
