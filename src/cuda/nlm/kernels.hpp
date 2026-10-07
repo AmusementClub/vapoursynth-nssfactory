@@ -49,7 +49,10 @@ void nlm_finish(const float* src, const float* weight, const float* max_weight, 
 // its pixels' sums in registers through every offset of every frame pair: per
 // offset the distance map of the tile with its halo, the row sums and the
 // weights go through shared memory, so the frames are read from the device's
-// memory once and only the result is written. The sums are taken in the
+// memory once and only the result is written. Where they fit beside the maps
+// (one channel, the default radii), the block first copies the windows of the
+// centre frame and of each pair into shared memory and reads those: the
+// frames' rows of a tile do not stay in the first-level cache otherwise. The sums are taken in the
 // order of the kernels above (per pixel: j ascending, then k ascending, then
 // the offsets ascending); the distances are stored before they are summed,
 // which the kernels above may contract, so the two agree to rounding.
