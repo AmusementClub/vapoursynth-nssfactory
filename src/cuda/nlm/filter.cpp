@@ -86,6 +86,10 @@ struct WindowCache {
 struct TileSlot {
     Stream stream;
     std::array<DeviceBuffer, 3> out;
+    // With d = 1 and room for them: the weight maps two frames saved for the
+    // frames behind them, and which frames.
+    std::array<DeviceBuffer, 2> weights;
+    std::array<int, 2> weights_of{-1, -1};
 };
 
 // Where a frame in flight has its result downloaded to.
@@ -162,6 +166,8 @@ using Frames = std::vector<const VSFrame*>;
 // Frames in flight beyond one per stream on the tile path: they stage their
 // input and copy their result out while the streams work.
 constexpr std::size_t kTileExtraStages = 2;
+// Saved weight maps take at most 1 / kWeightShare of the device's memory.
+constexpr std::size_t kWeightShare = 4;
 
 void plane_frame(const NlmData& d, const Frames& srcf, const Frames& reff, VSFrame* dst, const VSAPI* vsapi) {
     auto slot = d.pool->acquire();
@@ -410,7 +416,17 @@ void tile_frame(NlmData& d, int n, const Frames& srcf, const Frames& reff, VSFra
         args.width = d.width;
         args.height = h;
         for (int c = 0; c < nc; ++c) args.out[c] = s.out[c].as<float>();
+        int save = -1;
+        if (s.weights[0].get()) {
+            // Read what frame n - 1 saved on this stream, save into the other set.
+            const int load = n > 0 && s.weights_of[0] == n - 1 ? 0 : n > 0 && s.weights_of[1] == n - 1 ? 1 : -1;
+            save = load == 0 ? 1 : 0;
+            args.weight_load = load < 0 ? nullptr : s.weights[load].as<float>();
+            args.weight_save = s.weights[save].as<float>();
+            s.weights_of[save] = -1;
+        }
         nlm_tile(args, s.stream);
+        if (save >= 0) s.weights_of[save] = n;
         for (int c = 0; c < nc; ++c) {
             begin_download(s.out[c].get(), row_bytes, row_bytes, h, out + d.plane_bytes * c, s.stream);
         }
@@ -527,13 +543,22 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     const std::size_t streams = static_cast<std::size_t>(d->backend.num_streams);
     const std::size_t window = static_cast<std::size_t>(2 * d->d + 1);
     std::size_t stages = streams + kTileExtraStages, cached = 0;
+    // With d = 1 a frame's forward weight maps are the backward maps of the
+    // frame after it, so every stream keeps two sets of (2a + 1)^2 maps: one
+    // to read, one to write (in order 469 to 560 fps at 1080p; nothing for
+    // other request orders). They are the first thing a limit takes, and
+    // without a limit they may use a quarter of the device.
+    const std::size_t span = static_cast<std::size_t>(2 * d->a + 1);
+    std::size_t weight_sets = d->d == 1 ? 2 : 0;
+    if (streams * weight_sets * span * span * d->plane_bytes > d->device.total_memory / kWeightShare) weight_sets = 0;
     auto tile_bytes = [&] {
         return d->plane_bytes * (cached * 2 * regions_per_frame(*d) + streams * d->nc +
-                                 stages * (d->nc + d->vi.format.numPlanes));
+                                 stages * (d->nc + d->vi.format.numPlanes) + streams * weight_sets * span * span);
     };
     d->tiles = nlm_tile_supported(d->d, d->a, d->s);
     if (d->tiles) {
         cached = window + stages;
+        if (tile_bytes() > limit) weight_sets = 0;
         while (tile_bytes() > limit && stages > streams) cached = window + --stages;
         while (tile_bytes() > limit && cached > window) --cached;
         d->tiles = tile_bytes() <= limit;
@@ -566,6 +591,18 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         for (std::size_t i = 0; i < streams; ++i) {
             slots.push_back(std::make_unique<TileSlot>());
             for (int c = 0; c < d->nc; ++c) slots.back()->out[c] = DeviceBuffer(d->plane_bytes, d->budget);
+            // The maps only save work: a device without room for them (other
+            // filters hold it) runs without, as before they existed.
+            try {
+                for (std::size_t w = 0; w < weight_sets; ++w) {
+                    slots.back()->weights[w] = DeviceBuffer(d->plane_bytes * span * span, d->budget);
+                }
+            } catch (const std::exception&) {
+                for (auto& slot : slots) {
+                    for (DeviceBuffer& set : slot->weights) set.reset();
+                }
+                weight_sets = 0;
+            }
         }
         d->tile_pool = std::make_unique<SlotPool<TileSlot>>(std::move(slots));
         std::vector<std::unique_ptr<TileStage>> staged;

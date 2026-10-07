@@ -36,6 +36,13 @@ core.nss_cuda.NLM(clip clip[, int d = 1, int a = 2, int s = 4, float h = 1.2,
   however many windows it is part of, in any order of requests and with any
   number of streams. Threads stage their uploads and copy their results out
   while the stream works on other frames.
+- **Weight maps are computed once with `d = 1`.** The map of a frame against
+  the next one is also the next frame's map against it, so a stream keeps
+  what a frame computed for the frame after it. This helps requests in
+  order only and costs `2 (2a + 1)²` planes per stream (396 MiB at 1080p
+  with the default `a = 2`); it is the first thing `memory_limit_mb` takes
+  away, and it is left out when it would need more than a quarter of the
+  device's memory. The output is the same with and without it.
 - **Memory.** By default the device holds `2d + 4` frames of the clip (with
   one stream). Under `memory_limit_mb` it holds fewer, down to one window. For
   `d` above 8, a patch or search window too large for a tile's shared memory

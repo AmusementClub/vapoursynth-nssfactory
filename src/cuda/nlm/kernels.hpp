@@ -67,6 +67,13 @@ struct NlmTileArgs {
     float h2_inv_norm, wref;
     int width, height;
     float* out[3];
+    // d = 1 only, either may be null. The weight map of (the next frame against this one) at offset o is
+    // also the map of (the next frame as the centre against its backward frame): weight_save takes it
+    // for every offset ((2a + 1)^2 planes, offset (ox, oy) at (oy + a) * (2a + 1) + ox + a), and
+    // weight_load holds what the frame before saved, which tiles away from the border read instead of
+    // computing their backward maps.
+    float* weight_save;
+    const float* weight_load;
 };
 // Whether the window (2d + 1 frames) and the tile's shared memory fit.
 bool nlm_tile_supported(int d, int a, int s);

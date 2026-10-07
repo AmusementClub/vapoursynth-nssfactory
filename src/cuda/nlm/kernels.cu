@@ -182,7 +182,8 @@ __device__ __forceinline__ void tile_weights(float* dm, float* hs, float* wt, co
                                              const float* neighbor_window, const NlmPlanes& center,
                                              const NlmPlanes& neighbor, NlmDistance mode, int ox, int oy, int s,
                                              float h2_inv_norm, int width, int height, int rx0, int ry0, int rx1,
-                                             int ry1, int tid, bool interior, int stride, int origin, int plane) {
+                                             int ry1, int tid, bool interior, int stride, int origin, int plane,
+                                             float* save = nullptr) {
     const int rw = rx1 - rx0 + 1, rh = ry1 - ry0 + 1;
     const int dw = rw + 2 * s, dh = rh + 2 * s;
     const float inv_dw = 1.0f / static_cast<float>(dw);
@@ -216,7 +217,14 @@ __device__ __forceinline__ void tile_weights(float* dm, float* hs, float* wt, co
         hs[e] = box_sum<S>(dm + ey * dw + (e - ey * rw), 1, s);
     }
     __syncthreads();
-    for (int e = tid; e < rw * rh; e += NT) wt[e] = fast_exp(-box_sum<S>(hs + e, rw, s) * h2_inv_norm);
+    for (int e = tid; e < rw * rh; e += NT) {
+        const float value = fast_exp(-box_sum<S>(hs + e, rw, s) * h2_inv_norm);
+        wt[e] = value;
+        if (save) {
+            const int ey = element_row(e, inv_rw);
+            save[(ry0 + ey) * width + rx0 + e - ey * rw] = value;
+        }
+    }
     __syncthreads();
 }
 
@@ -235,8 +243,10 @@ constexpr long long window_floats(int tw, int th, int a, int s, int channels) {
 // A block of TW * TH / PIX threads owns a TW x TH tile; a thread keeps the
 // sums of PIX of its pixels.
 // With IMG the block reads the centre frame and the current pair from copies
-// of their windows in shared memory.
-template <int TW, int TH, int PIX, int S, bool IMG>
+// of their windows in shared memory. With KEEP it saves and loads weight maps
+// (NlmTileArgs::weight_save, weight_load); without, the kernel is the one
+// that knows nothing of them.
+template <int TW, int TH, int PIX, int S, bool IMG, bool KEEP>
 __global__ void tile_kernel(NlmTileArgs a) {
     constexpr int NT = TW * TH / PIX;
     extern __shared__ float shared[];
@@ -261,6 +271,8 @@ __global__ void tile_kernel(NlmTileArgs a) {
         for (int c = 0; c < 3; ++c) sum[k][c] = 0.f;
     }
     const int span = 2 * a.a + 1;
+    const float* const weight_load = KEEP ? a.weight_load : nullptr;
+    float* const weight_save = KEEP ? a.weight_save : nullptr;
     // Whether every pixel the tile reads (halo a + s, neighbours a further) is inside the image.
     const int reach = 2 * a.a + s;
     const bool interior = x0 >= reach && y0 >= reach && x0 + TW + reach <= width && y0 + TH + reach <= height;
@@ -306,15 +318,23 @@ __global__ void tile_kernel(NlmTileArgs a) {
                         u4_mq[k] = wt[(my - ry0) * rw + mx - rx0];
                     }
                 } else {
-                    tile_weights<NT, S, IMG>(dm, hs, wt, img, bwd_img, center, bwd, a.distance, ox, oy, s,
-                                             a.h2_inv_norm, width, height, x0, y0, x1, y1, tid, interior, stride,
-                                             origin, plane);
-                    for (int k = 0; k < PIX; ++k) {
-                        if (inside[k]) u4[k] = wt[(y[k] - y0) * (x1 - x0 + 1) + x[k] - x0];
+                    const long long maps = static_cast<long long>((oy + a.a) * span + ox + a.a) * width * height;
+                    // The frame before saved this map wherever p + o is inside the image.
+                    if (weight_load && x0 + ox >= 0 && x1 + ox < width && y0 + oy >= 0 && y1 + oy < height) {
+                        for (int k = 0; k < PIX; ++k) {
+                            if (inside[k]) u4[k] = weight_load[maps + y[k] * width + x[k]];
+                        }
+                    } else {
+                        tile_weights<NT, S, IMG>(dm, hs, wt, img, bwd_img, center, bwd, a.distance, ox, oy, s,
+                                                 a.h2_inv_norm, width, height, x0, y0, x1, y1, tid, interior, stride,
+                                                 origin, plane);
+                        for (int k = 0; k < PIX; ++k) {
+                            if (inside[k]) u4[k] = wt[(y[k] - y0) * (x1 - x0 + 1) + x[k] - x0];
+                        }
                     }
                     tile_weights<NT, S, IMG>(dm, hs, wt, fwd_img, img, fwd, center, a.distance, ox, oy, s,
                                              a.h2_inv_norm, width, height, qx0, qy0, qx1, qy1, tid, interior, stride,
-                                             origin, plane);
+                                             origin, plane, weight_save ? weight_save + maps : nullptr);
                     for (int k = 0; k < PIX; ++k) {
                         if (!inside[k]) continue;
                         const int mx = clampi(x[k] - ox, 0, width - 1), my = clampi(y[k] - oy, 0, height - 1);
@@ -369,10 +389,18 @@ void launch_shape_s(const NlmTileArgs& args, cudaStream_t stream) {
     const long long all = maps + window_floats(TW, TH, args.a, args.s, args.channels);
     // The windows only where they fit beside the maps: with more shared memory than every device grants
     // without asking, one block per SM is left and the copies cost more than they save.
-    if (all * static_cast<long long>(sizeof(float)) <= kTileSharedBytes) {
-        tile_kernel<TW, TH, PIX, S, true><<<grid, TW * TH / PIX, all * sizeof(float), stream>>>(args);
+    const bool windows = all * static_cast<long long>(sizeof(float)) <= kTileSharedBytes;
+    const std::size_t shared = (windows ? all : maps) * sizeof(float);
+    const unsigned threads = TW * TH / PIX;
+    const bool keep = args.weight_save || args.weight_load;
+    if (windows && keep) {
+        tile_kernel<TW, TH, PIX, S, true, true><<<grid, threads, shared, stream>>>(args);
+    } else if (windows) {
+        tile_kernel<TW, TH, PIX, S, true, false><<<grid, threads, shared, stream>>>(args);
+    } else if (keep) {
+        tile_kernel<TW, TH, PIX, S, false, true><<<grid, threads, shared, stream>>>(args);
     } else {
-        tile_kernel<TW, TH, PIX, S, false><<<grid, TW * TH / PIX, maps * sizeof(float), stream>>>(args);
+        tile_kernel<TW, TH, PIX, S, false, false><<<grid, threads, shared, stream>>>(args);
     }
 }
 
