@@ -78,61 +78,10 @@ Install `libnss.so` into the VapourSynth plugin directory.
 
 `-DNSS_ENABLE_CUDA=ON` also builds `libnss_cuda` (namespace `nss_cuda`). It
 needs nvcc from CUDA 12.4 or newer; Windows builds use nvcc with MSVC `cl.exe`.
-All nine filters are available:
-
-- `core.nss_cuda.BM3D`: spatial, `ref`/Wiener, temporal, `chroma` (CBM3D),
-  and `final` (both stages on the device). See `docs/api/bm3d.md`.
-- `core.nss_cuda.NLM`: all channel modes, temporal `d`, and `rclip`. See
-  `docs/api/nlm.md`.
-- `core.nss_cuda.WNNM`, `core.nss_cuda.MCWNNM` and `core.nss_cuda.NCSR`: spatial
-  and temporal. See `docs/api/wnnm.md`,
-  `docs/api/mcwnnm.md` and `docs/api/ncsr.md`.
-- `core.nss_cuda.NLH` and `core.nss_cuda.TWSC`: given or blind sigma,
-  Gray/YUV/RGB, and temporal. See `docs/api/nlh.md`
-  and `docs/api/twsc.md`.
-- `core.nss_cuda.LSSC`. See `docs/api/lssc.md`.
-- `core.nss_cuda.VAggregate`, which also accepts CPU fat intermediates
-  (a host-side reduction).
-- `core.nss_cuda.Version()`.
-- `core.nss_cuda.Backend()`, which reports the device, driver/runtime
-  versions and the support level.
-
-Each filter takes the same arguments as its `nss` counterpart, plus
-`device_id` and `num_streams` at the end, and gives the same errors under the
-`nss_cuda` name. The one difference in behaviour is the temporal output
-(below). Outputs agree with the CPU plugin to 60 dB PSNR or better
-(not bit-for-bit) and are identical from run to run.
-
-- **`device_id`** (default 0) selects the GPU; one filter instance uses one
-  device.
-- **`num_streams`** (default 1, up to 16) is the number of frames an instance
-  processes at once. Each stream owns its device buffers. The host copies of
-  several frames (or temporal chunks) run around one stream, which keeps the
-  device busy for the fast filters: 1080p BM3D on an RTX 5080 runs at about
-  790 fps with one stream and with three, and at `radius = 1` at about 310
-  fps with one and 350 with three.
-- **`memory_limit_mb`** has no default in `nss_cuda`: without it the filter
-  takes what its plan needs, and a device allocation that fails is reported
-  as the CUDA out-of-memory error. With it, the value caps the instance's
-  device and pinned host memory and the internal batches are fitted to it; a
-  limit that cannot hold the streams is a creation error. Nothing degrades
-  silently in either case.
-- **Temporal filtering.** With `radius > 0` the device filters return
-  finished, normal-height frames: no `VAggregate` call is needed.
-  - BM3D, WNNM and single-round NCSR keep the temporal accumulation on the
-    device; the other filters reduce the intermediate inside the filter.
-  - `temporal_mode="legacy"` returns the fat intermediate for `VAggregate`
-    instead, exactly as the CPU plugin does; use it to mix backends or to
-    keep an existing script unchanged.
-  - The finished-frame mode needs more memory than legacy.
-  - It works in chunks of `rolling_chunk` frames and keeps finished chunks
-    for later requests: `rolling_cache_chunks` at first (default 1), growing
-    to `rolling_cache_limit` (default 16) when requests jump between
-    positions. Sequential rendering, a chained second stage and a temporal
-    filter downstream compute each chunk once. Fully random access costs a
-    chunk per miss; `temporal_mode="legacy"` does not depend on the order.
-- **Driver.** A prebuilt plugin needs a driver for the CUDA release it was
-  built with (12.9 for the release packages) or newer.
+All nine filters are available under the same arguments as `nss`, plus
+`device_id` and `num_streams`; with `radius > 0` they return finished frames
+by default. The [CUDA reference](docs/api/cuda.md) has the arguments, the
+temporal output, memory, numerics, driver requirements and measured speed.
 
 - **Default architectures:** native code for sm_75, sm_86, sm_89 and sm_120,
   plus compute_75 PTX. Toolkits older than 12.8 cannot target sm_120, so RTX 50

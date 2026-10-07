@@ -68,28 +68,8 @@ Cost scales with `1/step^2` for matching plus per-group SVD work growing with
   useful.
 - This filter emits no `_NSS*` frame properties; diagnostics live on NLH/TWSC.
 
-## CUDA (`core.nss_cuda.WNNM`)
+## CUDA
 
-`core.nss_cuda.WNNM` (from `libnss_cuda`, built with `-DNSS_ENABLE_CUDA=ON`)
-takes the same arguments and gives the same errors as `nss.WNNM`. It adds
-`device_id` (default 0) and `num_streams` (default 1) at the end of the argument list.
-
-- **Device-resident.** Matching, the per-group SVD shrinkage and the
-  aggregation all run on the device. With `temporal_mode = "legacy"`, `radius > 0` returns the same fat
-  intermediate as the CPU, so either backend's `VAggregate` can reduce it.
-- **Temporal output.** With `radius > 0` the device plugin returns finished,
-  normal-height frames by default (`temporal_mode = "rolling"`): it
-  keeps the temporal accumulation on the device and copies back only final frames.
-  `temporal_mode = "legacy"` returns the fat intermediate instead, as the CPU
-  plugin does. `rolling_chunk` (default 4, range 1 to 64) and
-  `rolling_cache_chunks` / `rolling_cache_limit` (defaults 1 and 16) set the
-  chunk size and the number of finished chunks kept at first and at most; they
-  only matter where the accumulation stays on the device.
-- **Numerics.** The SVD is taken through the FP32 Gram matrix with a cyclic
-  Jacobi eigensolver.
-  - The output is not bit-identical to the CPU, but is inside the 60 dB gate
-    (86–143 dB on the frozen references).
-  - The output is run-to-run identical: every group is solved in a fixed
-    order, and aggregation is ordered.
-  - Groups of up to 8 patches run one thread per group. Larger groups run one
-    thread block per group with a round-robin parallel Jacobi.
+`core.nss_cuda.WNNM` takes the same arguments. What is specific to the device
+(extra arguments, temporal output, memory, numerics, speed) is in the
+[CUDA reference](cuda.md#wnnm).

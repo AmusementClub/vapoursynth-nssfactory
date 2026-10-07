@@ -65,30 +65,8 @@ with `1/step^2 * bm_range^2`; per-group cost scales with the PCA/SVD solve at
 - `radius > 0` output requires `VAggregate`.
 - No `_NSS*` frame properties on this filter.
 
-## CUDA (`core.nss_cuda.NCSR`)
+## CUDA
 
-`core.nss_cuda.NCSR` (from `libnss_cuda`, built with `-DNSS_ENABLE_CUDA=ON`)
-takes the same arguments and gives the same errors as `nss.NCSR`. It adds
-`device_id` (default 0) and `num_streams` (default 1) at the end of the argument list.
-
-- **Device-resident.** Matching, the per-group PCA and centralized shrinkage,
-  the aggregation and all outer rounds run on the device. `radius > 0`
-  returns the same fat intermediate as the CPU, so either backend's
-  `VAggregate` can reduce it.
-- **Temporal output.** With `radius > 0` the device plugin returns finished,
-  normal-height frames by default (`temporal_mode = "rolling"`): it
-  keeps the temporal accumulation on the device when `iters = 1`; with more rounds it reduces the fat intermediate with `nss_cuda.VAggregate` inside the filter.
-  `temporal_mode = "legacy"` returns the fat intermediate instead, as the CPU
-  plugin does. `rolling_chunk` (default 4, range 1 to 64) and
-  `rolling_cache_chunks` / `rolling_cache_limit` (defaults 1 and 16) set the
-  chunk size and the number of finished chunks kept at first and at most; they
-  only matter where the accumulation stays on the device.
-- **Numerics.** The PCA is taken through the FP32 Gram matrix with a cyclic
-  Jacobi eigensolver, and the column weights use `expf` where the CPU uses
-  its fast exponential.
-  - The output is not bit-identical to the CPU, but is inside the 60 dB gate
-    (105–139 dB on the frozen references).
-  - The output is run-to-run identical: every group is solved in a fixed
-    order, and aggregation is ordered.
-  - Groups of up to 8 patches run one thread per group. Larger groups run one
-    thread block per group with a round-robin parallel Jacobi.
+`core.nss_cuda.NCSR` takes the same arguments. What is specific to the device
+(extra arguments, temporal output, memory, numerics, speed) is in the
+[CUDA reference](cuda.md#ncsr).
