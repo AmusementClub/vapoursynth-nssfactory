@@ -96,6 +96,13 @@ def main():
         # Tiles of one pixel row or column at the right and bottom edges.
         ("gray 65x33", make_clip(core, vs.GRAYS, 65, 33, 5), dict(a=4)),
         ("gray 20x9", make_clip(core, vs.GRAYS, 20, 9, 6), dict(a=3, s=5)),
+        # Tiles with nothing outside the image (they skip the clamping), with and without
+        # the frames' windows in shared memory (one channel with the default radii has them).
+        ("gray 200x150", make_clip(core, vs.GRAYS, 200, 150, 7, length=3), {}),
+        ("gray 200x150 a4", make_clip(core, vs.GRAYS, 200, 150, 7, length=3), dict(a=4, s=2)),
+        ("gray 200x150 rclip", make_clip(core, vs.GRAYS, 200, 150, 7, length=3),
+         dict(rclip=make_clip(core, vs.GRAYS, 200, 150, 8, length=3))),
+        ("rgb 150x110", make_clip(core, vs.RGBS, 150, 110, 9, length=3), {}),
     ]
     if args.quick:
         cases = [cases[0], cases[5], cases[7], cases[9]]
