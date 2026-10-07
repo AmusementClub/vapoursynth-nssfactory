@@ -591,8 +591,17 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         for (std::size_t i = 0; i < streams; ++i) {
             slots.push_back(std::make_unique<TileSlot>());
             for (int c = 0; c < d->nc; ++c) slots.back()->out[c] = DeviceBuffer(d->plane_bytes, d->budget);
-            for (std::size_t w = 0; w < weight_sets; ++w) {
-                slots.back()->weights[w] = DeviceBuffer(d->plane_bytes * span * span, d->budget);
+            // The maps only save work: a device without room for them (other
+            // filters hold it) runs without, as before they existed.
+            try {
+                for (std::size_t w = 0; w < weight_sets; ++w) {
+                    slots.back()->weights[w] = DeviceBuffer(d->plane_bytes * span * span, d->budget);
+                }
+            } catch (const std::exception&) {
+                for (auto& slot : slots) {
+                    for (DeviceBuffer& set : slot->weights) set.reset();
+                }
+                weight_sets = 0;
             }
         }
         d->tile_pool = std::make_unique<SlotPool<TileSlot>>(std::move(slots));

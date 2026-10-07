@@ -136,6 +136,13 @@ def main():
             count += 1
             if value < floor:
                 failures.append(f"order {label} frame {n}: psnr {value:.2f} < {floor}")
+        # One node asked in order keeps what a frame computed for the next one
+        # (the weight maps of d = 1): the frames must be those of the fresh nodes.
+        node = core.nss_cuda.NLM(clip, num_streams=1, **kw)
+        for n in range(clip.num_frames):
+            count += 1
+            if any(not np.array_equal(x, y) for x, y in zip(frame_planes(node, n), expected[n])):
+                failures.append(f"order {label} frame {n}: asked in order differs from a fresh node's frame")
         rng = np.random.default_rng(5)
         for streams in (1, 2, 3):
             node = core.nss_cuda.NLM(clip, num_streams=streams, **kw)
