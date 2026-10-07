@@ -76,7 +76,7 @@ give, bit for bit.
 - With `radius > 0` the basic stage is temporal too, and its finished frames
   are the reference of the second stage in either temporal mode.
 - On the CPU this is the two calls chained. On `nss_cuda` the estimate stays
-  on the device (see the [CUDA reference](cuda.md#bm3d-and-vaggregate)).
+  on the device (see the [CUDA page](cuda/bm3d.md)).
 
 ## Color (CBM3D)
 
@@ -131,4 +131,4 @@ dominant cost driver is `block_step` (positions scale as `1/step^2`), then
 
 `core.nss_cuda.BM3D` and `core.nss_cuda.VAggregate` take the same arguments. What is specific to the device
 (extra arguments, temporal output, memory, numerics, speed) is in the
-[CUDA reference](cuda.md#bm3d-and-vaggregate).
+[CUDA page](cuda/bm3d.md) and [cuda/vaggregate.md](cuda/vaggregate.md).

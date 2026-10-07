@@ -108,4 +108,4 @@ stage dominates; blind estimation adds a full step-1 matching pass per frame.
 
 `core.nss_cuda.NLH` takes the same arguments. What is specific to the device
 (extra arguments, temporal output, memory, numerics, speed) is in the
-[CUDA reference](cuda.md#nlh).
+[CUDA page](cuda/nlh.md).

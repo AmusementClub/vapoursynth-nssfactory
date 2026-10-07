@@ -78,4 +78,4 @@ directly; `block_step` scales positions as usual.
 
 `core.nss_cuda.MCWNNM` takes the same arguments. What is specific to the device
 (extra arguments, temporal output, memory, numerics, speed) is in the
-[CUDA reference](cuda.md#mcwnnm).
+[CUDA page](cuda/mcwnnm.md).

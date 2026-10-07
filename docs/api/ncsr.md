@@ -69,4 +69,4 @@ with `1/step^2 * bm_range^2`; per-group cost scales with the PCA/SVD solve at
 
 `core.nss_cuda.NCSR` takes the same arguments. What is specific to the device
 (extra arguments, temporal output, memory, numerics, speed) is in the
-[CUDA reference](cuda.md#ncsr).
+[CUDA page](cuda/ncsr.md).

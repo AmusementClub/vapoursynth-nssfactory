@@ -72,4 +72,4 @@ Cost scales with `1/step^2` for matching plus per-group SVD work growing with
 
 `core.nss_cuda.WNNM` takes the same arguments. What is specific to the device
 (extra arguments, temporal output, memory, numerics, speed) is in the
-[CUDA reference](cuda.md#wnnm).
+[CUDA page](cuda/wnnm.md).

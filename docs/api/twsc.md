@@ -89,4 +89,4 @@ work.
 
 `core.nss_cuda.TWSC` takes the same arguments. What is specific to the device
 (extra arguments, temporal output, memory, numerics, speed) is in the
-[CUDA reference](cuda.md#twsc).
+[CUDA page](cuda/twsc.md).

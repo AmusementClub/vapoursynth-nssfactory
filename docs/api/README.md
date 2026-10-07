@@ -29,8 +29,8 @@ count; treat them as cost tiers, not promises.
 heavier (see the per-page performance notes). All other rows are exact defaults.
 
 The CUDA plugin `libnss_cuda` (namespace `nss_cuda`) has the same filters with
-the same arguments. Everything specific to it is on one page: the
-[CUDA reference](cuda.md).
+the same arguments. Everything specific to it, with a page per function, is in the
+[CUDA reference](cuda/README.md).
 
 ## Conventions shared by every filter
 
@@ -45,7 +45,7 @@ the same arguments. Everything specific to it is on one page: the
   intermediate* (a taller frame stack; numerator/denominator per temporal
   slice) for an explicit `VAggregate` call. The device plugin (`nss_cuda`)
   returns finished frames by default instead; see the
-  [CUDA reference](cuda.md#temporal-output). With `radius = 0` every filter
+  [CUDA reference](cuda/README.md#temporal-output). With `radius = 0` every filter
   returns a normal-height frame.
 - **`rclip` / `ref`**: an optional reference clip (same format/size) that guides
   matching; denoising still targets `clip`.

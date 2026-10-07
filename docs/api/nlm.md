@@ -65,4 +65,4 @@ Cost scales with `(2a+1)^2 * (2d+1)`; `s` has a smaller linear effect.
 
 `core.nss_cuda.NLM` takes the same arguments. What is specific to the device
 (extra arguments, temporal output, memory, numerics, speed) is in the
-[CUDA reference](cuda.md#nlm).
+[CUDA page](cuda/nlm.md).
