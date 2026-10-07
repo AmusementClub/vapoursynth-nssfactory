@@ -662,7 +662,10 @@ void mcwnnm_filter_groups(const McwnnmGroupArgs& given, cudaStream_t stream) {
     args.classes = 0;
     for (int c = 0; c < 3; ++c) {
         int cls = 0;
-        while (cls < args.classes && args.sigma[args.channel_of[cls]] != args.sigma[c]) ++cls;
+        // A channel without noise is pinned to its input by a weight of 1e12
+        // and stays a class of its own: two of them as one class agreed with
+        // the CPU to 102 dB where they reach 136 dB apart.
+        while (cls < args.classes && !(args.sigma[c] > 0.f && args.sigma[args.channel_of[cls]] == args.sigma[c])) ++cls;
         if (cls == args.classes) args.channel_of[args.classes++] = c;
         args.class_of[c] = cls;
     }

@@ -92,6 +92,10 @@ def main():
         ("gray rclip", gray, dict(sigma=5, rclip=guide, **small)),
         ("yuv420 per-plane", yuv420, dict(sigma=[5, 0, 3], **small)),
         ("rgb default", rgb, dict(sigma=5, **small)),
+        # Groups of up to 8: many groups (more than one chunk of the scratch)
+        # and a block wider than the 8 threads of a group.
+        ("gray step2", gray, dict(sigma=5, block_step=2, **small)),
+        ("gray b16 g8", gray, dict(sigma=8, block_size=16, block_step=8, **small)),
     ]
     temporal = [
         ("gray r1", gray, dict(sigma=5, radius=1, **small)),
