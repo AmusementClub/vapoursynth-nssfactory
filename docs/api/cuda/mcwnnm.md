@@ -47,7 +47,9 @@ arguments are described under [temporal output](README.md#temporal-output).
     integer atomics on fixed-point sums (exact, so independent of the
     order); temporal output sorts its patches and sums them in a fixed
     order.
-  - Groups of up to 8 patches run one thread per group. Larger groups run 16
-    or 32 threads per group with a round-robin parallel Jacobi.
+  - Groups of up to 8 patches run as three kernels: the channel Gram
+    matrices and the output read the patches with 8 threads per group, and
+    the ADMM runs one thread per group. Larger groups run 16 or 32 threads
+    per group with a round-robin parallel Jacobi.
 - **Memory.** The ADMM state costs about 2.5 KiB of device memory per group
   at the defaults.

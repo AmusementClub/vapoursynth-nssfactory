@@ -8,9 +8,167 @@
 namespace nss_cuda {
 namespace {
 
-// Up to 8 columns: one thread per group with fixed loop bounds and order
-// (run-to-run identical). N is the column capacity; columns beyond the
-// group's count are zero and contribute zero singular values.
+// Scratch of the kernels for up to 8 columns: matrix m of channel c at
+// (m * 3 + c) * group^2 (kVectors: channel 0 only), the aggregation weight at
+// kMcwnnmWeight * group^2. Interleaved over chunks of 64 groups (element e of
+// group r at e * width + r % 64, width the groups of the chunk), so the
+// warps of the solve kernel and the 8-thread groups of the other two both
+// touch consecutive words.
+enum { kGram = 0, kP = 1, kQ = 2, kVectors = 3 };
+constexpr int kMcwnnmWeight = 10, kMcwnnmChunk = 64, kMcwnnmLanes = 8, kMcwnnmWarps = 4;
+
+__device__ __forceinline__ int mcwnnm_width(const McwnnmGroupArgs& a, int r) {
+    return min(kMcwnnmChunk, a.batch - r / kMcwnnmChunk * kMcwnnmChunk);
+}
+__device__ __forceinline__ float* mcwnnm_state(const McwnnmGroupArgs& a, int r) {
+    const long long per = 10LL * a.group * a.group + 1;  // mcwnnm_scratch_floats
+    return a.scratch + (r / kMcwnnmChunk) * kMcwnnmChunk * per + r % kMcwnnmChunk;
+}
+
+// The centered pixel at `offset` of the group's patches and its mean.
+__device__ __forceinline__ float mcwnnm_pixel(const float* const* col, long long offset, int n, bool residual,
+                                              float* value) {
+    constexpr int N = 8;
+    float sum = 0.f;
+#pragma unroll
+    for (int j = 0; j < N; ++j) {
+        value[j] = j < n ? col[j][offset] : 0.f;
+        sum += value[j];
+    }
+    const float mean = residual ? sum * (1.f / static_cast<float>(n)) : 0.f;
+#pragma unroll
+    for (int j = 0; j < N; ++j) value[j] = j < n ? value[j] - mean : 0.f;
+    return mean;
+}
+
+// Up to 8 columns, first of three kernels: the channel Gram matrices of the
+// centered input. 8 threads per group, thread l taking the pixels of column
+// l (l + 8, ...) of every patch, so a row of a patch is one request of the
+// group's threads; a shuffle tree adds the 8 partial sums.
+__global__ void mcwnnm_rows_kernel(McwnnmGroupArgs a) {
+    constexpr int N = 8;
+    const int lane = threadIdx.x % kMcwnnmLanes;
+    const int slot = (blockIdx.x * blockDim.x + threadIdx.x) / kMcwnnmLanes;
+    const bool live = slot < a.batch;
+    const int r = live ? slot : a.batch - 1;  // idle groups mirror the last one and store nothing
+    const int n = min(a.counts[r], a.group);
+    const DeviceMatch* match = a.matches + static_cast<long long>(r) * a.group;
+    const float* col[N];
+#pragma unroll
+    for (int j = 0; j < N; ++j) {
+        const DeviceMatch& mj = match[j < n ? j : 0];
+        col[j] = a.src[mj.t] + static_cast<long long>(mj.y) * a.pitch + mj.x;
+    }
+    const int square = a.group * a.group, width = mcwnnm_width(a, r);
+    float* const state = mcwnnm_state(a, r);
+    for (int c = 0; c < 3; ++c) {
+        float g[N * (N + 1) / 2];
+#pragma unroll
+        for (int e = 0; e < N * (N + 1) / 2; ++e) g[e] = 0.f;
+        for (int row = 0; row < a.block; ++row) {
+            for (int x = lane; x < a.block; x += kMcwnnmLanes) {
+                float y[N];
+                mcwnnm_pixel(col, c * a.channel_step + static_cast<long long>(row) * a.pitch + x, n, a.residual, y);
+#pragma unroll
+                for (int j = 0; j < N; ++j) {
+#pragma unroll
+                    for (int k = 0; k <= j; ++k) g[j * (j + 1) / 2 + k] = fmaf(y[j], y[k], g[j * (j + 1) / 2 + k]);
+                }
+            }
+        }
+#pragma unroll
+        for (int j = 0; j < N; ++j) {
+#pragma unroll
+            for (int k = 0; k <= j; ++k) {
+                const int e = j * (j + 1) / 2 + k;
+                float sum = g[e];
+#pragma unroll
+                for (int offset = 1; offset < kMcwnnmLanes; offset <<= 1) sum += __shfl_xor_sync(0xffffffffu, sum, offset);
+                if (live && j < n && e % kMcwnnmLanes == lane) {
+                    state[static_cast<long long>((kGram * 3 + c) * square + j * a.group + k) * width] = sum;
+                    state[static_cast<long long>((kGram * 3 + c) * square + k * a.group + j) * width] = sum;
+                }
+            }
+        }
+    }
+}
+
+// Third: the output Y_c Z_c in the layout of the first, with Z_c and the
+// aggregation weight from the solve kernel.
+__global__ void mcwnnm_apply_kernel(McwnnmGroupArgs a) {
+    constexpr int N = 8;
+    const int lane = threadIdx.x % kMcwnnmLanes;
+    const int r = (blockIdx.x * blockDim.x + threadIdx.x) / kMcwnnmLanes;
+    if (r >= a.batch) return;  // no shuffles or barriers below
+    const int area = a.block * a.block;
+    const int n = min(a.counts[r], a.group);
+    const DeviceMatch* match = a.matches + static_cast<long long>(r) * a.group;
+    const float* col[N];
+#pragma unroll
+    for (int j = 0; j < N; ++j) {
+        const DeviceMatch& mj = match[j < n ? j : 0];
+        col[j] = a.src[mj.t] + static_cast<long long>(mj.y) * a.pitch + mj.x;
+    }
+    const int square = a.group * a.group, width = mcwnnm_width(a, r);
+    const float* const state = mcwnnm_state(a, r);
+    const float patch_weight = state[static_cast<long long>(kMcwnnmWeight) * square * width];
+    const bool fused = a.fused.num != nullptr;
+    long long cell[N];
+#pragma unroll
+    for (int j = 0; j < N; ++j) {
+        cell[j] = fused && j < n ? fixed_patch_cell(a.fused, match[j].t, match[j].y, match[j].x) : -1;
+    }
+    const long long channel_values = static_cast<long long>(a.batch) * a.group * area;
+    float* const out = a.values + static_cast<long long>(r) * a.group * area;  // channel c at + c * channel_values
+    for (int c = 0; c < 3; ++c) {
+        float z[N * N];
+#pragma unroll
+        for (int k = 0; k < N; ++k) {
+#pragma unroll
+            for (int j = 0; j < N; ++j) {
+                z[k * N + j] =
+                    k < n && j < n ? state[static_cast<long long>((kP * 3 + c) * square + k * a.group + j) * width] : 0.f;
+            }
+        }
+        unsigned long long* const num = a.fused.num + c * a.fused.channel_step;
+        for (int row = 0; row < a.block; ++row) {
+            for (int x = lane; x < a.block; x += kMcwnnmLanes) {
+                float y[N];
+                const float mean =
+                    mcwnnm_pixel(col, c * a.channel_step + static_cast<long long>(row) * a.pitch + x, n, a.residual, y);
+                const int target = row * a.fused.pitch + x;
+#pragma unroll
+                for (int j = 0; j < N; ++j) {
+                    float sum = 0.f;
+#pragma unroll
+                    for (int k = 0; k < N; ++k) sum = fmaf(y[k], z[k * N + j], sum);
+                    if (fused) {
+                        if (cell[j] >= 0) fixed_add(num, cell[j] + target, patch_weight * (sum + mean));
+                    } else if (j < n) {
+                        out[c * channel_values + j * area + row * a.block + x] = sum + mean;
+                    }
+                }
+            }
+        }
+        if (fused && lane == 0) {
+            // The den once per patch, at its first cell: the finish box-sums it.
+#pragma unroll
+            for (int j = 0; j < N; ++j) {
+                if (cell[j] >= 0) fixed_add(a.fused.den + c * a.fused.channel_step, cell[j], patch_weight);
+            }
+        }
+    }
+    if (fused || lane != 0) return;
+    for (int j = 0; j < a.group; ++j) {
+        a.patches[static_cast<long long>(r) * a.group + j] =
+            j < n ? AggregatePatch{match[j].x, match[j].y, match[j].t, patch_weight} : AggregatePatch{0, 0, -1, 0.f};
+    }
+}
+
+// Second: the ADMM, one thread per group with fixed loop bounds and order
+// (run-to-run identical), on the Gram matrices of the first kernel. N is the
+// column capacity; columns beyond the group's count are zero and contribute
+// zero singular values.
 //
 // The ADMM runs on n x n matrices instead of the m x n iterates. Every step
 // after the eigen step treats a row of X and A alone and linearly, with
@@ -20,9 +178,9 @@ namespace {
 //   Q_c' = Q_c + rho (P_c - Z_c),
 //   P_c' = (w_c I + rho' / 2 (Z_c - Q_c' / rho')) / (w_c + rho' / 2),
 // and the Gram matrix of the next shrinkage input T_c' = P_c' + Q_c' / rho'
-// is sum_c T_c'^T (Y_c^T Y_c) T_c'. The image rows are streamed twice: for
-// the three channel Gram matrices, and for the output Y_c Z_c of the last
-// iteration.
+// is sum_c T_c'^T (Y_c^T Y_c) T_c'. The image rows are streamed twice, by
+// the kernels around this one: for the three channel Gram matrices, and for
+// the output Y_c Z_c of the last iteration.
 //
 // An iteration's eigen step starts from the eigenvectors V of the one
 // before: the Gram matrix is taken to V^T G V, which is nearly diagonal once
@@ -34,32 +192,21 @@ __global__ void mcwnnm_group_kernel(McwnnmGroupArgs a) {
     const int area = a.block * a.block;
     const int m = 3 * area;
     const int n = min(a.counts[r], a.group);
-    const DeviceMatch* match = a.matches + static_cast<long long>(r) * a.group;
-    const float* col[N];
-    // Called again before the output pass, so the pointers do not hold
-    // registers through the iterations.
-    const auto locate = [&] {
-#pragma unroll
-        for (int j = 0; j < N; ++j) {
-            const DeviceMatch& mj = match[j < n ? j : 0];
-            col[j] = a.src[mj.t] + static_cast<long long>(mj.y) * a.pitch + mj.x;
-        }
-    };
-    locate();
-    // Per channel the input Gram matrix, P and Q, and the eigenvectors of
-    // the last eigen step, each group x group and interleaved across the
-    // block's groups (element e of thread l at e * lanes + l), so a warp's
-    // accesses to one element coalesce.
-    const int lanes = min(static_cast<int>(blockDim.x), a.batch - static_cast<int>(blockIdx.x * blockDim.x));
+    // Per channel the input Gram matrix (from the rows kernel), P and Q, and
+    // the eigenvectors of the last eigen step, each group x group and
+    // interleaved across the block's groups (mcwnnm_state).
+    const int lanes = mcwnnm_width(a, r);
     const int square = a.group * a.group;
-    float* const state = a.scratch + static_cast<long long>(blockIdx.x) * blockDim.x * 10 * square + threadIdx.x;
+    float* const state = mcwnnm_state(a, r);
+    // A row's address, then its element: written this way the kernel keeps
+    // the 8 strides k * lanes in registers instead of an offset per element,
+    // which pushed the matrices out to local memory (9.9 M spill requests
+    // per launch against 1.3 M; 148 fps against 169).
+    const long long stride = lanes;
     const auto at = [&](int matrix, int c, int j, int k) -> float& {
-        return state[static_cast<long long>((matrix * 3 + c) * square + j * a.group + k) * lanes];
+        float* const row = state + static_cast<long long>((matrix * 3 + c) * square + j * a.group) * stride;
+        return row[k * stride];
     };
-    enum { kGram = 0, kP = 1, kQ = 2, kVectors = 3 };  // kVectors: channel 0 only
-    const long long channel_values = static_cast<long long>(a.batch) * a.group * area;
-    float* out = a.values + static_cast<long long>(r) * a.group * area;  // channel c at + c * channel_values
-    const bool fused = a.fused.num != nullptr;
 
     float g[N * N], v[N * N], next[N * N];  // registers
 
@@ -77,51 +224,21 @@ __global__ void mcwnnm_group_kernel(McwnnmGroupArgs a) {
     const float constant = 8.f * sqrtf(2.f * static_cast<float>(n)) * smin * smin;
     const int rank = min(m, n);
     const int start_k = a.residual ? 0 : 1;
-    const float inv_n = 1.f / static_cast<float>(n);
 
-    // Row i of the (centered) input and its mean.
-    const auto load_row = [&](int i, float* row) {
-        const int c = i / area, p = i % area;
-        const long long offset = c * a.channel_step + static_cast<long long>(p / a.block) * a.pitch + p % a.block;
-        float sum = 0.f;
-#pragma unroll
-        for (int j = 0; j < N; ++j) {
-            row[j] = j < n ? col[j][offset] : 0.f;
-            sum += row[j];
-        }
-        const float mean = a.residual ? sum * inv_n : 0.f;
-#pragma unroll
-        for (int j = 0; j < N; ++j) row[j] = j < n ? row[j] - mean : 0.f;
-        return mean;
-    };
-
-    // The channel Gram matrices; P_c = scale_c I and Q_c = 0 (X0 = argmin
-    // with Z = A = 0), whose shrinkage input is X0 itself.
+    // P_c = scale_c I and Q_c = 0 (X0 = argmin with Z = A = 0), whose
+    // shrinkage input is X0 itself.
     float rho = a.rho;
 #pragma unroll
     for (int i = 0; i < N * N; ++i) next[i] = 0.f;
     for (int c = 0; c < 3; ++c) {
-#pragma unroll
-        for (int i = 0; i < N * N; ++i) g[i] = 0.f;
-        for (int p = 0; p < area; ++p) {
-            float y[N];
-            load_row(c * area + p, y);
-#pragma unroll
-            for (int j = 0; j < N; ++j) {
-#pragma unroll
-                for (int k = 0; k <= j; ++k) g[j * N + k] = fmaf(y[j], y[k], g[j * N + k]);
-            }
-        }
         const float scale = weight[c] / (weight[c] + 0.5f * rho);
 #pragma unroll
         for (int j = 0; j < N; ++j) {
 #pragma unroll
             for (int k = 0; k <= j; ++k) {
-                const float value = g[j * N + k];
+                const float value = j < n ? at(kGram, c, j, k) : 0.f;
                 next[j * N + k] = fmaf(scale * scale, value, next[j * N + k]);
                 if (j < n) {
-                    at(kGram, c, j, k) = value;
-                    at(kGram, c, k, j) = value;
                     at(kP, c, j, k) = j == k ? scale : 0.f;
                     at(kP, c, k, j) = j == k ? scale : 0.f;
                     at(kQ, c, j, k) = 0.f;
@@ -235,33 +352,12 @@ __global__ void mcwnnm_group_kernel(McwnnmGroupArgs a) {
                 }
             }
             if (last) {
-                // Output rows Y_c Z_c.
-                if (c == 0) locate();
-                const float patch_weight = a.adaptive && kept > 0 ? 1.f / static_cast<float>(kept) : 1.f;
-                unsigned long long* const num = a.fused.num + c * a.fused.channel_step;
-                for (int p = 0; p < area; ++p) {
-                    float y[N];
-                    const float mean = load_row(c * area + p, y);
-                    const int target = (p / a.block) * a.fused.pitch + p % a.block;
+                // Z_c for the apply kernel, in P_c's place.
+#pragma unroll
+                for (int row = 0; row < N; ++row) {
 #pragma unroll
                     for (int j = 0; j < N; ++j) {
-                        float sum = 0.f;
-#pragma unroll
-                        for (int k = 0; k < N; ++k) sum = fmaf(y[k], v[k * N + j], sum);
-                        if (j >= n) continue;
-                        if (fused) {
-                            const long long cell = fixed_patch_cell(a.fused, match[j].t, match[j].y, match[j].x);
-                            if (cell >= 0) fixed_add(num, cell + target, patch_weight * (sum + mean));
-                        } else {
-                            out[c * channel_values + j * area + p] = sum + mean;
-                        }
-                    }
-                }
-                if (fused) {
-                    // The den once per patch, at its first cell: the finish box-sums it.
-                    for (int j = 0; j < n; ++j) {
-                        const long long cell = fixed_patch_cell(a.fused, match[j].t, match[j].y, match[j].x);
-                        if (cell >= 0) fixed_add(a.fused.den + c * a.fused.channel_step, cell, patch_weight);
+                        if (row < n && j < n) at(kP, c, row, j) = v[row * N + j];
                     }
                 }
                 continue;
@@ -287,12 +383,7 @@ __global__ void mcwnnm_group_kernel(McwnnmGroupArgs a) {
         }
         rho = next_rho;
     }
-    if (fused) return;
-    const float patch_weight = a.adaptive && kept > 0 ? 1.f / static_cast<float>(kept) : 1.f;
-    for (int j = 0; j < a.group; ++j) {
-        a.patches[static_cast<long long>(r) * a.group + j] =
-            j < n ? AggregatePatch{match[j].x, match[j].y, match[j].t, patch_weight} : AggregatePatch{0, 0, -1, 0.f};
-    }
+    state[static_cast<long long>(kMcwnnmWeight) * square * lanes] = a.adaptive && kept > 0 ? 1.f / static_cast<float>(kept) : 1.f;
 }
 
 // Above 8 columns: N threads per group and 32 / N groups per block (a block's
@@ -545,7 +636,12 @@ void mcwnnm_filter_groups(const McwnnmGroupArgs& args, cudaStream_t stream) {
     if (args.batch <= 0) return;
     const unsigned batch = static_cast<unsigned>(args.batch);
     if (args.group <= 8) {
-        mcwnnm_group_kernel<8><<<(batch + 63) / 64, 64, 0, stream>>>(args);
+        const unsigned per_block = kMcwnnmWarps * 32 / kMcwnnmLanes;
+        mcwnnm_rows_kernel<<<(batch + per_block - 1) / per_block, kMcwnnmWarps * 32, 0, stream>>>(args);
+        NSS_CUDA_CHECK_LAUNCH();
+        mcwnnm_group_kernel<8><<<(batch + kMcwnnmChunk - 1) / kMcwnnmChunk, kMcwnnmChunk, 0, stream>>>(args);
+        NSS_CUDA_CHECK_LAUNCH();
+        mcwnnm_apply_kernel<<<(batch + per_block - 1) / per_block, kMcwnnmWarps * 32, 0, stream>>>(args);
     } else if (args.group <= 16) {
         mcwnnm_block_kernel<16><<<(batch + 1) / 2, 32, 0, stream>>>(args);
     } else {
