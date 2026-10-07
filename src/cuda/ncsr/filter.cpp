@@ -2,6 +2,7 @@
 // nss_cuda.NCSR: parse_ncsr with the "nss_cuda" prefix (D14) around the
 // shared group driver (outer rounds with delta relaxation) and the NCSR group
 // kernel. rclip guides matching in the first round only.
+#include "cuda/common/gram_group.hpp"
 #include "cuda/common/group_driver.hpp"
 #include "cuda/ncsr/kernels.hpp"
 #include "frontend/validate.hpp"
@@ -65,8 +66,10 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         args.values = l.values;
         args.patches = l.patches;
         args.fused = l.fused;
+        args.scratch = l.scratch;
         ncsr_filter_groups(args, l.stream);
     };
+    config.scratch_floats = [](const GroupPlane& g, bool) { return gram_scratch_floats(g.group); };
     group_filter_install(std::move(config), out, core, vsapi);
     if (temporal.rolling && !device_rolling) {
         nss::frontend::aggregate_rolling(vsapi, in, out, core, nss::kWnnmDefaultRadius, "NCSR", "nss_cuda");

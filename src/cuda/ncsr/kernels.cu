@@ -87,7 +87,7 @@ struct NcsrModel {
 
 void ncsr_filter_groups(const NcsrGroupArgs& args, cudaStream_t stream) {
     const GramGroupArgs shell{args.src, args.pitch, args.matches, args.counts, args.batch,
-                              args.block, args.group, args.values, args.patches, args.fused};
+                              args.block, args.group, args.values, args.patches, args.fused, args.scratch};
     launch_gram_groups(shell, NcsrModel{args.sigma}, stream);
 }
 
