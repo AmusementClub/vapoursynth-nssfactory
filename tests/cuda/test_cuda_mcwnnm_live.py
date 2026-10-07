@@ -95,6 +95,16 @@ def main():
         ("rgb g32 b9", rgb, dict(sigma=8, group_size=32, block_size=9, block_step=5, **small)),
         ("rgb b2 g32", rgb, dict(sigma=8, group_size=32, block_size=2, block_step=2, **small)),
         ("rgb rclip", rgb, dict(sigma=5, rclip=guide, **small)),
+        # Channels of equal sigma iterate as one class: two classes, and
+        # several classes in the block kernel; many groups (more than one
+        # chunk of the scratch) and a block wider than the 8 threads of a group.
+        ("rgb two classes", rgb, dict(sigma=[5, 5, 3], **small)),
+        ("rgb two bypassed", rgb, dict(sigma=[5, 0, 0], **small)),
+        ("rgb g16 per-channel sigma", rgb, dict(sigma=[4, 8, 6], group_size=16, block_step=4, **small)),
+        ("rgb g16 two classes", rgb, dict(sigma=[5, 3, 5], group_size=16, block_step=4, **small)),
+        ("rgb g32 two classes", rgb, dict(sigma=[5, 5, 3], group_size=32, block_size=9, block_step=5, **small)),
+        ("rgb step2", rgb, dict(sigma=5, block_step=2, **small)),
+        ("rgb b9 g8", rgb, dict(sigma=5, block_size=9, block_step=5, **small)),
     ]
     temporal = [
         ("rgb r1", rgb, dict(sigma=5, radius=1, **small)),

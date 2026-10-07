@@ -61,18 +61,24 @@ __global__ void mcwnnm_rows_kernel(McwnnmGroupArgs a) {
     }
     const int square = a.group * a.group, width = mcwnnm_width(a, r);
     float* const state = mcwnnm_state(a, r);
-    for (int c = 0; c < 3; ++c) {
+    for (int cls = 0; cls < a.classes; ++cls) {
+        // The class's channels into one sum.
         float g[N * (N + 1) / 2];
 #pragma unroll
         for (int e = 0; e < N * (N + 1) / 2; ++e) g[e] = 0.f;
-        for (int row = 0; row < a.block; ++row) {
-            for (int x = lane; x < a.block; x += kMcwnnmLanes) {
-                float y[N];
-                mcwnnm_pixel(col, c * a.channel_step + static_cast<long long>(row) * a.pitch + x, n, a.residual, y);
+        for (int c = 0; c < 3; ++c) {
+            if (a.class_of[c] != cls) continue;
+            for (int row = 0; row < a.block; ++row) {
+                for (int x = lane; x < a.block; x += kMcwnnmLanes) {
+                    float y[N];
+                    mcwnnm_pixel(col, c * a.channel_step + static_cast<long long>(row) * a.pitch + x, n, a.residual, y);
 #pragma unroll
-                for (int j = 0; j < N; ++j) {
+                    for (int j = 0; j < N; ++j) {
 #pragma unroll
-                    for (int k = 0; k <= j; ++k) g[j * (j + 1) / 2 + k] = fmaf(y[j], y[k], g[j * (j + 1) / 2 + k]);
+                        for (int k = 0; k <= j; ++k) {
+                            g[j * (j + 1) / 2 + k] = fmaf(y[j], y[k], g[j * (j + 1) / 2 + k]);
+                        }
+                    }
                 }
             }
         }
@@ -85,8 +91,8 @@ __global__ void mcwnnm_rows_kernel(McwnnmGroupArgs a) {
 #pragma unroll
                 for (int offset = 1; offset < kMcwnnmLanes; offset <<= 1) sum += __shfl_xor_sync(0xffffffffu, sum, offset);
                 if (live && j < n && e % kMcwnnmLanes == lane) {
-                    state[static_cast<long long>((kGram * 3 + c) * square + j * a.group + k) * width] = sum;
-                    state[static_cast<long long>((kGram * 3 + c) * square + k * a.group + j) * width] = sum;
+                    state[static_cast<long long>((kGram * 3 + cls) * square + j * a.group + k) * width] = sum;
+                    state[static_cast<long long>((kGram * 3 + cls) * square + k * a.group + j) * width] = sum;
                 }
             }
         }
@@ -127,7 +133,8 @@ __global__ void mcwnnm_apply_kernel(McwnnmGroupArgs a) {
 #pragma unroll
             for (int j = 0; j < N; ++j) {
                 z[k * N + j] =
-                    k < n && j < n ? state[static_cast<long long>((kP * 3 + c) * square + k * a.group + j) * width] : 0.f;
+                    k < n && j < n ? state[static_cast<long long>((kP * 3 + a.class_of[c]) * square + k * a.group + j) * width]
+                                   : 0.f;
             }
         }
         unsigned long long* const num = a.fused.num + c * a.fused.channel_step;
@@ -182,6 +189,11 @@ __global__ void mcwnnm_apply_kernel(McwnnmGroupArgs a) {
 // the kernels around this one: for the three channel Gram matrices, and for
 // the output Y_c Z_c of the last iteration.
 //
+// Channels of equal sigma have equal weights, hence equal P, Q and Z, and
+// their terms of the next Gram matrix add up to T^T (sum of their Gram
+// matrices) T. They iterate as one class (McwnnmGroupArgs::classes): with
+// one sigma for all three, a third of the state and of the work on it.
+//
 // An iteration's eigen step starts from the eigenvectors V of the one
 // before: the Gram matrix is taken to V^T G V, which is nearly diagonal once
 // the iterates settle, and the sweeps go on from V.
@@ -230,8 +242,8 @@ __global__ void mcwnnm_group_kernel(McwnnmGroupArgs a) {
     float rho = a.rho;
 #pragma unroll
     for (int i = 0; i < N * N; ++i) next[i] = 0.f;
-    for (int c = 0; c < 3; ++c) {
-        const float scale = weight[c] / (weight[c] + 0.5f * rho);
+    for (int c = 0; c < a.classes; ++c) {  // c: a class of channels from here on
+        const float scale = weight[a.channel_of[c]] / (weight[a.channel_of[c]] + 0.5f * rho);
 #pragma unroll
         for (int j = 0; j < N; ++j) {
 #pragma unroll
@@ -313,8 +325,8 @@ __global__ void mcwnnm_group_kernel(McwnnmGroupArgs a) {
         }
         const float next_rho = fminf(1e4f, a.mu * rho);
         const float inv_rho = 1.f / rho, inv_next = 1.f / next_rho, half_next = 0.5f * next_rho;
-        for (int c = 0; c < 3; ++c) {
-            const float w = weight[c];
+        for (int c = 0; c < a.classes; ++c) {
+            const float w = weight[a.channel_of[c]];
             const float reciprocal = 1.f / (w + half_next);
             // Row by row: Z_c, then Q_c', P_c' and T_c' (in v); on the last
             // iteration v keeps Z_c.
@@ -396,14 +408,18 @@ __global__ void mcwnnm_group_kernel(McwnnmGroupArgs a) {
 template <int N>
 __global__ void mcwnnm_block_kernel(McwnnmGroupArgs a) {
     constexpr int kGroups = 32 / N;
-    __shared__ float g_all[kGroups][N * N], v_all[kGroups][N * N], t_all[kGroups][N * N], u_all[kGroups][N * N];
+    __shared__ float g_all[kGroups][N * N], v_all[kGroups][N * N], t_all[kGroups][N * N];
     __shared__ float cs_all[kGroups][N + 2];
+    // u (products that all threads read) is a fourth matrix only with
+    // several classes: with one, g is free whenever u is in use, and the
+    // matrix less is a third more groups per SM.
+    extern __shared__ float u_all[];
     __shared__ int flag, kept_all[kGroups];
     const int slot = threadIdx.x / N, lane = threadIdx.x % N;
     float* const g = g_all[slot];
     float* const v = v_all[slot];
     float* const t = t_all[slot];
-    float* const u = u_all[slot];
+    float* const u = a.classes == 1 ? g : u_all + slot * N * N;
     float* const cs = cs_all[slot];
     int& kept = kept_all[slot];
     const bool live = static_cast<int>(blockIdx.x) * kGroups + slot < a.batch;
@@ -464,17 +480,20 @@ __global__ void mcwnnm_block_kernel(McwnnmGroupArgs a) {
     float next[N], acc[N];
 #pragma unroll
     for (int k = 0; k < N; ++k) next[k] = 0.f;
-    for (int c = 0; c < 3; ++c) {
+    for (int c = 0; c < a.classes; ++c) {  // c: a class of channels from here on (see the thread kernel)
 #pragma unroll
         for (int k = 0; k < N; ++k) acc[k] = 0.f;
-        for (int p = 0; p < area; ++p) {
-            float y[N];
-            load_row(c, p, y);
-            const float own = y[lane];
+        for (int channel = 0; channel < 3; ++channel) {
+            if (a.class_of[channel] != c) continue;
+            for (int p = 0; p < area; ++p) {
+                float y[N];
+                load_row(channel, p, y);
+                const float own = y[lane];
 #pragma unroll
-            for (int k = 0; k < N; ++k) acc[k] = fmaf(own, y[k], acc[k]);
+                for (int k = 0; k < N; ++k) acc[k] = fmaf(own, y[k], acc[k]);
+            }
         }
-        const float scale = weight[c] / (weight[c] + 0.5f * rho);
+        const float scale = weight[a.channel_of[c]] / (weight[a.channel_of[c]] + 0.5f * rho);
 #pragma unroll
         for (int k = 0; k < N; ++k) {
             next[k] = fmaf(scale * scale, acc[k], next[k]);
@@ -519,6 +538,7 @@ __global__ void mcwnnm_block_kernel(McwnnmGroupArgs a) {
                 for (int i = 0; i < N; ++i) sum = fmaf(v[i * N + lane], u[i * N + k], sum);
                 acc[k] = sum;
             }
+            __syncthreads();  // u may be g: every thread has read it before one writes
 #pragma unroll
             for (int k = 0; k < N; ++k) {
                 if (k <= lane) g[lane * N + k] = acc[k];
@@ -537,8 +557,8 @@ __global__ void mcwnnm_block_kernel(McwnnmGroupArgs a) {
         const bool last = it + 1 == a.admm_iter;
         const float next_rho = fminf(1e4f, a.mu * rho);
         const float inv_rho = 1.f / rho, inv_next = 1.f / next_rho, half_next = 0.5f * next_rho;
-        for (int c = 0; c < 3; ++c) {
-            const float w = weight[c];
+        for (int c = 0; c < a.classes; ++c) {
+            const float w = weight[a.channel_of[c]];
             const float reciprocal = 1.f / (w + half_next);
             // Row `lane` of Z_c = (P_c + Q_c / rho) V C, then of Q_c', P_c'
             // and T_c' (into t); on the last iteration t keeps Z_c.
@@ -577,25 +597,29 @@ __global__ void mcwnnm_block_kernel(McwnnmGroupArgs a) {
             }
             __syncthreads();
             if (last) {
-                // Output column `lane` of Y_c Z_c.
+                // Output column `lane` of Y Z for every channel of the class.
                 if (mine && (!fused || cell >= 0)) {
                     const float patch_weight = a.adaptive && kept > 0 ? 1.f / static_cast<float>(kept) : 1.f;
 #pragma unroll
                     for (int k = 0; k < N; ++k) acc[k] = t[k * N + lane];
-                    for (int p = 0; p < area; ++p) {
-                        float y[N];
-                        const float mean = load_row(c, p, y);
-                        float sum = 0.f;
+                    for (int channel = 0; channel < 3; ++channel) {
+                        if (a.class_of[channel] != c) continue;
+                        for (int p = 0; p < area; ++p) {
+                            float y[N];
+                            const float mean = load_row(channel, p, y);
+                            float sum = 0.f;
 #pragma unroll
-                        for (int k = 0; k < N; ++k) sum = fmaf(y[k], acc[k], sum);
-                        if (fused) {
-                            fixed_add(a.fused.num + c * a.fused.channel_step,
-                                      cell + (p / a.block) * a.fused.pitch + p % a.block, patch_weight * (sum + mean));
-                        } else {
-                            out[c * channel_values + lane * area + p] = sum + mean;
+                            for (int k = 0; k < N; ++k) sum = fmaf(y[k], acc[k], sum);
+                            if (fused) {
+                                fixed_add(a.fused.num + channel * a.fused.channel_step,
+                                          cell + (p / a.block) * a.fused.pitch + p % a.block,
+                                          patch_weight * (sum + mean));
+                            } else {
+                                out[channel * channel_values + lane * area + p] = sum + mean;
+                            }
                         }
+                        if (fused) fixed_add(a.fused.den + channel * a.fused.channel_step, cell, patch_weight);
                     }
-                    if (fused) fixed_add(a.fused.den + c * a.fused.channel_step, cell, patch_weight);
                 }
                 __syncthreads();
                 continue;
@@ -632,8 +656,19 @@ __global__ void mcwnnm_block_kernel(McwnnmGroupArgs a) {
 
 }  // namespace
 
-void mcwnnm_filter_groups(const McwnnmGroupArgs& args, cudaStream_t stream) {
-    if (args.batch <= 0) return;
+void mcwnnm_filter_groups(const McwnnmGroupArgs& given, cudaStream_t stream) {
+    if (given.batch <= 0) return;
+    McwnnmGroupArgs args = given;
+    args.classes = 0;
+    for (int c = 0; c < 3; ++c) {
+        int cls = 0;
+        // A channel without noise is pinned to its input by a weight of 1e12
+        // and stays a class of its own: two of them as one class agreed with
+        // the CPU to 102 dB where they reach 136 dB apart.
+        while (cls < args.classes && !(args.sigma[c] > 0.f && args.sigma[args.channel_of[cls]] == args.sigma[c])) ++cls;
+        if (cls == args.classes) args.channel_of[args.classes++] = c;
+        args.class_of[c] = cls;
+    }
     const unsigned batch = static_cast<unsigned>(args.batch);
     if (args.group <= 8) {
         const unsigned per_block = kMcwnnmWarps * 32 / kMcwnnmLanes;
@@ -643,9 +678,10 @@ void mcwnnm_filter_groups(const McwnnmGroupArgs& args, cudaStream_t stream) {
         NSS_CUDA_CHECK_LAUNCH();
         mcwnnm_apply_kernel<<<(batch + per_block - 1) / per_block, kMcwnnmWarps * 32, 0, stream>>>(args);
     } else if (args.group <= 16) {
-        mcwnnm_block_kernel<16><<<(batch + 1) / 2, 32, 0, stream>>>(args);
+        mcwnnm_block_kernel<16><<<(batch + 1) / 2, 32, args.classes == 1 ? 0 : 2 * 16 * 16 * sizeof(float), stream>>>(args);
     } else {
-        mcwnnm_block_kernel<32><<<batch, 32, 0, stream>>>(args);  // nss::kWnnmMaxGroup
+        // nss::kWnnmMaxGroup
+        mcwnnm_block_kernel<32><<<batch, 32, args.classes == 1 ? 0 : 32 * 32 * sizeof(float), stream>>>(args);
     }
     NSS_CUDA_CHECK_LAUNCH();
 }
