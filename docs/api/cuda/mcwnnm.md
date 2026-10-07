@@ -51,5 +51,9 @@ arguments are described under [temporal output](README.md#temporal-output).
     matrices and the output read the patches with 8 threads per group, and
     the ADMM runs one thread per group. Larger groups run 16 or 32 threads
     per group with a round-robin parallel Jacobi.
+  - Channels with the same `sigma` have the same weight and iterate as
+    one: with one `sigma` for all three (the default) the ADMM keeps and
+    updates a third of the state. Different values per channel cost up to
+    a quarter of the speed.
 - **Memory.** The ADMM state costs about 2.5 KiB of device memory per group
   at the defaults.

@@ -40,6 +40,13 @@ struct McwnnmGroupArgs {
     // With num set the kernel aggregates (channel c at + c * channel_step
     // cells); values and patches are unused.
     FixedTarget fused{};
+    // Filled by mcwnnm_filter_groups: channels of equal sigma have the same
+    // weight and so the same P, Q and Z; they form a class, which iterates
+    // once on the sum of its channels' Gram matrices. Channel c belongs to
+    // class class_of[c]; class k has the weight of channel channel_of[k].
+    int classes = 3;
+    int class_of[3] = {0, 1, 2};
+    int channel_of[3] = {0, 1, 2};
 };
 
 // Per channel the input Gram matrix, P and Q; the last eigenvectors and the
