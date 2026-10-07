@@ -40,6 +40,7 @@ struct GroupPlane {
     // output is made of float slices: the driver clears the flag for it.
     bool fused = false;
     // Filled by the driver:
+    bool wiener = false;  // its launches get a guide (the Wiener reference)
     int width = 0, height = 0;
     std::size_t floats = 0;
     RasterGrid grid{};
@@ -91,6 +92,14 @@ struct GroupFilterConfig {
     // patch records and weights. Unlike joint groups this is one round per
     // plane, so rolling output and fused aggregation remain available.
     bool shared_match = false;
+    // Two stages in one node (BM3D final): the source is first filtered with
+    // `basic` and no guide, and that estimate stays on the device as the
+    // guide of the second stage, `planes`. The node takes no guide clip then.
+    // Spatial and rolling output, one round, one plane per unit or a
+    // shared_match unit. basic[i].active: the first stage filters plane i
+    // (otherwise the estimate of that plane is the source).
+    bool two_stage = false;
+    GroupPlane basic[3];
     // Outer rounds (MCWNNM, NCSR): every round after the first relaxes the
     // estimate toward the input by delta, re-matches on the estimate (the
     // guide only drives the first round) and filters the estimate again.

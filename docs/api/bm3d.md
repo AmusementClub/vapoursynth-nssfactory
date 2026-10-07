@@ -11,6 +11,7 @@ out = core.nss.BM3D(clip, sigma=25)                       # spatial default
 fine = core.nss.BM3D(clip, sigma=25, block_size=8, block_step=4, bm_range=10)
 temporal = core.nss.BM3D(clip, sigma=25, radius=2)        # see radius note below
 color = core.nss.BM3D(yuv444, sigma=[25, 15, 15], chroma=1)  # CBM3D: groups from luma
+both = core.nss.BM3D(clip, sigma=25, final=1)             # basic + Wiener stage in one call
 ```
 
 ## Signature
@@ -19,7 +20,8 @@ color = core.nss.BM3D(yuv444, sigma=[25, 15, 15], chroma=1)  # CBM3D: groups fro
 core.nss.BM3D(clip clip[, clip ref, float[] sigma = 3.0, int[] block_size = 8,
               int[] group_size = 8, int[] block_step, int[] bm_range = 7,
               int radius = 0, int[] ps_num, int[] ps_range = 4, int chroma = 0,
-              int memory_limit_mb])
+              int final = 0, float[] sigma_basic, int[] block_size_basic,
+              int[] group_size_basic, int memory_limit_mb])
 ```
 
 Array-typed parameters take one value per plane; a single value broadcasts.
@@ -46,6 +48,35 @@ Omitted `block_step` adapts to `min(8, block_size)` per plane; omitted
 | `ps_num` | min(2, group) | [1, group] | Predictive-search seeds kept per temporal step (only used with `radius > 0`). |
 | `ps_range` | 4 | [1, 64] | Predictive-search window radius around each seed (temporal mode). |
 | `memory_limit_mb` | none | — | Workspace cap; fails instead of degrading. |
+
+## Both stages in one call (`final`)
+
+`BM3D(clip, final=1, ...)` runs the basic stage and then the Wiener stage
+with the basic estimate as its reference. It gives exactly what the two calls
+
+```python
+basic = core.nss.BM3D(clip, sigma=sigma_basic, block_size=block_size_basic,
+                      group_size=group_size_basic, ...)   # finished frames
+out = core.nss.BM3D(clip, ref=basic, sigma=sigma, block_size=block_size,
+                    group_size=group_size, ...)
+```
+
+give, bit for bit.
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `final` | 0 | 1 runs both stages. Cannot be combined with `ref` (which supplies a basic estimate of your own). |
+| `sigma_basic` | `sigma` | Noise level of the basic stage, per plane. 0 leaves a plane's estimate as the source. |
+| `block_size_basic` | `block_size` | Patch edge of the basic stage. |
+| `group_size_basic` | `group_size` | Group size of the basic stage. |
+
+- The other arguments hold for both stages. An omitted `block_step` or
+  `ps_num` adapts to each stage's block and group; a given one must fit both.
+- The `*_basic` arguments need `final=1`.
+- With `radius > 0` the basic stage is temporal too, and its finished frames
+  are the reference of the second stage in either temporal mode.
+- On the CPU this is the two calls chained. On `nss_cuda` the estimate stays
+  on the device (see the CUDA section).
 
 ## Color (CBM3D)
 
@@ -134,8 +165,13 @@ temporal = core.nss_cuda.VAggregate(fat, clip, radius=1)
     left for its frames are kept, so it runs `rolling_chunk` centers and
     uploads `rolling_chunk` frames instead of `rolling_chunk + 2R` and
     `rolling_chunk + 4R`. Any other chunk starts afresh. The output is the
-    same either way. Under a `memory_limit_mb` without room for the carried
-    sums every chunk starts afresh.
+    same either way.
+  - A frame is finished as soon as its last center has run, so a plane keeps
+    2R + 1 slices of sums whatever `rolling_chunk` is; the chunk's finished
+    frames wait on the device and are downloaded together.
+  - Under a `memory_limit_mb` without room for it, the planes of a clip take
+    turns on one state (each chunk then starts afresh unless the clip has one
+    plane) and finished frames are downloaded one by one.
   - Each center frame's contributions are added into the chunk's target
     frames: as exact fixed-point sums for the shapes that aggregate inside
     the filter kernel (below), in ascending order as the CPU does for the
@@ -174,10 +210,12 @@ temporal = core.nss_cuda.VAggregate(fat, clip, radius=1)
   with smaller internal batches to fit (the output does not change). The
   smallest limit one stream accepts at 4K, for GRAYS / YUV420 / YUV444 or RGB:
   - Spatial: about 350 / 370 / 420, and 420 / 430 / 480 with `ref`.
-  - Rolling, `radius = 1`: 1400 / 1560 / 2030, and 1750 / 1900 / 2380 with `ref`.
+  - Rolling, `radius = 1`: 1140 / 1300 / 1780, and 1490 / 1650 / 2130 with `ref`.
   - Rolling, `radius = 2`: 1590 / 1750 / 2220, and 2130 / 2280 / 2760 with `ref`.
   - Legacy with `ref`: 990 / 1090 / 1370 at `radius = 1`, 1630 / 1790 / 2260
     at `radius = 2`.
+  - Rolling with `final=1`: 1810 / 1970 / 2440 at `radius = 1`, 2760 / 2920 /
+    3390 at `radius = 2`.
 - **Performance.** At 1080p GRAYS on an RTX 5080, one stream, against
   bm3dcuda with the same search (measured 2026-10-06):
   - Spatial: about 1.25x with 32 VapourSynth threads (the frame transfers
@@ -186,6 +224,14 @@ temporal = core.nss_cuda.VAggregate(fat, clip, radius=1)
     `radius = 2` with 32 threads, 1.4x with one thread. Random access:
     1.15x with one thread, 2.2x with 32. It keeps the CPU's predictive
     search and reproducible sums.
+  - `final=1` keeps the basic estimate on the device: one upload and one
+    download per plane instead of three and two. Against the two calls,
+    GRAYS: 303 to 730 fps spatial, 297 to 458 at `radius = 1`, 293 to 347 at
+    `radius = 2`; YUV420: 204 to 433 spatial, 192 to 297 at `radius = 1`;
+    YUV444 with `chroma=1`: 95 to 241 spatial, 95 to 199 at `radius = 1`.
+    Rolling reads 4R frames on each side of a chunk that starts afresh
+    (2R for one stage) and keeps a source ring of 4R + 1 frames. The legacy
+    intermediate with `final=1` is the two calls chained.
   - `chroma=1` at YUV444: 243 fps spatial (separate planes 286: the host
     copies bound both, and three planes per frame go less evenly), 238 fps
     at `radius = 1` (separate 222) and 229 at `radius = 2` (separate 179).

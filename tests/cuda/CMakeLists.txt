@@ -63,6 +63,11 @@ add_test(NAME test_cuda_temporal_rolling
                  --plugin "${NSS_CUDA_PLUGIN}" --namespace nss_cuda --native-rolling BM3D,WNNM,NCSR
                  --default-mode rolling)
 set_tests_properties(test_cuda_temporal_rolling PROPERTIES LABELS cuda SKIP_RETURN_CODE 77)
+# BM3D final=1 against the two calls it stands for, bit for bit.
+add_test(NAME test_cuda_bm3d_final
+         COMMAND ${Python3_EXECUTABLE} "${PROJECT_SOURCE_DIR}/tests/test_bm3d_final.py"
+                 --plugin "${NSS_CUDA_PLUGIN}" --namespace nss_cuda)
+set_tests_properties(test_cuda_bm3d_final PROPERTIES LABELS cuda SKIP_RETURN_CODE 77)
 # Live CPU-vs-GPU filter checks need the CPU plugin as the reference.
 if(TARGET nss)
   foreach(filter bm3d nlm wnnm mcwnnm ncsr nlh twsc lssc)

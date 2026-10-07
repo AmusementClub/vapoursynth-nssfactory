@@ -513,9 +513,12 @@ __global__ void __launch_bounds__(kThreads) predictive_match_warp_kernel(MatchGe
 // behind it one lane up.
 // - L <= B: lane j owns the columns j, j + L, ... of the block and a shuffle
 //   tree over the L lanes totals a candidate.
-// - L > B: the lanes form L / B parts of B lanes. Each part takes a column
-//   of its own (lane j the block column j % B), so L / B candidates are
-//   summed at once and then entered one after the other.
+// - L > B: the lanes form parts of W lanes, W the block width rounded up to
+//   a power of two. Each part takes a column of its own (lane j the block
+//   column j % W), so L / W candidates are summed at once and then entered
+//   one after the other.
+// A lane whose column lies beyond the block (widths that are not a power of
+// two, as 12) adds nothing.
 // A window is scanned column by column, so that the next candidate is the
 // block one row down: each lane keeps its B rows in registers and reads one
 // new row per candidate. The loops are the same for every reference (the
@@ -548,22 +551,33 @@ __device__ __forceinline__ DeviceMatch lane_match(unsigned long long key, int t)
     return DeviceMatch{static_cast<int>(at & 0xffffu), static_cast<int>(at >> 16), t, __uint_as_float(bits)};
 }
 
-// Block columns a lane owns, and candidates summed at once.
+// Lanes that total one candidate, block columns a lane owns, and candidates
+// summed at once.
 template <int B, int L>
-constexpr int kLaneCols = L <= B ? B / L : 1;
+constexpr int kLaneWidth = L <= B ? L : detail::pow2_at_least(B);
 template <int B, int L>
-constexpr int kLaneParts = L <= B ? 1 : L / B;
+constexpr int kLaneCols = L <= B ? (B + L - 1) / L : 1;
+template <int B, int L>
+constexpr int kLaneParts = L / kLaneWidth<B, L>;
+// Column c of the lane at `sub` within its part, and whether the block has it.
+template <int B, int L>
+__device__ __forceinline__ int lane_column(int sub, int c) {
+    return sub % kLaneWidth<B, L> + c * kLaneWidth<B, L>;
+}
+template <int B, int L>
+constexpr bool kLaneEven = B % kLaneWidth<B, L> == 0;
 
-// The lane's terms of the reference block, row-major: ref[row * kLaneCols + c].
+// The lane's terms of the reference block, row-major: ref[row * kLaneCols + c]
+// (the value is not used for a column the block does not have).
 template <int B, int L>
 __device__ __forceinline__ void lane_reference(const float* plane, const MatchGeometry& g, int cx, int cy, int sub,
                                                float* ref) {
     constexpr int kCols = kLaneCols<B, L>;
-    const float* at = plane + static_cast<long long>(cy) * g.pitch + cx + sub % B;
+    const float* at = plane + static_cast<long long>(cy) * g.pitch + cx;
 #pragma unroll
     for (int row = 0; row < B; ++row) {
 #pragma unroll
-        for (int c = 0; c < kCols; ++c) ref[row * kCols + c] = at[row * g.pitch + c * L];
+        for (int c = 0; c < kCols; ++c) ref[row * kCols + c] = at[row * g.pitch + min(lane_column<B, L>(sub, c), B - 1)];
     }
 }
 
@@ -578,14 +592,22 @@ __device__ __forceinline__ void lane_scan(const float* plane, const MatchGeometr
                                           bool enabled, unsigned skip, int lane, const float* ref,
                                           unsigned long long& held) {
     const int sub = lane % L;
-    static_assert(L <= B ? B % L == 0 : L % B == 0, "lanes own whole columns, or parts whole blocks");
-    constexpr int kCols = kLaneCols<B, L>, kParts = kLaneParts<B, L>;
+    constexpr int kCols = kLaneCols<B, L>, kParts = kLaneParts<B, L>, kWidth = kLaneWidth<B, L>;
+    // Columns of this lane inside the block, clamped for the reads; `has`
+    // says which exist (all of them when the width divides the block).
+    int column[kCols];
+    bool has[kCols];
+#pragma unroll
+    for (int c = 0; c < kCols; ++c) {
+        has[c] = kLaneEven<B, L> || lane_column<B, L>(sub, c) < B;
+        column[c] = min(lane_column<B, L>(sub, c), B - 1);
+    }
     const int max_x = g.width - B, max_y = g.height - B, last_row = g.height - 1;
     const int bottom = my + hi;
     for (int x0 = mx - lo; x0 <= mx + hi; x0 += kParts) {
-        const int x = x0 + sub / B;  // this part's column
+        const int x = x0 + sub / kWidth;  // this part's column
         const bool col_ok = enabled && x >= 0 && x <= max_x && x <= mx + hi;
-        const float* col = plane + min(max(x, 0), max_x) + sub % B;
+        const float* col = plane + min(max(x, 0), max_x);
         // v[c * B + slot]: the rows of the current block, as a ring. Before
         // phase i, row y + k is in slot (i + 1 + k) % B for k < B - 1.
         float v[kCols * B];
@@ -593,7 +615,7 @@ __device__ __forceinline__ void lane_scan(const float* plane, const MatchGeometr
         for (int k = 0; k < B - 1; ++k) {
             const float* row = col + static_cast<long long>(min(max(my - lo + k, 0), last_row)) * g.pitch;
 #pragma unroll
-            for (int c = 0; c < kCols; ++c) v[c * B + k + 1] = row[c * L];
+            for (int c = 0; c < kCols; ++c) v[c * B + k + 1] = row[column[c]];
         }
         int y = my - lo;
         while (y <= bottom) {
@@ -602,20 +624,20 @@ __device__ __forceinline__ void lane_scan(const float* plane, const MatchGeometr
                 if (y > bottom) break;
                 const float* row = col + static_cast<long long>(min(max(y + B - 1, 0), last_row)) * g.pitch;
 #pragma unroll
-                for (int c = 0; c < kCols; ++c) v[c * B + i] = row[c * L];
+                for (int c = 0; c < kCols; ++c) v[c * B + i] = row[column[c]];
                 float sum = 0.f;
 #pragma unroll
                 for (int k = 0; k < B; ++k) {
 #pragma unroll
                     for (int c = 0; c < kCols; ++c) {
-                        const float d = ref[k * kCols + c] - v[c * B + (i + 1 + k) % B];
+                        const float d = has[c] ? ref[k * kCols + c] - v[c * B + (i + 1 + k) % B] : 0.f;
                         sum = fmaf(d, d, sum);
                     }
                 }
                 // The same value on every lane of the candidate: the tree
                 // adds the same pairs on each of them.
 #pragma unroll
-                for (int offset = 1; offset < (L < B ? L : B); offset <<= 1) {
+                for (int offset = 1; offset < kWidth; offset <<= 1) {
                     sum += __shfl_xor_sync(kAllLanes, sum, offset);
                 }
                 const unsigned at = lane_position(x, y);
@@ -625,7 +647,7 @@ __device__ __forceinline__ void lane_scan(const float* plane, const MatchGeometr
                        : kLaneEmpty;
 #pragma unroll
                 for (int part = 0; part < kParts; ++part) {
-                    const unsigned long long key = kParts == 1 ? mine : __shfl_sync(kAllLanes, mine, part * B, L);
+                    const unsigned long long key = kParts == 1 ? mine : __shfl_sync(kAllLanes, mine, part * kWidth, L);
                     bool enters = key < held;
                     if constexpr (Dedupe) {
                         // Every lane takes part in the ballot: not behind `enters`.
@@ -744,13 +766,19 @@ __global__ void __launch_bounds__(32 * kLaneWarps) predictive_match_lane_kernel(
 }
 
 // Lanes per reference for the shapes the lane kernels serve (0: none): the
-// fewest of 8, 16 and 32 that hold the matches and the layer's best.
+// fewest of 8, 16 and 32 that hold the matches and the layer's best. Block
+// 32 takes all 32 lanes (a lane then holds one column: with fewer lanes the
+// rows of several columns do not fit registers).
 int lane_group(const MatchGeometry& g, int ps_num) {
     if (g.channels != 1 || g.group < 2) return 0;
-    if (g.block != 4 && g.block != 8 && g.block != 16) return 0;
+    switch (g.block) {
+    case 1: case 2: case 4: case 8: case 12: case 16: case 32: break;
+    default: return 0;
+    }
     if (g.width > kLaneMaxCoordinate || g.height > kLaneMaxCoordinate) return 0;
     const int need = std::max(g.group - 1, ps_num);
-    return need <= 8 ? 8 : need <= 16 ? 16 : need <= 32 ? 32 : 0;
+    if (need > 32) return 0;
+    return g.block == 32 ? 32 : need <= 8 ? 8 : need <= 16 ? 16 : 32;
 }
 
 template <int B, int L>
@@ -772,9 +800,13 @@ bool launch_lanes(const float* plane, const MatchGeometry& g, const TemporalWind
     switch (g.block * 100 + lane_group(g, tw ? tw->ps_num : 0)) {
 #define NSS_LANE(B, L) \
     case B * 100 + L: launch_lane<B, L>(plane, g, tw, grid, ref_begin, ref_count, out, counts, stream); break;
+    NSS_LANE(1, 8) NSS_LANE(1, 16) NSS_LANE(1, 32)
+    NSS_LANE(2, 8) NSS_LANE(2, 16) NSS_LANE(2, 32)
     NSS_LANE(4, 8) NSS_LANE(4, 16) NSS_LANE(4, 32)
     NSS_LANE(8, 8) NSS_LANE(8, 16) NSS_LANE(8, 32)
+    NSS_LANE(12, 8) NSS_LANE(12, 16) NSS_LANE(12, 32)
     NSS_LANE(16, 8) NSS_LANE(16, 16) NSS_LANE(16, 32)
+    NSS_LANE(32, 32)
 #undef NSS_LANE
     default: return false;
     }

@@ -45,4 +45,28 @@ void nlm_reset(float* weight, float* max_weight, float* const* wdst, int channel
 void nlm_finish(const float* src, const float* weight, const float* max_weight, const float* wdst, float wref,
                 int width, int height, float* out, cudaStream_t stream);
 
+// The whole frame in one launch. A block owns a tile of the output and keeps
+// its pixels' sums in registers through every offset of every frame pair: per
+// offset the distance map of the tile with its halo, the row sums and the
+// weights go through shared memory, so the frames are read from the device's
+// memory once and only the result is written. The sums are taken in the
+// order of the kernels above (per pixel: j ascending, then k ascending, then
+// the offsets ascending); the distances are stored before they are summed,
+// which the kernels above may contract, so the two agree to rounding.
+inline constexpr int kNlmTileFrames = 17;
+
+struct NlmTileArgs {
+    NlmPlanes ref[kNlmTileFrames];  // window slot t: the planes the distances are taken on
+    NlmPlanes src[kNlmTileFrames];  // window slot t: the planes that are averaged (ref without rclip)
+    NlmDistance distance;
+    int channels;
+    int d, a, s;
+    float h2_inv_norm, wref;
+    int width, height;
+    float* out[3];
+};
+// Whether the window (2d + 1 frames) and the tile's shared memory fit.
+bool nlm_tile_supported(int d, int a, int s);
+void nlm_tile(const NlmTileArgs& args, cudaStream_t stream);
+
 }  // namespace nss_cuda
