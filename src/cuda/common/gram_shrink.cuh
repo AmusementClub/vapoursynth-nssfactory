@@ -11,13 +11,11 @@
 
 namespace nss_cuda {
 
-// Cyclic Jacobi eigendecomposition of the N x N symmetric matrix g (full
-// storage): on return the diagonal of g holds the eigenvalues and column i of
-// v the matching eigenvector. Fixed operation order (deterministic).
+// Cyclic Jacobi sweeps on the N x N symmetric matrix g (full storage), with
+// every rotation also applied to the columns of v: on return the diagonal of
+// g holds the eigenvalues. Fixed operation order (deterministic).
 template <int N>
-__device__ __forceinline__ void jacobi_eigen(float* g, float* v) {
-#pragma unroll
-    for (int i = 0; i < N * N; ++i) v[i] = (i / N == i % N) ? 1.f : 0.f;
+__device__ __forceinline__ void jacobi_sweeps(float* g, float* v) {
     // Cyclic Jacobi with branch-free rotations.
     for (int sweep = 0; sweep < 16; ++sweep) {
         float off = 0.f, diag = 0.f;
@@ -59,6 +57,15 @@ __device__ __forceinline__ void jacobi_eigen(float* g, float* v) {
             }
         }
     }
+}
+
+// Eigendecomposition of g: as jacobi_sweeps from v = I, so that column i of
+// v is the eigenvector of eigenvalue i.
+template <int N>
+__device__ __forceinline__ void jacobi_eigen(float* g, float* v) {
+#pragma unroll
+    for (int i = 0; i < N * N; ++i) v[i] = (i / N == i % N) ? 1.f : 0.f;
+    jacobi_sweeps<N>(g, v);
 }
 
 // Singular values s = sqrt(max(eigenvalue, 0)) and their indices in

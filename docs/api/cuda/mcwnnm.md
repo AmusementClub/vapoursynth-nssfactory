@@ -36,10 +36,18 @@ arguments are described under [temporal output](README.md#temporal-output).
 - **Temporal output.** The fat intermediate is reduced with
   `nss_cuda.VAggregate` inside the filter.
 - **Numerics.** Each ADMM step shrinks through the FP32 Gram matrix with a
-  cyclic Jacobi eigensolver.
+  cyclic Jacobi eigensolver that starts from the eigenvectors of the step
+  before. The iteration runs on one small matrix pair per channel (the
+  iterates are the centered input times these), which is the same
+  mathematics as the CPU's iterates with other rounding.
   - The output is not bit-identical to the CPU, but is inside the 60 dB gate
     (135–142 dB on the frozen references).
-  - One thread handles each group in a fixed order, and aggregation is
-    ordered.
-- **Memory.** The ADMM state costs about 12 KiB of device memory per group at
-  the defaults, so a 1080p frame runs in several batches.
+  - The output is run-to-run identical: every group is solved in a fixed
+    order. Spatial output aggregates from inside the filter kernel with
+    integer atomics on fixed-point sums (exact, so independent of the
+    order); temporal output sorts its patches and sums them in a fixed
+    order.
+  - Groups of up to 8 patches run one thread per group. Larger groups run 16
+    or 32 threads per group with a round-robin parallel Jacobi.
+- **Memory.** The ADMM state costs about 2.5 KiB of device memory per group
+  at the defaults.

@@ -817,6 +817,13 @@ const VSFrame* frame_output(Driver* d, int n, VSFrameContext* ctx, VSCore* core,
                     for (int c = 0; c < channels; ++c) {
                         float* est = s.src_frames[t].as<float>() + c * p.floats;
                         const std::size_t slice = (static_cast<std::size_t>(c) * d->ntemp + t) * p.floats;
+                        if (p.fused) {  // spatial: one slice per channel
+                            const FixedTarget fixed{s.fixed_num.as<unsigned long long>() + slice,
+                                                    s.fixed_den.as<unsigned long long>() + slice, p.width, p.floats};
+                            fixed_finish(fixed, p.block, est, p.width, p.height, s.fixed_rows.as<unsigned long long>(),
+                                         est, s.stream);
+                            continue;
+                        }
                         aggregate_finish(s.num.as<float>() + slice, s.den.as<float>() + slice, est, p.width, p.height, p.width,
                                          est, s.stream);
                     }
@@ -829,7 +836,9 @@ const VSFrame* frame_output(Driver* d, int n, VSFrameContext* ctx, VSCore* core,
                     // s.out is reused for every channel: its download is
                     // stream-ordered before the next finish overwrites it.
                     const std::size_t channel = static_cast<std::size_t>(c) * p.floats;
-                    if (p.fused) {
+                    // An iterative filter's last finish left the result in the
+                    // source frame.
+                    if (p.fused && !iterative(*d)) {
                         const FixedTarget fixed{s.fixed_num.as<unsigned long long>() + channel,
                                                 s.fixed_den.as<unsigned long long>() + channel, p.width, p.floats};
                         fixed_finish(fixed, p.block, s.host_src_ptrs[0] + channel, p.width, p.height,
@@ -1480,9 +1489,6 @@ void group_filter_install(GroupFilterConfig&& config, VSMap* out, VSCore* core, 
     // is the float slices of each center.
     if (d->mode == GroupMode::Legacy) {
         for (GroupPlane& p : d->planes) p.fused = false;
-    }
-    if (any_fused(*d) && iterative(*d)) {
-        throw std::logic_error(prefix(*d) + "fused aggregation does not support joint or multi-round filters");
     }
     if (d->channels > 1) {
         bool any = false;

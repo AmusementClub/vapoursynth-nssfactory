@@ -233,14 +233,23 @@ int main() {
             image_case(61, 57, 8, 8, 5, 15, nch, 1, 0, 0, 2, flat, stats);    // MCWNNM-like joint groups
             image_case(72, 64, 8, 16, 6, 40, nch, 1, 0, 0, 2, flat, stats);   // NLH window (even: asymmetric)
         }
+        // Joint lane kernels: blocks below 8 and every lane count.
+        image_case(61, 57, 4, 8, 5, 15, 3, 1, 0, 0, 2, flat, stats);
+        image_case(61, 57, 2, 16, 3, 11, 3, 1, 0, 0, 2, flat, stats);
+        image_case(61, 57, 1, 32, 3, 9, 3, 1, 0, 0, 2, flat, stats);
+        image_case(61, 57, 8, 32, 6, 21, 3, 1, 0, 0, 2, flat, stats);
         image_case(72, 64, 8, 90, 7, 60, 1, 1, 0, 0, 2, flat, stats);         // TWSC default group
         image_case(72, 64, 4, 256, 9, 33, 2, 1, 0, 0, 2, flat, stats);        // group limit
         image_case(40, 36, 16, 64, 8, 129, 1, 1, 0, 0, 2, flat, stats);       // window larger than the plane
     }
     // Predictive search (ties across frames are ordered differently, so only
-    // the noisy planes): warp path, block top-K, and the 256-entry kernel.
+    // the noisy planes): lane kernels (one channel, and three jointly), warp
+    // path (two channels), block top-K, and the 256-entry kernel.
     image_case(64, 56, 8, 16, 6, 40, 1, 3, 1, 1, 2, false, stats);
     image_case(64, 56, 8, 16, 6, 21, 3, 5, 0, 2, 3, false, stats);
+    image_case(64, 56, 4, 8, 6, 15, 3, 5, 2, 2, 4, false, stats);
+    image_case(64, 56, 8, 32, 6, 15, 3, 3, 1, 1, 6, false, stats);
+    image_case(64, 56, 8, 16, 6, 21, 2, 5, 0, 2, 3, false, stats);
     image_case(64, 56, 8, 16, 6, 21, 1, 5, 4, 2, 3, false, stats);
     image_case(64, 56, 8, 64, 8, 21, 2, 3, 1, 1, 20, false, stats);
     image_case(64, 56, 4, 200, 8, 25, 1, 3, 2, 1, 100, false, stats);

@@ -31,6 +31,7 @@ struct WnnmGroupArgs {
     int adaptive;
     float* values;              // batch * group * block^2
     AggregatePatch* patches;    // batch * group
+    FixedTarget fused{};        // with num set: the kernel aggregates; values and patches are unused
 };
 
 void wnnm_filter_groups(const WnnmGroupArgs& args, cudaStream_t stream);

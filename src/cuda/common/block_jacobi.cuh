@@ -19,11 +19,18 @@ __device__ __forceinline__ void jacobi_schedule(int round, int pair, int K, int&
 }
 
 // g: symmetric k x k (row-major), v: its eigenvectors on return. cs holds the
-// k / 2 + 1 rotations of a round; *flag is shared scratch.
+// k / 2 + 1 rotations of a round; *flag is shared scratch. Without `identity`
+// the rotations go on from the v passed in (g then being in that basis).
+//
+// `lanes` threads work on the matrix, this one being `lane` of them. A block
+// may hold several matrices, each with its own g, v and cs and all with the
+// same k and *flag: every thread of the block then calls this, and the
+// sweeps go on until no matrix rotates. A matrix that has converged is not
+// changed by the further sweeps (no element passes the test again), so its
+// result does not depend on what shares the block.
 template <class Real>
-__device__ void block_jacobi(Real* g, Real* v, int k, Real* cs, int* flag) {
-    const int lane = threadIdx.x, lanes = blockDim.x;
-    for (int e = lane; e < k * k; e += lanes) v[e] = (e / k == e % k) ? Real(1) : Real(0);
+__device__ void block_jacobi(Real* g, Real* v, int k, Real* cs, int* flag, bool identity, int lane, int lanes) {
+    for (int e = lane; identity && e < k * k; e += lanes) v[e] = (e / k == e % k) ? Real(1) : Real(0);
     const Real tolerance = sizeof(Real) == 8 ? Real(1e-15) : Real(1e-7);
     __syncthreads();
     Real trace = 0;
@@ -31,7 +38,7 @@ __device__ void block_jacobi(Real* g, Real* v, int k, Real* cs, int* flag) {
     const Real floor = tolerance * trace / k;
     const int K = k + (k & 1), half = K / 2;
     for (int sweep = 0; sweep < 30 && k > 1; ++sweep) {
-        if (lane == 0) *flag = 0;
+        if (lane == 0) *flag = 0;  // the same value from every matrix's lane 0
         __syncthreads();
         for (int round = 0; round < K - 1; ++round) {
             for (int pair = lane; pair < half; pair += lanes) {
@@ -85,6 +92,12 @@ __device__ void block_jacobi(Real* g, Real* v, int k, Real* cs, int* flag) {
         __syncthreads();
         if (!rotated) break;
     }
+}
+
+// One matrix per block, on all its threads.
+template <class Real>
+__device__ void block_jacobi(Real* g, Real* v, int k, Real* cs, int* flag, bool identity = true) {
+    block_jacobi(g, v, k, cs, flag, identity, static_cast<int>(threadIdx.x), static_cast<int>(blockDim.x));
 }
 
 }  // namespace nss_cuda
