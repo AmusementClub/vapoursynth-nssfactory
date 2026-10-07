@@ -45,5 +45,7 @@ arguments are described under [temporal output](README.md#temporal-output).
     kernel with integer atomics on fixed-point sums (exact, so independent
     of the order); legacy temporal output sorts its patches and sums them in
     a fixed order.
-  - Groups of up to 8 patches run one thread per group. Larger groups run 16
+  - Groups of up to 8 patches run as three kernels: the Gram matrices and
+    the reconstruction read the patches with 8 threads per group, and the
+    eigen step runs one thread per group in registers. Larger groups run 16
     or 32 threads per group with a round-robin parallel Jacobi.

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // nss_cuda.WNNM: parse_wnnm with the "nss_cuda" prefix (D14) around the
 // shared group driver and the WNNM group kernel. rclip guides matching only.
+#include "cuda/common/gram_group.hpp"
 #include "cuda/common/group_driver.hpp"
 #include "cuda/wnnm/kernels.hpp"
 #include "frontend/validate.hpp"
@@ -62,8 +63,10 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         args.values = l.values;
         args.patches = l.patches;
         args.fused = l.fused;
+        args.scratch = l.scratch;
         wnnm_filter_groups(args, l.stream);
     };
+    config.scratch_floats = [](const GroupPlane& g, bool) { return gram_scratch_floats(g.group); };
     group_filter_install(std::move(config), out, core, vsapi);
 }
 
