@@ -76,7 +76,7 @@ give, bit for bit.
 - With `radius > 0` the basic stage is temporal too, and its finished frames
   are the reference of the second stage in either temporal mode.
 - On the CPU this is the two calls chained. On `nss_cuda` the estimate stays
-  on the device (see the CUDA section).
+  on the device (see the [CUDA reference](cuda.md#bm3d-and-vaggregate)).
 
 ## Color (CBM3D)
 
@@ -127,112 +127,8 @@ dominant cost driver is `block_step` (positions scale as `1/step^2`), then
   usual "25/255" noise.
 - Array parameters are per-plane: `block_size=[8,16]` is legal on YUV.
 
-## CUDA (`core.nss_cuda.BM3D`, `core.nss_cuda.VAggregate`)
+## CUDA
 
-The CUDA plugin (`libnss_cuda`, built with `-DNSS_ENABLE_CUDA=ON`) takes the
-same arguments and gives the same errors as `nss.BM3D` / `nss.VAggregate`. It
-adds two GPU-only arguments at the end of the argument list. Its temporal
-arguments, shared with the CPU signature, are the ones to know on the device:
-
-| Parameter | Default | Meaning |
-|---|---|---|
-| `temporal_mode` | `"rolling"` | With `radius > 0`: `"rolling"` returns finished, normal-height frames; `"legacy"` returns the fat intermediate for `VAggregate`, as the CPU plugin does. |
-| `rolling_chunk` | 4 | Frames accumulated per rolling chunk, 1 to 64. |
-| `rolling_cache_chunks` | 1 | Finished chunks kept for later frame requests at first, 1 to 64. Given alone, the cache stays at this size. |
-| `rolling_cache_limit` | 16 | What the cache may grow to, 1 to 64 and at least `rolling_cache_chunks`. It keeps one more chunk each time two requests miss on chunks it dropped recently, so alternating between positions settles after a few misses. Under `memory_limit_mb` it grows only into what the limit leaves. (On the CPU the two arguments name one fixed size.) |
-| `device_id` | 0 | CUDA device index. |
-| `num_streams` | 1 | How many frames (or rolling chunks) can be in flight on the device at once, 1 to 16. Each stream has its own device buffers. One stream already keeps the device busy; more add little (about 15% for the rolling mode). With `memory_limit_mb`, a value that does not fit is a creation error. `VAggregate` accepts both arguments but does not use a device. |
-
-```python
-basic = core.nss_cuda.BM3D(clip, sigma=25)
-final = core.nss_cuda.BM3D(clip, ref=basic, sigma=25)
-# Temporal: finished frames by default (temporal_mode="rolling").
-temporal = core.nss_cuda.BM3D(clip, sigma=25, radius=1)
-# The CPU plugin's two-step form, for mixing backends or debugging.
-fat = core.nss_cuda.BM3D(clip, sigma=25, radius=1, temporal_mode="legacy")
-temporal = core.nss_cuda.VAggregate(fat, clip, radius=1)
-```
-
-- **Device-resident.** Matching (spatial or predictive temporal), collaborative
-  filtering and aggregation all run on the device.
-  - Spatial and rolling output copy only final frames back.
-  - Legacy `radius > 0` copies back the fat intermediate, because it must
-    exist as a VS frame.
-- **Rolling.**
-  - Each chunk of frames keeps a ring of the temporal window on the device.
-  - A chunk that follows the one its stream ran last carries on from it: the
-    window frames stay on the device and the sums that the earlier centers
-    left for its frames are kept, so it runs `rolling_chunk` centers and
-    uploads `rolling_chunk` frames instead of `rolling_chunk + 2R` and
-    `rolling_chunk + 4R`. Any other chunk starts afresh. The output is the
-    same either way.
-  - A frame is finished as soon as its last center has run, so a plane keeps
-    2R + 1 slices of sums whatever `rolling_chunk` is; the chunk's finished
-    frames wait on the device and are downloaded together.
-  - Under a `memory_limit_mb` without room for it, the planes of a clip take
-    turns on one state (each chunk then starts afresh unless the clip has one
-    plane) and finished frames are downloaded one by one.
-  - Each center frame's contributions are added into the chunk's target
-    frames: as exact fixed-point sums for the shapes that aggregate inside
-    the filter kernel (below), in ascending order as the CPU does for the
-    rest.
-  - It agrees with `nss_cuda.VAggregate(nss_cuda.BM3D(..., radius=R,
-    temporal_mode="legacy"))` to rounding (8 ulp measured) for the former
-    shapes and bit for bit for the latter.
-- **`nss_cuda.VAggregate` runs on the host.** Its inputs are already host
-  frames, and uploading 2(2R+1) planes per frame costs several times more than
-  the sum itself. It sums slices in the CPU's order and divides with IEEE
-  rounding.
-- **Interop.** The fat intermediate is a plain VS frame with versioned
-  properties, so `nss.VAggregate` and `nss_cuda.VAggregate` accept each other's
-  BM3D output. They agree within a few ulp: the CPU's fast-math division may
-  be up to 2 ulp off IEEE rounding.
-- **Numerics.** The transform math is the CPU's 3D DCT, as butterflies: the
-  8-point ones of the CPU's fused path and the same generated codelets for
-  12, 16, 32 and 64.
-  - Shapes whose group fits registers are filtered several groups per warp:
-    block 4, 8 or 16 with a group of at least 2 and up to 128 samples per
-    lane (group x block), plus 16 / 16, and 4 / 64, 8 / 32 and 16 / 32 for the
-    hard-threshold stage. The
-    others run one block per group, with the cube in shared memory when it
-    fits 24 KB and in device memory otherwise.
-  - The output is not bit-identical to the CPU, but stays within the 60 dB
-    gate in `tests/data/cuda_tolerances_v1.json`.
-  - The output is run-to-run identical on a given GPU, driver and build.
-    Spatial and rolling filtering of most shapes aggregates from inside the
-    filter kernel with integer atomics on fixed-point sums (exact, so
-    independent of the order); legacy temporal output and the remaining
-    shapes sort their patches and sum them in a fixed order.
-- **Memory.** `nss_cuda` has no default `memory_limit_mb`: the filter takes
-  what its plan needs and a failed device allocation is reported as the CUDA
-  out-of-memory error. With `memory_limit_mb`, the value also caps device
-  memory, pinned staging and the rolling chunk cache, and the filter runs
-  with smaller internal batches to fit (the output does not change). The
-  smallest limit one stream accepts at 4K, for GRAYS / YUV420 / YUV444 or RGB:
-  - Spatial: about 350 / 370 / 420, and 420 / 430 / 480 with `ref`.
-  - Rolling, `radius = 1`: 1140 / 1300 / 1780, and 1490 / 1650 / 2130 with `ref`.
-  - Rolling, `radius = 2`: 1590 / 1750 / 2220, and 2130 / 2280 / 2760 with `ref`.
-  - Legacy with `ref`: 990 / 1090 / 1370 at `radius = 1`, 1630 / 1790 / 2260
-    at `radius = 2`.
-  - Rolling with `final=1`: 1810 / 1970 / 2440 at `radius = 1`, 2760 / 2920 /
-    3390 at `radius = 2`.
-- **Performance.** At 1080p GRAYS on an RTX 5080, one stream, against
-  bm3dcuda with the same search (measured 2026-10-06):
-  - Spatial: about 1.25x with 32 VapourSynth threads (the frame transfers
-    bound it); the kernels take the same time.
-  - Rolling, frames asked for in order: 2.7x at `radius = 1` and 3.3x at
-    `radius = 2` with 32 threads, 1.4x with one thread. Random access:
-    1.15x with one thread, 2.2x with 32. It keeps the CPU's predictive
-    search and reproducible sums.
-  - `final=1` keeps the basic estimate on the device: one upload and one
-    download per plane instead of three and two. Against the two calls,
-    GRAYS: 303 to 730 fps spatial, 297 to 458 at `radius = 1`, 293 to 347 at
-    `radius = 2`; YUV420: 204 to 433 spatial, 192 to 297 at `radius = 1`;
-    YUV444 with `chroma=1`: 95 to 241 spatial, 95 to 199 at `radius = 1`.
-    Rolling reads 4R frames on each side of a chunk that starts afresh
-    (2R for one stage) and keeps a source ring of 4R + 1 frames. The legacy
-    intermediate with `final=1` is the two calls chained.
-  - `chroma=1` at YUV444: 243 fps spatial (separate planes 286: the host
-    copies bound both, and three planes per frame go less evenly), 238 fps
-    at `radius = 1` (separate 222) and 229 at `radius = 2` (separate 179).
-    bm3dcuda with `chroma=True`: 200, 94 and 65.
+`core.nss_cuda.BM3D` and `core.nss_cuda.VAggregate` take the same arguments. What is specific to the device
+(extra arguments, temporal output, memory, numerics, speed) is in the
+[CUDA reference](cuda.md#bm3d-and-vaggregate).

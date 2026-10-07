@@ -28,6 +28,10 @@ count; treat them as cost tiers, not promises.
 (`block_step=8, group_size=8, iters=2`); their true defaults are substantially
 heavier (see the per-page performance notes). All other rows are exact defaults.
 
+The CUDA plugin `libnss_cuda` (namespace `nss_cuda`) has the same filters with
+the same arguments. Everything specific to it is on one page: the
+[CUDA reference](cuda.md).
+
 ## Conventions shared by every filter
 
 - **Input**: constant-format 32-bit float Gray, YUV, or RGB clips only. Integer
@@ -40,7 +44,9 @@ heavier (see the per-page performance notes). All other rows are exact defaults.
 - **`radius > 0` (temporal)**: the filter then returns the *weighted
   intermediate* (a taller frame stack; numerator/denominator per temporal
   slice) for an explicit `VAggregate` call. The device plugin (`nss_cuda`)
-  returns finished frames by default instead; see each filter's CUDA section. With `radius = 0` every filter returns a normal-height frame.
+  returns finished frames by default instead; see the
+  [CUDA reference](cuda.md#temporal-output). With `radius = 0` every filter
+  returns a normal-height frame.
 - **`rclip` / `ref`**: an optional reference clip (same format/size) that guides
   matching; denoising still targets `clip`.
 - **`bm_range` vs `search_window`**: `search_window = 2 * bm_range + 1`.
