@@ -1,0 +1,279 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Builds, tests and packages every plugin and uploads the packages as workflow
+# artifacts. It publishes nothing: run it by hand to get the binaries of any
+# branch or commit. draft-release calls it and attaches the same packages.
+name: package
+
+on:
+  workflow_dispatch:
+    inputs:
+      label:
+        description: 'Name part of the packages (nssfactory-<label>-<platform>); the short commit hash if empty'
+        required: false
+        type: string
+        default: ''
+  workflow_call:
+    inputs:
+      label:
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+env:
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_MAXSIZE: 2G
+  CMAKE_C_COMPILER_LAUNCHER: ccache
+  CMAKE_CXX_COMPILER_LAUNCHER: ccache
+  PKG_LABEL: ${{ inputs.label }}
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: release-ccache-linux-${{ github.sha }}
+          restore-keys: release-ccache-linux-
+      - name: packages
+        run: sudo apt-get update && sudo apt-get install -y cmake g++ git curl ccache
+      - name: VapourSynth host (wheel bundles core DLLs and API4 headers)
+        run: |
+          pip install vapoursynth numpy
+          echo "VapourSynth_INCLUDE_DIR=$(python3 -c "import vapoursynth, pathlib; print(pathlib.Path(vapoursynth.__file__).parent / 'include')")" >> "$GITHUB_ENV"
+      - name: configure
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+            -DNSS_HWY_TARGET_MODE=dynamic
+      - name: build
+        run: cmake --build build -j
+      - name: unit tests
+        run: ctest --test-dir build --output-on-failure
+      - name: host smoke (default + temporal + explicit parameters)
+        run: python3 tests/smoke_defaults.py
+        env:
+          NSS_SO: ${{ github.workspace }}/build/libnss.so
+      - name: parameter bounds probe
+        run: python3 tests/test_parameter_bounds_plugin.py
+        env:
+          NSS_SO: ${{ github.workspace }}/build/libnss.so
+      - name: package label
+        shell: bash
+        run: echo "PKG_LABEL=${PKG_LABEL:-${GITHUB_SHA::7}}" >> "$GITHUB_ENV"
+      - name: package
+        run: |
+          test -f build/libnss.so
+          pkg="nssfactory-${PKG_LABEL}-linux-x86_64"
+          mkdir -p "pkg/$pkg"
+          cp build/libnss.so README.md LICENSE NOTICE "pkg/$pkg/"
+          tar -C pkg -czf "$pkg.tar.gz" "$pkg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64
+          path: nssfactory-*-linux-x86_64.tar.gz
+          if-no-files-found: error
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: release-ccache-macos-${{ github.sha }}
+          restore-keys: release-ccache-macos-
+      - name: packages
+        run: |
+          brew install ccache
+          python3 -m venv .vsenv
+          .vsenv/bin/pip install vapoursynth numpy
+          echo "VapourSynth_INCLUDE_DIR=$(.vsenv/bin/python3 -c "import vapoursynth, pathlib; print(pathlib.Path(vapoursynth.__file__).parent / 'include')")" >> "$GITHUB_ENV"
+      - name: configure
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+            -DNSS_HWY_TARGET_MODE=neon
+      - name: build
+        run: cmake --build build -j
+      - name: unit tests
+        run: ctest --test-dir build --output-on-failure
+      - name: host smoke (default + temporal + explicit parameters)
+        run: .vsenv/bin/python3 tests/smoke_defaults.py
+        env:
+          NSS_SO: ${{ github.workspace }}/build/libnss.dylib
+      - name: parameter bounds probe
+        run: .vsenv/bin/python3 tests/test_parameter_bounds_plugin.py
+        env:
+          NSS_SO: ${{ github.workspace }}/build/libnss.dylib
+      - name: package label
+        shell: bash
+        run: echo "PKG_LABEL=${PKG_LABEL:-${GITHUB_SHA::7}}" >> "$GITHUB_ENV"
+      - name: package
+        run: |
+          test -f build/libnss.dylib
+          pkg="nssfactory-${PKG_LABEL}-macos-arm64"
+          mkdir -p "pkg/$pkg"
+          cp build/libnss.dylib README.md LICENSE NOTICE "pkg/$pkg/"
+          tar -C pkg -czf "$pkg.tar.gz" "$pkg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64
+          path: nssfactory-*-macos-arm64.tar.gz
+          if-no-files-found: error
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: release-ccache-windows-${{ github.sha }}
+          restore-keys: release-ccache-windows-
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: packages
+        run: |
+          choco install ccache llvm ninja --no-progress
+          pip install vapoursynth numpy scipy
+      - name: verify clang++ target
+        shell: powershell
+        run: |
+          clang++ --version
+          $target = (clang++ -print-target-triple).Trim()
+          Write-Host "clang++ target: $target"
+          if ($target -notmatch "windows-msvc") {
+            throw "Expected an MSVC-targeted clang++, got '$target'"
+          }
+      - name: configure
+        run: |
+          $vsInclude = python -c "import vapoursynth, pathlib; print(pathlib.Path(vapoursynth.__file__).parent / 'include')"
+          $pythonExe = (Get-Command python).Source
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DNSS_HWY_TARGET_MODE=dynamic -DVapourSynth_INCLUDE_DIR="$vsInclude" -DPython3_EXECUTABLE="$pythonExe"
+      - name: build
+        run: cmake --build build -j
+      - name: verify Python oracle environment
+        run: python -c "import numpy, scipy; print('numpy', numpy.__version__, 'scipy', scipy.__version__)"
+      - name: unit tests
+        run: ctest --test-dir build --output-on-failure
+      - name: host smoke (default + temporal + explicit parameters)
+        run: python tests/smoke_defaults.py
+        env:
+          NSS_SO: ${{ github.workspace }}\build\libnss.dll
+      - name: parameter bounds probe
+        run: python tests/test_parameter_bounds_plugin.py
+        env:
+          NSS_SO: ${{ github.workspace }}\build\libnss.dll
+      - name: package label
+        shell: bash
+        run: echo "PKG_LABEL=${PKG_LABEL:-${GITHUB_SHA::7}}" >> "$GITHUB_ENV"
+      - name: package
+        run: |
+          $pkg = "nssfactory-${env:PKG_LABEL}-windows-x86_64"
+          New-Item -ItemType Directory "pkg/$pkg" | Out-Null
+          Copy-Item build\libnss.dll, README.md, LICENSE, NOTICE "pkg/$pkg/"
+          tar -C pkg -a -c -f "$pkg.zip" "$pkg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86_64
+          path: nssfactory-*-windows-x86_64.zip
+          if-no-files-found: error
+
+  # CUDA plugin: built with the release toolkit (12.9: native cubins for
+  # sm_75/86/89/120 plus compute_75 PTX), CUDA runtime linked statically.
+  build-linux-cuda:
+    runs-on: ubuntu-latest
+    container: nvidia/cuda:12.9.1-devel-ubuntu24.04
+    env:  # no ccache in the toolkit image
+      CMAKE_C_COMPILER_LAUNCHER: ""
+      CMAKE_CXX_COMPILER_LAUNCHER: ""
+    steps:
+      - name: packages
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git python3 python3-venv ca-certificates
+          python3 -m venv /opt/venv
+          /opt/venv/bin/pip install cmake ninja vapoursynth
+          # Headers only: the plugin is loaded by the host and never links libvapoursynth.
+          git clone --depth 1 --branch R80 https://github.com/vapoursynth/vapoursynth /opt/vapoursynth
+      - uses: actions/checkout@v4
+      - name: configure
+        run: |
+          export PATH=/opt/venv/bin:$PATH
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DNSS_ENABLE_CUDA=ON -DNSS_BUILD_CPU=OFF \
+            -DVapourSynth_INCLUDE_DIR=/opt/vapoursynth/include \
+            -DPython3_EXECUTABLE=/opt/venv/bin/python
+      - name: build
+        run: /opt/venv/bin/cmake --build build -j
+      - name: fat binary contents
+        run: |
+          cuobjdump --list-elf --list-ptx build/src/cuda/libnss_cuda.so | tee fatbin.txt
+          for arch in sm_75 sm_86 sm_89 sm_120; do grep -q "\.${arch}\.cubin" fatbin.txt || { echo "missing $arch cubin"; exit 1; }; done
+          grep -q "\.sm_75\.ptx" fatbin.txt || { echo "missing compute_75 PTX"; exit 1; }
+      - name: "cuda tests (no GPU: load, signatures, creation errors)"
+        run: /opt/venv/bin/ctest --test-dir build -L cuda --output-on-failure
+      - name: package label
+        shell: bash
+        run: echo "PKG_LABEL=${PKG_LABEL:-${GITHUB_SHA::7}}" >> "$GITHUB_ENV"
+      - name: package
+        run: |
+          pkg="nssfactory-${PKG_LABEL}-linux-x86_64-cuda"
+          mkdir -p "pkg/$pkg"
+          cp build/src/cuda/libnss_cuda.so README.md LICENSE NOTICE "pkg/$pkg/"
+          tar -C pkg -czf "$pkg.tar.gz" "$pkg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64-cuda
+          path: nssfactory-*-linux-x86_64-cuda.tar.gz
+          if-no-files-found: error
+
+  build-windows-cuda:
+    # CUDA 12.9 supports MSVC through VS 2022; windows-latest ships VS 2026
+    # (MSVC 14.5x), which nvcc 12.9 rejects.
+    runs-on: windows-2022
+    env:  # no ccache on this runner image
+      CMAKE_C_COMPILER_LAUNCHER: ""
+      CMAKE_CXX_COMPILER_LAUNCHER: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Jimver/cuda-toolkit@v0.2.36
+        with:
+          cuda: "12.9.1"
+          method: network
+          sub-packages: '["nvcc", "cudart", "cuobjdump", "nvtx", "visual_studio_integration"]'
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: packages
+        run: pip install vapoursynth ninja
+      - name: configure
+        run: |
+          $vsInclude = python -c "import vapoursynth, pathlib; print(pathlib.Path(vapoursynth.__file__).parent / 'include')"
+          $pythonExe = (Get-Command python).Source
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=cl -DNSS_ENABLE_CUDA=ON -DNSS_BUILD_CPU=OFF -DVapourSynth_INCLUDE_DIR="$vsInclude" -DPython3_EXECUTABLE="$pythonExe"
+      - name: build
+        run: cmake --build build -j
+      - name: "cuda tests (no GPU: load, signatures, creation errors)"
+        run: ctest --test-dir build -L cuda --output-on-failure
+      - name: package label
+        shell: bash
+        run: echo "PKG_LABEL=${PKG_LABEL:-${GITHUB_SHA::7}}" >> "$GITHUB_ENV"
+      - name: package
+        run: |
+          $dll = Get-ChildItem -Recurse build -Filter libnss_cuda.dll | Select-Object -First 1
+          if (-not $dll) { throw "libnss_cuda.dll was not produced" }
+          cuobjdump --list-elf --list-ptx $dll.FullName
+          $pkg = "nssfactory-${env:PKG_LABEL}-windows-x86_64-cuda"
+          New-Item -ItemType Directory "pkg/$pkg" | Out-Null
+          Copy-Item $dll.FullName, README.md, LICENSE, NOTICE "pkg/$pkg/"
+          tar -C pkg -a -c -f "$pkg.zip" "$pkg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86_64-cuda
+          path: nssfactory-*-windows-x86_64-cuda.zip
+          if-no-files-found: error
