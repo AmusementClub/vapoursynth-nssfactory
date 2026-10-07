@@ -42,10 +42,11 @@ struct McwnnmGroupArgs {
     FixedTarget fused{};
 };
 
-// Per channel the input Gram matrix, P and Q; the last eigenvectors (thread
-// kernel; the block kernel keeps them in shared memory).
+// Per channel the input Gram matrix, P and Q; the last eigenvectors and the
+// aggregation weight (the kernels for up to 8 patches; the block kernel keeps
+// those two in shared memory).
 inline std::size_t mcwnnm_scratch_floats(int, int group) {
-    return 10 * static_cast<std::size_t>(group) * group;
+    return 10 * static_cast<std::size_t>(group) * group + 1;
 }
 
 void mcwnnm_filter_groups(const McwnnmGroupArgs& args, cudaStream_t stream);
