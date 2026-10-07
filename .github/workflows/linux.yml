@@ -5,6 +5,10 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+  actions: write  # to delete superseded caches
+
 env:
   CCACHE_DIR: ${{ github.workspace }}/.ccache
   CCACHE_MAXSIZE: 2G
@@ -40,13 +44,13 @@ jobs:
             ppa: ppa:ubuntu-toolchain-r/test
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/cache@v4
+      # Every run reads master's compiler cache; only runs on master write one
+      # (a cache per branch and commit filled the repository's 10 GB in days).
+      - uses: actions/cache/restore@v4
         with:
           path: .ccache
-          key: linux-ccache-${{ matrix.name }}-${{ github.ref_name }}-${{ github.sha }}
-          restore-keys: |
-            linux-ccache-${{ matrix.name }}-${{ github.ref_name }}-
-            linux-ccache-${{ matrix.name }}-
+          key: linux-ccache-${{ matrix.name }}-master-${{ github.sha }}
+          restore-keys: linux-ccache-${{ matrix.name }}-master-
       - name: packages
         run: |
           if [ -n "${{ matrix.ppa }}" ]; then sudo add-apt-repository -y "${{ matrix.ppa }}"; fi
@@ -85,3 +89,18 @@ jobs:
           NSS_SO: ${{ github.workspace }}/build/libnss.so
       - name: ccache stats
         run: ccache --show-stats
+      - name: save the compiler cache (master only)
+        if: github.ref == 'refs/heads/master'
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: linux-ccache-${{ matrix.name }}-master-${{ github.sha }}
+      - name: drop master's older compiler caches
+        if: github.ref == 'refs/heads/master'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREFIX: linux-ccache-${{ matrix.name }}-master-
+        run: |
+          gh cache list --repo "$GITHUB_REPOSITORY" --key "$PREFIX" --limit 100 --json id,key \
+            --jq ".[] | select(.key != \"${PREFIX}${GITHUB_SHA}\") | .id" |
+            while read -r id; do gh cache delete "$id" --repo "$GITHUB_REPOSITORY" || true; done

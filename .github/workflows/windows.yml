@@ -5,6 +5,10 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+  actions: write  # to delete superseded caches
+
 env:
   CCACHE_DIR: ${{ github.workspace }}/.ccache
   CCACHE_MAXSIZE: 2G
@@ -24,13 +28,13 @@ jobs:
         mode: [dynamic, avx2]
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/cache@v4
+      # Every run reads master's compiler cache; only runs on master write one
+      # (a cache per branch and commit filled the repository's 10 GB in days).
+      - uses: actions/cache/restore@v4
         with:
           path: .ccache
-          key: windows-ccache-clang-${{ matrix.mode }}-${{ github.ref_name }}-${{ github.sha }}
-          restore-keys: |
-            windows-ccache-clang-${{ matrix.mode }}-${{ github.ref_name }}-
-            windows-ccache-clang-${{ matrix.mode }}-
+          key: windows-ccache-clang-${{ matrix.mode }}-master-${{ github.sha }}
+          restore-keys: windows-ccache-clang-${{ matrix.mode }}-master-
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
@@ -66,3 +70,19 @@ jobs:
         run: python tests/smoke_defaults.py
       - name: parameter bounds probe
         run: python tests/test_parameter_bounds_plugin.py
+      - name: save the compiler cache (master only)
+        if: github.ref == 'refs/heads/master'
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: windows-ccache-clang-${{ matrix.mode }}-master-${{ github.sha }}
+      - name: drop master's older compiler caches
+        if: github.ref == 'refs/heads/master'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREFIX: windows-ccache-clang-${{ matrix.mode }}-master-
+        run: |
+          gh cache list --repo "$GITHUB_REPOSITORY" --key "$PREFIX" --limit 100 --json id,key \
+            --jq ".[] | select(.key != \"${PREFIX}${GITHUB_SHA}\") | .id" |
+            while read -r id; do gh cache delete "$id" --repo "$GITHUB_REPOSITORY" || true; done
