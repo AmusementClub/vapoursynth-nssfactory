@@ -182,7 +182,8 @@ __device__ __forceinline__ void tile_weights(float* dm, float* hs, float* wt, co
                                              const float* neighbor_window, const NlmPlanes& center,
                                              const NlmPlanes& neighbor, NlmDistance mode, int ox, int oy, int s,
                                              float h2_inv_norm, int width, int height, int rx0, int ry0, int rx1,
-                                             int ry1, int tid, bool interior, int stride, int origin, int plane) {
+                                             int ry1, int tid, bool interior, int stride, int origin, int plane,
+                                             float* save = nullptr) {
     const int rw = rx1 - rx0 + 1, rh = ry1 - ry0 + 1;
     const int dw = rw + 2 * s, dh = rh + 2 * s;
     const float inv_dw = 1.0f / static_cast<float>(dw);
@@ -216,7 +217,14 @@ __device__ __forceinline__ void tile_weights(float* dm, float* hs, float* wt, co
         hs[e] = box_sum<S>(dm + ey * dw + (e - ey * rw), 1, s);
     }
     __syncthreads();
-    for (int e = tid; e < rw * rh; e += NT) wt[e] = fast_exp(-box_sum<S>(hs + e, rw, s) * h2_inv_norm);
+    for (int e = tid; e < rw * rh; e += NT) {
+        const float value = fast_exp(-box_sum<S>(hs + e, rw, s) * h2_inv_norm);
+        wt[e] = value;
+        if (save) {
+            const int ey = element_row(e, inv_rw);
+            save[(ry0 + ey) * width + rx0 + e - ey * rw] = value;
+        }
+    }
     __syncthreads();
 }
 
@@ -306,15 +314,23 @@ __global__ void tile_kernel(NlmTileArgs a) {
                         u4_mq[k] = wt[(my - ry0) * rw + mx - rx0];
                     }
                 } else {
-                    tile_weights<NT, S, IMG>(dm, hs, wt, img, bwd_img, center, bwd, a.distance, ox, oy, s,
-                                             a.h2_inv_norm, width, height, x0, y0, x1, y1, tid, interior, stride,
-                                             origin, plane);
-                    for (int k = 0; k < PIX; ++k) {
-                        if (inside[k]) u4[k] = wt[(y[k] - y0) * (x1 - x0 + 1) + x[k] - x0];
+                    const long long maps = static_cast<long long>((oy + a.a) * span + ox + a.a) * width * height;
+                    // The frame before saved this map wherever p + o is inside the image.
+                    if (a.weight_load && x0 + ox >= 0 && x1 + ox < width && y0 + oy >= 0 && y1 + oy < height) {
+                        for (int k = 0; k < PIX; ++k) {
+                            if (inside[k]) u4[k] = a.weight_load[maps + y[k] * width + x[k]];
+                        }
+                    } else {
+                        tile_weights<NT, S, IMG>(dm, hs, wt, img, bwd_img, center, bwd, a.distance, ox, oy, s,
+                                                 a.h2_inv_norm, width, height, x0, y0, x1, y1, tid, interior, stride,
+                                                 origin, plane);
+                        for (int k = 0; k < PIX; ++k) {
+                            if (inside[k]) u4[k] = wt[(y[k] - y0) * (x1 - x0 + 1) + x[k] - x0];
+                        }
                     }
                     tile_weights<NT, S, IMG>(dm, hs, wt, fwd_img, img, fwd, center, a.distance, ox, oy, s,
                                              a.h2_inv_norm, width, height, qx0, qy0, qx1, qy1, tid, interior, stride,
-                                             origin, plane);
+                                             origin, plane, a.weight_save ? a.weight_save + maps : nullptr);
                     for (int k = 0; k < PIX; ++k) {
                         if (!inside[k]) continue;
                         const int mx = clampi(x[k] - ox, 0, width - 1), my = clampi(y[k] - oy, 0, height - 1);
