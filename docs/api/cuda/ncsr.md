@@ -41,6 +41,9 @@ arguments are described under [temporal output](README.md#temporal-output).
   - The output is not bit-identical to the CPU, but is inside the 60 dB gate
     (105–139 dB on the frozen references).
   - The output is run-to-run identical: every group is solved in a fixed
-    order, and aggregation is ordered.
-  - Groups of up to 8 patches run one thread per group. Larger groups run one
-    thread block per group with a round-robin parallel Jacobi.
+    order. Spatial and rolling output aggregates from inside the filter
+    kernel with integer atomics on fixed-point sums (exact, so independent
+    of the order); legacy temporal output sorts its patches and sums them in
+    a fixed order.
+  - Groups of up to 8 patches run one thread per group. Larger groups run 16
+    or 32 threads per group with a round-robin parallel Jacobi.

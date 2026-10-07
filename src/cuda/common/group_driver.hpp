@@ -36,8 +36,8 @@ struct GroupPlane {
     float sigma = 0.f;    // filter-defined scale, passed through to launch
     // The filter's kernel aggregates this plane's groups itself, into
     // GroupLaunch::fused; the driver then keeps no values, patch records or
-    // float sums for it. Single-channel, single-round filters only. Legacy
-    // output is made of float slices: the driver clears the flag for it.
+    // float sums for it. Legacy output is made of float slices: the driver
+    // clears the flag for it.
     bool fused = false;
     // Filled by the driver:
     bool wiener = false;  // its launches get a guide (the Wiener reference)
@@ -65,7 +65,7 @@ struct GroupLaunch {
     const bool* channel_active; // shared_match: channel c is filtered (else left alone, its outputs unused)
     // plane->fused: the accumulators of the plane (see FixedTarget for the
     // slice of a match); values and patches are then null. Channel c of a
-    // shared_match unit starts c * fused.channel_step cells further.
+    // shared_match or joint unit starts c * fused.channel_step cells further.
     FixedTarget fused{};
     cudaStream_t stream;
 };

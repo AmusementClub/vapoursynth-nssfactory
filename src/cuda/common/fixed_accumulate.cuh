@@ -23,6 +23,14 @@ __device__ __forceinline__ int fixed_slice(const FixedTarget& target, int t) {
     return cell < target.slice_ring ? cell : cell - target.slice_ring;
 }
 
+// First accumulator cell of a patch at (x, y) of window slot t, or -1 when
+// the target keeps no slice for that frame.
+__device__ __forceinline__ long long fixed_patch_cell(const FixedTarget& target, int t, int y, int x) {
+    const int slice = fixed_slice(target, t);
+    if (slice < 0) return -1;
+    return slice * static_cast<long long>(target.slice_step) + static_cast<long long>(y) * target.pitch + x;
+}
+
 __device__ __forceinline__ void fixed_add(unsigned long long* cells, long long at, float value) {
     atomicAdd(cells + at, static_cast<unsigned long long>(__float2ll_rn(value * kFixedScale)));
 }

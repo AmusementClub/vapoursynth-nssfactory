@@ -50,6 +50,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         g.range = p.bm_range;
         g.ps_num = p.ps_num;
         g.ps_range = p.ps_range;
+        g.fused = true;
     }
     config.launch = [](const GroupLaunch& l) {
         NcsrGroupArgs args{};
@@ -63,6 +64,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         args.sigma = l.plane->sigma;
         args.values = l.values;
         args.patches = l.patches;
+        args.fused = l.fused;
         ncsr_filter_groups(args, l.stream);
     };
     group_filter_install(std::move(config), out, core, vsapi);

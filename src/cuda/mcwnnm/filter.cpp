@@ -46,6 +46,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         g.range = p.bm_range;
         g.ps_num = p.ps_num;
         g.ps_range = p.ps_range;
+        g.fused = true;
     }
     config.scratch_floats = [](const GroupPlane& g, bool) { return mcwnnm_scratch_floats(g.block, g.group); };
     McwnnmGroupArgs base{};
@@ -68,6 +69,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         args.values = l.values;
         args.scratch = l.scratch;
         args.patches = l.patches;
+        args.fused = l.fused;
         mcwnnm_filter_groups(args, l.stream);
     };
     group_filter_install(std::move(config), out, core, vsapi);

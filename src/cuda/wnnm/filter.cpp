@@ -44,6 +44,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         g.range = p.bm_range;
         g.ps_num = p.ps_num;
         g.ps_range = p.ps_range;
+        g.fused = true;
     }
     const int residual = p.residual, adaptive = p.adaptive;
     config.launch = [residual, adaptive](const GroupLaunch& l) {
@@ -60,6 +61,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         args.adaptive = adaptive;
         args.values = l.values;
         args.patches = l.patches;
+        args.fused = l.fused;
         wnnm_filter_groups(args, l.stream);
     };
     group_filter_install(std::move(config), out, core, vsapi);
