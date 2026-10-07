@@ -14,6 +14,8 @@ On supported Apple ARM builds, LSSC reconstruction can select an opt-in SME matr
 
 See the [API guide](docs/api/README.md) for per-filter parameters, defaults,
 measured cost tiers and pitfalls.
+The CUDA plugin (`nss_cuda`) is documented in the
+[CUDA reference](docs/api/cuda.md).
 
 ```python
 core.nss.NLM(clip clip[, int d = 1, int a = 2, int s = 4, float h = 1.2, string channels = "AUTO", int wmode = 0, float wref = 1.0, clip rclip = None])
