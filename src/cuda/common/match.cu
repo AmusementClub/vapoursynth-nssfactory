@@ -672,8 +672,11 @@ __device__ __forceinline__ void lane_scan(const float* plane, const MatchGeometr
                         const int same = lanes_set<L>(__ballot_sync(kAllLanes, held == key), lane);
                         enters = enters && same == 0;
                     }
-                    const unsigned long long pre = __shfl_up_sync(kAllLanes, held, 1, L);
-                    if (enters) held = (sub == 0 || !(key < pre)) ? key : pre;
+                    // Most candidates enter no list: the shift is skipped then.
+                    if (__any_sync(kAllLanes, enters)) {
+                        const unsigned long long pre = __shfl_up_sync(kAllLanes, held, 1, L);
+                        if (enters) held = (sub == 0 || !(key < pre)) ? key : pre;
+                    }
                 }
                 ++y;
             }
@@ -792,7 +795,7 @@ int lane_group(const MatchGeometry& g, int ps_num) {
     if ((g.channels != 1 && g.channels != 3) || g.group < 2) return 0;
     switch (g.block) {
     case 1: case 2: case 4: case 8: break;
-    case 12: case 16: case 32:
+    case 7: case 12: case 15: case 16: case 32:
         if (g.channels != 1) return 0;
         break;
     default: return 0;
@@ -827,8 +830,10 @@ bool launch_lanes(const float* plane, const MatchGeometry& g, const TemporalWind
     NSS_LANE(1, 8) NSS_LANE(1, 16) NSS_LANE(1, 32)
     NSS_LANE(2, 8) NSS_LANE(2, 16) NSS_LANE(2, 32)
     NSS_LANE(4, 8) NSS_LANE(4, 16) NSS_LANE(4, 32)
+    NSS_LANE(7, 8) NSS_LANE(7, 16) NSS_LANE(7, 32)
     NSS_LANE(8, 8) NSS_LANE(8, 16) NSS_LANE(8, 32)
     NSS_LANE(12, 8) NSS_LANE(12, 16) NSS_LANE(12, 32)
+    NSS_LANE(15, 8) NSS_LANE(15, 16) NSS_LANE(15, 32)
     NSS_LANE(16, 8) NSS_LANE(16, 16) NSS_LANE(16, 32)
     NSS_LANE(32, 32)
     NSS_LANE_JOINT(1, 8) NSS_LANE_JOINT(1, 16) NSS_LANE_JOINT(1, 32)

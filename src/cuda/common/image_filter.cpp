@@ -9,7 +9,8 @@
 // hard threshold, per-pixel aggregation, finish), one Wiener round for the
 // center against the Basic estimate, YUV -> RGB on the numerators. Planes of
 // equal geometry share matching and pixel selection; subsampled chroma
-// matches on the area-averaged luma.
+// matches on the area-averaged luma. The filter kernels aggregate their own
+// output into fixed-point accumulators (TWSC uses the ordered aggregator).
 //
 // TWSC: rounds of joint matching over the noisy planes of equal geometry (on
 // the estimate, or on rclip), the trilateral weighted sparse coding of every
@@ -48,6 +49,9 @@ namespace {
 
 // Upper bound on the per-batch group workspace.
 constexpr std::size_t kArenaBytes = 192u << 20;
+// NLH keeps matches and pixel indices there only (its kernels aggregate):
+// half holds every pass in a few batches (96 and 192 MiB measured the same).
+constexpr std::size_t kNlhArenaBytes = 96u << 20;
 // Aggregation capacity per arena byte (patches); small groups are capped by it.
 constexpr std::size_t kArenaBytesPerPatch = 1024;
 
@@ -64,9 +68,8 @@ std::size_t group_bytes(const Shape& s) {
                                  ? 0
                                  : matrices * (s.wiener && !nlh_local_matrix(s.group, s.q) ? 2 : 1);
     const std::size_t guide = nlh_prepare_shared(s.block, s.group) ? 0 : m * s.group;
-    const std::size_t floats = guide + coef + static_cast<std::size_t>(s.nch) * s.group * m + m;
-    return floats * sizeof(float) + m * s.q * sizeof(int) + sizeof(int) + (s.nch + 1) * sizeof(double) +
-           static_cast<std::size_t>(s.group) * (sizeof(DeviceMatch) + sizeof(AggregatePatch));
+    return (guide + coef) * sizeof(float) + m * s.q * sizeof(int) + sizeof(int) + (s.nch + 1) * sizeof(double) +
+           static_cast<std::size_t>(s.group) * sizeof(DeviceMatch);
 }
 
 // Device bytes one TWSC group needs in the arena (see TwscGroupArgs).
@@ -79,6 +82,7 @@ std::size_t twsc_group_bytes(int block, int group, int nch) {
 struct Slot {
     Stream stream;
     DeviceBuffer input, basic, reference, resized, num, den;  // planes of `plane_floats`
+    DeviceBuffer fixed_num, fixed_den;  // NLH accumulators: 64-bit sums per plane, 32-bit counts per geometry
     DeviceBuffer guide_ptrs, data_ptrs, basic_ptrs;           // device pointer arrays
     DeviceBuffer arena, totals, stalled;
     PinnedBuffer staging;
@@ -95,6 +99,7 @@ struct ImageData : nss::FullImageParams {
     bool rgb = false;
     int planes = 1, max_frames = 1, reference_planes = 0;
     int width[3]{}, height[3]{};
+    int geometries = 1, geometry[3]{};  // planes of equal size share their selection counts
     std::size_t plane_floats = 0, arena_bytes = 0, max_patches = 0;
     std::unique_ptr<SlotPool<Slot>> pool;
     int radius() const { return model == nss::Model::TWSC ? twsc.radius : nlh.radius; }
@@ -121,6 +126,12 @@ struct Frame {
     }
     std::uint8_t* staging(int region) const {
         return s.staging.as<std::uint8_t>() + static_cast<std::size_t>(region) * d.plane_floats * sizeof(float);
+    }
+    unsigned long long* sums(int c) const {
+        return s.fixed_num.as<unsigned long long>() + static_cast<std::size_t>(c) * d.max_frames * d.plane_floats;
+    }
+    unsigned* counts(int c) const {
+        return s.fixed_den.as<unsigned>() + static_cast<std::size_t>(d.geometry[c]) * d.max_frames * d.plane_floats;
     }
     std::size_t floats(int c) const { return static_cast<std::size_t>(d.width[c]) * d.height[c]; }
 };
@@ -177,7 +188,6 @@ NlhGroupArgs layout(const Frame& f, const Shape& shape, int batch, double** part
     if (partial) *partial = reinterpret_cast<double*>(take(b * shape.nch * sizeof(double)));
     if (sums) *sums = reinterpret_cast<double*>(take((b / 256 + 1) * shape.nch * sizeof(double)));
     a.matches = reinterpret_cast<DeviceMatch*>(take(b * shape.group * sizeof(DeviceMatch)));
-    a.patches = reinterpret_cast<AggregatePatch*>(take(b * shape.group * sizeof(AggregatePatch)));
     a.counts = reinterpret_cast<int*>(take(b * sizeof(int)));
     a.indices = reinterpret_cast<int*>(take(b * m * shape.q * sizeof(int)));
     if (!nlh_prepare_shared(shape.block, shape.group)) {
@@ -188,8 +198,6 @@ NlhGroupArgs layout(const Frame& f, const Shape& shape, int batch, double** part
         a.coef = reinterpret_cast<float*>(take(coef));
         if (shape.wiener && !nlh_local_matrix(shape.group, shape.q)) a.ref_coef = reinterpret_cast<float*>(take(coef));
     }
-    a.values = reinterpret_cast<float*>(take(b * shape.nch * shape.group * m * sizeof(float)));
-    a.den = reinterpret_cast<float*>(take(b * m * sizeof(float)));
     if (static_cast<std::size_t>(at - f.s.arena.as<std::uint8_t>()) > f.d.arena_bytes) {
         throw std::logic_error("nss_cuda: group arena overflow");
     }
@@ -205,8 +213,7 @@ NlhGroupArgs layout(const Frame& f, const Shape& shape, int batch, double** part
 int batch_for(const ImageData& d, const Shape& shape, int total) {
     // Alignment slack of the arena split: 16 bytes per region.
     const std::size_t fit = (d.arena_bytes - 16 * 12) / (group_bytes(shape) + 16);
-    const std::size_t cap = d.max_patches / shape.group;
-    return static_cast<int>(std::max<std::size_t>(1, std::min({fit, cap, static_cast<std::size_t>(total)})));
+    return static_cast<int>(std::clamp<std::size_t>(fit, 1, static_cast<std::size_t>(total)));
 }
 
 MatchGeometry match_geometry(int width, int height, int block, int window, int group) {
@@ -254,19 +261,37 @@ void estimate_sigma(Frame& f, int t) {
         NSS_CUDA_CHECK(cudaMemsetAsync(s.totals.get(), 0, 3 * sizeof(double), s.stream));
         const RasterGrid grid = make_raster_grid(width, height, shape.block, search.step);
         const MatchGeometry geometry = match_geometry(width, height, shape.block, search.window, shape.group);
-        const int batch = batch_for(d, shape, grid.count());
+        // Only matches and the statistic live in the arena: batches are far
+        // larger than those of the filter passes.
+        const std::size_t per_group = shape.group * sizeof(DeviceMatch) + sizeof(int) + nch * sizeof(double);
+        const std::size_t fit = (d.arena_bytes - 16 * 4 - 2 * nch * sizeof(double)) / (per_group + 1);
+        const int batch = static_cast<int>(std::clamp<std::size_t>(fit, 1, static_cast<std::size_t>(grid.count())));
         for (int begin = 0; begin < grid.count(); begin += batch) {
             const int n = std::min(batch, grid.count() - begin);
-            double *partial = nullptr, *sums = nullptr;
-            NlhGroupArgs a = layout(f, shape, n, &partial, &sums);
+            std::uint8_t* at = s.arena.as<std::uint8_t>();
+            const auto take = [&](std::size_t bytes) {
+                std::uint8_t* p = at;
+                at += (bytes + 15) & ~std::size_t{15};
+                return p;
+            };
+            const std::size_t b = static_cast<std::size_t>(n);
+            auto* partial = reinterpret_cast<double*>(take(b * nch * sizeof(double)));
+            auto* sums = reinterpret_cast<double*>(take((b / 256 + 1) * nch * sizeof(double)));
+            NlhGroupArgs a{};
+            a.matches = reinterpret_cast<DeviceMatch*>(take(b * shape.group * sizeof(DeviceMatch)));
+            a.counts = reinterpret_cast<int*>(take(b * sizeof(int)));
+            if (static_cast<std::size_t>(at - s.arena.as<std::uint8_t>()) > d.arena_bytes) {
+                throw std::logic_error("nss_cuda: group arena overflow");
+            }
+            a.batch = n;
+            a.nch = nch;
             a.guides = s.guide_ptrs.as<const float*>();
             a.data = s.data_ptrs.as<const float*>();
             a.width = width;
-            a.pow2 = false;
+            for (int c = 0; c < nch; ++c) a.guided[c] = data_ptr[c] == guide;
             spatial_match(guide, geometry, grid, begin, n, const_cast<DeviceMatch*>(a.matches),
                           const_cast<int*>(a.counts), s.stream);
-            nlh_prepare_groups(a, s.stream);
-            nlh_sigma_groups(a, partial, sums, s.totals.as<double>(), s.stream);
+            nlh_estimate_groups(a, partial, sums, s.totals.as<double>(), s.stream);
         }
         double totals[3]{};
         NSS_CUDA_CHECK(cudaMemcpyAsync(totals, s.totals.get(), sizeof(totals), cudaMemcpyDeviceToHost, s.stream));
@@ -330,7 +355,12 @@ void run_pass(Frame& f, const DeviceBuffer& data, const nss::NlhImageOptions& o,
         window.ps_num = o.ps_num;
         window.ps_range = o.ps_range;
         const int batch = batch_for(d, shape, grid.count());
-        bool written = false;
+        // The kernels add into the accumulators of the geometry's planes.
+        const std::size_t cells = static_cast<std::size_t>(f.count) * d.plane_floats;
+        for (int c = 0; c < nch; ++c) {
+            NSS_CUDA_CHECK(cudaMemsetAsync(f.sums(channels[c]), 0, cells * sizeof(unsigned long long), s.stream));
+        }
+        NSS_CUDA_CHECK(cudaMemsetAsync(f.counts(first), 0, cells * sizeof(unsigned), s.stream));
         for (int t0 = wiener ? f.center : 0; t0 < (wiener ? f.center + 1 : f.count); ++t0) {
             window.t0 = t0;
             for (int begin = 0; begin < grid.count(); begin += batch) {
@@ -345,9 +375,12 @@ void run_pass(Frame& f, const DeviceBuffer& data, const nss::NlhImageOptions& o,
                 for (int c = 0; c < nch; ++c) {
                     const float sigma = f.sigma[t0][channels[c]];
                     a.threshold[c] = nlh_float_threshold(nss::kNlhHardCoefficient * o.hard_strength * sigma);
-                    a.noise[c] = (o.wiener_sigma_scale * sigma) * (o.wiener_sigma_scale * sigma);
+                    nlh_set_noise(a, c, (o.wiener_sigma_scale * sigma) * (o.wiener_sigma_scale * sigma));
                     a.identity[c] = sigma == 0;
+                    a.num[c] = f.sums(channels[c]);
                 }
+                a.den = f.counts(first);
+                a.slice_step = d.plane_floats;
                 {
                     NSS_CUDA_RANGE("nlh.match");
                     auto* matches = const_cast<DeviceMatch*>(a.matches);
@@ -363,17 +396,12 @@ void run_pass(Frame& f, const DeviceBuffer& data, const nss::NlhImageOptions& o,
                     nlh_prepare_groups(a, s.stream);
                     nlh_filter_groups(a, s.stream);
                 }
-                NSS_CUDA_RANGE("nlh.aggregate");
-                const std::size_t channel_values = static_cast<std::size_t>(n) * shape.group * shape.block * shape.block;
-                for (int c = 0; c < nch; ++c) {
-                    const AggregateTarget target{f.accum(s.num, channels[c]), f.accum(s.den, channels[c]), width, height,
-                                                 width, f.count, d.plane_floats};
-                    s.aggregator->run(a.values + c * channel_values, a.patches, n * shape.group, shape.block, target,
-                                      s.stream, written, a.den, shape.group);
-                }
-                written = true;
             }
             f.groups += static_cast<std::uint64_t>(grid.count()) * nch;
+        }
+        for (int c = 0; c < nch; ++c) {
+            nlh_finish_sums(f.sums(channels[c]), f.counts(first), f.accum(s.num, channels[c]),
+                            f.accum(s.den, channels[c]), cells, s.stream);
         }
     }
 }
@@ -772,7 +800,14 @@ std::unique_ptr<Slot> make_slot(const ImageData& d, int staging_regions) {
     slot->totals = DeviceBuffer(3 * sizeof(double), d.budget);
     slot->stalled = DeviceBuffer(sizeof(int), d.budget);
     slot->staging = PinnedBuffer(static_cast<std::size_t>(staging_regions) * d.plane_floats * sizeof(float), d.budget);
-    slot->aggregator = std::make_unique<OrderedAggregator>(d.width[0], d.height[0], d.max_frames, d.max_patches, d.budget);
+    if (d.model == nss::Model::TWSC) {
+        slot->aggregator =
+            std::make_unique<OrderedAggregator>(d.width[0], d.height[0], d.max_frames, d.max_patches, d.budget, true);
+    } else {
+        const std::size_t cells = static_cast<std::size_t>(d.max_frames) * d.plane_floats;
+        slot->fixed_num = DeviceBuffer(cells * d.planes * sizeof(unsigned long long), d.budget);
+        slot->fixed_den = DeviceBuffer(cells * d.geometries * sizeof(unsigned), d.budget);
+    }
     return slot;
 }
 
@@ -811,6 +846,17 @@ void create(const VSMap* in, VSMap* out, VSCore* core, const VSAPI* api, nss::Mo
         d.height[c] = nss::plane_height(d.vi, c);
         d.plane_floats = std::max(d.plane_floats, static_cast<std::size_t>(d.width[c]) * d.height[c]);
     }
+    {
+        std::array<bool, 3> used{};
+        d.geometries = 0;
+        for (int first = 0; first < d.planes; ++first) {
+            if (used[first]) continue;
+            std::array<int, 3> channels{};
+            const int nch = geometry_group(d, first, used, channels);
+            for (int c = 0; c < nch; ++c) d.geometry[channels[c]] = d.geometries;
+            ++d.geometries;
+        }
+    }
 
     // Memory plan: the window planes, staging and the output frame are fixed
     // per slot; the group arena takes what the budget leaves, up to
@@ -819,7 +865,10 @@ void create(const VSMap* in, VSMap* out, VSCore* core, const VSAPI* api, nss::Mo
     const int rows = d.radius() ? 2 * (2 * d.radius() + 1) : 1;
     const int staging_regions = d.max_frames * (d.planes + d.reference_planes) + d.planes * rows;
     const std::size_t device_planes = static_cast<std::size_t>(d.max_frames) * (3 * 4 + (d.reference ? 3 : 0) + 1);
-    const std::size_t fixed = plane_bytes * (device_planes + staging_regions) + plane_bytes * d.planes * rows;
+    // NLH accumulators: 64-bit sums per plane and 32-bit counts per geometry.
+    const std::size_t accumulators = twsc ? 0 : static_cast<std::size_t>(d.max_frames) * (2 * d.planes + d.geometries);
+    const std::size_t fixed =
+        plane_bytes * (device_planes + staging_regions + accumulators) + plane_bytes * d.planes * rows;
     // The largest group over the possible resolved shapes (NLH: block <= 16).
     const int max_group = twsc ? d.twsc.group : std::max({d.nlh.group[0], d.nlh.group[1], 16});
     const int max_q = std::max({d.nlh.q[0], d.nlh.q[1], 4});
@@ -831,13 +880,16 @@ void create(const VSMap* in, VSMap* out, VSCore* core, const VSAPI* api, nss::Mo
             one_group = std::max(one_group, group_bytes(Shape{block, max_group, max_q, d.planes, true}) + 16 * 13);
         }
     }
-    // Arena plus its aggregation buffers.
+    const std::size_t arena_cap = twsc ? kArenaBytes : kNlhArenaBytes;
+    // Arena plus, for TWSC, its aggregation buffers (sort arrays and the tile bins).
+    const std::size_t bins = twsc ? OrderedAggregator::bin_bytes(d.width[0], d.height[0], d.max_frames, true) : 0;
+    const std::size_t sort_bytes = twsc ? OrderedAggregator::kBytesPerPatch : 0;
     const auto slot_bytes = [&](std::size_t arena) {
-        return fixed + arena + arena / kArenaBytesPerPatch * OrderedAggregator::kBytesPerPatch + (1u << 16);
+        return fixed + arena + arena / kArenaBytesPerPatch * sort_bytes + bins + (1u << 16);
     };
     const std::size_t limit = d.budget ? d.budget->snapshot().limit : SIZE_MAX;
     if (!d.backend.streams_explicit) {
-        d.backend.num_streams = static_cast<int>(std::clamp<std::size_t>(limit / slot_bytes(kArenaBytes), 1, kDefaultStreams));
+        d.backend.num_streams = static_cast<int>(std::clamp<std::size_t>(limit / slot_bytes(arena_cap), 1, kDefaultStreams));
     }
     const std::size_t share = limit == SIZE_MAX ? SIZE_MAX : limit / static_cast<std::size_t>(d.backend.num_streams);
     if (share < slot_bytes(one_group)) {
@@ -846,10 +898,10 @@ void create(const VSMap* in, VSMap* out, VSCore* core, const VSAPI* api, nss::Mo
                                     std::to_string(d.backend.num_streams) + " stream(s) needs at least " +
                                     std::to_string((slot_bytes(one_group) >> 20) + 1) + " MiB");
     }
-    d.arena_bytes = kArenaBytes;
-    if (share != SIZE_MAX && slot_bytes(kArenaBytes) > share) {
+    d.arena_bytes = arena_cap;
+    if (share != SIZE_MAX && slot_bytes(arena_cap) > share) {
         // slot_bytes is affine in the arena: solve for the largest that fits.
-        const double per_byte = 1.0 + static_cast<double>(OrderedAggregator::kBytesPerPatch) / kArenaBytesPerPatch;
+        const double per_byte = 1.0 + static_cast<double>(sort_bytes) / kArenaBytesPerPatch;
         d.arena_bytes = std::max(one_group, static_cast<std::size_t>((share - slot_bytes(0)) / per_byte));
     }
     d.max_patches = std::max<std::size_t>(d.arena_bytes / kArenaBytesPerPatch, max_group);
