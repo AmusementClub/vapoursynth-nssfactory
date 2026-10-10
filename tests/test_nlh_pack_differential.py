@@ -7,7 +7,7 @@ from nlh_pack_differential import property_differences, validate_resources
 
 
 def properties():
-    return {'0': {'_NSSSigma': 25., '_NSSModelVersion': 5,
+    return {'0': {'_NSSSigma': 25., '_NSSModelVersion': 6,
                   '_NSSResourceBytes': [0, 0, 0, 100, 50, 1000],
                   '_NSSResourcePeak': 200, '_NSSResourceLimit': 10000}}
 

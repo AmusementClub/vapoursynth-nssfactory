@@ -1,0 +1,91 @@
+{
+  "schema": "nss.nlh-presets.v6",
+  "model_version": 6,
+  "profiles": {
+    "gray-low": {
+      "block_size": [
+        8,
+        16
+      ],
+      "block_step": [
+        6,
+        15
+      ],
+      "group_size": [
+        16,
+        16
+      ],
+      "q": [
+        4,
+        4
+      ],
+      "search_window": [
+        24,
+        16
+      ],
+      "basic_iters": 3,
+      "wiener_iters": 2,
+      "lambda_basic": 0.6,
+      "hard_strength": 1.0,
+      "wiener_sigma_scale": 0.32,
+      "noise_model": "awgn"
+    },
+    "gray-high": {
+      "block_size": [
+        8,
+        16
+      ],
+      "block_step": [
+        6,
+        15
+      ],
+      "group_size": [
+        16,
+        16
+      ],
+      "q": [
+        4,
+        4
+      ],
+      "search_window": [
+        24,
+        16
+      ],
+      "basic_iters": 3,
+      "wiener_iters": 2,
+      "lambda_basic": 0.6,
+      "hard_strength": 1.0,
+      "wiener_sigma_scale": 0.32,
+      "noise_model": "awgn"
+    },
+    "rgb": {
+      "block_size": [
+        8,
+        16
+      ],
+      "block_step": [
+        6,
+        15
+      ],
+      "group_size": [
+        16,
+        16
+      ],
+      "q": [
+        4,
+        4
+      ],
+      "search_window": [
+        24,
+        16
+      ],
+      "basic_iters": 3,
+      "wiener_iters": 2,
+      "lambda_basic": 0.6,
+      "hard_strength": 1.0,
+      "wiener_sigma_scale": 0.32,
+      "noise_model": "real"
+    }
+  },
+  "scope": "Public omissions select this one preset for every noise model and sigma (the three profiles are equal); explicit options override individual fields. Exact coefficients are retained here."
+}

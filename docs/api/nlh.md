@@ -8,12 +8,12 @@ filter here at defaults.
 
 ```python
 out = core.nss.NLH(clip)                          # blind estimation
-awgn = core.nss.NLH(clip, sigma=25)               # explicit sigma (Gray AWGN lane)
+awgn = core.nss.NLH(clip, sigma=25)               # explicit sigma
 custom = core.nss.NLH(clip, sigma=25, block_size=[6, 9], block_step=[3, 6])
 ```
 
 Two-stage array parameters take `[Basic, Wiener]`; a single value broadcasts
-to both stages. Omitted fields are resolved per lane below.
+to both stages. Omitted fields come from the preset below.
 
 ## Signature
 
@@ -31,36 +31,52 @@ core.nss.NLH(clip clip[, float[] sigma, string noise_model = "auto",
 
 | Parameter | Default | Range | Meaning and impact |
 |---|---|---|---|
-| `sigma` | omitted = blind | >= 0 | 8-bit noise stddev per plane. When omitted, noise is estimated per frame/channel and the lane is chosen from the estimate. Explicit `sigma=0` preserves the plane exactly. |
-| `noise_model` | `"auto"` | auto / awgn / real | `auto` = AWGN for Gray, real for RGB/YUV. AWGN picks the low/high lane by the center frame's maximum working-domain sigma (<= 50 / > 50). |
-| `block_size` | lane table | [2, 16] | `[Basic, Wiener]` patch edge. Smaller Basic blocks track texture; the larger Wiener block stabilizes the second stage. |
-| `block_step` | lane table | [1, block] | Per-stage stride. Cost scales as `1/step^2` per stage; the Basic stage's step is the dominant cost driver. |
+| `sigma` | omitted = blind | >= 0 | 8-bit noise stddev per plane. When omitted, noise is estimated per frame/channel. Explicit `sigma=0` preserves the plane exactly. |
+| `noise_model` | `"auto"` | auto / awgn / real | Kept for compatibility: since model version 6 there is one preset and the value selects nothing. Version 5 chose a preset by it (and by sigma). |
+| `block_size` | preset | [2, 16] | `[Basic, Wiener]` patch edge. Smaller Basic blocks track texture; the larger Wiener block stabilizes the second stage. |
+| `block_step` | preset | [1, block] | Per-stage stride. Cost scales as `1/step^2` per stage; the Basic stage's step is the dominant cost driver. |
 | `group_size` | [16, 16] | {2,4,8,16,32,64} | Pixel-matrix size per group (power of two). |
-| `search_window` | [40, 40] | [1, 129] | Matching window per stage. `bm_range=r` means `2r+1` on both stages; passing both is an error. |
-| `q` | lane table | {2,4,8,16}, q <= block^2 | Haar coefficient rows kept per group (power of two). |
+| `search_window` | preset | [1, 129] | Matching window per stage. `bm_range=r` means `2r+1` on both stages; passing both is an error. |
+| `q` | preset | {2,4,8,16}, q <= block^2 | Haar coefficient rows kept per group (power of two). |
 | `radius` | 0 | [0, 16] | Temporal radius. >0 returns the weighted intermediate for `VAggregate`. |
 | `rclip` | none | clip | Reference clip guiding matching. |
 
-### Lane defaults (resolved when fields are omitted)
+### Preset (resolved when fields are omitted)
 
-`[Basic, Wiener]` per field. Shared: `group_size=[16,16]`,
-`search_window=[40,40]`, `lambda_basic=0.6`, `wiener_iters=2`.
+`[Basic, Wiener]` per field. One preset serves every format, noise model and
+sigma:
 
-| Lane | block_size | block_step | q | basic_iters | hard_strength | wiener_sigma_scale |
-|---|---|---|---|---:|---:|---:|
-| Gray AWGN, sigma <= 50 | [8, 16] | [6, 15] | [4, 4] | 4 | 1.0 | 0.32 |
-| Gray AWGN, sigma > 50 | [8, 15] | [6, 7] | [4, 4] | 5 | 0.70710678 | 0.64 |
-| Real (RGB/YUV auto) | [7, 16] | [4, 10] | [2, 4] | 2 | 0.125 | 0.64 |
+| block_size | block_step | group_size | search_window | q | basic_iters | wiener_iters | lambda_basic | hard_strength | wiener_sigma_scale |
+|---|---|---|---|---|---:|---:|---:|---:|---:|
+| [8, 16] | [6, 15] | [16, 16] | [24, 16] | [4, 4] | 3 | 2 | 0.6 | 1.0 | 0.32 |
+
+An omitted block is capped at the smallest processed plane, an omitted step
+at its block, and an omitted `q` is halved until it fits `block^2`.
+
+This is the model version 6 preset. Version 5 had three, chosen by noise
+model and sigma; to reproduce them pass the fields explicitly:
+
+| Version 5 preset | block_size | block_step | search_window | q | basic_iters | hard_strength | wiener_sigma_scale |
+|---|---|---|---|---|---:|---:|---:|
+| Gray AWGN, sigma <= 50 | [8, 16] | [6, 15] | [40, 40] | [4, 4] | 4 | 1.0 | 0.32 |
+| Gray AWGN, sigma > 50 | [8, 15] | [6, 7] | [40, 40] | [4, 4] | 5 | 0.70710678 | 0.64 |
+| Real (RGB/YUV auto) | [7, 16] | [4, 10] | [40, 40] | [2, 4] | 2 | 0.125 | 0.64 |
+
+Against version 5 on the study's test images (PSNR): gray up to sigma 50
++0.05 dB; gray at sigma 75 to 100 -0.5 dB; RGB +3.9 dB at sigma 5, +1.6 at
+15, +0.6 at 25, -0.7 at 50, -1.1 to -1.4 at 75 to 100, and -1.3 dB on real
+camera noise with blind estimation. For strong or real noise the version 5
+values above remain the better choice.
 
 ## Secondary parameters
 
 | Parameter | Default | Range | Meaning |
 |---|---|---|---|
-| `basic_iters` | lane table | [1, 64] | Basic rounds (iterative hard-threshold refinement). Linear cost driver. |
+| `basic_iters` | preset | [1, 64] | Basic rounds (iterative hard-threshold refinement). Linear cost driver. |
 | `wiener_iters` | 2 | [1, 64] | Times the fixed Wiener gain is re-applied (not full extra Wiener passes). |
 | `lambda_basic` | 0.6 | [0, 1] | Mix between the iterated Basic estimate and the input each round. |
-| `hard_strength` | lane table | >= 0 | Scales the linear Basic threshold `2.025 * hard_strength * sigma_channel`. |
-| `wiener_sigma_scale` | lane table | >= 0 | Noise scale inside the Wiener gain `r^2 / (r^2 + noise)`. |
+| `hard_strength` | preset | >= 0 | Scales the linear Basic threshold `2.025 * hard_strength * sigma_channel`. |
+| `wiener_sigma_scale` | preset | >= 0 | Noise scale inside the Wiener gain `r^2 / (r^2 + noise)`. |
 | `ps_num` / `ps_range` | 2 / 4 | [1,min(group)] / [1,64] | Predictive temporal search (`radius > 0`). |
 | `memory_limit_mb` | none | — | Workspace cap; fails instead of degrading. |
 
@@ -69,7 +85,7 @@ core.nss.NLH(clip clip[, float[] sigma, string noise_model = "auto",
 Each output frame stamps `_NSSSigma`, `_NSSBlockSize`, `_NSSBlockStep`,
 `_NSSGroupSize`, `_NSSSearchWindow`, `_NSSQ`, `_NSSIterations`,
 `_NSSLambdaBasic`, `_NSSHardStrength`, `_NSSHardCoefficient`,
-`_NSSWienerSigmaScale`, and `_NSSModelVersion=5` — the resolved values actually
+`_NSSWienerSigmaScale`, and `_NSSModelVersion=6` — the resolved values actually
 executed, so blind runs can be audited per frame.
 
 ## Algorithm and paper
@@ -86,10 +102,12 @@ multipliers.
 
 ## Defaults rationale and performance
 
-The preset lanes come from a joint quality/speed search over DIV2K and CC
-real-noise pairs. Low-noise blind estimation knowingly trades detail for the
-large high-noise/real-noise gains — on nearly-clean sources (sigma around 5),
-expect visible detail loss with the real-noise lane in particular. Benchmark-geometry
+The preset comes from quality/speed searches over DIV2K images and CC
+real-noise pairs: version 5 found three presets, and version 6 keeps the
+low-noise gray one for every clip with a smaller search window and one Basic
+round fewer. It favours low and moderate noise (see the comparison under the
+preset table); for strong or real camera noise pass the version 5 values.
+Benchmark-geometry
 (block 8/8, step 8/8) runs at ~6621 ms/frame single-core 1080p GRAYS
 (~0.15 fps); the true defaults with blind estimation are heavier. The Basic
 stage dominates; blind estimation adds a full step-1 matching pass per frame.

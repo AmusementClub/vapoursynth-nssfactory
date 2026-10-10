@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #pragma once
-// NLH arguments, the frozen v5 presets and pure preset resolution, shared by
+// NLH arguments, the frozen v6 presets and pure preset resolution, shared by
 // every backend (no VapourSynth or kernel dependencies).
 #include "nss/params.hpp"
 
@@ -18,41 +18,30 @@ struct NlhImageOptions {
     int basic_iterations = 0, wiener_iterations = 0;
     int radius = 0, ps_num = 2, ps_range = 4;
     double basic_mix = -1, hard_strength = -1, wiener_sigma_scale = -1;
-    bool real_noise = false;
+    bool real_noise = false;  // noise_model; selects nothing since model version 6
 };
 
 namespace nlh_detail {
-// Selected by the frozen development/selection procedure; exact public
-// fixtures are in tests/data/nlh_presets_v5.json. Kernel math is unchanged.
-inline constexpr NlhImageOptions kAwgnLow{
+// The one preset of model version 6; exact public fixtures are in
+// tests/data/nlh_presets_v6.json. Version 5 chose among three by noise
+// model and sigma (AWGN up to 50, AWGN above 50, real); version 6 keeps the
+// first of them for every clip, with a search window of 24 / 16 instead of
+// 40 / 40 and one Basic round fewer. Kernel math is unchanged.
+inline constexpr NlhImageOptions kPreset{
     .block = {8, 16}, .step = {6, 15},
-    .group = {16, 16}, .q = {4, 4}, .window = {40, 40},
-    .basic_iterations = 4, .wiener_iterations = 2,
+    .group = {16, 16}, .q = {4, 4}, .window = {24, 16},
+    .basic_iterations = 3, .wiener_iterations = 2,
     .basic_mix = 0.6, .hard_strength = 1.0,
     .wiener_sigma_scale = 0.32,
 };
-inline constexpr NlhImageOptions kAwgnHigh{
-    .block = {8, 15}, .step = {6, 7},
-    .group = {16, 16}, .q = {4, 4}, .window = {40, 40},
-    .basic_iterations = 5, .wiener_iterations = 2,
-    .basic_mix = 0.6, .hard_strength = 0.7071067811865476,
-    .wiener_sigma_scale = 0.64,
-};
-inline constexpr NlhImageOptions kReal{
-    .block = {7, 16}, .step = {4, 10},
-    .group = {16, 16}, .q = {2, 4}, .window = {40, 40},
-    .basic_iterations = 2, .wiener_iterations = 2,
-    .basic_mix = 0.6, .hard_strength = 0.125,
-    .wiener_sigma_scale = 0.64, .real_noise = true,
-};
 }  // namespace nlh_detail
 
-// Resolve omitted fields from the preset for the largest selected sigma (in
-// public 8-bit units) and the smallest selected plane dimension.
-inline NlhImageOptions nlh_resolve_preset(double sigma, int available, const NlhImageOptions& requested) {
+// Resolve omitted fields from the preset for the smallest selected plane
+// dimension. The preset no longer depends on sigma (the largest selected one,
+// in public 8-bit units) or on the noise model; both stay in the interface.
+inline NlhImageOptions nlh_resolve_preset(double /*sigma*/, int available, const NlhImageOptions& requested) {
     if (available < 2) throw std::invalid_argument("nss: selected plane is smaller than block_size");
-    const auto& preset = requested.real_noise ? nlh_detail::kReal :
-                         sigma <= 50 ? nlh_detail::kAwgnLow : nlh_detail::kAwgnHigh;
+    const auto& preset = nlh_detail::kPreset;
     auto o = requested;
     for (int s = 0; s < 2; ++s) {
         o.block[s] = o.block[s] ? o.block[s] : std::min(preset.block[s], available);
