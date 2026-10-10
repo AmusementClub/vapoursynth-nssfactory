@@ -20,8 +20,23 @@ core.nss_cuda.VAggregate(clip clip, clip src[, int radius = 0, int[] planes,
                          int device_id = 0, int num_streams = 1])
 ```
 
-The arguments are those of `nss.VAggregate`. `device_id` and `num_streams`
-are accepted but no device is used.
+## Parameters
+
+| Parameter | Default | Range | Meaning |
+|---|---|---|---|
+| `clip` | required | clip | The fat intermediate: the output of a temporal filter with `radius > 0` and `temporal_mode="legacy"` (or of the CPU plugin). Its height is `src` height x `(2 * radius + 1)` x 2. |
+| `src` | required | clip | The clip the intermediate was computed from. It gives the output format and size, and the planes that are not aggregated. |
+| `radius` | 0 | [1, 16] in practice | The radius the intermediate was produced with. It must match the one recorded in the frame properties. |
+| `planes` | all planes | unique plane indices | The planes to aggregate. A plane that is not listed is copied from `src`. |
+| `allow_legacy` | 0 | 0 / 1 | 1 also accepts an intermediate without any `_NSSFat*` identity properties (output of old builds). A partially tagged frame is always rejected. |
+| `memory_limit_mb` | none | > 0 | Caps the host workspace of the instance. |
+| `device_id` | 0 | device index | Accepted for the common signature; no device is used. |
+| `num_streams` | 1 | [1, 16] | Accepted for the common signature; no device is used. |
+
+The intermediate carries its model, model version, radius and layout as frame
+properties, and a frame whose identity does not match the current build is
+rejected: intermediates of another model version (for example NLH before
+version 6) must be regenerated.
 
 ## On the device
 

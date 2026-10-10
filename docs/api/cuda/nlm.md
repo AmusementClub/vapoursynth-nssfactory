@@ -2,9 +2,9 @@
 
 Non-local means on the device: all channel modes, temporal `d`, and `rclip`. The output is always normal-height.
 
-The parameters mean what they mean in [`nss.NLM`](../nlm.md), which
-also has the algorithm, the defaults rationale and the pitfalls. This page has
-the call and what is specific to the device.
+Every argument is described on this page. The algorithm, the paper and the
+reasoning behind the defaults are on the CPU page, [`nss.NLM`](../nlm.md); the
+model and the defaults are the same on both plugins.
 
 ```python
 out = core.nss_cuda.NLM(clip, h=1.2)          # defaults
@@ -20,8 +20,33 @@ core.nss_cuda.NLM(clip clip[, int d = 1, int a = 2, int s = 4, float h = 1.2,
                   int memory_limit_mb, int device_id = 0, int num_streams = 1])
 ```
 
-`device_id`, `num_streams` and `memory_limit_mb` are described in the
-[shared arguments](README.md#arguments).
+## Primary parameters
+
+| Parameter | Default | Range | Meaning and impact |
+|---|---|---|---|
+| `h` | 1.2 | > 0 | Filtering strength. Larger values smooth more aggressively. This is the knob to turn first; the default is intentionally conservative (earlier calibration found `h=1.2` barely denoises strong noise — raise it with the noise level). |
+| `d` | 1 | [0, 256] | Temporal radius in frames. `d=0` is purely spatial; `d>0` pools matches from `d` neighbouring frames on each side, improving quality on static regions at a linear cost in frames searched. |
+| `a` | 2 | [1, 64] | Search radius in pixels around the anchor. Cost grows as `(2a+1)^2`; quality saturates quickly. |
+| `s` | 4 | [0, 1024] | Patch radius for the similarity comparison (patch size `2s+1`). Larger patches are more noise-robust but blur fine structure. |
+| `channels` | `"AUTO"` | Y / UV / YUV / RGB / AUTO | Which planes to process. AUTO selects by color family. |
+
+## Secondary parameters
+
+| Parameter | Default | Range | Meaning |
+|---|---|---|---|
+| `wref` | 1.0 | > 0 | Weight of the reference (center) pixel's own contribution. Below 1 trusts neighbours more. |
+| `wmode` | 0 | 0 only | Weight kernel. Only `0` (Welsch) is implemented; other values are rejected. |
+| `rclip` | none | clip | Reference clip for similarity search (same format/size). |
+
+## Device parameters
+
+| Parameter | Default | Range | Meaning |
+|---|---|---|---|
+| `device_id` | 0 | device index | CUDA device the instance runs on. One instance uses one device; `core.nss_cuda.Backend(device_id)` reports whether it is supported. |
+| `num_streams` | 1 | [1, 16] | Frames (or temporal chunks) the instance has in flight on the device at once. Each stream owns its device buffers, so memory grows with it. |
+| `memory_limit_mb` | none | > 0 | Caps the instance's device and pinned host memory. The internal batches are fitted to it and the output does not change; a limit that cannot hold the streams is a creation error. Without it the filter takes what its plan needs. |
+
+How the streams and the memory limit behave across filters is in the [shared notes](README.md#shared-by-every-filter).
 
 ## On the device
 
@@ -57,3 +82,13 @@ core.nss_cuda.NLM(clip clip[, int d = 1, int a = 2, int s = 4, float h = 1.2,
     measured).
   - The output is run-to-run identical: every pixel is accumulated by one
     thread in a fixed offset order.
+
+## Pitfalls
+
+- `h` is **not** in sigma units and does not track the noise level by itself;
+  retune it when noise changes materially.
+- There is no `radius` and no fat intermediate: temporal support is the `d`
+  parameter and the result is always normal-height.
+- `a` must be smaller than the processed plane width (creation-time error).
+- `d` pins `2d + 1` input frames; creation rejects radii whose pinned footprint
+  exceeds 2 GiB for the actual frame size.
