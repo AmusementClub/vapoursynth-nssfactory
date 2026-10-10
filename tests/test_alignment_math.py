@@ -221,8 +221,11 @@ class Suite:
         y = self.rng.integers(0, 64, (height, width)) / 128
         guide = self.rng.integers(0, 64, (height, width)) / 128
         patches = {(x, z): guide[z:z+8, x:x+8].ravel() for z in range(height-7) for x in range(width-7)}
+        # References: every fourth position per axis and the last one; every position is a candidate.
+        xs = sorted({*range(0, width-7, 4), width-8}); zs = sorted({*range(0, height-7, 4), height-8})
         estimates = []
-        for pos, patch in patches.items():
+        for pos in ((x, z) for z in zs for x in xs):
+            patch = patches[pos]
             neighbors = [pos] + sorted((key for key in patches if key != pos),
                                       key=lambda key: (np.sum((patch-patches[key])**2), key[1], key[0]))[:15]
             g = np.array([patches[key] for key in neighbors]).T

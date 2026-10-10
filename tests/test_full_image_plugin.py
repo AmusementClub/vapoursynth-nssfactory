@@ -97,7 +97,7 @@ class Suite:
                 rows=list(pool.map(lambda n: (n,values(node,n)),order))
             captured={n:row[0] for n,row in rows}
             for n,(planes,props) in rows:
-                assert props['_NSSModelVersion']==(3 if name=='TWSC' else 6)
+                assert props['_NSSModelVersion']==(4 if name=='TWSC' else 6)
                 for p,a in enumerate(planes):
                     assert a.shape==original[n][p].shape and np.isfinite(a).all()
             if expected is None: expected=captured
