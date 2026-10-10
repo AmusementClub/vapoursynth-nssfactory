@@ -2,9 +2,9 @@
 
 Block matching and 3D collaborative filtering on the device: spatial, `ref` (Wiener), temporal, `chroma` (CBM3D) and `final` (both stages in one call).
 
-The parameters mean what they mean in [`nss.BM3D`](../bm3d.md), which
-also has the algorithm, the defaults rationale and the pitfalls. This page has
-the call and what is specific to the device.
+Every argument is described on this page. The algorithm, the paper and the
+reasoning behind the defaults are on the CPU page, [`nss.BM3D`](../bm3d.md); the
+model and the defaults are the same on both plugins.
 
 ```python
 basic = core.nss_cuda.BM3D(clip, sigma=25)
@@ -31,9 +31,95 @@ core.nss_cuda.BM3D(clip clip[, clip ref, float[] sigma = 3.0, int[] block_size =
                    int memory_limit_mb, int device_id = 0, int num_streams = 1])
 ```
 
-`device_id`, `num_streams` and `memory_limit_mb` are described in the
-[shared arguments](README.md#arguments). `temporal_mode` and the `rolling_*`
-arguments are described under [temporal output](README.md#temporal-output).
+Array-typed parameters take one value per plane; a single value broadcasts.
+Omitted `block_step` adapts to `min(8, block_size)` per plane; omitted
+`ps_num` adapts to `min(2, group_size)`.
+
+## Primary parameters
+
+| Parameter | Default | Range | Meaning and impact |
+|---|---|---|---|
+| `sigma` | 3.0 | >= 0 | 8-bit noise standard deviation per plane. Controls threshold/Wiener strength. Note the input is remapped through the BM3D effective-noise profile, so the response tracks the paper's expected behaviour. `sigma=0` bypasses the plane. |
+| `block_size` | 8 | {1,2,4,8,12,16,32} | Patch edge. 8 is the general default; 12 exists for high-noise DCT profiles. Larger blocks cost quadratically per patch. |
+| `block_step` | min(8, block) | [1, block] | Stride between reference patches. Halving it roughly quadruples positions (2D) — the main quality/speed trade. |
+| `group_size` | 8 | {1,2,4,8,16,32,64} | Maximum patches per 3D stack. More matches help at high noise; marginal at low noise. |
+| `bm_range` | 7 | [1, 64] | Search window radius (`window = 2*bm_range + 1`). Cost grows quadratically; motion/texture may justify a larger window. |
+| `radius` | 0 | [0, 16] | Temporal radius in frames. >0 makes the filter temporal: finished, normal-height frames by default (`temporal_mode`, below). |
+| `ref` | none | clip | External reference clip guiding both stages' matching (paper-style two-stage usage). |
+| `chroma` | 0 | {0, 1} | CBM3D for YUV 4:4:4 clips: groups are matched on plane 0 only (of `ref` when given) and all three planes are filtered with them. See "Color (CBM3D)". |
+
+## Secondary parameters
+
+| Parameter | Default | Range | Meaning |
+|---|---|---|---|
+| `ps_num` | min(2, group) | [1, group] | Predictive-search seeds kept per temporal step (only used with `radius > 0`). |
+| `ps_range` | 4 | [1, 64] | Predictive-search window radius around each seed (temporal mode). |
+
+## Both stages in one call (`final`)
+
+`BM3D(clip, final=1, ...)` runs the basic stage and then the Wiener stage
+with the basic estimate as its reference. It gives exactly what the two calls
+
+```python
+basic = core.nss_cuda.BM3D(clip, sigma=sigma_basic, block_size=block_size_basic,
+                      group_size=group_size_basic, ...)   # finished frames
+out = core.nss_cuda.BM3D(clip, ref=basic, sigma=sigma, block_size=block_size,
+                    group_size=group_size, ...)
+```
+
+give, bit for bit.
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `final` | 0 | 1 runs both stages. Cannot be combined with `ref` (which supplies a basic estimate of your own). |
+| `sigma_basic` | `sigma` | Noise level of the basic stage, per plane. 0 leaves a plane's estimate as the source. |
+| `block_size_basic` | `block_size` | Patch edge of the basic stage. |
+| `group_size_basic` | `group_size` | Group size of the basic stage. |
+
+- The other arguments hold for both stages. An omitted `block_step` or
+  `ps_num` adapts to each stage's block and group; a given one must fit both.
+- The `*_basic` arguments need `final=1`.
+- With `radius > 0` the basic stage is temporal too, and its finished frames
+  are the reference of the second stage in either temporal mode.
+- The basic estimate stays on the device (see "On the device" below); on the
+  CPU plugin `final=1` is the two calls chained.
+
+## Color (CBM3D)
+
+With `chroma=1` the filter follows the color variant of the paper (Dabov, Foi,
+Katkovnik & Egiazarian, *Color Image Denoising via Sparse 3D Collaborative
+Filtering with Grouping Constraint in Luminance-Chrominance Space*, ICIP 2007):
+the groups are found on the luminance plane, where the structure is strongest,
+and each plane is collaboratively filtered with those same groups.
+
+- The clip must be YUV 4:4:4. The filter does not convert color: give it
+  YUV or an opponent space stored as YUV, and convert back afterwards.
+- Matching runs on plane 0 of `ref` when a `ref` is given, of `clip` otherwise.
+  In the second stage each plane's Wiener gains come from the same plane of
+  `ref`.
+- `block_size`, `group_size`, `block_step`, `bm_range`, `ps_num` and
+  `ps_range` take their first value for all planes. `sigma` stays per plane.
+- A plane with `sigma = 0` is copied. Plane 0 still provides the groups, so
+  `sigma=[0, s, s]` filters the chroma planes under luma's guidance.
+- Plane 0 is filtered exactly as without `chroma`; planes 1 and 2 differ.
+- `radius > 0`, `ref` and both temporal modes work as usual.
+
+It matches once instead of three times, so it is also faster wherever the
+matching is a large part of the work.
+
+## Device parameters
+
+| Parameter | Default | Range | Meaning |
+|---|---|---|---|
+| `device_id` | 0 | device index | CUDA device the instance runs on. One instance uses one device; `core.nss_cuda.Backend(device_id)` reports whether it is supported. |
+| `num_streams` | 1 | [1, 16] | Frames (or temporal chunks) the instance has in flight on the device at once. Each stream owns its device buffers, so memory grows with it. |
+| `memory_limit_mb` | none | > 0 | Caps the instance's device and pinned host memory. The internal batches are fitted to it and the output does not change; a limit that cannot hold the streams is a creation error. Without it the filter takes what its plan needs. |
+| `temporal_mode` | `"rolling"` | rolling / legacy | With `radius > 0`: `"rolling"` returns finished, normal-height frames; `"legacy"` returns the fat intermediate for `VAggregate`, as the CPU plugin does. |
+| `rolling_chunk` | 4 | [1, 64] | Frames accumulated per rolling chunk. |
+| `rolling_cache_chunks` | 1 | [1, 64] | Finished chunks kept for later frame requests at first. Given alone, the cache stays at this size. |
+| `rolling_cache_limit` | 16 | [1, 64], >= `rolling_cache_chunks` | What the chunk cache may grow to: it keeps one more chunk each time two requests miss on chunks it dropped recently. Under `memory_limit_mb` it grows only into what the limit leaves. |
+
+How the streams, the memory limit and the rolling output behave across filters is in the [shared notes](README.md#shared-by-every-filter).
 
 ## On the device
 
@@ -113,3 +199,13 @@ arguments are described under [temporal output](README.md#temporal-output).
     copies bound both, and three planes per frame go less evenly), 238 fps
     at `radius = 1` (separate 222) and 229 at `radius = 2` (separate 179).
     bm3dcuda with `chroma=True`: 200, 94 and 65.
+
+## Pitfalls
+
+- `sigma` is in 8-bit units even though the clip is float32; 25 means the
+  usual "25/255" noise.
+- Array parameters are per-plane: `block_size=[8,16]` is legal on YUV.
+- With `radius > 0` and `temporal_mode="legacy"` the output is a **taller
+  intermediate**, not a viewable frame: pass it through
+  `core.nss_cuda.VAggregate(out, clip, radius=radius)`. The default mode
+  returns finished frames.

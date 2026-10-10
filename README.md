@@ -53,8 +53,8 @@ an 8-bit noise standard deviation. TWSC uses one balanced default
 (`block_size=8`, `block_step=1`, `group_size=90`, `iters=12`) across noise
 levels; sigma controls denoising strength rather than changing the compute
 geometry. NLH estimates noise when `sigma` is omitted, and any other omitted
-field falls back to a measured Gray-low, Gray-high or real-noise preset;
-explicit fields override only that field. Explicit `sigma=0` preserves that
+field falls back to one measured preset (the same for every format and
+noise level); explicit fields override only that field. Explicit `sigma=0` preserves that
 input plane. `bm_range=r` explicitly means `search_window=2*r+1`; supplying
 both is an error. See the API guide pages for [TWSC](docs/api/twsc.md) and
 [NLH](docs/api/nlh.md) for the full parameter and model details.

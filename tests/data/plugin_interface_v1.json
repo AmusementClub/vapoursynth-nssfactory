@@ -14964,7 +14964,12 @@
    }
   },
   "NLH|RGBS|combo:block_step=[8, 2],sigma=3": {
-   "error": "nss.NLH: invalid resolved stage shape"
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
   },
   "NLH|RGBS|combo:bm_range=3,search_window=[9, 9],sigma=3": {
    "error": "nss: bm_range and search_window are mutually exclusive"
@@ -16759,7 +16764,12 @@
    }
   },
   "NLH|YUV420PS|combo:block_step=[8, 2],sigma=3": {
-   "error": "nss.NLH: invalid resolved stage shape"
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
   },
   "NLH|YUV420PS|combo:bm_range=3,search_window=[9, 9],sigma=3": {
    "error": "nss: bm_range and search_window are mutually exclusive"

@@ -2,9 +2,9 @@
 
 Learned simultaneous sparse coding on the device. Spatial only: `radius > 0` is rejected, as on the CPU.
 
-The parameters mean what they mean in [`nss.LSSC`](../lssc.md), which
-also has the algorithm, the defaults rationale and the pitfalls. This page has
-the call and what is specific to the device.
+Every argument is described on this page. The algorithm, the paper and the
+reasoning behind the defaults are on the CPU page, [`nss.LSSC`](../lssc.md); the
+model and the defaults are the same on both plugins.
 
 ```python
 out = core.nss_cuda.LSSC(clip, sigma=25)                    # defaults
@@ -19,8 +19,27 @@ core.nss_cuda.LSSC(clip clip[, float[] sigma = 3.0, int block_size = 8,
                    int memory_limit_mb, int device_id = 0, int num_streams = 1])
 ```
 
-`device_id`, `num_streams` and `memory_limit_mb` are described in the
-[shared arguments](README.md#arguments).
+## Primary parameters
+
+| Parameter | Default | Range | Meaning and impact |
+|---|---|---|---|
+| `sigma` | 3.0 | >= 0 | 8-bit noise stddev per plane. Drives the sparse-coding regularization. `sigma=0` bypasses the plane. |
+| `block_size` | 8 | {1,2,4,8,16} | Patch edge (power-of-two family only). Dictionary dimension is `block^2`. |
+| `block_step` | 8 | [1, block] | Reference-patch stride; positions scale as `1/step^2`. The main quality/speed trade. |
+| `radius` | 0 | 0 only | Kept for the common signature. LSSC has no temporal mode: `radius > 0` is rejected. |
+
+The dictionary size (256 atoms) and cluster count (64) are internal constants,
+capped by the actual patch count; they are not exposed.
+
+## Device parameters
+
+| Parameter | Default | Range | Meaning |
+|---|---|---|---|
+| `device_id` | 0 | device index | CUDA device the instance runs on. One instance uses one device; `core.nss_cuda.Backend(device_id)` reports whether it is supported. |
+| `num_streams` | 1 | [1, 16] | Frames (or temporal chunks) the instance has in flight on the device at once. Each stream owns its device buffers, so memory grows with it. |
+| `memory_limit_mb` | none | > 0 | Caps the instance's device and pinned host memory. The internal batches are fitted to it and the output does not change; a limit that cannot hold the streams is a creation error. Without it the filter takes what its plan needs. |
+
+How the streams and the memory limit behave across filters is in the [shared notes](README.md#shared-by-every-filter).
 
 ## On the device
 
@@ -38,3 +57,9 @@ core.nss_cuda.LSSC(clip clip[, float[] sigma = 3.0, int block_size = 8,
   so a dense `block_step` on a large frame takes that much device memory.
 - **Speed.** The dictionary update is sequential over the atoms, so the gain
   over the CPU is small: about 1–2x the CPU plugin at 16 threads for 1080p.
+
+## Pitfalls
+
+- Only block sizes 1/2/4/8/16 are accepted; other values fail at creation.
+- `radius > 0` is rejected: LSSC has no temporal mode.
+- No `_NSS*` frame properties on this filter.

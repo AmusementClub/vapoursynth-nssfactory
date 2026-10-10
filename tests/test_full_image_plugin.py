@@ -97,7 +97,7 @@ class Suite:
                 rows=list(pool.map(lambda n: (n,values(node,n)),order))
             captured={n:row[0] for n,row in rows}
             for n,(planes,props) in rows:
-                assert props['_NSSModelVersion']==(3 if name=='TWSC' else 5)
+                assert props['_NSSModelVersion']==(3 if name=='TWSC' else 6)
                 for p,a in enumerate(planes):
                     assert a.shape==original[n][p].shape and np.isfinite(a).all()
             if expected is None: expected=captured
@@ -179,7 +179,7 @@ class Suite:
         assert props['_NSSWienerSigmaScale']==NLH_WIENER_SIGMA_SCALE
         _,props=values(core.nss.NLH(source,sigma=3,block_size=4,block_step=4,group_size=8,q=2,search_window=5,basic_iters=1,hard_strength=1.5),0)
         assert props['_NSSHardCoefficient']==NLH_HARD_COEFFICIENT*1.5
-        presets=json.loads((Path(__file__).parent/'data/nlh_presets_v5.json').read_text())['profiles']
+        presets=json.loads((Path(__file__).parent/'data/nlh_presets_v6.json').read_text())['profiles']
         for sigma,lane,noise_model in [(50,'gray-low','awgn'),(50+1e-9,'gray-high','awgn'),
                                        (50.01,'gray-high','awgn'),(3,'rgb','real')]:
             _,props=values(core.nss.NLH(source,sigma=sigma,noise_model=noise_model,search_window=1),0)
@@ -255,7 +255,7 @@ class Suite:
             else: raise AssertionError((name,args,'must fail'))
         for name in ('TWSC','NLH'):
             raw=getattr(core.nss,name)(source,sigma=0,**kwargs(name,1))
-            incompatible=core.std.SetFrameProps(raw,_NSSModelVersion=4 if name=='NLH' else 2)
+            incompatible=core.std.SetFrameProps(raw,_NSSModelVersion=5 if name=='NLH' else 2)
             try: values(core.nss.VAggregate(incompatible,source,radius=1),0)
             except vs.Error: pass
             else: raise AssertionError('old model contribution accepted')

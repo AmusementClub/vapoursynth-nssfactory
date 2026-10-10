@@ -2,9 +2,9 @@
 
 Multi-channel WNNM for RGB on the device, spatial and temporal.
 
-The parameters mean what they mean in [`nss.MCWNNM`](../mcwnnm.md), which
-also has the algorithm, the defaults rationale and the pitfalls. This page has
-the call and what is specific to the device.
+Every argument is described on this page. The algorithm, the paper and the
+reasoning behind the defaults are on the CPU page, [`nss.MCWNNM`](../mcwnnm.md); the
+model and the defaults are the same on both plugins.
 
 ```python
 out = core.nss_cuda.MCWNNM(rgb_clip, sigma=[25, 25, 25])   # defaults
@@ -25,9 +25,44 @@ core.nss_cuda.MCWNNM(clip clip[, float[] sigma = 3.0, int block_size = 8,
                      int memory_limit_mb, int device_id = 0, int num_streams = 1])
 ```
 
-`device_id`, `num_streams` and `memory_limit_mb` are described in the
-[shared arguments](README.md#arguments). `temporal_mode` and the `rolling_*`
-arguments are described under [temporal output](README.md#temporal-output).
+## Primary parameters
+
+| Parameter | Default | Range | Meaning and impact |
+|---|---|---|---|
+| `sigma` | [3,3,3] | >= 0 | 8-bit noise stddev per channel (list of up to 3; last value broadcasts). Unequal channel noise is supported and common for real sensors. `sigma=0` bypasses the channel. |
+| `block_size` | 8 | [1, 16] | Patch edge. |
+| `block_step` | 8 | [1, block] | Reference-patch stride; positions scale as `1/step^2`. |
+| `group_size` | 8 | [1, 32] | Matched patches per group. |
+| `bm_range` | 7 | [1, 64] | Search window radius. |
+| `iters` | 2 | [1, 64] | Outer re-estimation rounds (re-match on the current estimate). Round 2 costs ~another full pass; reduce to 1 for a ~2x speedup when quality allows. |
+| `radius` | 0 | [0, 16] | Temporal radius. >0 makes the filter temporal: finished, normal-height frames by default (`temporal_mode`, below). |
+| `rclip` | none | clip | Reference clip guiding matching. |
+
+## Secondary parameters
+
+| Parameter | Default | Range | Meaning |
+|---|---|---|---|
+| `residual` | 1 | 0 / 1 | `1` demeans patch rows (Matlab Estimation pipeline, the factory default); `0` keeps DC in the ADMM matrix (bare `MCWNNM_ADMM.m`). |
+| `admm_iter` | 10 | [1, 1000] | Inner ADMM iterations per group per round. The dominant per-group cost; see the solver contract before lowering. |
+| `rho` | 3.0 | > 0 | Initial ADMM penalty. |
+| `mu` | 1.001 | >= 1 | Penalty growth factor per inner iteration (near-constant by default). |
+| `delta` | 0.1 | [0, 1] | Relaxation mixing the previous estimate between outer iterations. |
+| `adaptive_aggregation` | 0 | 0 / 1 | Residual-weighted aggregation (off by default here, unlike WNNM). |
+| `ps_num` / `ps_range` | 2 / 4 | [1,group] / [1,64] | Predictive temporal search (with `radius > 0`). |
+
+## Device parameters
+
+| Parameter | Default | Range | Meaning |
+|---|---|---|---|
+| `device_id` | 0 | device index | CUDA device the instance runs on. One instance uses one device; `core.nss_cuda.Backend(device_id)` reports whether it is supported. |
+| `num_streams` | 1 | [1, 16] | Frames (or temporal chunks) the instance has in flight on the device at once. Each stream owns its device buffers, so memory grows with it. |
+| `memory_limit_mb` | none | > 0 | Caps the instance's device and pinned host memory. The internal batches are fitted to it and the output does not change; a limit that cannot hold the streams is a creation error. Without it the filter takes what its plan needs. |
+| `temporal_mode` | `"rolling"` | rolling / legacy | With `radius > 0`: `"rolling"` returns finished, normal-height frames; `"legacy"` returns the fat intermediate for `VAggregate`, as the CPU plugin does. |
+| `rolling_chunk` | 4 | [1, 64] | Frames accumulated per rolling chunk. |
+| `rolling_cache_chunks` | 1 | [1, 64] | Finished chunks kept for later frame requests at first. Given alone, the cache stays at this size. |
+| `rolling_cache_limit` | 16 | [1, 64], >= `rolling_cache_chunks` | What the chunk cache may grow to: it keeps one more chunk each time two requests miss on chunks it dropped recently. Under `memory_limit_mb` it grows only into what the limit leaves. |
+
+How the streams, the memory limit and the rolling output behave across filters is in the [shared notes](README.md#shared-by-every-filter).
 
 ## On the device
 
@@ -57,3 +92,12 @@ arguments are described under [temporal output](README.md#temporal-output).
     a quarter of the speed.
 - **Memory.** The ADMM state costs about 2.5 KiB of device memory per group
   at the defaults.
+
+## Pitfalls
+
+- Input must be RGBS (three planes); for Gray use WNNM instead.
+- The `mu=1.001` default keeps rho nearly constant across inner iterations,
+  matching the authors; do not raise it without checking quality.
+- `temporal_mode="legacy"` output needs a `VAggregate` call; the default mode
+  returns finished frames.
+- No `_NSS*` frame properties.

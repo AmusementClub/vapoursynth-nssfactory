@@ -263,8 +263,13 @@ int main() {
     image_case(64, 56, 4, 16, 5, 21, 1, 3, 1, 1, 12, false, stats);
     image_case(64, 56, 8, 33, 6, 21, 1, 3, 1, 1, 20, false, stats);
     image_case(64, 56, 16, 33, 9, 21, 1, 3, 0, 1, 5, false, stats);
-    // Blocks 1, 2, 12 (lanes without a column) and 32 (one reference per warp).
+    // Blocks 1, 2, 7, 12, 15 (lanes without a column) and 32 (one reference per warp).
     for (const bool flat : {false, true}) {
+        for (const int block : {7, 15}) {
+            for (const int group : {2, 8, 16, 32}) spatial_case(97, 83, block, group, 3, 7, flat, stats);
+            image_case(72, 64, block, 16, block - 3, 40, 1, 1, 0, 0, 2, flat, stats);  // NLH presets
+            temporal_case(71, 66, block, 16, 5, 7, 1, 1, 3, flat, stats);
+        }
         for (const int block : {1, 2, 32}) {
             for (const int group : {2, 8, 16, 32}) spatial_case(97, 83, block, group, std::min(block, 3), 7, flat, stats);
         }

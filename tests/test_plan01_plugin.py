@@ -144,7 +144,7 @@ def main():
             for n in (4, 0, 2, 1):
                 fat_frame = raw.get_frame(n)
                 for key, value in dict(_NSSFatVersion=2, _NSSFatCenter=n, _NSSFatRadius=2,
-                                       _NSSFatLayout=1, _NSSModel=model, _NSSModelVersion=5 if name=='NLH' else 3 if name=='TWSC' else 2).items():
+                                       _NSSFatLayout=1, _NSSModel=model, _NSSModelVersion=6 if name=='NLH' else 3 if name=='TWSC' else 2).items():
                     if fat_frame.props[key] != value:
                         raise AssertionError((name, key, value, fat_frame.props[key]))
                 actual, _ = evaluate(output, n)
@@ -237,13 +237,14 @@ def main():
     reject(lambda: core.nss.WNNM(gray, ps_num=2**31-1), "ps_num")
     reject(lambda: core.nss.NLM(gray, d=2**31-1), "invalid d/a/s/h")
     reject(lambda: core.nss.NLM(gray, a=gray.width), "smaller than the processed plane width")
-    reject(lambda: core.nss.NLM(gray, a=gray.width + 40), "smaller than the processed plane width")
+    reject(lambda: core.nss.NLM(gray, a=64), "smaller than the processed plane width")
+    reject(lambda: core.nss.NLM(gray, a=gray.width + 40), "invalid d/a/s/h/wref")  # above the cap of 64
     reject(lambda: core.nss.NLM(gray, wref=0.0), "invalid d/a/s/h/wref")
     reject(lambda: core.nss.NLM(gray, d=257), "invalid d/a/s/h/wref")
     reject(lambda: core.nss.NLM(gray, s=1025), "invalid d/a/s/h/wref")
-    reject(lambda: core.nss.NCSR(gray, delta=1.5), "delta must be in [0, 1]")
-    reject(lambda: core.nss.NCSR(gray, delta=-0.5), "delta must be in [0, 1]")
-    reject(lambda: core.nss.MCWNNM(rgb, delta=2.0), "delta must be in [0, 1]")
+    reject(lambda: core.nss.NCSR(gray, delta=1.5), "delta in [0, 1]")
+    reject(lambda: core.nss.NCSR(gray, delta=-0.5), "delta in [0, 1]")
+    reject(lambda: core.nss.MCWNNM(rgb, delta=2.0), "delta in [0, 1]")
     rows.append(dict(test="failure_and_recovery", passed=True))
     report = dict(passed=True, checks=len(rows), cases=rows, peak_rss=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
                   plugin_sha256=hashlib.sha256(Path(os.environ["NSS_SO"]).read_bytes()).hexdigest(),

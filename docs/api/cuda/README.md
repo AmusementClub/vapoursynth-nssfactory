@@ -2,12 +2,13 @@
 
 `libnss_cuda` is the CUDA plugin (namespace `nss_cuda`), built with
 `-DNSS_ENABLE_CUDA=ON`. It has all nine filters of the CPU plugin, one page
-each below: the call signature and what is specific to the device (memory,
-numerics, measured speed). This page has what they share. The meaning of the
-parameters, the papers and the pitfalls are on the CPU pages and hold for
-both plugins.
+each below. A page describes every argument of its function (default, range,
+meaning), the device arguments, and what is specific to the device (memory,
+numerics, measured speed). This page has what the filters share. The papers
+and the reasoning behind the defaults are on the CPU pages; the models and
+the defaults are the same on both plugins.
 
-| Function | CUDA page | CPU page (parameters) |
+| Function | CUDA page (all arguments) | CPU page (algorithm, paper) |
 |---|---|---|
 | `core.nss_cuda.BM3D` | [bm3d.md](bm3d.md) | [bm3d.md](../bm3d.md) |
 | `core.nss_cuda.VAggregate` | [vaggregate.md](vaggregate.md) | [bm3d.md](../bm3d.md) |
@@ -33,13 +34,29 @@ temporal output (below). Outputs agree with the CPU plugin to 60 dB PSNR or
 better (not bit-for-bit; the gate is in `tests/data/cuda_tolerances_v1.json`)
 and are identical from run to run on a given GPU, driver and build.
 
-### Arguments
+### Input and common conventions
 
-| Parameter | Default | Meaning |
-|---|---|---|
-| `device_id` | 0 | CUDA device index. One filter instance uses one device. |
-| `num_streams` | 1 | How many frames (or temporal chunks) an instance has in flight on the device at once, 1 to 16. Each stream owns its device buffers. |
-| `memory_limit_mb` | none | Caps the instance's device and pinned host memory (see below). |
+- **Input**: constant-format 32-bit float Gray, YUV or RGB clips only. Integer
+  or variable-format input is rejected at creation time.
+- **`sigma` units**: the 8-bit noise standard deviation (0–255 scale), one
+  value per processed plane; a single value broadcasts. `sigma=0` bypasses
+  that plane. NLH estimates sigma per frame when it is omitted; TWSC does the
+  same with `estimate_sigma=1`.
+- **`rclip` / `ref`**: an optional reference clip (same format and size) that
+  guides matching; denoising still targets `clip`.
+- **`bm_range` and `search_window`**: `search_window = 2 * bm_range + 1`.
+  Passing both is an error. TWSC and NLH accept either; the others take
+  `bm_range`.
+- **Diagnostics**: NLH and TWSC stamp per-frame `_NSS*` frame properties; the
+  other filters emit none.
+
+### Device arguments
+
+| Parameter | Default | Range | Meaning |
+|---|---|---|---|
+| `device_id` | 0 | device index | CUDA device index. One filter instance uses one device. |
+| `num_streams` | 1 | [1, 16] | How many frames (or temporal chunks) an instance has in flight on the device at once. Each stream owns its device buffers. |
+| `memory_limit_mb` | none | > 0 | Caps the instance's device and pinned host memory (see below). |
 
 - **`num_streams`.** The host copies of several frames (or temporal chunks)
   run around one stream, which keeps the device busy for the fast filters:
@@ -58,12 +75,12 @@ With `radius > 0` the device filters return finished, normal-height frames:
 no `VAggregate` call is needed. (NLM is temporal through `d` and always
 returns normal-height frames; LSSC has no temporal mode.)
 
-| Parameter | Default | Meaning |
-|---|---|---|
-| `temporal_mode` | `"rolling"` | `"rolling"` returns finished frames; `"legacy"` returns the fat intermediate for `VAggregate`, exactly as the CPU plugin does. |
-| `rolling_chunk` | 4 | Frames accumulated per rolling chunk, 1 to 64. |
-| `rolling_cache_chunks` | 1 | Finished chunks kept for later frame requests at first, 1 to 64. Given alone, the cache stays at this size. |
-| `rolling_cache_limit` | 16 | What the cache may grow to, 1 to 64 and at least `rolling_cache_chunks`. It keeps one more chunk each time two requests miss on chunks it dropped recently, so alternating between positions settles after a few misses. Under `memory_limit_mb` it grows only into what the limit leaves. (On the CPU the two arguments name one fixed size.) |
+| Parameter | Default | Range | Meaning |
+|---|---|---|---|
+| `temporal_mode` | `"rolling"` | rolling / legacy | `"rolling"` returns finished frames; `"legacy"` returns the fat intermediate for `VAggregate`, exactly as the CPU plugin does. |
+| `rolling_chunk` | 4 | [1, 64] | Frames accumulated per rolling chunk. |
+| `rolling_cache_chunks` | 1 | [1, 64] | Finished chunks kept for later frame requests at first. Given alone, the cache stays at this size. |
+| `rolling_cache_limit` | 16 | [1, 64], >= `rolling_cache_chunks` | What the cache may grow to. It keeps one more chunk each time two requests miss on chunks it dropped recently, so alternating between positions settles after a few misses. Under `memory_limit_mb` it grows only into what the limit leaves. (On the CPU the two arguments name one fixed size.) |
 
 - BM3D, WNNM and single-round NCSR keep the temporal accumulation on the
   device and copy back only final frames. MCWNNM, NLH and TWSC (and NCSR with

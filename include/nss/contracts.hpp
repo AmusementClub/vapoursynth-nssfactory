@@ -8,7 +8,7 @@ inline constexpr int kContributionVersion = 2;
 inline constexpr int kContributionNumDenSlices = 1;
 enum class Model : int { BM3D = 1, WNNM, MCWNNM, TWSC, NCSR, NLH, LSSC, NLM };
 inline constexpr int model_semantic_version(Model model) {
-    return model == Model::NLH ? 5 : model == Model::TWSC ? 3 : kSemanticVersion;
+    return model == Model::NLH ? 6 : model == Model::TWSC ? 3 : kSemanticVersion;
 }
 enum class KernelStatus : int { Ok, Bypass, InvalidInput, NumericalFailure, Unsupported, ResourceFailure };
 struct NoiseProfile {
