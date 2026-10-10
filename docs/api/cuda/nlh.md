@@ -126,7 +126,7 @@ How the streams, the memory limit and the rolling output behave across filters i
 ## Pitfalls
 
 - `sigma` omitted means blind estimation with an 8x8 minimum plane bootstrap;
-  planes smaller than 8x8 are creation-time errors. The estimate costs a dense
+  planes smaller than 8x8 are creation-time errors. The estimate costs a
   matching pass per frame: give `sigma` when it is known.
 - Explicit invalid stage combinations (e.g. `q > block^2`) are errors, not
   silent clamps.

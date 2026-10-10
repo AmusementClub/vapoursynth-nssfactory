@@ -3,6 +3,7 @@
 #include "nss/cpu_api.hpp"
 #include "nss/cpu_nlh.hpp"
 #include "cpu/bm/matcher.hpp"
+#include "cpu/common/image_internal.hpp"
 #include "cpu/common/image_ssd_row.hpp"
 #include <algorithm>
 #include <array>
@@ -142,7 +143,8 @@ float nlh_estimate_sigma(const ImagePlane& channel, const ImagePlane& guide) {
     const float* guides[] = {guide.pixels.data()};
     double total = 0;
     std::uint64_t groups = 0;
-    for (int y = 0; y <= channel.height - 8; ++y) for (int x = 0; x <= channel.width - 8; ++x) {
+    // Every kNoiseEstimateStep-th reference per axis, the last row and column included.
+    image_detail::raster(channel.width, channel.height, 8, kNoiseEstimateStep, [&](int x, int y) {
         const int n = image_match(guides, 1, 1, channel.width, channel.height, 0, x, y, cfg, matches.data());
         for (int j = 0; j < n; ++j) {
             const auto& mm = matches[j];
@@ -160,7 +162,7 @@ float nlh_estimate_sigma(const ImagePlane& channel, const ImagePlane& guide) {
             local += std::sqrt(d2 / n);
         }
         total += local / (m * (q - 1)); ++groups;
-    }
+    });
     const double result = total / double(groups);
     if (!std::isfinite(result)) throw std::runtime_error("nss: nonfinite blind noise estimate");
     return float(result);

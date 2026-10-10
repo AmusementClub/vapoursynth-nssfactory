@@ -53,10 +53,10 @@ def pack(images, found, block):
 
 
 def noise_estimate(channel, guide):
-    """Independent fixed b8/g16/q4/W40 bootstrap; guide only selects positions."""
+    """Independent fixed b8/g16/q4/W40 bootstrap on every fourth reference; guide only selects positions."""
     estimates=[]
     h,w=channel.shape
-    for x,y in raster(w,h,8,1):
+    for x,y in raster(w,h,8,4):
         found=matches(guide[None,None],0,x,y,8,16,40)
         gp=pack(guide[None,None],found,8)
         pixels=pack(channel[None,None],found,8)

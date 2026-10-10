@@ -116,7 +116,7 @@ void nlh_estimate_frame_sigma(ImageFrame& frame, const ImageFrame& guide, int pl
         std::array<double, 3> totals{};
         std::uint64_t groups = 0;
         const float* guides[]{matching->pixels.data()};
-        for (int y = 0; y <= height - 8; ++y) for (int x = 0; x <= width - 8; ++x) {
+        raster(width, height, 8, kNoiseEstimateStep, [&](int x, int y) {
             const int n = image_match(guides, 1, 1, width, height, 0, x, y, search, matches.data());
             for (int j = 0; j < n; ++j) {
                 const auto& mm = matches[j];
@@ -140,7 +140,7 @@ void nlh_estimate_frame_sigma(ImageFrame& frame, const ImageFrame& guide, int pl
                 totals[c] += local / (m * (q - 1));
             }
             ++groups;
-        }
+        });
         for (int c = 0; c < count; ++c) {
             const double sigma = totals[c] / double(groups);
             if (!std::isfinite(sigma)) throw std::runtime_error("nss: nonfinite blind noise estimate");

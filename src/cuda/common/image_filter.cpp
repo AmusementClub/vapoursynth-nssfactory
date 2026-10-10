@@ -222,7 +222,8 @@ MatchGeometry match_geometry(int width, int height, int block, int window, int g
     return g;
 }
 
-// Blind noise estimate on the device: fixed 8x8 / 16 / q4 / W40 / step 1.
+// Blind noise estimate on the device: fixed 8x8 / 16 / q4 / W40 over every
+// kNoiseEstimateStep-th reference.
 // NLH (nss::nlh_estimate_frame_sigma): planes of equal geometry share the
 // luma-guided matching and pixel selection. TWSC (nss::nlh_estimate_sigma per
 // plane): every plane is matched on itself (or on its rclip plane).
@@ -241,7 +242,7 @@ void estimate_sigma(Frame& f, int t) {
         }
         // The fixed bootstrap search of the estimate (nss::ImageSearch defaults).
         const struct {
-            int block = 8, step = 1, group = 16, window = 40;
+            int block = 8, step = nss::kNoiseEstimateStep, group = 16, window = 40;
         } search;
         const Shape shape{search.block, search.group, 4, nch, false};
         // Single-frame matching on this frame's guide.

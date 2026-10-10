@@ -30,7 +30,7 @@ core.nss.TWSC(clip clip[, float[] sigma = 3.0, int estimate_sigma = 0,
 | Parameter | Default | Range | Meaning and impact |
 |---|---|---|---|
 | `sigma` | 3.0 | >= 0 | 8-bit noise stddev per plane. Controls denoising strength only — one geometry is kept for all noise levels. `sigma=0` bypasses the plane. Mutually exclusive with `estimate_sigma`. |
-| `estimate_sigma` | 0 | 0 / 1 | Estimate sigma per frame/channel instead of taking it. |
+| `estimate_sigma` | 0 | 0 / 1 | Estimate sigma per frame/channel instead of taking it (the NLH estimator: 8x8 blocks on every fourth position per axis). |
 | `block_size` | 8 | [1, 16] | Patch edge. |
 | `block_step` | 1 | [1, block] | Reference-patch stride. **The default is 1 (every position)** — overriding it is the single largest speed lever: positions scale as `1/step^2`, so `block_step=8` is ~64x fewer groups. |
 | `group_size` | 90 | [1, 256] | Matched patches per group. 90 follows the paper's high-quality regime; 8–16 trades quality for large speedups. |
@@ -57,7 +57,7 @@ core.nss.TWSC(clip clip[, float[] sigma = 3.0, int estimate_sigma = 0,
 Each output frame stamps: `_NSSSigma` (per-plane, in 8-bit units),
 `_NSSGroups`, `_NSSADMMMaxIterGroups`, `_NSSSvdDoubleGroups`,
 `_NSSSylvesterResidual`, `_NSSBlockSize`, `_NSSGroupSize`, `_NSSBlockStep`,
-`_NSSSearchWindow`, `_NSSIterations`, and `_NSSModelVersion=3`.
+`_NSSSearchWindow`, `_NSSIterations`, and `_NSSModelVersion=4`.
 
 ## Algorithm and paper
 

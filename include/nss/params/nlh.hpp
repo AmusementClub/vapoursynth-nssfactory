@@ -11,6 +11,13 @@
 
 namespace nss {
 
+// Reference stride of the blind noise estimate (nlh_estimate_sigma; NLH
+// without sigma and TWSC with estimate_sigma=1). The estimate is the mean of
+// a per-group statistic over the raster of 8x8 references: every fourth
+// position per axis gives the dense value to 0.2% (0.04% on average) at a
+// sixteenth of the work.
+inline constexpr int kNoiseEstimateStep = 4;
+
 struct NlhImageOptions {
     // Zero integer fields and exactly -1 coefficient fields request a preset.
     // Public parsing permits these sentinels only through omitted arguments.
