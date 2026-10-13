@@ -448,7 +448,30 @@ Placement place(int cap) {
     return p;
 }
 
+__global__ void twsc_opponent_kernel(float* a, float* b, float* c, std::size_t count, bool inverse) {
+    const std::size_t i = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= count) return;
+    // nss::twsc_opponent_forward / twsc_opponent_inverse.
+    const float x = a[i], y = b[i], z = c[i];
+    if (inverse) {
+        const float base = x * nss::kTwscOpponentA;
+        a[i] = base + y * nss::kTwscOpponentB + z * nss::kTwscOpponentC;
+        b[i] = base - 2 * (z * nss::kTwscOpponentC);
+        c[i] = base - y * nss::kTwscOpponentB + z * nss::kTwscOpponentC;
+    } else {
+        a[i] = (x + y + z) * nss::kTwscOpponentA;
+        b[i] = (x - z) * nss::kTwscOpponentB;
+        c[i] = (x - 2 * y + z) * nss::kTwscOpponentC;
+    }
+}
+
 }  // namespace
+
+void twsc_opponent(float* a, float* b, float* c, std::size_t count, bool inverse, cudaStream_t stream) {
+    if (count == 0) return;
+    twsc_opponent_kernel<<<static_cast<unsigned>((count + 255) / 256), 256, 0, stream>>>(a, b, c, count, inverse);
+    NSS_CUDA_CHECK_LAUNCH();
+}
 
 int twsc_resident_groups(int block, int group, int nch) {
     const int m = block * block * nch;

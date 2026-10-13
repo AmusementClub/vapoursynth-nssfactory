@@ -91,6 +91,7 @@ CASES = [
     case("twsc-g256-light", "TWSC", "g256", LIGHT_TWSC),
     case("twsc-g256-s25-light", "TWSC", "g256s25", dict(LIGHT_TWSC, sigma=25)),
     case("twsc-rgb256-light", "TWSC", "rgb256", LIGHT_TWSC),
+    case("twsc-rgb256-joint-light", "TWSC", "rgb256", dict(LIGHT_TWSC, cfast=0)),
     case("twsc-g256-blind-light", "TWSC", "g256", dict(LIGHT_TWSC, sigma=None, estimate_sigma=1)),
     case("twsc-gseq-r1-light", "TWSC", "gseq", dict(LIGHT_TWSC, radius=1), TEMPORAL, aggregate=1),
     case("twsc-g1080-light", "TWSC", "g1080", LIGHT_TWSC),

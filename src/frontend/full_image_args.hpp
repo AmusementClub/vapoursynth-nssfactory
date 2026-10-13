@@ -11,7 +11,7 @@ inline constexpr const char* kTwscSignature =
     "clip:vnode;sigma:float[]:opt;block_size:int:opt;block_step:int:opt;group_size:int:opt;"
     "bm_range:int:opt;radius:int:opt;ps_num:int:opt;ps_range:int:opt;lambda2:float:opt;"
     "rclip:vnode:opt;iters:int:opt;delta:float:opt;estimate_sigma:int:opt;search_window:int:opt;"
-    "admm_iter:int:opt;rho:float:opt;mu:float:opt;tol:float:opt;memory_limit_mb:int:opt;" NSS_TEMPORAL_SIGNATURE;
+    "admm_iter:int:opt;rho:float:opt;mu:float:opt;tol:float:opt;cfast:int:opt;memory_limit_mb:int:opt;" NSS_TEMPORAL_SIGNATURE;
 
 inline constexpr const char* kNlhSignature =
     "clip:vnode;sigma:float[]:opt;block_size:int[]:opt;block_step:int[]:opt;group_size:int[]:opt;"

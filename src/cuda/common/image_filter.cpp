@@ -116,6 +116,7 @@ struct ImageData : nss::FullImageParams {
     BackendArgs backend;
     DeviceInfo device;
     bool rgb = false;
+    bool split = false;  // TWSC cfast: three opponent planes, each a unit of its own
     int planes = 1, max_frames = 1, reference_planes = 0;
     int width[3]{}, height[3]{};
     int geometries = 1, geometry[3]{};  // planes of equal size share their selection counts
@@ -485,7 +486,8 @@ void run_twsc(Frame& f) {
             std::array<int, 3> channels{};
             int nch = 0;
             for (int c = first; c < d.planes; ++c) {
-                if (!used[c] && f.sigma[f.center][c] > 0 && d.width[c] == width && d.height[c] == height) {
+                if (!used[c] && f.sigma[f.center][c] > 0 && (c == first || !d.split) && d.width[c] == width &&
+                    d.height[c] == height) {
                     channels[nch++] = c;
                     used[c] = true;
                 }
@@ -711,6 +713,13 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
                            d.plane_floats, true, s.stream);
         }
     }
+    for (int t = 0; t < f.count && d.split; ++t) {
+        twsc_opponent(f.plane(s.input, t, 0), f.plane(s.input, t, 1), f.plane(s.input, t, 2), d.plane_floats, false, s.stream);
+        if (d.reference) {
+            twsc_opponent(f.plane(s.reference, t, 0), f.plane(s.reference, t, 1), f.plane(s.reference, t, 2), d.plane_floats,
+                          false, s.stream);
+        }
+    }
     if (d.estimate) {
         NSS_CUDA_RANGE("image.estimate");
         for (int t = 0; t < f.count; ++t) estimate_sigma(f, t);
@@ -745,7 +754,21 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
     if (!bypass) {
         if (twsc) run_twsc(f);
         else run_nlh(f, o);
-        for (int c = 0; c < planes; ++c) {
+        if (d.split) {
+            // Each plane's estimate, then back to RGB before the planes are copied out.
+            for (int c = 0; c < planes; ++c) {
+                aggregate_finish(f.accum(s.num, c, f.center), f.accum(s.den, c, f.center), f.plane(s.input, f.center, c),
+                                 d.width[c], d.height[c], d.width[c], f.plane(s.basic, f.center, c), s.stream);
+            }
+            twsc_opponent(f.plane(s.basic, f.center, 0), f.plane(s.basic, f.center, 1), f.plane(s.basic, f.center, 2),
+                          d.plane_floats, true, s.stream);
+            for (int c = 0; c < planes; ++c) {
+                const std::size_t row_bytes = static_cast<std::size_t>(d.width[c]) * sizeof(float);
+                begin_download(f.plane(s.basic, f.center, c), row_bytes, row_bytes, d.height[c],
+                               f.staging(downloads + c * rows), s.stream);
+            }
+        }
+        for (int c = 0; c < planes && !d.split; ++c) {
             const std::size_t row_bytes = static_cast<std::size_t>(d.width[c]) * sizeof(float);
             if (!d.estimate && d.sigma[c] == 0) continue;
             if (radius == 0) {
@@ -809,6 +832,7 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
         api->mapSetFloat(props, "_NSSSylvesterResidual", 0, maReplace)) {
         throw std::bad_alloc();
     }
+    if (twsc && api->mapSetInt(props, "_NSSCFast", d.split, maReplace)) throw std::bad_alloc();
     const int stages = twsc ? 1 : 2;
     const int blocks[2]{twsc ? d.twsc.block : o.block[0], o.block[1]};
     const int groups[2]{twsc ? d.twsc.group : o.group[0], o.group[1]};
@@ -895,6 +919,7 @@ void create(const VSMap* in, VSMap* out, VSCore* core, const VSAPI* api, nss::Mo
     d.budget = nss::current_budget();
     const bool twsc = model == nss::Model::TWSC;
     d.rgb = !twsc && d.vi.format.colorFamily == cfRGB;  // NLH works in YUV
+    d.split = twsc && nss::twsc_color_split(d.twsc, d.vi.format.colorFamily == cfRGB, d.estimate, d.sigma_units.data());
     d.planes = d.vi.format.numPlanes;
     d.max_frames = std::min(2 * d.radius() + 1, d.vi.numFrames);
     // NLH matches on the reference luma (which needs all of RGB); TWSC on
@@ -933,7 +958,7 @@ void create(const VSMap* in, VSMap* out, VSCore* core, const VSAPI* api, nss::Mo
     const int max_q = std::max({d.nlh.q[0], d.nlh.q[1], 4});
     std::size_t one_group = d.estimate ? group_bytes(Shape{8, 16, 4, d.planes, false}) + 16 * 13 : 0;
     if (twsc) {
-        one_group = std::max(one_group, twsc_group_bytes(d.twsc.block, d.twsc.group, d.planes) + 16 * 9);
+        one_group = std::max(one_group, twsc_group_bytes(d.twsc.block, d.twsc.group, d.split ? 1 : d.planes) + 16 * 9);
     } else {
         for (int block = 2; block <= 16; ++block) {
             one_group = std::max(one_group, group_bytes(Shape{block, max_group, max_q, d.planes, true}) + 16 * 13);

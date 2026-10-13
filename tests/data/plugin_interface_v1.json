@@ -20296,6 +20296,58 @@
     "width": 48
    }
   },
+  "TWSC|GRAYS|cfast=-1": {
+   "error": "nss: cfast outside supported range"
+  },
+  "TWSC|GRAYS|cfast=0": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|cfast=1": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|GRAYS|cfast=1000": {
+   "error": "nss: cfast outside supported range"
+  },
+  "TWSC|GRAYS|cfast=16": {
+   "error": "nss: cfast outside supported range"
+  },
+  "TWSC|GRAYS|cfast=17": {
+   "error": "nss: cfast outside supported range"
+  },
+  "TWSC|GRAYS|cfast=2": {
+   "error": "nss: cfast outside supported range"
+  },
+  "TWSC|GRAYS|cfast=3": {
+   "error": "nss: cfast outside supported range"
+  },
+  "TWSC|GRAYS|cfast=33": {
+   "error": "nss: cfast outside supported range"
+  },
+  "TWSC|GRAYS|cfast=4": {
+   "error": "nss: cfast outside supported range"
+  },
+  "TWSC|GRAYS|cfast=65": {
+   "error": "nss: cfast outside supported range"
+  },
+  "TWSC|GRAYS|cfast=7": {
+   "error": "nss: cfast outside supported range"
+  },
+  "TWSC|GRAYS|cfast=8": {
+   "error": "nss: cfast outside supported range"
+  },
+  "TWSC|GRAYS|cfast=9": {
+   "error": "nss: cfast outside supported range"
+  },
   "TWSC|GRAYS|combo:block_size=4": {
    "ok": {
     "format": "GrayS",
@@ -22061,6 +22113,58 @@
     "height": 40,
     "width": 48
    }
+  },
+  "TWSC|RGBS|cfast=-1": {
+   "error": "nss: cfast outside supported range"
+  },
+  "TWSC|RGBS|cfast=0": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|cfast=1": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|RGBS|cfast=1000": {
+   "error": "nss: cfast outside supported range"
+  },
+  "TWSC|RGBS|cfast=16": {
+   "error": "nss: cfast outside supported range"
+  },
+  "TWSC|RGBS|cfast=17": {
+   "error": "nss: cfast outside supported range"
+  },
+  "TWSC|RGBS|cfast=2": {
+   "error": "nss: cfast outside supported range"
+  },
+  "TWSC|RGBS|cfast=3": {
+   "error": "nss: cfast outside supported range"
+  },
+  "TWSC|RGBS|cfast=33": {
+   "error": "nss: cfast outside supported range"
+  },
+  "TWSC|RGBS|cfast=4": {
+   "error": "nss: cfast outside supported range"
+  },
+  "TWSC|RGBS|cfast=65": {
+   "error": "nss: cfast outside supported range"
+  },
+  "TWSC|RGBS|cfast=7": {
+   "error": "nss: cfast outside supported range"
+  },
+  "TWSC|RGBS|cfast=8": {
+   "error": "nss: cfast outside supported range"
+  },
+  "TWSC|RGBS|cfast=9": {
+   "error": "nss: cfast outside supported range"
   },
   "TWSC|RGBS|combo:block_size=4": {
    "ok": {
@@ -23842,6 +23946,58 @@
     "height": 40,
     "width": 48
    }
+  },
+  "TWSC|YUV420PS|cfast=-1": {
+   "error": "nss: cfast outside supported range"
+  },
+  "TWSC|YUV420PS|cfast=0": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|cfast=1": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "TWSC|YUV420PS|cfast=1000": {
+   "error": "nss: cfast outside supported range"
+  },
+  "TWSC|YUV420PS|cfast=16": {
+   "error": "nss: cfast outside supported range"
+  },
+  "TWSC|YUV420PS|cfast=17": {
+   "error": "nss: cfast outside supported range"
+  },
+  "TWSC|YUV420PS|cfast=2": {
+   "error": "nss: cfast outside supported range"
+  },
+  "TWSC|YUV420PS|cfast=3": {
+   "error": "nss: cfast outside supported range"
+  },
+  "TWSC|YUV420PS|cfast=33": {
+   "error": "nss: cfast outside supported range"
+  },
+  "TWSC|YUV420PS|cfast=4": {
+   "error": "nss: cfast outside supported range"
+  },
+  "TWSC|YUV420PS|cfast=65": {
+   "error": "nss: cfast outside supported range"
+  },
+  "TWSC|YUV420PS|cfast=7": {
+   "error": "nss: cfast outside supported range"
+  },
+  "TWSC|YUV420PS|cfast=8": {
+   "error": "nss: cfast outside supported range"
+  },
+  "TWSC|YUV420PS|cfast=9": {
+   "error": "nss: cfast outside supported range"
   },
   "TWSC|YUV420PS|combo:block_size=4": {
    "ok": {
@@ -29923,7 +30079,7 @@
   "NCSR": "clip:vnode;sigma:float[]:opt;block_size:int:opt;block_step:int:opt;group_size:int:opt;bm_range:int:opt;radius:int:opt;ps_num:int:opt;ps_range:int:opt;rclip:vnode:opt;iters:int:opt;delta:float:opt;memory_limit_mb:int:opt;temporal_mode:data:opt;rolling_chunk:int:opt;rolling_cache_chunks:int:opt;rolling_cache_limit:int:opt;",
   "NLH": "clip:vnode;sigma:float[]:opt;block_size:int[]:opt;block_step:int[]:opt;group_size:int[]:opt;bm_range:int:opt;radius:int:opt;ps_num:int:opt;ps_range:int:opt;q:int[]:opt;rclip:vnode:opt;noise_model:data:opt;search_window:int[]:opt;basic_iters:int:opt;lambda_basic:float:opt;hard_strength:float:opt;wiener_iters:int:opt;wiener_sigma_scale:float:opt;memory_limit_mb:int:opt;temporal_mode:data:opt;rolling_chunk:int:opt;rolling_cache_chunks:int:opt;rolling_cache_limit:int:opt;",
   "NLM": "clip:vnode;d:int:opt;a:int:opt;s:int:opt;h:float:opt;channels:data:opt;wmode:int:opt;wref:float:opt;rclip:vnode:opt;memory_limit_mb:int:opt;",
-  "TWSC": "clip:vnode;sigma:float[]:opt;block_size:int:opt;block_step:int:opt;group_size:int:opt;bm_range:int:opt;radius:int:opt;ps_num:int:opt;ps_range:int:opt;lambda2:float:opt;rclip:vnode:opt;iters:int:opt;delta:float:opt;estimate_sigma:int:opt;search_window:int:opt;admm_iter:int:opt;rho:float:opt;mu:float:opt;tol:float:opt;memory_limit_mb:int:opt;temporal_mode:data:opt;rolling_chunk:int:opt;rolling_cache_chunks:int:opt;rolling_cache_limit:int:opt;",
+  "TWSC": "clip:vnode;sigma:float[]:opt;block_size:int:opt;block_step:int:opt;group_size:int:opt;bm_range:int:opt;radius:int:opt;ps_num:int:opt;ps_range:int:opt;lambda2:float:opt;rclip:vnode:opt;iters:int:opt;delta:float:opt;estimate_sigma:int:opt;search_window:int:opt;admm_iter:int:opt;rho:float:opt;mu:float:opt;tol:float:opt;cfast:int:opt;memory_limit_mb:int:opt;temporal_mode:data:opt;rolling_chunk:int:opt;rolling_cache_chunks:int:opt;rolling_cache_limit:int:opt;",
   "VAggregate": "clip:vnode;src:vnode;radius:int:opt;planes:int[]:opt;allow_legacy:int:opt;memory_limit_mb:int:opt;",
   "Version": "",
   "WNNM": "clip:vnode;sigma:float[]:opt;block_size:int:opt;block_step:int:opt;group_size:int:opt;bm_range:int:opt;radius:int:opt;ps_num:int:opt;ps_range:int:opt;residual:int:opt;adaptive_aggregation:int:opt;rclip:vnode:opt;memory_limit_mb:int:opt;temporal_mode:data:opt;rolling_chunk:int:opt;rolling_cache_chunks:int:opt;rolling_cache_limit:int:opt;"

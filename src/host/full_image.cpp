@@ -68,6 +68,18 @@ const VSFrame* VS_CC fullGetFrame(int n, int activation, void* instance, void**,
         }
     }
     const bool rgb = d.model == nss::Model::NLH && d.vi.format.colorFamily == cfRGB;
+    // TWSC cfast: the frame and the reference as three opponent planes.
+    const bool split = d.model == nss::Model::TWSC &&
+        nss::twsc_color_split(d.twsc, d.vi.format.colorFamily == cfRGB, d.estimate, d.sigma_units.data());
+    const auto opponent = [](nss::ImageFrame& image) {
+        auto& p = image.planes;
+        for (std::size_t i = 0; i < p[0].pixels.size(); ++i)
+            nss::twsc_opponent_forward(p[0].pixels[i], p[1].pixels[i], p[2].pixels[i]);
+    };
+    if (split) for (int t = 0; t < count; ++t) {
+        opponent(input[t]);
+        if (d.reference) opponent(reference[t]);
+    }
     if (rgb) for (int t = 0; t < count; ++t) {
         nss::nlh_rgb_to_yuv(input[t], !d.estimate);
         if (d.reference) nss::nlh_rgb_to_yuv(reference[t], false);
@@ -103,8 +115,10 @@ const VSFrame* VS_CC fullGetFrame(int n, int activation, void* instance, void**,
     nss::stamp_contribution(dst, radius, n, d.model, api);
     nss::ImageContributions result;
     if (!bypass) {
+        nss::TwscImageOptions twsc_options = d.twsc;
+        twsc_options.planes_alone = split;
         result = d.model == nss::Model::TWSC
-            ? nss::twsc_image(input, d.reference ? &reference : nullptr, planes, center, d.twsc)
+            ? nss::twsc_image(input, d.reference ? &reference : nullptr, planes, center, twsc_options)
             : nss::nlh_image(input, d.reference ? &reference : nullptr, planes, center, nlh_options);
         if (rgb) for (int t = 0; t < count; ++t) {
             // Shared pixel indices give all three channels identical counts.
@@ -114,7 +128,28 @@ const VSFrame* VS_CC fullGetFrame(int n, int activation, void* instance, void**,
             nss::nlh_yuv_to_rgb(result.numerator[t]);
         }
     }
-    for (int c = 0; c < planes; ++c) {
+    if (split && !bypass) {
+        // Each plane's estimate (its input where no group reached), then back to RGB.
+        const int width = d.vi.width, height = d.vi.height;
+        float* out[3]; int stride[3];
+        for (int c = 0; c < 3; ++c) {
+            out[c] = reinterpret_cast<float*>(api->getWritePtr(dst, c));
+            stride[c] = int(owned.getStride(dst, c) / sizeof(float));
+        }
+        for (int y = 0; y < height; ++y) for (int x = 0; x < width; ++x) {
+            const auto index = y * width + x;
+            float value[3];
+            for (int c = 0; c < 3; ++c) {
+                const float num = result.numerator[center].planes[c].pixels[index], den = result.denominator[center].planes[c].pixels[index];
+                const double estimate = den > 0 ? double(num) / den : input[center].planes[c].pixels[index];
+                if (!std::isfinite(estimate)) throw std::runtime_error("nss: nonfinite final estimate");
+                value[c] = float(estimate);
+            }
+            nss::twsc_opponent_inverse(value[0], value[1], value[2]);
+            for (int c = 0; c < 3; ++c) out[c][y * stride[c] + x] = value[c];
+        }
+    }
+    for (int c = 0; c < planes && !(split && !bypass); ++c) {
         const int width = nss::plane_width(d.vi, c), height = nss::plane_height(d.vi, c);
         const int stride = int(owned.getStride(dst, c) / sizeof(float));
         const int src_stride = int(owned.getStride(source[center], c) / sizeof(float));
@@ -156,6 +191,7 @@ const VSFrame* VS_CC fullGetFrame(int n, int activation, void* instance, void**,
         api->mapSetInt(props, "_NSSADMMMaxIterGroups", std::int64_t(result.stats.max_iteration_groups), maReplace) ||
         api->mapSetInt(props, "_NSSSvdDoubleGroups", std::int64_t(result.stats.double_svd_groups), maReplace) ||
         api->mapSetFloat(props, "_NSSSylvesterResidual", result.stats.max_sylvester_residual, maReplace)) throw std::bad_alloc();
+    if (d.model == nss::Model::TWSC && api->mapSetInt(props, "_NSSCFast", split, maReplace)) throw std::bad_alloc();
     const int stages = d.model == nss::Model::TWSC ? 1 : 2;
     diagnostic_ints(api, props, "_NSSBlockSize", blocks, stages);
     diagnostic_ints(api, props, "_NSSGroupSize", groups, stages);

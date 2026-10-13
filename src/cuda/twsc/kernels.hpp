@@ -16,6 +16,7 @@
 
 #include "cuda/common/aggregate.hpp"
 #include "cuda/common/match.hpp"
+#include "nss/params/twsc.hpp"
 
 #include <cuda_runtime.h>
 
@@ -64,5 +65,9 @@ std::size_t twsc_real_bytes();
 int twsc_resident_groups(int block, int group, int nch);
 
 void twsc_filter_groups(const TwscGroupArgs& args, cudaStream_t stream);
+
+// cfast (nss::twsc_color_split): three planes of `count` floats to the
+// opponent planes in place, or back.
+void twsc_opponent(float* a, float* b, float* c, std::size_t count, bool inverse, cudaStream_t stream);
 
 }  // namespace nss_cuda
