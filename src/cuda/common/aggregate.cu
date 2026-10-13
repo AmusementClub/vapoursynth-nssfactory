@@ -102,18 +102,55 @@ tile_reduce_kernel(const float* values, const AggregatePatch* patches, const int
             staged[threadIdx.x] = patches[p];
         }
         __syncthreads();
-        for (int e = 0; e < n; ++e) {
-            const AggregatePatch patch = staged[e];
-            const int dx = px - patch.x;
-            if (dx < 0 || dx >= block) continue;
-            const float* v = values + static_cast<long long>(staged_id[e]) * area + dx;
-            const float* w = pixel_den ? pixel_den + static_cast<long long>(staged_id[e] / den_group) * area + dx : nullptr;
+        if constexpr (kPerThread == 1) {
+            // One pixel per thread: the sum is a chain of dependent FMAs whose
+            // operands come from global memory. The loads of kAhead entries
+            // are issued together, ahead of their additions (same order, same
+            // sums); an entry that misses the pixel loads nothing.
+            constexpr int kAhead = 4;
+            const int py = ty * kTile + row0;
+            float sum_num = num[0], sum_den = den[0];
+            for (int e = 0; e < n; e += kAhead) {
+                float weight[kAhead], value[kAhead], add[kAhead];
+                bool hit[kAhead];
 #pragma unroll
-            for (int k = 0; k < kPerThread; ++k) {
-                const int dy = ty * kTile + row0 + k * kRowStep - patch.y;
-                if (dy >= 0 && dy < block) {
-                    num[k] = fmaf(patch.weight, v[dy * block], num[k]);
-                    den[k] += w ? w[dy * block] : patch.weight;
+                for (int u = 0; u < kAhead; ++u) {
+                    const int at = min(e + u, n - 1);
+                    const AggregatePatch patch = staged[at];
+                    const int dx = px - patch.x, dy = py - patch.y;
+                    hit[u] = e + u < n && dx >= 0 && dx < block && dy >= 0 && dy < block;
+                    const long long cell = static_cast<long long>(staged_id[at]) * area + dy * block + dx;
+                    weight[u] = patch.weight;
+                    value[u] = hit[u] ? values[cell] : 0.f;
+                    add[u] = !hit[u] ? 0.f
+                             : pixel_den ? pixel_den[static_cast<long long>(staged_id[at] / den_group) * area + dy * block + dx]
+                                         : patch.weight;
+                }
+#pragma unroll
+                for (int u = 0; u < kAhead; ++u) {
+                    if (hit[u]) {
+                        sum_num = fmaf(weight[u], value[u], sum_num);
+                        sum_den += add[u];
+                    }
+                }
+            }
+            num[0] = sum_num;
+            den[0] = sum_den;
+        } else {
+            for (int e = 0; e < n; ++e) {
+                const AggregatePatch patch = staged[e];
+                const int dx = px - patch.x;
+                if (dx < 0 || dx >= block) continue;
+                const float* v = values + static_cast<long long>(staged_id[e]) * area + dx;
+                const float* w =
+                    pixel_den ? pixel_den + static_cast<long long>(staged_id[e] / den_group) * area + dx : nullptr;
+#pragma unroll
+                for (int k = 0; k < kPerThread; ++k) {
+                    const int dy = ty * kTile + row0 + k * kRowStep - patch.y;
+                    if (dy >= 0 && dy < block) {
+                        num[k] = fmaf(patch.weight, v[dy * block], num[k]);
+                        den[k] += w ? w[dy * block] : patch.weight;
+                    }
                 }
             }
         }
@@ -125,6 +162,108 @@ tile_reduce_kernel(const float* values, const AggregatePatch* patches, const int
             tnum[static_cast<long long>(py) * target.pitch + px] = num[k];
             tden[static_cast<long long>(py) * target.pitch + px] = den[k];
         }
+    }
+}
+
+// tile_reduce_kernel for 8x8 tiles with many entries each (and patch weights
+// as the denominator's terms). There a tile's block is one warp's chain of
+// some 26 instructions and a wait for global memory per four entries, and
+// the launch waits for the fullest tile. Here the work on a chunk of entries
+// is three steps of a pipeline, each on threads of its own: 32 threads bring
+// the patch records to shared memory; 384, six to a pixel, gather the value
+// and the weight of every (entry, pixel), zeros where the patch misses the
+// pixel, a thread's loads all at once; the 64 pixel threads add them in
+// entry order (the same additions: a miss adds zeros), about five
+// instructions an entry. Same sums as tile_reduce_kernel, bit for bit.
+constexpr int kStreamChunk = 32;
+constexpr int kStreamPixels = kTinyTile * kTinyTile;
+constexpr int kStreamGather = 6;  // threads to a pixel
+constexpr int kStreamThreads = (2 + kStreamGather) * kStreamPixels;
+
+__global__ void __launch_bounds__(kStreamThreads)
+tile_stream_kernel(const float* values, const AggregatePatch* patches, const int* ids, const int* begin,
+                   const int* end, int block, int tiles_x, int tiles_y, AggregateTarget target, bool accumulate) {
+    __shared__ AggregatePatch staged[2][kStreamChunk];
+    __shared__ int staged_id[2][kStreamChunk];
+    __shared__ float staged_value[2][kStreamChunk * kStreamPixels];
+    __shared__ float staged_weight[2][kStreamChunk * kStreamPixels];
+    const int tx = blockIdx.x, ty = blockIdx.y, slice = blockIdx.z;
+    const int bin = slice * tiles_x * tiles_y + ty * tiles_x + tx;
+    // Threads [0, 64) add, [64, 128) stage, the others gather.
+    const int role = threadIdx.x / kStreamPixels;
+    const int pixel = threadIdx.x % kStreamPixels;
+    const int px = tx * kTinyTile + pixel % kTinyTile;
+    const int py = ty * kTinyTile + pixel / kTinyTile;
+    const bool inside = px < target.width && py < target.height;
+    float* tnum = target.num + slice * target.slice_step + static_cast<long long>(py) * target.pitch + px;
+    float* tden = target.den + slice * target.slice_step + static_cast<long long>(py) * target.pitch + px;
+    float num = 0.f, den = 0.f;
+    if (role == 0 && inside && accumulate) num = *tnum, den = *tden;
+    const int area = block * block;
+    const int first = begin[bin], last = end[bin];
+    const int steps = (last - first + kStreamChunk - 1) / kStreamChunk;
+    const auto count = [=](int chunk) { return min(kStreamChunk, last - first - chunk * kStreamChunk); };
+    // Step s: chunk s + 2 is staged, chunk s + 1 gathered, chunk s added.
+    for (int s = -2; s < steps; ++s) {
+        if (role == 1) {
+            if (s + 2 < steps && pixel < count(s + 2)) {
+                const int id = ids[first + (s + 2) * kStreamChunk + pixel];
+                staged_id[s & 1][pixel] = id;
+                staged[s & 1][pixel] = patches[id];
+            }
+        } else if (role >= 2) {
+            if (s + 1 >= 0 && s + 1 < steps) {
+                const int n = count(s + 1);
+                const AggregatePatch* patch = staged[(s + 1) & 1];
+                const int* id = staged_id[(s + 1) & 1];
+                float* value = staged_value[(s + 1) & 1];
+                float* weight = staged_weight[(s + 1) & 1];
+                // A thread's entries: role - 2, then every kStreamGather-th.
+                constexpr int kLoads = (kStreamChunk + kStreamGather - 1) / kStreamGather;
+                float v[kLoads], w[kLoads];
+#pragma unroll
+                for (int u = 0; u < kLoads; ++u) {
+                    const int at = min(role - 2 + kStreamGather * u, n - 1);
+                    const int dx = px - patch[at].x, dy = py - patch[at].y;
+                    const bool hit = dx >= 0 && dx < block && dy >= 0 && dy < block;
+                    v[u] = hit ? values[static_cast<long long>(id[at]) * area + dy * block + dx] : 0.f;
+                    w[u] = hit ? patch[at].weight : 0.f;
+                }
+#pragma unroll
+                for (int u = 0; u < kLoads; ++u) {
+                    const int e = role - 2 + kStreamGather * u;
+                    if (e < n) {
+                        value[e * kStreamPixels + pixel] = v[u];
+                        weight[e * kStreamPixels + pixel] = w[u];
+                    }
+                }
+            }
+        } else if (s >= 0) {
+            const int n = count(s);
+            const float* value = staged_value[s & 1];
+            const float* weight = staged_weight[s & 1];
+            int e = 0;
+            for (; e + 4 <= n; e += 4) {
+                float v[4], w[4];
+#pragma unroll
+                for (int u = 0; u < 4; ++u) v[u] = value[(e + u) * kStreamPixels + pixel], w[u] = weight[(e + u) * kStreamPixels + pixel];
+#pragma unroll
+                for (int u = 0; u < 4; ++u) {
+                    num = fmaf(w[u], v[u], num);
+                    den += w[u];
+                }
+            }
+            for (; e < n; ++e) {
+                const float w = weight[e * kStreamPixels + pixel];
+                num = fmaf(w, value[e * kStreamPixels + pixel], num);
+                den += w;
+            }
+        }
+        __syncthreads();
+    }
+    if (role == 0 && inside) {
+        *tnum = num;
+        *tden = den;
     }
 }
 
@@ -261,7 +400,13 @@ void OrderedAggregator::run(const float* values, const AggregatePatch* patches, 
         NSS_CUDA_CHECK_LAUNCH();
     }
     const dim3 grid(tiles_x, tiles_y, target.slices);
-    if (tile == kTinyTile) {
+    // Same sums from either kernel; the stream kernel's larger blocks pay
+    // where the tiles hold several chunks on average.
+    if (tile == kTinyTile && !pixel_den && static_cast<std::size_t>(entries) >= 4 * kStreamChunk * bins) {
+        tile_stream_kernel<<<grid, kStreamThreads, 0, stream>>>(values, patches, ids_out_.as<int>(),
+                                                                bin_begin_.as<int>(), bin_end_.as<int>(), block,
+                                                                tiles_x, tiles_y, target, accumulate);
+    } else if (tile == kTinyTile) {
         tile_reduce_kernel<kTinyTile><<<grid, kTileBlock<kTinyTile>, 0, stream>>>(
             values, patches, ids_out_.as<int>(), bin_begin_.as<int>(), bin_end_.as<int>(), block, tiles_x, tiles_y,
             target, accumulate, pixel_den, den_group);

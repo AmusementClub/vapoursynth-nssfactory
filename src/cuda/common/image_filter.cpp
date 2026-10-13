@@ -40,8 +40,10 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace nss_cuda {
@@ -52,6 +54,10 @@ constexpr std::size_t kArenaBytes = 192u << 20;
 // NLH keeps matches and pixel indices there only (its kernels aggregate):
 // half holds every pass in a few batches (96 and 192 MiB measured the same).
 constexpr std::size_t kNlhArenaBytes = 96u << 20;
+// Frames in flight per instance (staging sets; see create()). Two saturate
+// one stream (1080p TWSC, block_step 8 / group 8 / 2 rounds on an RTX 5080:
+// 87 fps with one set, 97 with two, 96 with three).
+constexpr std::size_t kFramesInFlight = 2;
 // Aggregation capacity per arena byte (patches); small groups are capped by it.
 constexpr std::size_t kArenaBytesPerPatch = 1024;
 
@@ -85,8 +91,21 @@ struct Slot {
     DeviceBuffer fixed_num, fixed_den;  // NLH accumulators: 64-bit sums per plane, 32-bit counts per geometry
     DeviceBuffer guide_ptrs, data_ptrs, basic_ptrs;           // device pointer arrays
     DeviceBuffer arena, totals, stalled;
-    PinnedBuffer staging;
     std::unique_ptr<OrderedAggregator> aggregator;
+};
+
+// Pinned staging of one frame in flight: its uploads, then its downloads. A
+// frame is copied in before it takes a slot and copied out after it has
+// given the slot back, so a stream works while other threads copy.
+struct Staging {
+    PinnedBuffer bytes;
+    cudaEvent_t done = nullptr;  // recorded behind the frame's last download
+    Staging() = default;
+    Staging(const Staging&) = delete;
+    Staging& operator=(const Staging&) = delete;
+    ~Staging() {
+        if (done) cudaEventDestroy(done);
+    }
 };
 
 struct ImageData : nss::FullImageParams {
@@ -102,6 +121,7 @@ struct ImageData : nss::FullImageParams {
     int geometries = 1, geometry[3]{};  // planes of equal size share their selection counts
     std::size_t plane_floats = 0, arena_bytes = 0, max_patches = 0;
     std::unique_ptr<SlotPool<Slot>> pool;
+    std::unique_ptr<SlotPool<Staging>> staging;
     int radius() const { return model == nss::Model::TWSC ? twsc.radius : nlh.radius; }
     const char* name() const { return model == nss::Model::TWSC ? "TWSC" : "NLH"; }
 };
@@ -110,6 +130,7 @@ struct ImageData : nss::FullImageParams {
 struct Frame {
     const ImageData& d;
     Slot& s;
+    Staging& g;
     int count;   // frames in the request window
     int center;  // index of the output frame in it
     std::array<std::array<float, 3>, 33> sigma{};
@@ -125,7 +146,7 @@ struct Frame {
         return buffer.as<float>() + (static_cast<std::size_t>(c) * d.max_frames + t) * d.plane_floats;
     }
     std::uint8_t* staging(int region) const {
-        return s.staging.as<std::uint8_t>() + static_cast<std::size_t>(region) * d.plane_floats * sizeof(float);
+        return g.bytes.as<std::uint8_t>() + static_cast<std::size_t>(region) * d.plane_floats * sizeof(float);
     }
     unsigned long long* sums(int c) const {
         return s.fixed_num.as<unsigned long long>() + static_cast<std::size_t>(c) * d.max_frames * d.plane_floats;
@@ -500,9 +521,14 @@ void run_twsc(Frame& f) {
             window.ps_num = o.ps_num;
             window.ps_range = o.ps_range;
             const std::size_t per_group = twsc_group_bytes(o.block, o.group, nch) + 16;
-            const int batch = static_cast<int>(std::max<std::size_t>(
+            int batch = static_cast<int>(std::max<std::size_t>(
                 1, std::min({(d.arena_bytes - 16 * 8) / per_group, d.max_patches / o.group,
                              static_cast<std::size_t>(grid.count())})));
+            // Whole waves of blocks (see twsc_resident_groups) when a batch is a few of them. A partial
+            // wave among many costs little, and other batch sizes suit the matcher better there (light
+            // 1080p shape, 21 waves: 2% slower rounded).
+            const int resident = twsc_resident_groups(o.block, o.group, nch);
+            if (batch > resident && batch < 8 * resident) batch -= batch % resident;
             bool written = false;
             for (int t0 = last ? f.center : 0; t0 < (last ? f.center + 1 : f.count); ++t0) {
                 window.t0 = t0;
@@ -607,45 +633,74 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
     }
     if (activation != arAllFramesReady) return nullptr;
     NSS_CUDA_RANGE("image.frame");
-    auto slot = d.pool->acquire();
-    Slot& s = *slot;
+    // The staging set is leased before the output frame is allocated, so at
+    // most that many frames are in flight.
+    auto staging = d.staging->acquire();
+    Staging& g = *staging;
     DeviceGuard guard(d.device.index);
     nss::ResourceScope scope(d.budget);
     nss::FrameScope owned(api);
-    Frame f{d, s, last - first + 1, n - first};
+    const int count = last - first + 1;
     const int planes = d.planes;
-
-    // Upload the window: every source plane, and the reference planes the
-    // luma guide needs.
-    std::vector<const VSFrame*> source(f.count);
-    int region = 0;
-    const auto upload = [&](const VSFrame* frame, int c, float* device) {
-        const std::size_t row_bytes = static_cast<std::size_t>(d.width[c]) * sizeof(float);
-        std::uint8_t* staging = f.staging(region++);
-        upload_plane(api->getReadPtr(frame, c), api->getStride(frame, c), row_bytes, d.height[c], staging, device,
-                     row_bytes, s.stream);
-        const float* samples = reinterpret_cast<const float*>(staging);
-        for (std::size_t i = 0; i < f.floats(c); ++i) {
-            if (!std::isfinite(samples[i])) throw std::invalid_argument("nss: nonfinite source/reference sample");
-        }
+    const auto region_at = [&](int region) {
+        return g.bytes.as<std::uint8_t>() + static_cast<std::size_t>(region) * d.plane_floats * sizeof(float);
     };
-    try {
-        for (int t = 0; t < f.count; ++t) {
-            source[t] = owned.getFrameFilter(first + t, d.node, ctx);
-            for (int c = 0; c < planes; ++c) {
-                upload(source[t], c, f.plane(s.input, t, c));
-                f.sigma[t][c] = d.sigma[c] / 255.f;
-                f.units[t][c] = d.sigma_units[c];
-            }
-            if (d.reference) {
-                const VSFrame* frame = owned.getFrameFilter(first + t, d.reference, ctx);
-                for (int c = 0; c < d.reference_planes; ++c) upload(frame, c, f.plane(s.reference, t, c));
-                owned.freeFrame(frame);
-            }
+
+    // Stage the window: every source plane, and the reference planes the
+    // luma guide needs.
+    struct Upload {
+        int region, t, c;
+        bool reference;
+    };
+    std::vector<Upload> uploads;
+    std::vector<const VSFrame*> source(count);
+    const auto stage = [&](const VSFrame* frame, int t, int c, bool reference) {
+        const std::size_t row_bytes = static_cast<std::size_t>(d.width[c]) * sizeof(float);
+        const int region = static_cast<int>(uploads.size());
+        stage_plane(api->getReadPtr(frame, c), api->getStride(frame, c), row_bytes, d.height[c], region_at(region));
+        const auto* samples = reinterpret_cast<const std::uint32_t*>(region_at(region));
+        const std::size_t floats = static_cast<std::size_t>(d.width[c]) * d.height[c];
+        std::uint32_t bad = 0;  // an all-ones exponent is an infinity or a NaN
+        for (std::size_t i = 0; i < floats; ++i) bad |= static_cast<std::uint32_t>((samples[i] & 0x7f800000u) == 0x7f800000u);
+        if (bad) throw std::invalid_argument("nss: nonfinite source/reference sample");
+        uploads.push_back({region, t, c, reference});
+    };
+    for (int t = 0; t < count; ++t) {
+        source[t] = owned.getFrameFilter(first + t, d.node, ctx);
+        for (int c = 0; c < planes; ++c) stage(source[t], t, c, false);
+        if (d.reference) {
+            const VSFrame* frame = owned.getFrameFilter(first + t, d.reference, ctx);
+            for (int c = 0; c < d.reference_planes; ++c) stage(frame, t, c, true);
+            owned.freeFrame(frame);
         }
-    } catch (...) {
-        s.stream.synchronize();  // staged copies must not outlive this frame
-        throw;
+    }
+
+    // The slot is held while the frame's work is queued (the blind estimate
+    // waits for its result in between): what the next frame queues on the
+    // stream runs after it, and the staging belongs to this frame until its
+    // event has passed.
+    std::optional<SlotPool<Slot>::Lease> slot(d.pool->acquire());
+    Slot& s = **slot;
+    // On an error the queued copies must not outlive the staging lease.
+    struct Drain {
+        cudaStream_t stream;
+        bool armed = true;
+        ~Drain() {
+            if (armed) cudaStreamSynchronize(stream);
+        }
+    } drain{s.stream};
+    Frame f{d, s, g, count, n - first};
+    for (const Upload& u : uploads) {
+        const std::size_t row_bytes = static_cast<std::size_t>(d.width[u.c]) * sizeof(float);
+        upload_staged(region_at(u.region), row_bytes, d.height[u.c], f.plane(u.reference ? s.reference : s.input, u.t, u.c),
+                      row_bytes, s.stream);
+    }
+    const int region = static_cast<int>(uploads.size());
+    for (int t = 0; t < f.count; ++t) {
+        for (int c = 0; c < planes; ++c) {
+            f.sigma[t][c] = d.sigma[c] / 255.f;
+            f.units[t][c] = d.sigma_units[c];
+        }
     }
     for (int t = 0; t < f.count && d.rgb; ++t) {
         nlh_rgb_to_yuv(f.plane(s.input, t, 0), f.plane(s.input, t, 1), f.plane(s.input, t, 2), d.plane_floats, false,
@@ -712,7 +767,10 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
             }
         }
     }
-    s.stream.synchronize();
+    NSS_CUDA_CHECK(cudaEventRecord(g.done, s.stream));
+    drain.armed = false;
+    slot.reset();
+    NSS_CUDA_CHECK(cudaEventSynchronize(g.done));
     for (int c = 0; c < planes; ++c) {
         const std::size_t row_bytes = static_cast<std::size_t>(d.width[c]) * sizeof(float);
         auto* out = api->getWritePtr(dst, c);
@@ -780,11 +838,12 @@ void VS_CC freeFilter(void* instance, VSCore*, const VSAPI*) {
     {
         DeviceGuard guard(d->device.index);
         d->pool.reset();
+        d->staging.reset();
     }
     delete d;
 }
 
-std::unique_ptr<Slot> make_slot(const ImageData& d, int staging_regions) {
+std::unique_ptr<Slot> make_slot(const ImageData& d) {
     auto slot = std::make_unique<Slot>();
     const std::size_t window = static_cast<std::size_t>(d.max_frames) * d.plane_floats * sizeof(float);
     slot->input = DeviceBuffer(window * 3, d.budget);
@@ -800,7 +859,6 @@ std::unique_ptr<Slot> make_slot(const ImageData& d, int staging_regions) {
     slot->arena = DeviceBuffer(d.arena_bytes, d.budget);
     slot->totals = DeviceBuffer(3 * sizeof(double), d.budget);
     slot->stalled = DeviceBuffer(sizeof(int), d.budget);
-    slot->staging = PinnedBuffer(static_cast<std::size_t>(staging_regions) * d.plane_floats * sizeof(float), d.budget);
     if (d.model == nss::Model::TWSC) {
         slot->aggregator =
             std::make_unique<OrderedAggregator>(d.width[0], d.height[0], d.max_frames, d.max_patches, d.budget, true);
@@ -906,11 +964,30 @@ void create(const VSMap* in, VSMap* out, VSCore* core, const VSAPI* api, nss::Mo
         d.arena_bytes = std::max(one_group, static_cast<std::size_t>((share - slot_bytes(0)) / per_byte));
     }
     d.max_patches = std::max<std::size_t>(d.arena_bytes / kArenaBytesPerPatch, max_group);
+    // A staging set and the output frame it feeds per frame in flight. One
+    // per stream is in `fixed`; more keep a stream busy while other threads
+    // copy, where the limit leaves room beside the full arena.
+    const std::size_t streams = static_cast<std::size_t>(d.backend.num_streams);
+    const std::size_t set_bytes = plane_bytes * staging_regions + plane_bytes * d.planes * rows;
+    std::size_t extra = std::max(streams, kFramesInFlight) - streams;
+    if (limit != SIZE_MAX) {
+        const std::size_t used = streams * slot_bytes(d.arena_bytes);
+        extra = std::min(extra, limit > used ? (limit - used) / set_bytes : 0);
+    }
+    const int staging_sets = static_cast<int>(streams + extra);
 
     {
         DeviceGuard guard(d.device.index);
         std::vector<std::unique_ptr<Slot>> slots;
-        for (int i = 0; i < d.backend.num_streams; ++i) slots.push_back(make_slot(d, staging_regions));
+        for (int i = 0; i < d.backend.num_streams; ++i) slots.push_back(make_slot(d));
+        std::vector<std::unique_ptr<Staging>> sets;
+        for (int i = 0; i < staging_sets; ++i) {
+            auto set = std::make_unique<Staging>();
+            set->bytes = PinnedBuffer(static_cast<std::size_t>(staging_regions) * plane_bytes, d.budget);
+            NSS_CUDA_CHECK(cudaEventCreateWithFlags(&set->done, cudaEventDisableTiming));
+            sets.push_back(std::move(set));
+        }
+        d.staging = std::make_unique<SlotPool<Staging>>(std::move(sets));
         d.pool = std::make_unique<SlotPool<Slot>>(std::move(slots));
     }
     const auto pattern = d.radius() ? rpGeneral : rpStrictSpatial;

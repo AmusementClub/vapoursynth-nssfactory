@@ -147,6 +147,148 @@ __global__ void __launch_bounds__(kThreads) spatial_match_kernel(const float* pl
     write_result(dst, counts + ref, cx, cy, 0, keys, topk.filled);
 }
 
+// Block per reference for large groups: one 4-byte sortable distance per
+// candidate, then the K smallest of the keys (distance, candidate index) by
+// a radix select, one byte a round from the top, instead of sorting them. In
+// the raster window the index order is the (y, x) order and t is common, so
+// this is the order of the full key and the result equals the block top-K
+// path. The counts of a round are integers: their sum does not depend on the
+// order of the atomic additions, nor does the result on the slot a selected
+// key takes before it is ranked.
+constexpr int kSelectThreads = 256;  // one histogram bin per thread
+constexpr int kSelectMaxCandidates = 1 << 16;
+constexpr unsigned kConsumed = 0xffffffffu;  // sortable_distance never returns this
+
+__host__ __device__ constexpr std::size_t select_fixed_bytes(int group, int candidates) {
+    return (group + (group & 1)) * sizeof(unsigned long long) + (kSelectThreads + kSelectThreads / 32 + 4 + candidates) * sizeof(unsigned);
+}
+
+template <int B>
+__device__ __forceinline__ void select_distances(const float* anchor, const float* plane, int pitch, const Window& w,
+                                                 int ww, int total, int cx, int cy, unsigned* sortable) {
+    float ref[B * B];
+#pragma unroll
+    for (int r = 0; r < B; ++r) {
+#pragma unroll
+        for (int c = 0; c < B; ++c) ref[r * B + c] = anchor[r * B + c];
+    }
+    for (int idx = threadIdx.x; idx < total; idx += kSelectThreads) {
+        const int x = w.left + idx % ww;
+        const int y = w.top + idx / ww;
+        const float* b = plane + static_cast<long long>(y) * pitch + x;
+        float sum = 0.f;
+#pragma unroll
+        for (int r = 0; r < B; ++r) {
+#pragma unroll
+            for (int c = 0; c < B; ++c) {
+                const float d = ref[r * B + c] - b[r * pitch + c];
+                sum = fmaf(d, d, sum);
+            }
+        }
+        sortable[idx] = (x == cx && y == cy) ? kConsumed : detail::sortable_distance(sum);
+    }
+}
+
+__global__ void __launch_bounds__(kSelectThreads) spatial_match_select_kernel(const float* plane, MatchGeometry g,
+                                                                              RasterGrid grid, int ref_begin,
+                                                                              DeviceMatch* out, int* counts,
+                                                                              int capacity) {
+    extern __shared__ unsigned char shared[];
+    const int lane = threadIdx.x;
+    const int ref = blockIdx.x;
+    const int cx = grid.x(ref_begin + ref);
+    const int cy = grid.y(ref_begin + ref);
+    DeviceMatch* dst = out + static_cast<long long>(ref) * g.group;
+    const Window w = spatial_window(g, cx, cy);
+    const int ww = w.right - w.left + 1;
+    const int total = ww * (w.bottom - w.top + 1);
+    const int group = min(g.group, kMaxGroup);
+    const int wanted = min(group, total) - 1;  // the reference itself is not a candidate
+    if (lane == 0) {
+        dst[0] = DeviceMatch{cx, cy, 0, 0.f};
+        counts[ref] = 1 + max(wanted, 0);
+    }
+    if (wanted <= 0) return;
+    auto* list = reinterpret_cast<unsigned long long*>(shared);
+    unsigned* histogram = reinterpret_cast<unsigned*>(list + group + (group & 1));
+    unsigned* warp_total = histogram + kSelectThreads;
+    unsigned* state = warp_total + kSelectThreads / 32;  // digit, keys below it, exact, slots taken
+    unsigned* sortable = state + 4;
+    // The reference block in shared memory; the candidates are read where
+    // they are (a staged window measured the same).
+    float* anchor = reinterpret_cast<float*>(sortable + capacity);
+    const int area = g.block * g.block;
+    for (int i = lane; i < g.channels * area; i += kSelectThreads) {
+        const int c = i / area, at = i % area;
+        anchor[i] = plane[c * g.channel_step + static_cast<long long>(cy + at / g.block) * g.pitch + cx + at % g.block];
+    }
+    histogram[lane] = 0;
+    if (lane == 0) state[3] = 0;
+    __syncthreads();
+    if (g.channels == 1 && g.block == 8) {
+        select_distances<8>(anchor, plane, g.pitch, w, ww, total, cx, cy, sortable);
+    } else if (g.channels == 1 && g.block == 4) {
+        select_distances<4>(anchor, plane, g.pitch, w, ww, total, cx, cy, sortable);
+    } else {
+        for (int idx = lane; idx < total; idx += kSelectThreads) {
+            const int x = w.left + idx % ww;
+            const int y = w.top + idx / ww;
+            const float* cand = plane + static_cast<long long>(y) * g.pitch + x;
+            sortable[idx] = (x == cx && y == cy)
+                                ? kConsumed
+                                : detail::sortable_distance(group_ssd(anchor, g.block, area, cand, g.pitch, g.channel_step, g));
+        }
+    }
+    __syncthreads();
+
+    // The key (distance << 16 | index) of rank `wanted`, a byte a round:
+    // `prefix` is its leading bytes so far and `need` its rank among the keys
+    // that share them. A round ends the search when the keys up to its byte
+    // are exactly the wanted ones (at the last byte they are: keys differ).
+    unsigned long long prefix = 0;
+    int need = wanted, shift = 40;
+    for (;; shift -= 8) {
+        for (int idx = lane; idx < total; idx += kSelectThreads) {
+            const unsigned long long key = static_cast<unsigned long long>(sortable[idx]) << 16 | static_cast<unsigned>(idx);
+            if (key >> (shift + 8) == prefix) atomicAdd(histogram + static_cast<int>(key >> shift & 255), 1u);
+        }
+        __syncthreads();
+        const unsigned count = histogram[lane];
+        unsigned through = count;  // keys of the bytes up to this thread's
+#pragma unroll
+        for (int offset = 1; offset < 32; offset <<= 1) {
+            const unsigned other = __shfl_up_sync(0xffffffffu, through, offset);
+            if (lane % 32 >= offset) through += other;
+        }
+        if (lane % 32 == 31) warp_total[lane / 32] = through;
+        histogram[lane] = 0;
+        __syncthreads();
+        for (int warp = 0; warp < lane / 32; ++warp) through += warp_total[warp];
+        if (static_cast<int>(through - count) < need && need <= static_cast<int>(through)) {
+            state[0] = lane;
+            state[1] = through - count;
+            state[2] = static_cast<int>(through) == need;
+        }
+        __syncthreads();
+        prefix = prefix << 8 | state[0];
+        need -= static_cast<int>(state[1]);
+        if (state[2] || shift == 0) break;
+    }
+    for (int idx = lane; idx < total; idx += kSelectThreads) {
+        const unsigned long long key = static_cast<unsigned long long>(sortable[idx]) << 16 | static_cast<unsigned>(idx);
+        if (key >> shift <= prefix) list[atomicAdd(state + 3, 1u)] = key;
+    }
+    __syncthreads();
+    for (int i = lane; i < wanted; i += kSelectThreads) {
+        const unsigned long long key = list[i];
+        int rank = 0;
+        for (int k = 0; k < wanted; ++k) rank += list[k] < key;
+        const int idx = static_cast<int>(key & 0xffff);
+        dst[1 + rank] = DeviceMatch{w.left + idx % ww, w.top + idx / ww, 0,
+                                    detail::key_distance(MatchKey{key >> 16 << 32, 0})};
+    }
+}
+
 // Warp-per-reference variants for small top-K (the common BM3D/WNNM case).
 // Each warp stages its search window in its own shared memory and keeps one
 // 4-byte sortable distance per candidate; positions are recomputed from the
@@ -157,7 +299,6 @@ __global__ void __launch_bounds__(kThreads) spatial_match_kernel(const float* pl
 // kWarpRefs for the BM3D/WNNM windows, fewer for NLH's larger ones.
 constexpr int kWarpRefs = kThreads / 32;
 constexpr int kWarpMaxK = 16;
-constexpr unsigned kConsumed = 0xffffffffu;  // sortable_distance never returns this
 
 struct Center {
     int x;
@@ -972,6 +1113,19 @@ __global__ void __launch_bounds__(kThreads) predictive_match_kernel(MatchGeometr
     write_result(dst, counts + ref, cx, cy, t0, global_keys, global_count);
 }
 
+bool launch_select(const float* plane, const MatchGeometry& g, const RasterGrid& grid, int ref_begin, int ref_count,
+                   DeviceMatch* out, int* counts, cudaStream_t stream) {
+    const int span = g.lo() + g.hi();
+    const int candidates = (span + 1) * (span + 1);
+    if (candidates > kSelectMaxCandidates) return false;
+    const std::size_t bytes = select_fixed_bytes(std::min(g.group, kMaxGroup), candidates) +
+                              static_cast<std::size_t>(g.block) * g.block * g.channels * sizeof(float);
+    if (bytes > kSharedBudget) return false;
+    spatial_match_select_kernel<<<ref_count, kSelectThreads, bytes, stream>>>(plane, g, grid, ref_begin, out, counts,
+                                                                              candidates);
+    return true;
+}
+
 template <int N>
 void launch_spatial(const float* plane, const MatchGeometry& g, const RasterGrid& grid, int ref_begin, int ref_count,
                     DeviceMatch* out, int* counts, cudaStream_t stream) {
@@ -1006,6 +1160,10 @@ void spatial_match(const float* plane, const MatchGeometry& geometry, const Rast
     if (wanted >= 1 && wanted <= kWarpMaxK && warps >= 1) {
         spatial_match_warp_kernel<<<(ref_count + warps - 1) / warps, 32 * warps, warps * warp_bytes, stream>>>(
             plane, geometry, grid, ref_begin, ref_count, out, counts, window_floats, candidates);
+        NSS_CUDA_CHECK_LAUNCH();
+        return;
+    }
+    if (launch_select(plane, geometry, grid, ref_begin, ref_count, out, counts, stream)) {
         NSS_CUDA_CHECK_LAUNCH();
         return;
     }

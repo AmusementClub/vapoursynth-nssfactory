@@ -81,18 +81,25 @@ How the streams, the memory limit and the rolling output behave across filters i
   the device.
 - **Temporal output.** The fat intermediate is reduced with
   `nss_cuda.VAggregate` inside the filter.
-- **Numerics.** The dictionary comes from an FP32 Jacobi eigendecomposition of
-  the Gram matrix of the smaller group side, and the solver runs in FP32
-  (FP64 was measured and gave the same agreement with the CPU).
+- **Numerics.** The dictionary comes from an FP32 eigendecomposition of the
+  Gram matrix of the smaller group side (Householder tridiagonalization and
+  implicit QL), and the solver runs in FP32 (FP64 was measured and gave the
+  same agreement with the CPU).
   - The output is not bit-identical to the CPU, but is inside the 60 dB gate
-    (92–143 dB on the frozen references) and run-to-run identical.
+    (93–143 dB on the frozen references) and run-to-run identical.
 - **Frame properties.** `_NSSSigma`, `_NSSGroups` and the shape properties
   match the CPU. `_NSSADMMMaxIterGroups` counts this backend's own
   non-converged groups; `_NSSSvdDoubleGroups` and `_NSSSylvesterResidual` are
   CPU-solver diagnostics and are reported as 0.
 - **Speed.** The default settings remain very heavy (one 64x64
-  eigendecomposition per pixel position per round): about 8 s for a 128x128
-  frame on an RTX 5080, against about 190 s on 16 CPU threads.
+  eigendecomposition per pixel position per round): about 0.5 s for a 128x128
+  frame on an RTX 5080 (2.3 s in RGB), against about 190 s on 16 CPU threads.
+  The fast call above (`block_step=8, group_size=8, iters=2`) runs 1080p at
+  about 97 fps in gray and 36 fps in RGB.
+- **Memory.** Besides its device buffers an instance keeps pinned host
+  staging for two frames in flight, so that one stream stays busy while
+  another thread copies; under a `memory_limit_mb` that leaves no room for
+  the second set it runs with one.
 
 ## Pitfalls
 
