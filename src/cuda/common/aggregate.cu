@@ -4,22 +4,28 @@
 
 #include <cub/device/device_radix_sort.cuh>
 
+#include <algorithm>
 #include <stdexcept>
 
 namespace nss_cuda {
 namespace {
 
 // Tiles are 16x16 for blocks up to 16 (one pixel per thread) and 32x32 above;
-// with fine tiles, 8x8 for blocks up to 8. A block <= tile + 1 spans at most
+// with fine tiles, 8x8 for blocks up to 8, and with micro tiles 4x4 for
+// blocks up to 4. A block <= tile + 1 spans at most
 // 2x2 tiles, and the smaller the tile, the fewer entries of its bin miss a
 // given pixel. The per-pixel order (patch id) does not depend on the tile
 // size.
+constexpr int kMicroTile = 4;
 constexpr int kTinyTile = 8;
 constexpr int kSmallTile = 16;
 constexpr int kLargeTile = OrderedAggregator::kTile;
 constexpr int kTilesPerPatch = 4;
-__host__ __device__ constexpr int tile_for(int block, bool fine) {
-    return fine && block <= kTinyTile ? kTinyTile : block <= kSmallTile ? kSmallTile : kLargeTile;
+__host__ __device__ constexpr int tile_for(int block, bool fine, bool micro) {
+    return micro && block <= kMicroTile ? kMicroTile
+           : fine && block <= kTinyTile ? kTinyTile
+           : block <= kSmallTile        ? kSmallTile
+                                        : kLargeTile;
 }
 constexpr int kTileThreads = 256;
 template <int kTile>
@@ -70,14 +76,14 @@ __global__ void bin_bounds_kernel(const unsigned* keys, int n, unsigned invalid,
 template <int kTile>
 __global__ void __launch_bounds__(kTileThreads)
 tile_reduce_kernel(const float* values, const AggregatePatch* patches, const int* ids, const int* begin,
-                   const int* end, int block, int tiles_x, int tiles_y, AggregateTarget target, bool accumulate,
-                   const float* pixel_den, int den_group) {
+                   const int* end, int block, int tiles_x, int tiles_y, int tile_y0, AggregateTarget target,
+                   bool accumulate, const float* pixel_den, int den_group) {
     constexpr int kThreads = kTileBlock<kTile>;
     constexpr int kPerThread = kTile * kTile / kThreads;
     constexpr int kRowStep = kThreads / kTile;
     __shared__ AggregatePatch staged[kThreads];
     __shared__ int staged_id[kThreads];
-    const int tx = blockIdx.x, ty = blockIdx.y, slice = blockIdx.z;
+    const int tx = blockIdx.x, ty = tile_y0 + static_cast<int>(blockIdx.y), slice = blockIdx.z;
     const int bin = slice * tiles_x * tiles_y + ty * tiles_x + tx;
     const int col = threadIdx.x % kTile;
     const int row0 = threadIdx.x / kTile;
@@ -175,25 +181,33 @@ tile_reduce_kernel(const float* values, const AggregatePatch* patches, const int
 // pixel, a thread's loads all at once; the 64 pixel threads add them in
 // entry order (the same additions: a miss adds zeros), about five
 // instructions an entry. Same sums as tile_reduce_kernel, bit for bit.
-constexpr int kStreamChunk = 32;
-constexpr int kStreamPixels = kTinyTile * kTinyTile;
 constexpr int kStreamGather = 6;  // threads to a pixel
-constexpr int kStreamThreads = (2 + kStreamGather) * kStreamPixels;
+template <int kTile>
+constexpr int kStreamPixels = kTile * kTile;
+// Entries a step: one per staging thread, at most 32.
+template <int kTile>
+constexpr int kStreamChunk = kStreamPixels<kTile> < 32 ? kStreamPixels<kTile> : 32;
+template <int kTile>
+constexpr int kStreamThreads = (2 + kStreamGather) * kStreamPixels<kTile>;
 
-__global__ void __launch_bounds__(kStreamThreads)
+template <int kTile>
+__global__ void __launch_bounds__(kStreamThreads<kTile>)
 tile_stream_kernel(const float* values, const AggregatePatch* patches, const int* ids, const int* begin,
-                   const int* end, int block, int tiles_x, int tiles_y, AggregateTarget target, bool accumulate) {
-    __shared__ AggregatePatch staged[2][kStreamChunk];
-    __shared__ int staged_id[2][kStreamChunk];
-    __shared__ float staged_value[2][kStreamChunk * kStreamPixels];
-    __shared__ float staged_weight[2][kStreamChunk * kStreamPixels];
-    const int tx = blockIdx.x, ty = blockIdx.y, slice = blockIdx.z;
+                   const int* end, int block, int tiles_x, int tiles_y, int tile_y0, AggregateTarget target,
+                   bool accumulate) {
+    constexpr int kPixels = kStreamPixels<kTile>;
+    constexpr int kChunk = kStreamChunk<kTile>;
+    __shared__ AggregatePatch staged[2][kChunk];
+    __shared__ int staged_id[2][kChunk];
+    __shared__ float staged_value[2][kChunk * kPixels];
+    __shared__ float staged_weight[2][kChunk * kPixels];
+    const int tx = blockIdx.x, ty = tile_y0 + static_cast<int>(blockIdx.y), slice = blockIdx.z;
     const int bin = slice * tiles_x * tiles_y + ty * tiles_x + tx;
-    // Threads [0, 64) add, [64, 128) stage, the others gather.
-    const int role = threadIdx.x / kStreamPixels;
-    const int pixel = threadIdx.x % kStreamPixels;
-    const int px = tx * kTinyTile + pixel % kTinyTile;
-    const int py = ty * kTinyTile + pixel / kTinyTile;
+    // Threads [0, pixels) add, [pixels, 2 pixels) stage, the others gather.
+    const int role = threadIdx.x / kPixels;
+    const int pixel = threadIdx.x % kPixels;
+    const int px = tx * kTile + pixel % kTile;
+    const int py = ty * kTile + pixel / kTile;
     const bool inside = px < target.width && py < target.height;
     float* tnum = target.num + slice * target.slice_step + static_cast<long long>(py) * target.pitch + px;
     float* tden = target.den + slice * target.slice_step + static_cast<long long>(py) * target.pitch + px;
@@ -201,13 +215,13 @@ tile_stream_kernel(const float* values, const AggregatePatch* patches, const int
     if (role == 0 && inside && accumulate) num = *tnum, den = *tden;
     const int area = block * block;
     const int first = begin[bin], last = end[bin];
-    const int steps = (last - first + kStreamChunk - 1) / kStreamChunk;
-    const auto count = [=](int chunk) { return min(kStreamChunk, last - first - chunk * kStreamChunk); };
+    const int steps = (last - first + kChunk - 1) / kChunk;
+    const auto count = [=](int chunk) { return min(kChunk, last - first - chunk * kChunk); };
     // Step s: chunk s + 2 is staged, chunk s + 1 gathered, chunk s added.
     for (int s = -2; s < steps; ++s) {
         if (role == 1) {
             if (s + 2 < steps && pixel < count(s + 2)) {
-                const int id = ids[first + (s + 2) * kStreamChunk + pixel];
+                const int id = ids[first + (s + 2) * kChunk + pixel];
                 staged_id[s & 1][pixel] = id;
                 staged[s & 1][pixel] = patches[id];
             }
@@ -219,7 +233,7 @@ tile_stream_kernel(const float* values, const AggregatePatch* patches, const int
                 float* value = staged_value[(s + 1) & 1];
                 float* weight = staged_weight[(s + 1) & 1];
                 // A thread's entries: role - 2, then every kStreamGather-th.
-                constexpr int kLoads = (kStreamChunk + kStreamGather - 1) / kStreamGather;
+                constexpr int kLoads = (kChunk + kStreamGather - 1) / kStreamGather;
                 float v[kLoads], w[kLoads];
 #pragma unroll
                 for (int u = 0; u < kLoads; ++u) {
@@ -233,8 +247,8 @@ tile_stream_kernel(const float* values, const AggregatePatch* patches, const int
                 for (int u = 0; u < kLoads; ++u) {
                     const int e = role - 2 + kStreamGather * u;
                     if (e < n) {
-                        value[e * kStreamPixels + pixel] = v[u];
-                        weight[e * kStreamPixels + pixel] = w[u];
+                        value[e * kPixels + pixel] = v[u];
+                        weight[e * kPixels + pixel] = w[u];
                     }
                 }
             }
@@ -246,7 +260,7 @@ tile_stream_kernel(const float* values, const AggregatePatch* patches, const int
             for (; e + 4 <= n; e += 4) {
                 float v[4], w[4];
 #pragma unroll
-                for (int u = 0; u < 4; ++u) v[u] = value[(e + u) * kStreamPixels + pixel], w[u] = weight[(e + u) * kStreamPixels + pixel];
+                for (int u = 0; u < 4; ++u) v[u] = value[(e + u) * kPixels + pixel], w[u] = weight[(e + u) * kPixels + pixel];
 #pragma unroll
                 for (int u = 0; u < 4; ++u) {
                     num = fmaf(w[u], v[u], num);
@@ -254,8 +268,8 @@ tile_stream_kernel(const float* values, const AggregatePatch* patches, const int
                 }
             }
             for (; e < n; ++e) {
-                const float w = weight[e * kStreamPixels + pixel];
-                num = fmaf(w, value[e * kStreamPixels + pixel], num);
+                const float w = weight[e * kPixels + pixel];
+                num = fmaf(w, value[e * kPixels + pixel], num);
                 den += w;
             }
         }
@@ -348,16 +362,18 @@ std::size_t sort_temp_size(std::size_t entries) {
 
 }  // namespace
 
-std::size_t OrderedAggregator::bin_bytes(int max_width, int max_height, int max_slices, bool fine_tiles) {
-    const int tile = fine_tiles ? kTinyTile : kSmallTile;
+std::size_t OrderedAggregator::bin_bytes(int max_width, int max_height, int max_slices, bool fine_tiles,
+                                         bool micro_tiles) {
+    const int tile = micro_tiles ? kMicroTile : fine_tiles ? kTinyTile : kSmallTile;
     return 2 * sizeof(int) * (static_cast<std::size_t>((max_width + tile - 1) / tile) *
                               ((max_height + tile - 1) / tile) * max_slices);
 }
 
 OrderedAggregator::OrderedAggregator(int max_width, int max_height, int max_slices, std::size_t max_patches,
-                                     const std::shared_ptr<nss::ResourceBudget>& budget, bool fine_tiles)
-    : fine_tiles_(fine_tiles),
-      max_bins_(bin_bytes(max_width, max_height, max_slices, fine_tiles) / (2 * sizeof(int))),
+                                     const std::shared_ptr<nss::ResourceBudget>& budget, bool fine_tiles,
+                                     bool micro_tiles)
+    : fine_tiles_(fine_tiles), micro_tiles_(micro_tiles),
+      max_bins_(bin_bytes(max_width, max_height, max_slices, fine_tiles, micro_tiles) / (2 * sizeof(int))),
       max_patches_(max_patches), max_entries_(max_patches * kTilesPerPatch) {
     if (max_bins_ >= 0x7fffffffu || max_entries_ > static_cast<std::size_t>(INT32_MAX)) {
         throw std::invalid_argument("nss_cuda: aggregation geometry too large");
@@ -374,16 +390,37 @@ OrderedAggregator::OrderedAggregator(int max_width, int max_height, int max_slic
 
 void OrderedAggregator::run(const float* values, const AggregatePatch* patches, int npatch, int block,
                             const AggregateTarget& target, cudaStream_t stream, bool accumulate,
-                            const float* pixel_den, int den_group) {
-    const int tile = tile_for(block, fine_tiles_);
+                            const float* pixel_den, int den_group, int row_first, int row_last) {
+    const int tile = tile_for(block, fine_tiles_, micro_tiles_);
     const int tiles_x = (target.width + tile - 1) / tile;
     const int tiles_y = (target.height + tile - 1) / tile;
     const std::size_t bins = static_cast<std::size_t>(tiles_x) * tiles_y * target.slices;
     if (static_cast<std::size_t>(npatch) > max_patches_ || bins > max_bins_ || block < 1 || block > kMaxBlock) {
         throw std::logic_error("nss_cuda: aggregation over capacity");
     }
-    NSS_CUDA_CHECK(cudaMemsetAsync(bin_begin_.get(), 0, bins * sizeof(int), stream));
-    NSS_CUDA_CHECK(cudaMemsetAsync(bin_end_.get(), 0, bins * sizeof(int), stream));
+    // With a band, only its tile rows are binned and run: a batch's patches
+    // cover a band of the frame, and the density test below is the band's.
+    // Pixels outside it keep their sums, so an overwrite clears the target
+    // first and then adds (the same sums: they start from zero either way).
+    const bool band = row_first > 0 || (row_last >= 0 && row_last < target.height - 1);
+    const int tile_y0 = band ? row_first / tile : 0;
+    const int tile_y1 = band ? std::min(row_last / tile, tiles_y - 1) : tiles_y - 1;
+    if (band && !accumulate) {
+        for (int slice = 0; slice < target.slices; ++slice) {
+            NSS_CUDA_CHECK(cudaMemset2DAsync(target.num + slice * target.slice_step, target.pitch * sizeof(float), 0,
+                                             target.width * sizeof(float), target.height, stream));
+            NSS_CUDA_CHECK(cudaMemset2DAsync(target.den + slice * target.slice_step, target.pitch * sizeof(float), 0,
+                                             target.width * sizeof(float), target.height, stream));
+        }
+        accumulate = true;
+    }
+    // Bins the kernels read: the band's rows of every slice (in between, rows
+    // no key reaches).
+    const std::size_t bin_first = static_cast<std::size_t>(tile_y0) * tiles_x;
+    const std::size_t bin_count =
+        (static_cast<std::size_t>(target.slices - 1) * tiles_y + tile_y1 + 1) * tiles_x - bin_first;
+    NSS_CUDA_CHECK(cudaMemsetAsync(bin_begin_.as<int>() + bin_first, 0, bin_count * sizeof(int), stream));
+    NSS_CUDA_CHECK(cudaMemsetAsync(bin_end_.as<int>() + bin_first, 0, bin_count * sizeof(int), stream));
     const int entries = npatch * kTilesPerPatch;
     if (npatch > 0) {
         const unsigned invalid = static_cast<unsigned>(bins);
@@ -399,25 +436,39 @@ void OrderedAggregator::run(const float* values, const AggregatePatch* patches, 
                                                                      bin_begin_.as<int>(), bin_end_.as<int>());
         NSS_CUDA_CHECK_LAUNCH();
     }
-    const dim3 grid(tiles_x, tiles_y, target.slices);
+    const int band_rows = tile_y1 - tile_y0 + 1;
+    const dim3 grid(tiles_x, band_rows, target.slices);
     // Same sums from either kernel; the stream kernel's larger blocks pay
     // where the tiles hold several chunks on average.
-    if (tile == kTinyTile && !pixel_den && static_cast<std::size_t>(entries) >= 4 * kStreamChunk * bins) {
-        tile_stream_kernel<<<grid, kStreamThreads, 0, stream>>>(values, patches, ids_out_.as<int>(),
-                                                                bin_begin_.as<int>(), bin_end_.as<int>(), block,
-                                                                tiles_x, tiles_y, target, accumulate);
+    const std::size_t run_bins = static_cast<std::size_t>(tiles_x) * band_rows * target.slices;
+    const bool dense = !pixel_den && tile <= kTinyTile &&
+                       static_cast<std::size_t>(entries) >=
+                           4 * static_cast<std::size_t>(tile == kMicroTile ? kStreamChunk<kMicroTile> : kStreamChunk<kTinyTile>) *
+                               run_bins;
+    if (dense && tile == kMicroTile) {
+        tile_stream_kernel<kMicroTile><<<grid, kStreamThreads<kMicroTile>, 0, stream>>>(
+            values, patches, ids_out_.as<int>(), bin_begin_.as<int>(), bin_end_.as<int>(), block, tiles_x, tiles_y,
+            tile_y0, target, accumulate);
+    } else if (dense) {
+        tile_stream_kernel<kTinyTile><<<grid, kStreamThreads<kTinyTile>, 0, stream>>>(
+            values, patches, ids_out_.as<int>(), bin_begin_.as<int>(), bin_end_.as<int>(), block, tiles_x, tiles_y,
+            tile_y0, target, accumulate);
+    } else if (tile == kMicroTile) {
+        tile_reduce_kernel<kMicroTile><<<grid, kTileBlock<kMicroTile>, 0, stream>>>(
+            values, patches, ids_out_.as<int>(), bin_begin_.as<int>(), bin_end_.as<int>(), block, tiles_x, tiles_y,
+            tile_y0, target, accumulate, pixel_den, den_group);
     } else if (tile == kTinyTile) {
         tile_reduce_kernel<kTinyTile><<<grid, kTileBlock<kTinyTile>, 0, stream>>>(
             values, patches, ids_out_.as<int>(), bin_begin_.as<int>(), bin_end_.as<int>(), block, tiles_x, tiles_y,
-            target, accumulate, pixel_den, den_group);
+            tile_y0, target, accumulate, pixel_den, den_group);
     } else if (tile == kSmallTile) {
         tile_reduce_kernel<kSmallTile><<<grid, kTileThreads, 0, stream>>>(
             values, patches, ids_out_.as<int>(), bin_begin_.as<int>(), bin_end_.as<int>(), block, tiles_x, tiles_y,
-            target, accumulate, pixel_den, den_group);
+            tile_y0, target, accumulate, pixel_den, den_group);
     } else {
         tile_reduce_kernel<kLargeTile><<<grid, kTileThreads, 0, stream>>>(
             values, patches, ids_out_.as<int>(), bin_begin_.as<int>(), bin_end_.as<int>(), block, tiles_x, tiles_y,
-            target, accumulate, pixel_den, den_group);
+            tile_y0, target, accumulate, pixel_den, den_group);
     }
     NSS_CUDA_CHECK_LAUNCH();
 }

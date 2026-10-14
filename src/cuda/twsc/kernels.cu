@@ -68,15 +68,31 @@ __device__ __forceinline__ void ordered_dots(int n, Real* sum, Common common, Ea
     }
 }
 
+// The elements e = outer * inners + inner of an outers x inners array from
+// e = threadIdx.x by steps of blockDim.x: body(outer, inner). The pair is
+// advanced by counters instead of a division per element.
+template <class Body>
+__device__ __forceinline__ void for_elements(int outers, int inners, Body body) {
+    int outer = threadIdx.x / inners, inner = threadIdx.x % inners;
+    const int outer_step = blockDim.x / inners, inner_step = blockDim.x % inners;
+    while (outer < outers) {
+        body(outer, inner);
+        outer += outer_step;
+        inner += inner_step;
+        if (inner >= inners) inner -= inners, ++outer;
+    }
+}
+
 // The elements (outer, inner) of an outers x inners array, a thread taking
 // runs of up to kWays inner neighbours: body(outer, first inner, count).
 template <class Body>
 __device__ __forceinline__ void for_runs(int outers, int inners, Body body) {
     const int runs = (inners + kWays - 1) / kWays;
-    for (int e = threadIdx.x; e < outers * runs; e += blockDim.x) {
-        const int first = e % runs * kWays;
-        body(e / runs, first, min(kWays, inners - first));
-    }
+    if (runs == 0) return;
+    for_elements(outers, runs, [&](int outer, int run) {
+        const int first = run * kWays;
+        body(outer, first, min(kWays, inners - first));
+    });
 }
 
 // One block per group; every step is a parallel loop over matrix elements
@@ -315,8 +331,8 @@ __global__ void __launch_bounds__(kThreads, 768 / kThreads) twsc_block_kernel(Tw
             __syncthreads();
         }
         float primal = 0.f, dc = 0.f, dz = 0.f;
-        for (int e = lane; e < r * n; e += lanes) {
-            const int k = e / n, j = e % n;
+        for_elements(r, n, [&](int k, int j) {
+            const int e = k * n + j;
             Real value, y = dual[e];
             if (uniform) {
                 if (iteration > 0) dual[e] = y += before * (coef[e] - aux[e]);
@@ -334,7 +350,7 @@ __global__ void __launch_bounds__(kThreads, 768 / kThreads) twsc_block_kernel(Tw
             dz += zchange * zchange;
             coef[e] = value;
             aux[e] = z;
-        }
+        });
         primal = warp_sum(primal);
         dc = warp_sum(dc);
         dz = warp_sum(dz);
@@ -368,7 +384,7 @@ __global__ void __launch_bounds__(kThreads, 768 / kThreads) twsc_block_kernel(Tw
     // group, U (diag(s') C) for a wide one.
     Real* mix = rhs;
     if (uniform) {
-        for (int e = lane; e < r * n; e += lanes) coef[e] *= tall ? scale[e / n] : spectrum[e / n];
+        for_elements(r, n, [&](int k, int j) { coef[k * n + j] *= tall ? scale[k] : spectrum[k]; });
         __syncthreads();
         for_runs(tall ? n : 0, n, [=](int j, int l, int count) {
             Real sum[kWays];

@@ -45,11 +45,14 @@ public:
     static constexpr int kTile = 32;
     static constexpr int kMaxBlock = kTile + 1;
     // fine_tiles: 8x8 tiles for blocks up to 8 (fewer entries tested per
-    // pixel, four times the bins); otherwise 16x16 up to 16. bin_bytes() is
-    // what the bin arrays of a given geometry take, for the caller's plan.
+    // pixel, four times the bins); otherwise 16x16 up to 16. micro_tiles
+    // (with fine_tiles): 4x4 tiles for blocks up to 4. bin_bytes() is what
+    // the bin arrays of a given geometry take, for the caller's plan.
     OrderedAggregator(int max_width, int max_height, int max_slices, std::size_t max_patches,
-                      const std::shared_ptr<nss::ResourceBudget>& budget, bool fine_tiles = false);
-    static std::size_t bin_bytes(int max_width, int max_height, int max_slices, bool fine_tiles);
+                      const std::shared_ptr<nss::ResourceBudget>& budget, bool fine_tiles = false,
+                      bool micro_tiles = false);
+    static std::size_t bin_bytes(int max_width, int max_height, int max_slices, bool fine_tiles,
+                                 bool micro_tiles = false);
     // values: npatch * block * block floats, patch-major, row-major inside a
     // patch. accumulate=false overwrites every pixel of every slice of target;
     // accumulate=true adds this batch after the target's current sums, so
@@ -57,13 +60,17 @@ public:
     // With pixel_den, den += pixel_den[(patch id / den_group) * block^2 + pixel]
     // instead of the patch weight (per-pixel counts shared by the den_group
     // patches of one group, as NLH's pixel matrices).
+    // [row_first, row_last]: pixel rows that every patch lies within, when the
+    // caller knows them (row_last < 0: the whole target). Only the tiles of
+    // those rows are run; the sums are the same.
     void run(const float* values, const AggregatePatch* patches, int npatch, int block, const AggregateTarget& target,
-             cudaStream_t stream, bool accumulate = false, const float* pixel_den = nullptr, int den_group = 1);
+             cudaStream_t stream, bool accumulate = false, const float* pixel_den = nullptr, int den_group = 1,
+             int row_first = 0, int row_last = -1);
     // Device bytes per patch of capacity (sort keys/ids, CUB alternate buffers).
     static constexpr std::size_t kBytesPerPatch = 4 * (4 * sizeof(unsigned) + 4 * sizeof(int));
 
 private:
-    bool fine_tiles_;
+    bool fine_tiles_, micro_tiles_;
     std::size_t max_bins_, max_patches_, max_entries_;
     DeviceBuffer keys_in_, keys_out_, ids_in_, ids_out_, bin_begin_, bin_end_, sort_temp_;
     std::size_t sort_temp_bytes_ = 0;

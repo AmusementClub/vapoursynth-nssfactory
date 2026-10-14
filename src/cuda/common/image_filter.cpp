@@ -58,7 +58,10 @@ constexpr std::size_t kNlhArenaBytes = 96u << 20;
 // one stream (1080p TWSC, block_step 8 / group 8 / 2 rounds on an RTX 5080:
 // 87 fps with one set, 97 with two, 96 with three).
 constexpr std::size_t kFramesInFlight = 2;
-// Aggregation capacity per arena byte (patches); small groups are capped by it.
+// Aggregation capacity per arena byte (patches); small groups are capped by
+// it. TWSC sizes it to the patches its arena holds when that is more: at
+// block 4 / group 32, 9300 instead of 6144 groups a batch, about 5% at 1080p
+// for 10 MiB of sort arrays (RTX 5080, 2026-10-14).
 constexpr std::size_t kArenaBytesPerPatch = 1024;
 
 struct Shape {
@@ -566,12 +569,19 @@ void run_twsc(Frame& f) {
                         twsc_filter_groups(a, s.stream);
                     }
                     NSS_CUDA_RANGE("twsc.aggregate");
+                    // The rows a spatial batch's patches lie within: the windows of its first and last
+                    // reference rows (clipped, not shifted, at the edges). Predictive matches may drift.
+                    int row_first = 0, row_last = -1;
+                    if (!(o.radius > 0 && f.count > 1)) {
+                        row_first = std::max(grid.y(begin) - geometry.lo(), 0);
+                        row_last = std::min(grid.y(begin + n - 1) + geometry.hi(), height - o.block) + o.block - 1;
+                    }
                     const std::size_t channel_values = static_cast<std::size_t>(n) * o.group * o.block * o.block;
                     for (int c = 0; c < nch; ++c) {
                         const AggregateTarget target{f.accum(s.num, channels[c]), f.accum(s.den, channels[c]), width,
                                                      height, width, f.count, d.plane_floats};
                         s.aggregator->run(a.values + c * channel_values, a.patches, n * o.group, o.block, target, s.stream,
-                                          written);
+                                          written, nullptr, 1, row_first, row_last);
                     }
                     written = true;
                 }
@@ -867,6 +877,10 @@ void VS_CC freeFilter(void* instance, VSCore*, const VSAPI*) {
     delete d;
 }
 
+// TWSC's 4x4 patches on 4x4 aggregation tiles: a pixel tests about 49
+// entries a 16-patch hit instead of 121 on 8x8 tiles.
+bool twsc_micro_tiles(const ImageData& d) { return d.model == nss::Model::TWSC && d.twsc.block <= 4; }
+
 std::unique_ptr<Slot> make_slot(const ImageData& d) {
     auto slot = std::make_unique<Slot>();
     const std::size_t window = static_cast<std::size_t>(d.max_frames) * d.plane_floats * sizeof(float);
@@ -885,7 +899,8 @@ std::unique_ptr<Slot> make_slot(const ImageData& d) {
     slot->stalled = DeviceBuffer(sizeof(int), d.budget);
     if (d.model == nss::Model::TWSC) {
         slot->aggregator =
-            std::make_unique<OrderedAggregator>(d.width[0], d.height[0], d.max_frames, d.max_patches, d.budget, true);
+            std::make_unique<OrderedAggregator>(d.width[0], d.height[0], d.max_frames, d.max_patches, d.budget, true,
+                                                twsc_micro_tiles(d));
     } else {
         const std::size_t cells = static_cast<std::size_t>(d.max_frames) * d.plane_floats;
         slot->fixed_num = DeviceBuffer(cells * d.planes * sizeof(unsigned long long), d.budget);
@@ -966,10 +981,16 @@ void create(const VSMap* in, VSMap* out, VSCore* core, const VSAPI* api, nss::Mo
     }
     const std::size_t arena_cap = twsc ? kArenaBytes : kNlhArenaBytes;
     // Arena plus, for TWSC, its aggregation buffers (sort arrays and the tile bins).
-    const std::size_t bins = twsc ? OrderedAggregator::bin_bytes(d.width[0], d.height[0], d.max_frames, true) : 0;
+    const std::size_t bins =
+        twsc ? OrderedAggregator::bin_bytes(d.width[0], d.height[0], d.max_frames, true, twsc_micro_tiles(d)) : 0;
     const std::size_t sort_bytes = twsc ? OrderedAggregator::kBytesPerPatch : 0;
+    const std::size_t bytes_per_patch =
+        twsc ? std::clamp<std::size_t>(
+                   twsc_group_bytes(d.twsc.block, d.twsc.group, d.split ? 1 : d.planes) / d.twsc.group, 1,
+                   kArenaBytesPerPatch)
+             : kArenaBytesPerPatch;
     const auto slot_bytes = [&](std::size_t arena) {
-        return fixed + arena + arena / kArenaBytesPerPatch * sort_bytes + bins + (1u << 16);
+        return fixed + arena + arena / bytes_per_patch * sort_bytes + bins + (1u << 16);
     };
     const std::size_t limit = d.budget ? d.budget->snapshot().limit : SIZE_MAX;
     if (!d.backend.streams_explicit) {
@@ -985,10 +1006,10 @@ void create(const VSMap* in, VSMap* out, VSCore* core, const VSAPI* api, nss::Mo
     d.arena_bytes = arena_cap;
     if (share != SIZE_MAX && slot_bytes(arena_cap) > share) {
         // slot_bytes is affine in the arena: solve for the largest that fits.
-        const double per_byte = 1.0 + static_cast<double>(sort_bytes) / kArenaBytesPerPatch;
+        const double per_byte = 1.0 + static_cast<double>(sort_bytes) / bytes_per_patch;
         d.arena_bytes = std::max(one_group, static_cast<std::size_t>((share - slot_bytes(0)) / per_byte));
     }
-    d.max_patches = std::max<std::size_t>(d.arena_bytes / kArenaBytesPerPatch, max_group);
+    d.max_patches = std::max<std::size_t>(d.arena_bytes / bytes_per_patch, max_group);
     // A staging set and the output frame it feeds per frame in flight. One
     // per stream is in `fixed`; more keep a stream busy while other threads
     // copy, where the limit leaves room beside the full arena.

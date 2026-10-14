@@ -113,12 +113,12 @@ times the groups, so `cfast=0` is the faster call there.
 On the device the transform and its inverse are one kernel each on the
 uploaded planes, and the three planes run one after the other on the
 instance's stream. RGB 1080p on an RTX 5080, `sigma=3`, `block_size=4,
-block_step=4, group_size=32, search_window=20`: 9.8 fps at `iters=2` and 6.6
-at `iters=3` with the fast path, 6.1 and 4.1 without. The joint filter needs
-`group_size=64` to reach the same quality at that block size (2.4 and 1.65
-fps). The default call on a 128x128 RGB frame takes 1.6 s with the fast path
-and 2.3 s without; `block_step=8, group_size=8, iters=2` at 1080p runs at 33
-fps with it and 36 without (see "When it pays").
+block_step=4, group_size=32, search_window=20`: 10.6 fps at `iters=2` and 7.2
+at `iters=3` with the fast path, 6.4 and 4.3 without (gray: 31 and 22 fps).
+The joint filter needs `group_size=64` to reach the same quality at that block
+size (2.6 and 1.8 fps). The default call on a 128x128 RGB frame takes 1.6 s
+with the fast path and 2.3 s without; `block_step=8, group_size=8, iters=2` at
+1080p runs at 33 fps with it and 36 without (see "When it pays").
 
 ## Device parameters
 
