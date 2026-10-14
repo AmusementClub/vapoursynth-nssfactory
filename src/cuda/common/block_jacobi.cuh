@@ -144,4 +144,147 @@ __device__ void block_jacobi(Real* g, Real* v, int k, Real* cs, int* flag, bool 
     block_jacobi(g, v, k, cs, flag, identity, static_cast<int>(threadIdx.x), static_cast<int>(blockDim.x));
 }
 
+// Cyclic Jacobi for a k x k matrix, k <= 16, on one warp (blockDim.x == 32),
+// in registers. The pairs of a round are fixed, (2j, 2j + 1), and the indices
+// move between rounds as in the circle method (0 stays, the other 15 step
+// along one ring: 1 -> 2 -> 4 -> ... -> 14 -> 15 -> 13 -> ... -> 3 -> 1), so
+// every pair meets once in 15 rounds and the indices are back in place after
+// each sweep. Lane (ja, jb) = (lane % 8, lane / 8) holds the rows of pair ja
+// at the columns of pairs jb and jb + 4, of g and of v; a move is a shuffle
+// along the lane's ja (rows of g) and jb (columns of g and v). The matrix is
+// padded with zeros to 16, which no rotation touches.
+//
+// a: symmetric k x k (row-major); on return its eigenvectors, one per row.
+// values: the k eigenvalues, in no order. Real is float (__fdividef, the
+// tolerances).
+constexpr int kWarpEigen = 16;
+constexpr float kWarpEigenSettled = 1e-8f;  // apq^2 / |app aqq| after which one sweep converges
+
+// The columns of pairs (jb, jb + 4) of one row move one step along the ring:
+// column 2P takes 2P - 2 (P >= 2) or 1 (P = 1), 0 stays; 2P + 1 takes 2P + 3
+// (P <= 6), 15 takes 14. u[b]: column 2 (jb + 4 (b / 2)) + b % 2.
+template <class Real>
+__device__ __forceinline__ void warp_eigen_move_columns(Real* u, int jb, int down, int up) {
+    const unsigned all = 0xffffffffu;
+    const Real even0 = __shfl_sync(all, jb == 0 ? u[1] : u[0], down);
+    const Real even1 = __shfl_sync(all, jb == 3 ? u[0] : u[2], down);
+    const Real odd0 = __shfl_sync(all, jb == 0 ? u[3] : u[1], up);
+    const Real odd1 = __shfl_sync(all, u[3], up);
+    u[0] = jb == 0 ? u[0] : even0;
+    u[1] = odd0;
+    u[3] = jb == 3 ? u[2] : odd1;
+    u[2] = even1;
+}
+
+template <class Real>
+__device__ void warp_eigen(Real* a, int k, Real* values) {
+    const unsigned all = 0xffffffffu;
+    const int lane = threadIdx.x;
+    if (k < 2) {
+        if (lane < k) values[0] = a[0], a[0] = Real(1);
+        __syncwarp();
+        return;
+    }
+    const int ja = lane & 7, jb = lane >> 3;
+    const int r0 = 2 * ja;
+    // Cell (dr, b): row r0 + dr, column col(b).
+    const auto col = [=](int b) { return 2 * (jb + 4 * (b >> 1)) + (b & 1); };
+    Real x[2][4], y[2][4];
+    Real trace = 0;
+    for (int i = 0; i < k; ++i) trace += fabs(a[i * k + i]);  // identical on every lane
+#pragma unroll
+    for (int dr = 0; dr < 2; ++dr) {
+#pragma unroll
+        for (int b = 0; b < 4; ++b) {
+            const int r = r0 + dr, c = col(b);
+            x[dr][b] = r < k && c < k ? a[r * k + c] : Real(0);
+            y[dr][b] = r == c ? Real(1) : Real(0);
+        }
+    }
+    __syncwarp();
+    const Real tolerance = sizeof(Real) == 8 ? Real(1e-15) : Real(1e-7);
+    const Real floor = tolerance * trace / k;
+    // The diagonal block of pair j is on lane j + 8 (j & 3), in its block j >> 2.
+    const bool diagonal = jb == (ja & 3);
+    const int slot = 2 * (ja >> 2);
+    const int from_a = ja + 8 * (ja & 3), from_b = 9 * jb, from_d = 9 * jb + 4;
+    const int down = ja + 8 * ((jb + 3) & 3), up = ja + 8 * ((jb + 1) & 3);  // along jb
+    const int before = (lane & ~7) | ((ja + 7) & 7), after = (lane & ~7) | ((ja + 1) & 7);  // along ja
+    for (int sweep = 0; sweep < 30; ++sweep) {
+        bool large = false;
+        for (int round = 0; round < kWarpEigen - 1; ++round) {
+            Real c = 1, sn = 0;
+            if (diagonal) {
+                // The rotation that clears apq: t = tan, from x = aqq - app and y = 2 apq
+                // (t = sign(x) y / (|x| + hypot(x, y))); c by a reciprocal square root
+                // with one Newton step, so that c^2 + s^2 = 1 to rounding.
+                const Real app = x[0][slot], apq = x[0][slot + 1], aqq = x[1][slot + 1];
+                if (apq * apq > tolerance * tolerance * fabs(app * aqq) && fabs(apq) > floor) {
+                    const Real dx = aqq - app, dy = Real(2) * apq;
+                    const Real square = fma(dx, dx, dy * dy);
+                    const Real hypot = square * rsqrt(square);
+                    const Real t = __fdividef(copysign(dy, dx) * copysign(Real(1), dy), fabs(dx) + hypot);
+                    const Real one = fma(t, t, Real(1));
+                    Real inverse = rsqrt(one);
+                    inverse = inverse * (Real(1.5) - Real(0.5) * one * inverse * inverse);
+                    c = inverse;
+                    sn = t * inverse;
+                    large = large || apq * apq > kWarpEigenSettled * fabs(app * aqq);
+                }
+            }
+            const Real ca = __shfl_sync(all, c, from_a), sa = __shfl_sync(all, sn, from_a);
+            const Real cb = __shfl_sync(all, c, from_b), sb = __shfl_sync(all, sn, from_b);
+            const Real cd = __shfl_sync(all, c, from_d), sd = __shfl_sync(all, sn, from_d);
+            // g: columns, then rows; v: columns.
+#pragma unroll
+            for (int dr = 0; dr < 2; ++dr) {
+                Real p = x[dr][0], q = x[dr][1];
+                x[dr][0] = cb * p - sb * q, x[dr][1] = sb * p + cb * q;
+                p = x[dr][2], q = x[dr][3];
+                x[dr][2] = cd * p - sd * q, x[dr][3] = sd * p + cd * q;
+                p = y[dr][0], q = y[dr][1];
+                y[dr][0] = cb * p - sb * q, y[dr][1] = sb * p + cb * q;
+                p = y[dr][2], q = y[dr][3];
+                y[dr][2] = cd * p - sd * q, y[dr][3] = sd * p + cd * q;
+            }
+#pragma unroll
+            for (int b = 0; b < 4; ++b) {
+                const Real p = x[0][b], q = x[1][b];
+                x[0][b] = ca * p - sa * q, x[1][b] = sa * p + ca * q;
+            }
+            // The move: columns of g and v, then rows of g (row 2P takes
+            // 2P - 2 or 1, 0 stays; 2P + 1 takes 2P + 3, 15 takes 14).
+#pragma unroll
+            for (int dr = 0; dr < 2; ++dr) {
+                warp_eigen_move_columns(x[dr], jb, down, up);
+                warp_eigen_move_columns(y[dr], jb, down, up);
+            }
+#pragma unroll
+            for (int b = 0; b < 4; ++b) {
+                const Real even = __shfl_sync(all, ja == 0 ? x[1][b] : x[0][b], before);
+                const Real odd = __shfl_sync(all, x[1][b], after);
+                const Real stay = x[0][b];
+                x[0][b] = ja == 0 ? stay : even;
+                x[1][b] = ja == 7 ? stay : odd;
+            }
+        }
+        // Cyclic Jacobi converges quadratically: after a sweep whose
+        // rotations were all small, the next would be below the tolerance.
+        if (!__any_sync(all, large)) break;
+    }
+    if (diagonal) {
+        if (r0 < k) values[r0] = x[0][slot];
+        if (r0 + 1 < k) values[r0 + 1] = x[1][slot + 1];
+    }
+#pragma unroll
+    for (int dr = 0; dr < 2; ++dr) {
+#pragma unroll
+        for (int b = 0; b < 4; ++b) {
+            const int r = r0 + dr, c = col(b);
+            if (r < k && c < k) a[c * k + r] = y[dr][b];
+        }
+    }
+    __syncwarp();
+}
+
 }  // namespace nss_cuda

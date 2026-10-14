@@ -49,6 +49,7 @@ struct TwscGroupArgs {
     int* stalled;                   // device counter: groups that reached the iteration limit
     bool shared_matrices = false;   // set by twsc_filter_groups
     bool shared_values = false;     // set by twsc_filter_groups
+    long long work_reals = 0;       // twsc_work_reals(m, group); set by twsc_filter_groups
 };
 
 // Reals of solver workspace per group.

@@ -113,10 +113,10 @@ times the groups, so `cfast=0` is the faster call there.
 On the device the transform and its inverse are one kernel each on the
 uploaded planes, and the three planes run one after the other on the
 instance's stream. RGB 1080p on an RTX 5080, `sigma=3`, `block_size=4,
-block_step=4, group_size=32, search_window=20`: 10.6 fps at `iters=2` and 7.2
-at `iters=3` with the fast path, 6.4 and 4.3 without (gray: 31 and 22 fps).
+block_step=4, group_size=32, search_window=20`: 13.1 fps at `iters=2` and 9.0
+at `iters=3` with the fast path, 6.9 and 4.6 without (gray: 38 and 27 fps).
 The joint filter needs `group_size=64` to reach the same quality at that block
-size (2.6 and 1.8 fps). The default call on a 128x128 RGB frame takes 1.6 s
+size (2.7 and 1.9 fps). The default call on a 128x128 RGB frame takes 1.6 s
 with the fast path and 2.3 s without; `block_step=8, group_size=8, iters=2` at
 1080p runs at 33 fps with it and 36 without (see "When it pays").
 
@@ -143,8 +143,9 @@ How the streams, the memory limit and the rolling output behave across filters i
   `nss_cuda.VAggregate` inside the filter.
 - **Numerics.** The dictionary comes from an FP32 eigendecomposition of the
   Gram matrix of the smaller group side (Householder tridiagonalization and
-  implicit QL), and the solver runs in FP32 (FP64 was measured and gave the
-  same agreement with the CPU).
+  implicit QL; cyclic Jacobi on one warp when the matrix is 12 x 12 to
+  16 x 16, as at `block_size=4`), and the solver runs in FP32 (FP64 was
+  measured and gave the same agreement with the CPU).
   - The output is not bit-identical to the CPU, but is inside the 60 dB gate
     (93–143 dB on the frozen references, 142 dB on the fast color path) and
     run-to-run identical.
