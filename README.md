@@ -26,7 +26,7 @@ core.nss.WNNM(clip clip[, float[] sigma = 3.0, int block_size = 8, int block_ste
 
 core.nss.MCWNNM(clip clip[, float[] sigma = 3.0, int block_size = 8, int block_step = 8, int group_size = 8, int bm_range = 7, int radius = 0, int ps_num = 2, int ps_range = 4, int residual = 1, int adaptive_aggregation = 0, clip rclip = None, int admm_iter = 10, float rho = 3.0, float mu = 1.001, int iters = 2, float delta = 0.1])
 
-core.nss.TWSC(clip clip[, float[] sigma = 3.0, int estimate_sigma = 0, int block_size = 8, int block_step = 1, int group_size = 90, int search_window = 60, int bm_range, int radius = 0, int ps_num = 2, int ps_range = 4, float lambda2 = 1.0, clip rclip = None, int iters = 12, float delta = 0.0, int admm_iter = 10, float rho = 0.5, float mu = 1.1, float tol = 1e-6, int cfast = 1, int memory_limit_mb])
+core.nss.TWSC(clip clip[, float[] sigma = 3.0, int estimate_sigma = 0, int block_size = 8, int block_step = 1, int group_size = 90, int search_window = 60, int bm_range, int radius = 0, int ps_num = 2, int ps_range = 4, float lambda2 = 1.0, clip rclip = None, int iters = 12 (4 with cfast), float delta = 0.0, int admm_iter = 10, float rho = 0.5, float mu = 1.1, float tol = 1e-6, int cfast = 1, int memory_limit_mb])
 
 core.nss.NLH(clip clip[, float[] sigma, string noise_model = "auto", int[] block_size, int[] block_step, int[] group_size, int[] search_window, int bm_range, int radius = 0, int ps_num = 2, int ps_range = 4, int[] q, clip rclip = None, int basic_iters, float lambda_basic, float hard_strength, int wiener_iters, float wiener_sigma_scale, int memory_limit_mb])
 
@@ -54,8 +54,8 @@ an 8-bit noise standard deviation. TWSC uses one balanced default
 levels; sigma controls denoising strength rather than changing the compute
 geometry. With `cfast=1` (the default) an RGB clip whose channels share one
 given sigma is filtered as three opponent-color planes instead of as stacked
-three-channel patches (spatial frames only; `cfast=0` keeps the joint filter,
-see `docs/api/twsc.md`). NLH estimates noise when `sigma` is omitted, and any other omitted
+three-channel patches, with 4 rounds unless `iters` is given (spatial frames
+only; `cfast=0` keeps the joint filter, see `docs/api/twsc.md`). NLH estimates noise when `sigma` is omitted, and any other omitted
 field falls back to one measured preset (the same for every format and
 noise level); explicit fields override only that field. Explicit `sigma=0` preserves that
 input plane. `bm_range=r` explicitly means `search_window=2*r+1`; supplying

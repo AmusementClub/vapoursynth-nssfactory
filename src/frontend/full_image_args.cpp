@@ -135,8 +135,14 @@ FullImageParams parse_full_image(const VSAPI* api, const VSMap* in, const VSVide
     if (rclip_vi && !same_video(vi, *rclip_vi)) fail_plain(ns, "rclip must match clip");
     if (present(api, in, "bm_range") && present(api, in, "search_window"))
         fail_plain(ns, "bm_range and search_window are mutually exclusive");
-    if (model == Model::TWSC) parse_twsc(api, in, sigma_given, d, ns);
-    else parse_nlh(api, in, vi, sigma_given, d, ns);
+    if (model == Model::TWSC) {
+        parse_twsc(api, in, sigma_given, d, ns);
+        if (!present(api, in, "iters") &&
+            twsc_color_split(d.twsc, vi.format.colorFamily == cfRGB, d.estimate, d.sigma_units.data()))
+            d.twsc.iterations = kTwscDefaultCfastIters;
+    } else {
+        parse_nlh(api, in, vi, sigma_given, d, ns);
+    }
     return d;
 }
 

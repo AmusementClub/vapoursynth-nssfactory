@@ -97,7 +97,7 @@ class Suite:
                 rows=list(pool.map(lambda n: (n,values(node,n)),order))
             captured={n:row[0] for n,row in rows}
             for n,(planes,props) in rows:
-                assert props['_NSSModelVersion']==(5 if name=='TWSC' else 6)
+                assert props['_NSSModelVersion']==6
                 for p,a in enumerate(planes):
                     assert a.shape==original[n][p].shape and np.isfinite(a).all()
             if expected is None: expected=captured
@@ -314,6 +314,14 @@ class Suite:
         for extra in off:
             _,props=values(core.nss.TWSC(source,**args,**extra),1)
             assert props['_NSSCFast']==0,(extra,props)
+        # Without iters the fast path takes 4 rounds and the joint filter 12.
+        quick={k:v for k,v in args.items() if k!='iters'}
+        for extra,rounds in ((dict(sigma=4),4),(dict(sigma=4,cfast=0),12),(dict(sigma=4,iters=7),7),
+                             (dict(sigma=[4,4,3]),12),(dict(estimate_sigma=1),12),(dict(sigma=4,radius=1,ps_range=1),12)):
+            _,props=values(core.nss.TWSC(source,**quick,**extra),1)
+            assert props['_NSSIterations']==rounds,(extra,props['_NSSIterations'])
+        _,props=values(core.nss.TWSC(make_clip(core,vs.GRAYS,frames=3,width=24,height=20)[0],sigma=4,**quick),1)
+        assert props['_NSSIterations']==12,props['_NSSIterations']
         for fmt in (vs.GRAYS,vs.YUV444PS,vs.YUV420PS):
             other,_=make_clip(core,fmt,frames=1,width=24,height=20)
             on,props=values(core.nss.TWSC(other,sigma=4,**args),0);none,_=values(core.nss.TWSC(other,sigma=4,cfast=0,**args),0)
