@@ -34,7 +34,7 @@ class HarnessTests(unittest.TestCase):
                          platform=platform, hashlib=hashlib, itertools=itertools, traceback=traceback, __file__=str(source))
         exec(compile(ast.Module(body=[suite], type_ignores=[]), str(source), 'exec'), namespace)
         cls = namespace['Suite']
-        for method in ('parameters', 'twsc_fixed_geometry', 'invalid', 'extended', 'oracle', 'matrix', 'zero'):
+        for method in ('parameters', 'twsc_fixed_geometry', 'cfast', 'invalid', 'extended', 'oracle', 'matrix', 'zero'):
             setattr(cls, method, lambda self, *args: None)
         with tempfile.TemporaryDirectory() as root, redirect_stdout(io.StringIO()) as output, patch.dict(os.environ, {}, clear=True):
             root = Path(root)
@@ -60,7 +60,7 @@ class HarnessTests(unittest.TestCase):
             self.assertNotEqual(records[0]['invocation_id'], records[1]['invocation_id'])
             self.assertEqual(records[1]['summary_path'], str(second.out / 'summary.json'))
             self.assertFalse(records[1]['passed'])
-            self.assertEqual(len(json.loads((second.out / 'summary.json').read_text())['cases']), 84)
+            self.assertEqual(len(json.loads((second.out / 'summary.json').read_text())['cases']), 85)
 
     def test_file_output_rejected(self):
         with tempfile.TemporaryDirectory() as root:
