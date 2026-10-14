@@ -1,23 +1,341 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // Symmetric eigendecomposition for one thread block: Householder
-// tridiagonalization, the accumulated reflectors, then implicit QL on the
-// tridiagonal matrix. About a quarter of the instructions of
-// block_jacobi.cuh at k = 64 (which took 10.8 sweeps a matrix there). The QL
-// rotations are a serial chain on thread 0 (the other threads apply them to
-// the vectors one iteration behind), so a block is bound by that chain and
-// an SM should hold as many blocks as its shared memory allows. Every sum
-// has a fixed order: the result does not depend on scheduling.
+// tridiagonalization, then either the accumulated reflectors and implicit QL
+// on the tridiagonal matrix, or divide and conquer on it with the reflectors
+// applied to its vectors (block_eigen_dc, given scratch). QL is about a
+// quarter of the instructions of block_jacobi.cuh at k = 64 (which took 10.8
+// sweeps a matrix there), but its rotations are a serial chain on thread 0
+// (the other threads apply them one iteration behind): a quarter of a 64 x 64
+// block's samples were the other warps waiting for it. Divide and conquer has
+// no such chain. Every sum has a fixed order: the result does not depend on
+// scheduling.
 #pragma once
 
 #include <cuda_runtime.h>
 
+#include "cuda/common/block_jacobi.cuh"
+
 namespace nss_cuda {
+
+// 1 / x to about two units in the last place (the secular equation).
+template <class Real>
+__device__ __forceinline__ Real block_eigen_rcp(Real x) {
+    if constexpr (sizeof(Real) == 4) return __fdividef(1.0f, x);
+    else return Real(1) / x;
+}
+
+// Reals of the scratch of block_eigen_dc (any memory, read by every thread).
+__host__ __device__ constexpr int block_eigen_dc_reals(int k) { return 3 * k * k + 20 * k + 8; }
+
+// Divide and conquer on the symmetric tridiagonal matrix (d, e) of order k
+// (Cuppen; the deflation of LAPACK's dlaed2, the vectors of Gu and
+// Eisenstat): the matrix is torn into leaves of at most 16 by rank-one
+// pieces, each leaf is solved by warp_eigen on one warp, and the nodes of a
+// level are merged together up the tree. The vectors in the tridiagonal
+// basis are kept as rows of z (k x k); at the end the reflectors take them to
+// the eigenvectors, one per row of a. d becomes the eigenvalues, in no order.
+// The block has at least k threads, a multiple of 32; scratch:
+// block_eigen_dc_reals(k) reals of any memory.
+template <class Real>
+__device__ void block_eigen_dc(Real* a, const Real* reflectors, int k, Real* d, const Real* e, Real* scratch) {
+    const int lane = threadIdx.x, lanes = blockDim.x, warp = lane >> 5, warps = lanes >> 5;
+    const Real eps = sizeof(Real) == 8 ? Real(2.2e-16) : Real(1.2e-7);
+    Real* z = scratch;
+    Real* u = z + k * k;      // the secular vectors of a merge (K x K); first the leaves' matrices
+    Real* tmp = u + k * k;    // a merge's new rows (n x n)
+    Real* lam = tmp + k * k;  // eigenvalues of the rows of z
+    Real* ds = lam + k;       // sorted values, weights and rows of a merge
+    Real* zs = ds + k;
+    Real* kd = zs + k;  // kept: values, weights, rows
+    Real* kz = kd + k;
+    Real* dd = kz + k;  // deflated: values
+    Real* tau = dd + k;
+    Real* zh = tau + k;
+    Real* inv = zh + k;
+    Real* rc = inv + k;  // deflating rotations: c, s
+    Real* newlam = rc + 2 * k;
+    int* src = reinterpret_cast<int*>(newlam + k);
+    int* ksrc = src + k;
+    int* dsrc = ksrc + k;
+    int* org = dsrc + k;
+    int* rr = org + k;  // deflating rotations: rows
+    int* counts = rr + 2 * k;
+    int leaves = 1;
+    while ((k + leaves - 1) / leaves > kWarpEigen) leaves *= 2;
+    const auto bound = [=](int p) { return p * k / leaves; };
+    __syncthreads();
+    // The tears: T = diag(T1 - |b| e_last e_last', T2 - |b| e_0 e_0') + |b| v v'.
+    for (int p = 1 + lane; p < leaves; p += lanes) {
+        const int s = bound(p);
+        const Real b = fabs(e[s - 1]);
+        d[s - 1] -= b;
+        d[s] -= b;
+    }
+    for (int i = lane; i < k * k; i += lanes) z[i] = 0;
+    __syncthreads();
+    for (int p = warp; p < leaves; p += warps) {
+        const int lo = bound(p), n = bound(p + 1) - lo, l = lane & 31;
+        Real* g = u + lo * kWarpEigen;
+        for (int i = l; i < n * n; i += 32) {
+            const int r = i / n, c = i % n;
+            g[i] = r == c ? d[lo + r] : c == r + 1 ? e[lo + r] : r == c + 1 ? e[lo + c] : Real(0);
+        }
+        __syncwarp();
+        warp_eigen(g, n, lam + lo);
+        for (int i = l; i < n * n; i += 32) z[(lo + i / n) * k + lo + i % n] = g[i];
+    }
+    __syncthreads();
+    for (int width = 1; width < leaves; width *= 2) {
+        // The nodes of a level are merged together: node p spans leaves
+        // [2 p width, 2 (p + 1) width), its arrays are at its first row.
+        const int nodes = leaves / (2 * width);
+        const auto node_of = [=](int i) {
+            int p = 0;
+            while (bound((p + 1) * 2 * width) <= i) ++p;
+            return p;
+        };
+        // z' v in the children's vectors, over sqrt 2 (|v| = sqrt 2), by value.
+        for (int j = lane; j < k; j += lanes) {
+            const int p = node_of(j), lo = bound(p * 2 * width), mid = bound((2 * p + 1) * width);
+            const int n = bound((p + 1) * 2 * width) - lo, t = j - lo;
+            const Real beta = e[mid - 1];
+            const Real w = (j < mid ? z[j * k + mid - 1] : copysign(Real(1), beta) * z[j * k + mid]) * Real(0.70710678118654752);
+            const Real mine = lam[j];
+            int rank = 0;
+            for (int q = 0; q < n; ++q) {
+                const Real other = lam[lo + q];
+                rank += other < mine || (other == mine && q < t);
+            }
+            ds[lo + rank] = mine;
+            zs[lo + rank] = w;
+            src[lo + rank] = j;
+        }
+        __syncthreads();
+        // Deflation, one thread a node (on different warps when there are).
+        const int stride = nodes * 32 <= lanes ? 32 : 1;
+        if (lane % stride == 0 && lane / stride < nodes) {
+            const int p = lane / stride, lo = bound(p * 2 * width), mid = bound((2 * p + 1) * width);
+            const int n = bound((p + 1) * 2 * width) - lo;
+            const Real rho = 2 * fabs(e[mid - 1]);
+            Real* ds_ = ds + lo; Real* zs_ = zs + lo; const int* src_ = src + lo;
+            Real dmax = 0, zmax = 0;
+            for (int i = 0; i < n; ++i) dmax = fmax(dmax, fabs(ds_[i])), zmax = fmax(zmax, fabs(zs_[i]));
+            // dlaed2's tolerance, on the scale of D + rho z z' (LAPACK
+            // scales the matrix to norm 1 first; |z| alone deflated groups
+            // of small norm).
+            const Real tol = 8 * eps * fmax(dmax, rho * zmax);
+            int kept = 0, dropped = 0, rotations = 0, prev = -1;
+            for (int i = 0; i < n; ++i) {
+                if (rho * fabs(zs_[i]) <= tol) {
+                    dd[lo + dropped] = ds_[i], dsrc[lo + dropped++] = src_[i];
+                    continue;
+                }
+                if (prev >= 0) {
+                    const Real h = hypot(zs_[i], zs_[prev]);
+                    const Real c = zs_[i] / h, s = -zs_[prev] / h;
+                    if (fabs((ds_[i] - ds_[prev]) * c * s) <= tol) {
+                        zs_[i] = h;
+                        rc[2 * (lo + rotations)] = c, rc[2 * (lo + rotations) + 1] = s;
+                        rr[2 * (lo + rotations)] = src_[prev], rr[2 * (lo + rotations) + 1] = src_[i];
+                        ++rotations;
+                        const Real low = ds_[prev] * c * c + ds_[i] * s * s;
+                        ds_[i] = ds_[prev] * s * s + ds_[i] * c * c;
+                        dd[lo + dropped] = low, dsrc[lo + dropped++] = src_[prev];
+                    } else {
+                        kd[lo + kept] = ds_[prev], kz[lo + kept] = zs_[prev], ksrc[lo + kept++] = src_[prev];
+                    }
+                }
+                prev = i;
+            }
+            if (prev >= 0) kd[lo + kept] = ds_[prev], kz[lo + kept] = zs_[prev], ksrc[lo + kept++] = src_[prev];
+            Real total = 0;
+            // From here zs holds kz^2, and inv[lo] their sum until the norms.
+            for (int i = 0; i < kept; ++i) zs_[i] = kz[lo + i] * kz[lo + i], total += zs_[i];
+            counts[2 * p] = kept, counts[2 * p + 1] = rotations;
+            inv[lo] = total;
+        }
+        __syncthreads();
+        // The roots of 1 + rho sum kz^2 / (kd - x), one a thread, as tau
+        // from the nearer pole kd[o]; Newton on tau f(tau), which has no pole
+        // at the origin, inside a bracket.
+        for (int j = lane; j < k; j += lanes) {
+            const int p = node_of(j), lo = bound(p * 2 * width), mid = bound((2 * p + 1) * width);
+            const int t = j - lo, kept = counts[2 * p];
+            if (t >= kept) {
+                newlam[j] = dd[lo + t - kept];
+                continue;
+            }
+            const Real rho = 2 * fabs(e[mid - 1]);
+            const Real* kd_ = kd + lo; const Real* k2 = zs + lo;
+            int o = t;
+            Real low = 0, high = rho * inv[lo];
+            if (t + 1 < kept) {
+                const Real half = (kd_[t + 1] - kd_[t]) / 2;
+                Real f = 1;
+                for (int l = 0; l < kept; ++l) f += rho * k2[l] * block_eigen_rcp((kd_[l] - kd_[t]) - half);
+                if (f >= 0) high = half;
+                else o = t + 1, low = (kd_[t] - kd_[t + 1]) / 2, high = 0;
+            }
+            Real x = (low + high) / 2;
+            const Real wo = rho * k2[o], origin = kd_[o];
+            for (int iteration = 0; iteration < 60; ++iteration) {
+                Real s1 = 0, s2 = 0, s3 = 0;
+                for (int l = 0; l < kept; ++l) {
+                    if (l == o) continue;
+                    const Real r = block_eigen_rcp((kd_[l] - origin) - x), q = k2[l] * r;
+                    s1 += q, s2 += q * r, s3 += fabs(q);
+                }
+                const Real h = x * (1 + rho * s1) - wo;
+                if (fabs(h) <= 4 * eps * (fabs(x) * (1 + rho * s3) + wo)) break;
+                if ((h > 0) == (x > 0)) high = x;
+                else low = x;
+                Real next = x - h / (1 + rho * s1 + x * rho * s2);
+                if (!(next > low && next < high)) next = (low + high) / 2;
+                if (next == x) break;
+                x = next;
+            }
+            org[j] = o, tau[j] = x;
+            newlam[j] = origin + x;
+        }
+        __syncthreads();
+        // Weights consistent with the roots (Gu and Eisenstat); the deflating
+        // rotations of the vectors, one column a thread.
+        for (int j = lane; j < k; j += lanes) {
+            const int p = node_of(j), lo = bound(p * 2 * width), mid = bound((2 * p + 1) * width);
+            const int t = j - lo, kept = counts[2 * p];
+            if (t < kept) {
+                const Real* kd_ = kd + lo;
+                const Real rho = 2 * fabs(e[mid - 1]);
+                Real prod = -((kd_[t] - kd_[org[j]]) - tau[j]) / rho;
+                for (int q = 0; q < kept; ++q)
+                    if (q != t) prod *= ((kd_[t] - kd_[org[lo + q]]) - tau[lo + q]) * block_eigen_rcp(kd_[t] - kd_[q]);
+                zh[j] = copysign(sqrt(fmax(prod, Real(0))), kz[j]);
+            }
+            const int rotations = counts[2 * p + 1];
+            for (int r = 0; r < rotations; ++r) {
+                const Real cc = rc[2 * (lo + r)], ss = rc[2 * (lo + r) + 1];
+                Real* x = z + rr[2 * (lo + r)] * k + j;
+                Real* y = z + rr[2 * (lo + r) + 1] * k + j;
+                const Real px = *x, py = *y;
+                *x = cc * px + ss * py;
+                *y = cc * py - ss * px;
+            }
+        }
+        __syncthreads();
+        // The secular vectors, scaled to unit length in the product.
+        for (int j = lane; j < k; j += lanes) {
+            const int p = node_of(j), lo = bound(p * 2 * width);
+            const int t = j - lo, kept = counts[2 * p];
+            if (t >= kept) continue;
+            const Real* kd_ = kd + lo;
+            Real* row = u + lo * k + t * kept;
+            const Real origin = kd_[org[j]], x = tau[j];
+            Real norm = 0;
+            for (int i = 0; i < kept; ++i) {
+                const Real v = zh[lo + i] * block_eigen_rcp((kd_[i] - origin) - x);
+                row[i] = v;
+                norm += v * v;
+            }
+            inv[j] = rsqrt(norm);
+        }
+        __syncthreads();
+        // New rows: the kept vectors times the secular vectors, then the
+        // deflated ones; four columns an item.
+        const int width_quads = (bound(2 * width) + 3) / 4 + 1;
+        for (int item = lane; item < k * width_quads; item += lanes) {
+            const int j = item / width_quads, c0 = (item % width_quads) * 4;
+            const int p = node_of(j), lo = bound(p * 2 * width), n = bound((p + 1) * 2 * width) - lo;
+            const int t = j - lo, kept = counts[2 * p];
+            if (c0 >= n) continue;
+            Real acc[4] = {0, 0, 0, 0};
+            if (t < kept) {
+                const Real* row = u + lo * k + t * kept;
+                for (int i = 0; i < kept; ++i) {
+                    const Real w = row[i];
+                    const Real* from = z + ksrc[lo + i] * k + lo + c0;
+#pragma unroll
+                    for (int q = 0; q < 4; ++q)
+                        if (c0 + q < n) acc[q] += w * from[q];
+                }
+#pragma unroll
+                for (int q = 0; q < 4; ++q) acc[q] *= inv[j];
+            } else {
+                const Real* from = z + dsrc[lo + t - kept] * k + lo + c0;
+#pragma unroll
+                for (int q = 0; q < 4; ++q)
+                    if (c0 + q < n) acc[q] = from[q];
+            }
+            Real* to = tmp + lo * k + t * n + c0;
+#pragma unroll
+            for (int q = 0; q < 4; ++q)
+                if (c0 + q < n) to[q] = acc[q];
+        }
+        __syncthreads();
+        for (int j = lane; j < k; j += lanes) {
+            const int p = node_of(j), lo = bound(p * 2 * width), n = bound((p + 1) * 2 * width) - lo, t = j - lo;
+            for (int c = 0; c < n; ++c) z[j * k + lo + c] = tmp[lo * k + t * n + c];
+            lam[j] = newlam[j];
+        }
+        __syncthreads();
+    }
+    // a <- z Q^T = z H_{k - 3} ... H_0 (reflectors: row j holds tau at j and
+    // u beyond), row by row without barriers: two threads a row, each a half
+    // of the columns, from a column skewed by the row so that the rows of a
+    // warp read different banks.
+    for (int i = lane; i < k * k; i += lanes) a[i] = z[i];
+    __syncthreads();
+    {
+        // Every lane of a warp runs every step (the shuffle, and the
+        // __syncwarp that orders a step's writes of one half of a row before
+        // the next step's reads of the other); a lane past the rows has no
+        // columns.
+        const int per = lanes >= 2 * k ? 2 : 1, r = lane / per, part = lane % per;
+        if (lane < 32 * ((per * k + 31) / 32)) {
+            Real* row = a + min(r, k - 1) * k;
+            for (int j = k - 3; j >= 0; --j) {
+                __syncwarp();
+                const Real* v = reflectors + j * k;
+                const Real tau = v[j];
+                if (tau == Real(0)) continue;
+                const int len = k - j - 1, half = (len + per - 1) / per;
+                const int from = r < k ? part * half : len, to = min(len, from + half);
+                const int skew = r % len;
+                Real sum = 0;
+                for (int t = from, c = j + 1 + (from + skew) % len; t < to; ++t) {
+                    sum += row[c] * v[c];
+                    if (++c == k) c = j + 1;
+                }
+                if (per == 2) {
+                    const Real other = __shfl_xor_sync(0xffffffffu, sum, 1);
+                    sum = part == 0 ? sum + other : other + sum;
+                }
+                const Real scale = tau * sum;
+                if (r >= k) continue;
+                for (int t = from, c = j + 1 + (from + skew) % len; t < to; ++t) {
+                    row[c] = fma(-scale, v[c], row[c]);
+                    if (++c == k) c = j + 1;
+                }
+            }
+        }
+    }
+    __syncthreads();
+    for (int i = lane; i < k; i += lanes) d[i] = lam[i];
+    __syncthreads();
+}
 
 // Reals of scratch block_eigen needs: `fast` is read by every thread for
 // every element (shared memory), `slow` holds the tridiagonal matrix and the
 // rotations (thread 0 writes them; any memory).
 __host__ __device__ constexpr int block_eigen_fast_reals(int k) { return k + 20; }
 __host__ __device__ constexpr int block_eigen_slow_reals(int k) { return 6 * k; }
+
+// Rounded operations the compiler may not contract.
+__device__ __forceinline__ float block_eigen_mul(float x, float y) { return __fmul_rn(x, y); }
+__device__ __forceinline__ double block_eigen_mul(double x, double y) { return __dmul_rn(x, y); }
+__device__ __forceinline__ float block_eigen_add(float x, float y) { return __fadd_rn(x, y); }
+__device__ __forceinline__ double block_eigen_add(double x, double y) { return __dadd_rn(x, y); }
+__device__ __forceinline__ float block_eigen_sub(float x, float y) { return __fsub_rn(x, y); }
+__device__ __forceinline__ double block_eigen_sub(double x, double y) { return __dsub_rn(x, y); }
 
 template <class Real>
 __device__ __forceinline__ Real block_eigen_warp_sum(Real x) {
@@ -130,14 +448,19 @@ __device__ void block_eigen_ql(Real* d, Real* e, int k, Real floor, int& l, int&
 // eigenvectors, one per row. The eigenvalues are slow[0 .. k), in no order.
 // reflectors: k x k reals of any memory (written once, read once). Keep a
 // and fast in shared memory. The block has at least max(k, 32) threads, a
-// multiple of 32.
+// multiple of 32. With kDc and dc (block_eigen_dc_reals(k) reals of any
+// memory) the tridiagonal matrix goes to block_eigen_dc; that path also
+// takes a leaner rank-2 update (only the columns beyond j, products that
+// cannot be contracted so that both triangles get the same bits); the QL
+// path keeps the original one.
 //
 // Threads are (row, segment of columns); a thread walks its columns from
 // its row's offset when k is even, so that the threads of a warp read
 // different banks (a column of a row-major matrix is one bank when k is a
 // multiple of 32).
-template <class Real>
-__device__ void block_eigen(Real* a, Real* reflectors, int k, Real* fast, Real* slow) {
+template <class Real, bool kDc = false>
+__device__ void block_eigen(Real* a, Real* reflectors, int k, Real* fast, Real* slow, Real* dc = nullptr) {
+    const bool divide = kDc && dc != nullptr;
     const int lane = threadIdx.x, lanes = blockDim.x;
     Real* d = slow;
     Real* e = slow + k;
@@ -173,9 +496,18 @@ __device__ void block_eigen(Real* a, Real* reflectors, int k, Real* fast, Real* 
                 const Real* mine_row = a + row * k;
                 mine = row == j + 1 ? u0 : x[row];
                 Real sum = 0;
-                for (int t = j + 1, c = (k & 1) ? j + 1 : row; t < k; ++t) {
-                    sum += mine_row[c] * (c == j + 1 ? u0 : x[c]);
-                    if (++c == k) c = j + 1;
+                if (divide) {
+                    // Over x (x[j + 1] is still x0), then the correction to u0.
+                    for (int t = j + 1, c = (k & 1) ? j + 1 : row; t < k; ++t) {
+                        sum += mine_row[c] * x[c];
+                        if (++c == k) c = j + 1;
+                    }
+                    sum += mine_row[j + 1] * (u0 - x0);
+                } else {
+                    for (int t = j + 1, c = (k & 1) ? j + 1 : row; t < k; ++t) {
+                        sum += mine_row[c] * (c == j + 1 ? u0 : x[c]);
+                        if (++c == k) c = j + 1;
+                    }
                 }
                 p = tau * sum;
             }
@@ -199,7 +531,11 @@ __device__ void block_eigen(Real* a, Real* reflectors, int k, Real* fast, Real* 
             }
         }
         __syncthreads();
-        if (row > j && begin + span > j + 1 && x[j] != Real(0)) {
+        // The columns beyond j of the thread's segment, from a skewed one.
+        // (row, c) and (c, row) get the same rounded products and sum
+        // (commutative), so the matrix stays symmetric bit for bit.
+        const int low = max(begin, j + 1), high = min(begin + span, k);
+        if (!divide && row > j && begin + span > j + 1 && x[j] != Real(0)) {
             const Real ui = x[row], wi = w[row];
             for (int t = 0, c = first; t < span; ++t) {
                 if (c > j && c < k) {
@@ -212,6 +548,15 @@ __device__ void block_eigen(Real* a, Real* reflectors, int k, Real* fast, Real* 
                     a[row * k + c] = value;
                 }
                 if (++c == begin + span) c = begin;
+            }
+        }
+        if (divide && row > j && high > low && x[j] != Real(0)) {
+            const Real ui = x[row], wi = w[row];
+            for (int t = low, c = low + ((k & 1) ? 0 : row % (high - low)); t < high; ++t) {
+                const Real uc = x[c], wc = w[c];
+                Real* at = a + row * k + c;
+                *at = block_eigen_sub(*at, block_eigen_add(block_eigen_mul(ui, wc), block_eigen_mul(wi, uc)));
+                if (++c == high) c = low;
             }
         }
         __syncthreads();
@@ -235,6 +580,12 @@ __device__ void block_eigen(Real* a, Real* reflectors, int k, Real* fast, Real* 
     }
     __syncthreads();
 
+    if constexpr (kDc) {
+        if (divide) {
+            block_eigen_dc(a, reflectors, k, d, e, dc);
+            return;
+        }
+    }
     // Q = H_0 ... H_{k - 3}, from the last reflector: Q <- H_j Q only
     // changes the rows and columns beyond j.
     for (int j = k - 3; j >= 0; --j) {

@@ -109,14 +109,20 @@ __device__ __forceinline__ void for_runs(int outers, int inners, Body body) {
 // window 20 at 1080p against block_eigen: group 10 0.92, 12 1.02, 14 1.12,
 // 16 1.22; joint RGB group 12 0.99, 14 1.05; light, group 8, 0.95), and at
 // cap 32 on four warps it took 220k instructions a group against 148k (RTX
-// 5080, 2026-10-14).
+// 5080, 2026-10-14). Caps above 16 (kDc instances) take divide and conquer
+// on the tridiagonal matrix (block_eigen_dc) with the group's ADMM arrays,
+// idle then, as its scratch; the QL chain it replaces was a quarter of a
+// 64 x 64 block's samples (default call, 128 x 128: gray 1.42, RGB 1.37,
+// joint RGB 1.31; block 8 / group 32 1.17). The second eigen step of
+// unequal row weights keeps QL. The kDc = false instance (caps up to 16)
+// does not carry it: in one instance the code cost the cap 16 path 2%.
 constexpr int kWarpEigenMin = 12;
-template <class Real>
-__device__ void group_eigen(Real* a, Real* reflectors, int k, int cap, Real* fast, Real* values) {
-    if (cap >= kWarpEigenMin && cap <= kWarpEigen) {
+template <class Real, bool kDc>
+__device__ void group_eigen(Real* a, Real* reflectors, int k, int cap, Real* fast, Real* values, Real* dc = nullptr) {
+    if (!kDc && cap >= kWarpEigenMin && cap <= kWarpEigen) {
         warp_eigen(a, k, values);
     } else {
-        block_eigen(a, reflectors, k, fast, values);
+        block_eigen<Real, kDc>(a, reflectors, k, fast, values, k > kWarpEigen ? dc : nullptr);
     }
 }
 
@@ -141,7 +147,7 @@ __host__ __device__ constexpr std::size_t block_scratch_bytes(int cap, int threa
 // kThreads (64 to 256) bounds the block size; smaller blocks may be launched.
 // The register bound (768 threads to an SM) is not what holds the blocks of
 // an SM back at 64 x 64 (five by shared memory) or 90 x 90 (three).
-template <class Real, int kThreads>
+template <class Real, int kThreads, bool kDc>
 __global__ void __launch_bounds__(kThreads, 768 / kThreads) twsc_block_kernel(TwscGroupArgs a) {
     extern __shared__ unsigned char shared_bytes[];  // scratch, then the matrix with a.shared_matrices
     const int lane = threadIdx.x, lanes = blockDim.x;
@@ -246,7 +252,7 @@ __global__ void __launch_bounds__(kThreads, 768 / kThreads) twsc_block_kernel(Tw
         }
     });
     __syncthreads();
-    group_eigen(gram, reflectors, kd, cap, scratch, values);
+    group_eigen<Real, kDc>(gram, reflectors, kd, cap, scratch, values, data);
 
     // Descending order by rank (ties by index), reduced spectrum, active count.
     for (int e = lane; e < kd; e += lanes) {
@@ -346,7 +352,7 @@ __global__ void __launch_bounds__(kThreads, 768 / kThreads) twsc_block_kernel(Tw
             weighted[l * r + k] = sum;
         }
         __syncthreads();
-        if (r > 0) group_eigen(weighted, reflectors, r, cap, scratch, values);
+        if (r > 0) group_eigen<Real, kDc>(weighted, reflectors, r, cap, scratch, values);
         for (int k = lane; k < r; k += lanes) eigen[k] = fmax(values[k], Real(0));
         __syncthreads();
     }
@@ -507,15 +513,17 @@ namespace {
 struct Placement {
     int threads;         // per block
     int bound;           // the kernel instance
+    bool divide;         // divide and conquer for the eigen step (cap above kWarpEigen)
     bool shared_matrices;
     bool shared_values;
     std::size_t shared;  // bytes per block
     int resident;        // blocks the device runs at a time
 };
 
-// About two threads per matrix row: the eigensolver is bound by one thread's
-// chain, so blocks per SM count for more than threads per block (measured on
-// sm_120, 2026-10-12; none of this enters the output). The matrix goes to
+// About two threads per matrix row: blocks per SM count for more than
+// threads per block (measured on sm_120, 2026-10-12 with QL; with divide and
+// conquer, 128 threads at cap 32 and 256 at cap 64 measured 0.85 to 0.87,
+// 2026-10-14; none of this enters the output). The matrix goes to
 // shared memory when a block may hold it. An SM then runs sm / (block +
 // 1 KiB) blocks (the driver's share, measured; the size in units of 256
 // bytes), up to the kernel's register bound; the solver's slow scratch joins
@@ -529,6 +537,7 @@ Placement place(int cap) {
     Placement p{};
     p.threads = cap <= 16 ? 32 : cap <= 32 ? 64 : cap <= 64 ? 128 : 256;
     p.bound = p.threads <= 64 ? 64 : p.threads <= 128 ? 128 : 256;
+    p.divide = cap > kWarpEigen;
     const std::size_t matrix = static_cast<std::size_t>(cap) * cap * sizeof(TwscReal);
     p.shared_matrices = matrix + block_scratch_bytes<TwscReal>(cap, p.bound, false) <= static_cast<std::size_t>(per_block);
     const auto bytes = [&](bool values) { return block_scratch_bytes<TwscReal>(cap, p.bound, values) + (p.shared_matrices ? matrix : 0); };
@@ -586,9 +595,12 @@ void twsc_filter_groups(const TwscGroupArgs& args, cudaStream_t stream) {
         kernel<<<a.batch, p.threads, p.shared, stream>>>(a);
     };
     switch (p.bound) {
-        case 64: launch(twsc_block_kernel<TwscReal, 64>); break;
-        case 128: launch(twsc_block_kernel<TwscReal, 128>); break;
-        default: launch(twsc_block_kernel<TwscReal, 256>); break;
+        case 64:
+            if (p.divide) launch(twsc_block_kernel<TwscReal, 64, true>);
+            else launch(twsc_block_kernel<TwscReal, 64, false>);
+            break;
+        case 128: launch(twsc_block_kernel<TwscReal, 128, true>); break;
+        default: launch(twsc_block_kernel<TwscReal, 256, true>); break;
     }
     NSS_CUDA_CHECK_LAUNCH();
 }

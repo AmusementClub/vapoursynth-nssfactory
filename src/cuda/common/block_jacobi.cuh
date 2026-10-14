@@ -179,7 +179,7 @@ __device__ __forceinline__ void warp_eigen_move_columns(Real* u, int jb, int dow
 template <class Real>
 __device__ void warp_eigen(Real* a, int k, Real* values) {
     const unsigned all = 0xffffffffu;
-    const int lane = threadIdx.x;
+    const int lane = threadIdx.x & 31;
     if (k < 2) {
         if (lane < k) values[0] = a[0], a[0] = Real(1);
         __syncwarp();

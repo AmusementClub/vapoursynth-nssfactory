@@ -116,8 +116,8 @@ instance's stream. RGB 1080p on an RTX 5080, `sigma=3`, `block_size=4,
 block_step=4, group_size=32, search_window=20`: 13.1 fps at `iters=2` and 9.0
 at `iters=3` with the fast path, 6.9 and 4.6 without (gray: 38 and 27 fps).
 The joint filter needs `group_size=64` to reach the same quality at that block
-size (2.7 and 1.9 fps). The default call on a 128x128 RGB frame takes 1.6 s
-with the fast path and 2.3 s without; `block_step=8, group_size=8, iters=2` at
+size (2.7 and 1.9 fps). The default call on a 128x128 RGB frame takes 1.1 s
+with the fast path and 1.7 s without; `block_step=8, group_size=8, iters=2` at
 1080p runs at 33 fps with it and 36 without (see "When it pays").
 
 ## Device parameters
@@ -142,8 +142,9 @@ How the streams, the memory limit and the rolling output behave across filters i
 - **Temporal output.** The fat intermediate is reduced with
   `nss_cuda.VAggregate` inside the filter.
 - **Numerics.** The dictionary comes from an FP32 eigendecomposition of the
-  Gram matrix of the smaller group side (Householder tridiagonalization and
-  implicit QL; cyclic Jacobi on one warp when the matrix is 12 x 12 to
+  Gram matrix of the smaller group side (Householder tridiagonalization,
+  then divide and conquer when the matrix is larger than 16 x 16 and
+  implicit QL otherwise; cyclic Jacobi on one warp when it is 12 x 12 to
   16 x 16, as at `block_size=4`), and the solver runs in FP32 (FP64 was
   measured and gave the same agreement with the CPU).
   - The output is not bit-identical to the CPU, but is inside the 60 dB gate
@@ -154,8 +155,8 @@ How the streams, the memory limit and the rolling output behave across filters i
   non-converged groups; `_NSSSvdDoubleGroups` and `_NSSSylvesterResidual` are
   CPU-solver diagnostics and are reported as 0.
 - **Speed.** The default settings remain very heavy (one 64x64
-  eigendecomposition per pixel position per round): about 0.5 s for a 128x128
-  frame on an RTX 5080 (1.6 s in RGB; 2.3 s with `cfast=0`), against about
+  eigendecomposition per pixel position per round): about 0.33 s for a 128x128
+  frame on an RTX 5080 (1.1 s in RGB; 1.7 s with `cfast=0`), against about
   190 s on 16 CPU threads. The fast call above (`block_step=8, group_size=8,
   iters=2`) runs 1080p at about 97 fps in gray and 33 fps in RGB (36 with
   `cfast=0`).
