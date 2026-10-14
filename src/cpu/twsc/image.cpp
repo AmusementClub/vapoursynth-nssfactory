@@ -38,7 +38,7 @@ ImageContributions twsc_image(const ImageSequence& input, const ImageSequence* r
             const int width = input[center].planes[first].width, height = input[center].planes[first].height;
             std::array<int, 3> channels{};
             int nch = 0;
-            for (int c = first; c < planes; ++c) if (!used[c] && input[center].sigma[c] > 0 &&
+            for (int c = first; c < planes; ++c) if (!used[c] && input[center].sigma[c] > 0 && (c == first || !o.planes_alone) &&
                 input[center].planes[c].width == width && input[center].planes[c].height == height) {
                 channels[nch++] = c; used[c] = true;
             }

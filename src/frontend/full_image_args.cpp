@@ -77,6 +77,7 @@ void parse_twsc(const VSAPI* api, const VSMap* in, bool sigma_given, FullImagePa
     o.solver.mu = real(api, in, "mu", 1.1, 1, std::numeric_limits<float>::max(), ns);
     o.solver.tolerance = real(api, in, "tol", 1e-6, 0, std::numeric_limits<float>::max(), ns);
     if (!(o.solver.rho > 0) || !(o.solver.tolerance > 0)) fail(ns, "TWSC", "rho and tol must be positive");
+    o.cfast = integer(api, in, "cfast", 1, 0, 1, ns) != 0;
 }
 
 void parse_nlh(const VSAPI* api, const VSMap* in, const VSVideoInfo& vi, bool sigma_given, FullImageParams& d,

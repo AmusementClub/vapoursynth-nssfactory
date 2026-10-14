@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-only
-"""Public TWSC v3 / NLH v5 gates, including independent image references."""
+"""Public TWSC / NLH gates, including independent image references."""
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
@@ -97,7 +97,7 @@ class Suite:
                 rows=list(pool.map(lambda n: (n,values(node,n)),order))
             captured={n:row[0] for n,row in rows}
             for n,(planes,props) in rows:
-                assert props['_NSSModelVersion']==(4 if name=='TWSC' else 6)
+                assert props['_NSSModelVersion']==(5 if name=='TWSC' else 6)
                 for p,a in enumerate(planes):
                     assert a.shape==original[n][p].shape and np.isfinite(a).all()
             if expected is None: expected=captured
@@ -277,7 +277,54 @@ class Suite:
             result,_=values(getattr(core.nss,name)(zero,sigma=3,rclip=reference,**kwargs(name)),0)
             np.testing.assert_array_equal(result[0],0)
 
+    def cfast(self):
+        """The fast color path is the opponent planes filtered alone; it runs only for RGB with one given sigma and radius 0."""
+        core=self.core
+        source,original=make_clip(core,vs.RGBS,frames=3,width=24,height=20,seed=31)
+        guide,guides=make_clip(core,vs.RGBS,frames=3,width=24,height=20,seed=32)
+        args=dict(block_size=4,block_step=2,group_size=12,search_window=9,iters=3)
+        a,b,c=(np.float32(v) for v in (3**-.5,2**-.5,6**-.5))
+        def forward(planes):
+            r,g,bl=planes
+            return [(r+g+bl)*a,(r-bl)*b,(r-np.float32(2)*g+bl)*c]
+        def gray(planes):
+            blank=core.std.BlankClip(width=24,height=20,format=vs.GRAYS,length=3)
+            def fill(n,f):
+                out=f.copy();np.copyto(np.asarray(out[0]),planes[n]);return out
+            return core.std.ModifyFrame(blank,blank,fill)
+        for reference in (False,True):
+            extra={'rclip':guide} if reference else {}
+            result,props=values(core.nss.TWSC(source,sigma=4,**args,**extra),1)
+            assert props['_NSSCFast']==1,props
+            opponent=[forward(frame) for frame in original];guide_opponent=[forward(frame) for frame in guides]
+            planes=[];groups=0
+            for p in range(3):
+                plane_guide={'rclip':gray([f[p] for f in guide_opponent])} if reference else {}
+                plane,plane_props=values(core.nss.TWSC(gray([f[p] for f in opponent]),sigma=4,**args,**plane_guide),1)
+                assert plane_props['_NSSCFast']==0
+                planes.append(plane[0]);groups+=plane_props['_NSSGroups']
+            x,y,z=planes;base=x*a
+            expected=[base+y*b+z*c,base-np.float32(2)*(z*c),base-y*b+z*c]
+            assert props['_NSSGroups']==groups,(props['_NSSGroups'],groups)
+            for p in range(3): assert np.max(np.abs(result[p]-expected[p]))<2e-6,(reference,p,np.max(np.abs(result[p]-expected[p])))
+            joint,joint_props=values(core.nss.TWSC(source,sigma=4,cfast=0,**args,**extra),1)
+            assert joint_props['_NSSCFast']==0 and joint_props['_NSSGroups']*3==groups
+            assert max(np.max(np.abs(result[p]-joint[p])) for p in range(3))>1e-4,'cfast did not change the RGB result'
+        off=[dict(sigma=[4,4,3]),dict(estimate_sigma=1),dict(sigma=0),dict(sigma=4,radius=1,ps_range=1)]
+        for extra in off:
+            _,props=values(core.nss.TWSC(source,**args,**extra),1)
+            assert props['_NSSCFast']==0,(extra,props)
+        for fmt in (vs.GRAYS,vs.YUV444PS,vs.YUV420PS):
+            other,_=make_clip(core,fmt,frames=1,width=24,height=20)
+            on,props=values(core.nss.TWSC(other,sigma=4,**args),0);none,_=values(core.nss.TWSC(other,sigma=4,cfast=0,**args),0)
+            assert props['_NSSCFast']==0 and all(np.array_equal(on[p],none[p]) for p in range(len(on))),fmt
+        for bad in (2,-1):
+            try: core.nss.TWSC(source,sigma=4,cfast=bad)
+            except vs.Error as error: assert 'cfast' in str(error),error
+            else: raise AssertionError('cfast outside 0 / 1 accepted')
+
     def run(self):
+        self.case('twsc_cfast',self.cfast)
         self.case('parameters',self.parameters);self.case('twsc_fixed_geometry',self.twsc_fixed_geometry)
         self.case('invalid_and_version',self.invalid);self.case('extended_shapes',self.extended)
         for name,radius,reference in itertools.product(('TWSC','NLH'),(0,1),(False,True)):
