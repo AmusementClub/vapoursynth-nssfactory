@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: GPL-2.0-only
 """nss_cuda.NCSR vs nss.NCSR on small random clips across block and group
 sizes (every group kernel capacity), outer rounds and delta, rclip and the
-temporal radius (legacy + VAggregate, including clip boundary frames). Each
+temporal radius (legacy + VAggregate and the rolling mode, including clip
+boundary frames). Each
 case must reach the NCSR tolerance (tests/data/cuda_tolerances_v1.json) and be
 run-to-run identical. Exits 77 without VapourSynth or a CUDA device.
 
@@ -125,6 +126,9 @@ def main():
         check(label, clip, core.nss.VAggregate(core.nss.NCSR(clip, **kw), clip, radius=r),
               core.nss_cuda.VAggregate(core.nss_cuda.NCSR(clip, temporal_mode="legacy", **kw), clip, radius=r),
               core.nss_cuda.VAggregate(core.nss_cuda.NCSR(clip, temporal_mode="legacy", **kw), clip, radius=r))
+        # The default rolling mode, every round on the device.
+        check(label + " rolling", clip, core.nss.VAggregate(core.nss.NCSR(clip, **kw), clip, radius=r),
+              core.nss_cuda.NCSR(clip, **kw), core.nss_cuda.NCSR(clip, **kw))
     # Repeated create/free must not leak device memory or fail.
     for _ in range(2 if args.quick else 20):
         core.nss_cuda.NCSR(gray, sigma=5).get_frame(0)

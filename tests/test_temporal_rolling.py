@@ -29,6 +29,7 @@ CASES = (
     ("MCWNNM", vs.RGBS, dict(sigma=5.0, radius=1, iters=1, **LIGHT)),
     ("NCSR", vs.GRAYS, dict(sigma=5.0, radius=1, iters=1, **LIGHT)),
     ("NCSR", vs.GRAYS, dict(sigma=5.0, radius=1, iters=2, **LIGHT)),
+    ("NCSR", vs.GRAYS, dict(sigma=5.0, radius=2, iters=3, delta=0.3, rolling_chunk=2, **LIGHT)),
     ("NLH", vs.GRAYS, dict(sigma=5.0, radius=1)),
     ("TWSC", vs.GRAYS, dict(sigma=5.0, radius=1, block_step=6, group_size=8, iters=1)),
 )
@@ -90,8 +91,7 @@ def main():
             continue
         a, b = frames(rolling), frames(chain)
         worst = max(float(np.max(np.abs(pa - pb))) for fa, fb in zip(a, b) for pa, pb in zip(fa, fb))
-        single_round = kw.get("iters", 1) == 1
-        if name in device and (name != "NCSR" or single_round):
+        if name in device:
             mse = max(float(np.mean((pa - pb) ** 2)) for fa, fb in zip(a, b) for pa, pb in zip(fa, fb))
             psnr = 200.0 if mse == 0 else -10 * np.log10(mse)
             ok, note = psnr >= args.min_psnr, f"psnr {psnr:.2f} dB"

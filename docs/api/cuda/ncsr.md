@@ -9,7 +9,7 @@ model and the defaults are the same on both plugins.
 ```python
 out = core.nss_cuda.NCSR(clip, sigma=25)                    # defaults
 hiq = core.nss_cuda.NCSR(clip, sigma=25, block_step=4)
-temporal = core.nss_cuda.NCSR(clip, sigma=25, radius=1, iters=1)  # accumulation stays on the device
+temporal = core.nss_cuda.NCSR(clip, sigma=25, radius=1)  # finished frames, every round on the device
 ```
 
 ## Signature
@@ -62,9 +62,17 @@ How the streams, the memory limit and the rolling output behave across filters i
 
 - **Device-resident.** Matching, the per-group PCA and centralized shrinkage,
   the aggregation and all outer rounds run on the device.
-- **Temporal output.** The temporal accumulation stays on the device when
-  `iters = 1`; with more rounds the fat intermediate is reduced with
-  `nss_cuda.VAggregate` inside the filter.
+- **Temporal output.** The rolling mode (the default) runs every round on the
+  device for any `iters`. As in the CPU's fat output, each center's rounds
+  before the last work on estimates of that center's own window (finished
+  from its groups alone, then relaxed toward the noisy frames by `delta`);
+  the last round adds to the rolling sums. It agrees with
+  `VAggregate(NCSR(..., temporal_mode="legacy"))` to 142–152 dB on the test
+  clips.
+  - With `iters > 1` a stream also holds the 2R+1 estimates of its center and
+    their fixed-point sums: 1080p `radius=1` takes 308 MiB of device memory
+    above a bare context (204 with the earlier legacy-inside path), and the
+    smallest accepted `memory_limit_mb` is 405 MiB (228 before).
 - **Numerics.** The PCA is taken through the FP32 Gram matrix with a cyclic
   Jacobi eigensolver, and the column weights use `expf` where the CPU uses
   its fast exponential.
@@ -80,11 +88,18 @@ How the streams, the memory limit and the rolling output behave across filters i
     eigen step runs one thread per group in registers. Larger groups run 16
     or 32 threads per group with a round-robin parallel Jacobi.
 
+## Speed
+
+1080p, RTX 5080 with a Ryzen 5950X, one stream, 2026-10-16: default (gray) 516 fps,
+`block_step=4` 266, `group_size=16` 177, `group_size=32, block_step=4` 5.7, RGB 195,
+`radius=1` 310 (`iters=1`: 456). The 16-thread CPU plugin on the same host: 35.8,
+6.8, 3.0, 0.084, 8.4 and 11.7 (21.6). The spatial default is bound by the host's
+frame copies (about 600 fps with `iters=1`); more streams do not raise it.
+
 ## Pitfalls
 
 - `iters=1` skips the second matching round: a sizeable speedup and a visible
-  quality change on textured noise. It is also the setting whose temporal
-  accumulation stays on the device.
+  quality change on textured noise.
 - `temporal_mode="legacy"` output needs a `VAggregate` call; the default mode
   returns finished frames.
 - No `_NSS*` frame properties on this filter.

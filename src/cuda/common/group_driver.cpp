@@ -81,6 +81,11 @@ struct Slot {
     DeviceBuffer out;                 // finished plane
     DeviceBuffer matches, counts, values, scratch, patches;
     std::unique_ptr<OrderedAggregator> aggregator;
+    // Rolling with several rounds: a center's estimates of its window frames
+    // (2R+1 planes and their device pointer array) and the fixed-point sums
+    // of its rounds before the last (2R+1 slices each).
+    std::vector<DeviceBuffer> estimates;
+    DeviceBuffer estimate_ptrs, round_num, round_den;
 };
 
 // Pinned staging for one frame (spatial, legacy) or one chunk (rolling) in
@@ -354,11 +359,16 @@ void plan_planes(Driver& d) {
     const int chunk = rolling ? d.rolling.rolling_chunk : 0;
     // Window frames (rolling keeps them in its states), float slices, the
     // result, and for fused planes the finish scratch and, when spatial, the
-    // fixed-point num and den (two float planes' worth each).
+    // fixed-point num and den (two float planes' worth each). Several rounds
+    // keep 2R+1 planes beside the window: the noisy frames (spatial, legacy)
+    // or a rolling center's estimates, and then also the fixed-point sums of
+    // its rounds before the last.
     const std::size_t device_planes = (rolling ? 0 : static_cast<std::size_t>(device_frames(d))) +
                                       static_cast<std::size_t>(d.channels) *
                                           ((any_ordered(d) ? 2 * d.ntemp : 0) + 1 + (d.iters > 1 ? d.ntemp : 0)) +
-                                      (any_fused(d) ? 2 + (rolling ? 0 : 4 * static_cast<std::size_t>(d.channels)) : 0);
+                                      (any_fused(d) ? 2 + 4 * static_cast<std::size_t>(rolling ? (d.iters > 1 ? d.ntemp : 0)
+                                                                                         : d.channels)
+                                                    : 0);
     const std::size_t total = d.budget ? d.budget->snapshot().limit : SIZE_MAX;
     int max_w = 1, max_h = 1;
     for (const GroupPlane* p : stage_planes(d)) {
@@ -569,6 +579,16 @@ std::unique_ptr<Slot> make_slot(const Driver& d) {
     }
     slot->src_ptrs = DeviceBuffer(d.ntemp * sizeof(float*), d.budget);
     if (w) slot->ref_ptrs = DeviceBuffer(d.ntemp * sizeof(float*), d.budget);
+    std::vector<const float*> estimate_ptrs;
+    if (rolling && d.iters > 1) {
+        for (int t = 0; t < d.ntemp; ++t) {
+            slot->estimates.emplace_back(plane_bytes, d.budget);
+            estimate_ptrs.push_back(slot->estimates.back().as<float>());
+        }
+        slot->estimate_ptrs = DeviceBuffer(d.ntemp * sizeof(float*), d.budget);
+        slot->round_num = DeviceBuffer(d.plane_floats * d.ntemp * sizeof(unsigned long long), d.budget);
+        slot->round_den = DeviceBuffer(d.plane_floats * d.ntemp * sizeof(unsigned long long), d.budget);
+    }
     if (any_ordered(d)) {
         slot->num = DeviceBuffer(unit_bytes * d.ntemp, d.budget);
         slot->den = DeviceBuffer(unit_bytes * d.ntemp, d.budget);
@@ -590,8 +610,16 @@ std::unique_ptr<Slot> make_slot(const Driver& d) {
     if (max_patches) {
         slot->aggregator = std::make_unique<OrderedAggregator>(max_w, max_h, d.ntemp, max_patches, d.budget, true);
     }
-    // Spatial/legacy windows map slot t to buffer t for the slot's lifetime.
-    if (rolling) return slot;
+    // Spatial/legacy windows map slot t to buffer t for the slot's lifetime,
+    // and so do a rolling center's estimates.
+    if (!estimate_ptrs.empty()) {
+        NSS_CUDA_CHECK(cudaMemcpy(slot->estimate_ptrs.get(), estimate_ptrs.data(), d.ntemp * sizeof(float*),
+                                  cudaMemcpyHostToDevice));
+    }
+    if (rolling) {
+        if (!estimate_ptrs.empty()) NSS_CUDA_CHECK(cudaDeviceSynchronize());  // see below
+        return slot;
+    }
     NSS_CUDA_CHECK(cudaMemcpy(slot->src_ptrs.get(), slot->host_src_ptrs.data(), d.ntemp * sizeof(float*),
                               cudaMemcpyHostToDevice));
     if (w) {
@@ -610,9 +638,11 @@ std::unique_ptr<Slot> make_slot(const Driver& d) {
 // plane of frame temporal_slot_frame(center, t). Matching runs on the guide
 // when match_guide is set, otherwise on the source/estimate frames. A fused
 // plane adds to fixed-point slices instead: the slot's one spatial slice, or
-// `rolling`, the chunk's (which the caller prepares).
+// `rolling`, the chunk's (which the caller prepares). `frames`, a device
+// pointer array like s.src_ptrs, replaces the window's source frames (a
+// rolling center's estimates), for matching too unless match_guide.
 void filter_center(const Driver& d, Slot& s, const GroupPlane& p, int center, bool match_guide,
-                   const FixedTarget* rolling = nullptr) {
+                   const FixedTarget* rolling = nullptr, const float* const* frames = nullptr) {
     cudaStream_t stream = s.stream;
     const int radius = d.radius;
     // The first of two stages filters the channels its estimate is needed for.
@@ -623,7 +653,7 @@ void filter_center(const Driver& d, Slot& s, const GroupPlane& p, int center, bo
     geometry.channel_step = static_cast<long long>(p.floats);
     TemporalWindow window{};
     if (radius > 0) {
-        window.frames = (match_guide ? s.ref_ptrs : s.src_ptrs).as<const float*>();
+        window.frames = match_guide ? s.ref_ptrs.as<const float*>() : frames ? frames : s.src_ptrs.as<const float*>();
         window.ntemp = d.ntemp;
         window.t0 = radius;
         window.radius = radius;
@@ -650,7 +680,7 @@ void filter_center(const Driver& d, Slot& s, const GroupPlane& p, int center, bo
             }
         }
         GroupLaunch launch{};
-        launch.src = s.src_ptrs.as<const float*>();
+        launch.src = frames ? frames : s.src_ptrs.as<const float*>();
         launch.guide = p.wiener ? s.ref_ptrs.as<const float*>() : nullptr;
         launch.pitch = p.width;
         launch.matches = s.matches.as<DeviceMatch>();
@@ -1195,11 +1225,12 @@ void queue_plane(Driver& d, RollTurn& turn, int plane, int start, int count, Chu
         void center(int center, int next) {
             if (!d.two_stage) upload(center);
             point(center, p.wiener);
+            const float* const* estimates = d.iters > 1 ? rounds(center) : nullptr;
             // Logical slice i is frame next + i, in ring cell (next + i) % (2R+1).
             fixed.slices = std::min(nt, nframes - next);
             fixed.slice_first = next % nt;
             fixed.slice_base = center - radius - next;
-            filter_center(d, s, p, center, p.wiener, &fixed);
+            filter_center(d, s, p, center, p.wiener && d.iters == 1, &fixed, estimates);
             // Ordered planes: each frame takes its centers in ascending
             // order, within a chunk and from one chunk to the next.
             for (int target = std::max(next, center - radius);
@@ -1212,6 +1243,38 @@ void queue_plane(Driver& d, RollTurn& turn, int plane, int start, int count, Chu
                                      p.floats, s.stream);
                 }
             }
+        }
+        // Every round of a center but the last, as the legacy output does it
+        // for its center alone: the round's sums cover the window's frames
+        // (slot t in slice t), and each window frame's estimate is finished
+        // from them (unchanged where nothing covers it), then relaxed toward
+        // its noisy frame for the next round, which matches and filters the
+        // estimates. Returns the device pointer array of the estimates.
+        const float* const* rounds(int center) {
+            FixedTarget sums{s.round_num.as<unsigned long long>(), s.round_den.as<unsigned long long>(), p.width,
+                             p.floats};
+            sums.slices = sums.slice_ring = nt;
+            const auto noisy = [&](int t) {
+                return r.src_frames[temporal_slot_frame(center, t, radius, nframes) % ring].as<float>();
+            };
+            const float* const* estimates = s.estimate_ptrs.as<const float*>();
+            for (int iter = 0; iter + 1 < d.iters; ++iter) {
+                fixed_clear(sums, p.floats * nt, s.stream);
+                for (int t = 0; t < nt && iter > 0; ++t) {
+                    iter_regularize(s.estimates[t].as<float>(), noisy(t), p.floats, d.delta, s.stream);
+                }
+                filter_center(d, s, p, center, p.wiener && iter == 0, &sums, iter > 0 ? estimates : nullptr);
+                for (int t = 0; t < nt; ++t) {
+                    const std::size_t slice = static_cast<std::size_t>(t) * p.floats;
+                    fixed_finish(FixedTarget{sums.num + slice, sums.den + slice, p.width, p.floats}, p.block,
+                                 iter > 0 ? s.estimates[t].as<float>() : noisy(t), p.width, p.height,
+                                 s.fixed_rows.as<unsigned long long>(), s.estimates[t].as<float>(), s.stream);
+                }
+            }
+            for (int t = 0; t < nt; ++t) {
+                iter_regularize(s.estimates[t].as<float>(), noisy(t), p.floats, d.delta, s.stream);
+            }
+            return estimates;
         }
         void output(int frame) {
             for (int c = 0; c < channels; ++c) {
@@ -1482,8 +1545,14 @@ void group_filter_install(GroupFilterConfig&& config, VSMap* out, VSCore* core, 
     d->vi_out = d->vi;
     if (d->mode == GroupMode::Legacy) d->vi_out.height = nss::checked_fat_height(d->vi.height, d->radius);
     d->budget = nss::current_budget();
-    if (d->mode == GroupMode::Rolling && iterative(*d)) {
-        throw std::logic_error(prefix(*d) + "rolling mode does not support joint or multi-round filters");
+    if (d->mode == GroupMode::Rolling && d->channels > 1 && !d->shared_match) {
+        throw std::logic_error(prefix(*d) + "rolling mode does not support joint filters");
+    }
+    // A rolling center's rounds before the last add into fixed-point sums.
+    for (const GroupPlane& p : d->planes) {
+        if (d->mode == GroupMode::Rolling && d->iters > 1 && p.active && !p.fused) {
+            throw std::logic_error(prefix(*d) + "rolling rounds need a fused plane");
+        }
     }
     // Fused planes finish straight from their accumulators; the legacy output
     // is the float slices of each center.

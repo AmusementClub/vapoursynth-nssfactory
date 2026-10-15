@@ -57,7 +57,7 @@ add_test(NAME test_cuda_stress
          COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/stress_cuda.py" --cuda "${NSS_CUDA_PLUGIN}"
                  --cycles 6 --frames 12)
 set_tests_properties(test_cuda_stress PROPERTIES LABELS cuda SKIP_RETURN_CODE 77)
-# Rolling against legacy + VAggregate; BM3D, WNNM and single-round NCSR roll on the device.
+# Rolling against legacy + VAggregate; BM3D, WNNM and NCSR roll on the device.
 add_test(NAME test_cuda_temporal_rolling
          COMMAND ${Python3_EXECUTABLE} "${PROJECT_SOURCE_DIR}/tests/test_temporal_rolling.py"
                  --plugin "${NSS_CUDA_PLUGIN}" --namespace nss_cuda --native-rolling BM3D,WNNM,NCSR

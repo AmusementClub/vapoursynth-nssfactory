@@ -32,6 +32,12 @@
 //     `codes` the factor C of M = V C, which the block kernel multiplies out
 //     across its threads; the return value is the aggregation weight of the
 //     group's patches.
+//   Optionally, for the block kernels (lane 0 runs `finish` otherwise):
+//   template <int N> float finish_lane(float* g, const float* v, const DeviceMatch* matches, int n, int area,
+//                                      int lane) const;
+//     `finish` with `codes` on the group's N threads, thread `lane` writing
+//     row `lane` of C; every thread of the block calls it (it holds a barrier
+//     between reading the eigenvalues and writing C).
 #pragma once
 
 #include "cuda/common/aggregate.hpp"
@@ -46,6 +52,7 @@
 
 #include <cstddef>
 #include <stdexcept>
+#include <type_traits>
 
 namespace nss_cuda {
 
@@ -63,6 +70,11 @@ struct GramGroupArgs {
     float* scratch = nullptr;   // batch * gram_scratch_floats(group)
 };
 
+
+template <class Model, class = void>
+struct GramLaneFinish : std::false_type {};
+template <class Model>
+struct GramLaneFinish<Model, std::void_t<decltype(&Model::template finish_lane<16>)>> : std::true_type {};
 
 // N threads per group and 32 / N groups per block, so that the warp is full
 // (a block's groups share the barriers and nothing else). A block's last
@@ -89,13 +101,18 @@ __global__ void gram_block_kernel(GramGroupArgs a, Model model) {
         const DeviceMatch& mj = m[j < n ? j : 0];
         col[j] = a.src[mj.t] + static_cast<long long>(mj.y) * a.pitch + mj.x;
     }
+    // Column `lane` of the group, as col[lane] (a run-time index into col or
+    // row would put that array in local memory).
+    const DeviceMatch& own_match = m[lane < n ? lane : 0];
+    const float* const own = a.src[own_match.t] + static_cast<long long>(own_match.y) * a.pitch + own_match.x;
     const bool center = model.center();
-    // Gram row `lane`.
+    // Gram row `lane`. The pixel's offset advances by a column counter: no
+    // division by the run-time block size (two nested loops lost more, 0.93,
+    // than the division cost).
     float acc[N];
 #pragma unroll
     for (int k = 0; k < N; ++k) acc[k] = 0.f;
-    for (int p = 0; p < area; ++p) {
-        const int offset = (p / a.block) * a.pitch + p % a.block;
+    for (int p = 0, c = 0, offset = 0; p < area; ++p) {
         float row[N];
         float sum = 0.f;
 #pragma unroll
@@ -103,20 +120,28 @@ __global__ void gram_block_kernel(GramGroupArgs a, Model model) {
             row[j] = j < n ? col[j][offset] : 0.f;
             sum += row[j];
         }
+        float mine = lane < n ? own[offset] : 0.f;
         if (center) {
             const float mu = sum / static_cast<float>(n);
 #pragma unroll
             for (int j = 0; j < N; ++j) row[j] = j < n ? row[j] - mu : 0.f;
+            mine = lane < n ? mine - mu : 0.f;
         }
-        const float mine = row[lane];
 #pragma unroll
         for (int k = 0; k < N; ++k) acc[k] = fmaf(mine, row[k], acc[k]);
+        if (++c == a.block) c = 0, offset += a.pitch - a.block;
+        ++offset;
     }
 #pragma unroll
     for (int k = 0; k < N; ++k) g[lane * N + k] = acc[k];
     __syncthreads();
     block_jacobi<float>(g, v, N, cs, &flag, true, lane, N);
-    if (lane == 0 && live) weight = model.template finish<N>(g, v, m, n, area, true);
+    if constexpr (GramLaneFinish<Model>::value) {
+        const float w = model.template finish_lane<N>(g, v, m, n, area, lane);
+        if (lane == 0 && live) weight = w;
+    } else if (lane == 0 && live) {
+        weight = model.template finish<N>(g, v, m, n, area, true);
+    }
     __syncthreads();
     const bool fused = a.fused.num != nullptr;
     const long long cell =
@@ -130,8 +155,7 @@ __global__ void gram_block_kernel(GramGroupArgs a, Model model) {
             for (int i = 0; i < N; ++i) sum = fmaf(v[k * N + i], g[i * N + lane], sum);
             acc[k] = sum;
         }
-        for (int p = 0; p < area; ++p) {
-            const int offset = (p / a.block) * a.pitch + p % a.block;
+        for (int p = 0, c = 0, offset = 0, target = 0; p < area; ++p) {
             float row[N];
             float sum = 0.f;
 #pragma unroll
@@ -144,10 +168,12 @@ __global__ void gram_block_kernel(GramGroupArgs a, Model model) {
 #pragma unroll
             for (int k = 0; k < N; ++k) out = fmaf(k < n ? row[k] - mu : 0.f, acc[k], out);
             if (fused) {
-                fixed_add(a.fused.num, cell + (p / a.block) * a.fused.pitch + p % a.block, weight * (out + mu));
+                fixed_add(a.fused.num, cell + target, weight * (out + mu));
             } else {
                 x[lane * area + p] = out + mu;
             }
+            if (++c == a.block) c = 0, offset += a.pitch - a.block, target += a.fused.pitch - a.block;
+            ++offset, ++target;
         }
         if (fused) fixed_add(a.fused.den, cell, weight);
     }
