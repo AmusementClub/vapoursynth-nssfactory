@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include "cuda/twsc/kernels.hpp"
+#include "cuda/common/block_jacobi.cuh"
 #include "cuda/common/block_tridiag.cuh"
 #include "cuda/runtime/error.hpp"
 
@@ -41,6 +42,11 @@ __device__ __forceinline__ float warp_sum(float x) {
 // kWays chains of additions in flight instead of one.
 constexpr int kWays = 4;
 
+// ADMM elements a thread keeps in registers, and pixels of a patch loaded
+// at a time (twsc_block_kernel).
+constexpr int kHeld = 16;
+constexpr int kRun = 8;
+
 // common(i) is c_i, each(way, i) the v_i of sum `way`.
 template <class Real, class Common, class Each>
 __device__ __forceinline__ void ordered_dots(int n, Real* sum, Common common, Each each) {
@@ -68,22 +74,63 @@ __device__ __forceinline__ void ordered_dots(int n, Real* sum, Common common, Ea
     }
 }
 
+// The elements e = outer * inners + inner of an outers x inners array from
+// e = threadIdx.x by steps of blockDim.x: body(outer, inner). The pair is
+// advanced by counters instead of a division per element.
+template <class Body>
+__device__ __forceinline__ void for_elements(int outers, int inners, Body body) {
+    int outer = threadIdx.x / inners, inner = threadIdx.x % inners;
+    const int outer_step = blockDim.x / inners, inner_step = blockDim.x % inners;
+    while (outer < outers) {
+        body(outer, inner);
+        outer += outer_step;
+        inner += inner_step;
+        if (inner >= inners) inner -= inners, ++outer;
+    }
+}
+
 // The elements (outer, inner) of an outers x inners array, a thread taking
 // runs of up to kWays inner neighbours: body(outer, first inner, count).
 template <class Body>
 __device__ __forceinline__ void for_runs(int outers, int inners, Body body) {
     const int runs = (inners + kWays - 1) / kWays;
-    for (int e = threadIdx.x; e < outers * runs; e += blockDim.x) {
-        const int first = e % runs * kWays;
-        body(e / runs, first, min(kWays, inners - first));
+    if (runs == 0) return;
+    for_elements(outers, runs, [&](int outer, int run) {
+        const int first = run * kWays;
+        body(outer, first, min(kWays, inners - first));
+    });
+}
+
+// The eigendecomposition of a group's k x k matrix (block_eigen's contract).
+// Caps 12 to 16 (one warp; block 4 in gray or on cfast's planes, joint RGB
+// with a group up to 16) take the warp Jacobi, in registers: at 16 about 20k
+// warp instructions a group against 35k for block_eigen, whose QL chain runs
+// on one thread. Padded to 16 it is slower below 12 (block 4 / step 4 /
+// window 20 at 1080p against block_eigen: group 10 0.92, 12 1.02, 14 1.12,
+// 16 1.22; joint RGB group 12 0.99, 14 1.05; light, group 8, 0.95), and at
+// cap 32 on four warps it took 220k instructions a group against 148k (RTX
+// 5080, 2026-10-14). Caps above 16 (kDc instances) take divide and conquer
+// on the tridiagonal matrix (block_eigen_dc) with the group's ADMM arrays,
+// idle then, as its scratch; the QL chain it replaces was a quarter of a
+// 64 x 64 block's samples (default call, 128 x 128: gray 1.42, RGB 1.37,
+// joint RGB 1.31; block 8 / group 32 1.17). The second eigen step of
+// unequal row weights keeps QL. The kDc = false instance (caps up to 16)
+// does not carry it: in one instance the code cost the cap 16 path 2%.
+constexpr int kWarpEigenMin = 12;
+template <class Real, bool kDc>
+__device__ void group_eigen(Real* a, Real* reflectors, int k, int cap, Real* fast, Real* values, Real* dc = nullptr) {
+    if (!kDc && cap >= kWarpEigenMin && cap <= kWarpEigen) {
+        warp_eigen(a, k, values);
+    } else {
+        block_eigen<Real, kDc>(a, reflectors, k, fast, values, k > kWarpEigen ? dc : nullptr);
     }
 }
 
 // One block per group; every step is a parallel loop over matrix elements
 // with fixed per-element operation order, and the norms of the convergence
 // test are reduced in a fixed order (within a warp, then over the warps), so
-// the result does not depend on scheduling. The eigensolver is
-// common/block_tridiag.cuh; the Gram matrix, which its eigenvectors replace,
+// the result does not depend on scheduling. The eigensolver is group_eigen;
+// the Gram matrix, which its eigenvectors replace,
 // lives in shared memory when the device has room for it
 // (twsc_filter_groups).
 //
@@ -100,7 +147,7 @@ __host__ __device__ constexpr std::size_t block_scratch_bytes(int cap, int threa
 // kThreads (64 to 256) bounds the block size; smaller blocks may be launched.
 // The register bound (768 threads to an SM) is not what holds the blocks of
 // an SM back at 64 x 64 (five by shared memory) or 90 x 90 (three).
-template <class Real, int kThreads>
+template <class Real, int kThreads, bool kDc>
 __global__ void __launch_bounds__(kThreads, 768 / kThreads) twsc_block_kernel(TwscGroupArgs a) {
     extern __shared__ unsigned char shared_bytes[];  // scratch, then the matrix with a.shared_matrices
     const int lane = threadIdx.x, lanes = blockDim.x;
@@ -113,7 +160,7 @@ __global__ void __launch_bounds__(kThreads, 768 / kThreads) twsc_block_kernel(Tw
     const DeviceMatch* match = a.matches + static_cast<long long>(g) * a.group;
     float* yc = a.centered + static_cast<long long>(g) * m * a.group;
     const int cap = min(m, a.group);
-    Real* work = static_cast<Real*>(a.work) + static_cast<long long>(g) * twsc_work_reals(m, a.group);
+    Real* work = static_cast<Real*>(a.work) + g * a.work_reals;
     Real* mean = work;
     Real* column = mean + m;
     Real* raw = column + a.group;
@@ -148,13 +195,29 @@ __global__ void __launch_bounds__(kThreads, 768 / kThreads) twsc_block_kernel(Tw
             const float* original = a.original[match[j].t * a.nch + c] + at;
             const double noise = a.sigma[match[j].t * a.nch + c];
             rms2 += noise * noise;
-            for (int p = 0; p < area; ++p) {
-                const int offset = (p / a.block) * a.width + p % a.block;
-                const float value = estimate[offset];
-                yc[j * m + c * area + p] = value;
-                if (a.residual) {
-                    const float d = original[offset] - value;
-                    residual.add(d * d);
+            // kRun pixels' loads ahead of their stores (yc may alias the
+            // frames as far as the compiler knows), in pixel order.
+            float* out = yc + j * m + c * area;
+            for (int p = 0, y = 0, x = 0; p < area; p += kRun) {
+                float value[kRun], given[kRun];
+#pragma unroll
+                for (int t = 0; t < kRun; ++t) {
+                    if (p + t < area) {
+                        const int offset = y * a.width + x;
+                        value[t] = estimate[offset];
+                        if (a.residual) given[t] = original[offset];
+                        if (++x == a.block) x = 0, ++y;
+                    }
+                }
+#pragma unroll
+                for (int t = 0; t < kRun; ++t) {
+                    if (p + t < area) {
+                        out[p + t] = value[t];
+                        if (a.residual) {
+                            const float d = given[t] - value[t];
+                            residual.add(d * d);
+                        }
+                    }
                 }
             }
         }
@@ -189,7 +252,7 @@ __global__ void __launch_bounds__(kThreads, 768 / kThreads) twsc_block_kernel(Tw
         }
     });
     __syncthreads();
-    block_eigen(gram, reflectors, kd, scratch, values);
+    group_eigen<Real, kDc>(gram, reflectors, kd, cap, scratch, values, data);
 
     // Descending order by rank (ties by index), reduced spectrum, active count.
     for (int e = lane; e < kd; e += lanes) {
@@ -289,12 +352,20 @@ __global__ void __launch_bounds__(kThreads, 768 / kThreads) twsc_block_kernel(Tw
             weighted[l * r + k] = sum;
         }
         __syncthreads();
-        if (r > 0) block_eigen(weighted, reflectors, r, scratch, values);
+        if (r > 0) group_eigen<Real, kDc>(weighted, reflectors, r, cap, scratch, values);
         for (int k = lane; k < r; k += lanes) eigen[k] = fmax(values[k], Real(0));
         __syncthreads();
     }
 
     bool converged = r == 0;
+    // With up to kHeld elements a thread (cap 16 and a group up to 32 on one
+    // warp, for one) the dual and auxiliary variables stay in registers: the
+    // arrays of an SM's resident groups are more than its L1 holds, and the
+    // ADMM pass waited on them (coef too: it spills).
+    const bool held = uniform && r * n <= kHeld * lanes;
+    Real held_dual[kHeld], held_aux[kHeld];
+#pragma unroll
+    for (int t = 0; t < kHeld; ++t) held_dual[t] = held_aux[t] = 0;
     // The dual update of an iteration is taken by the next one's first pass.
     Real rho = static_cast<Real>(a.rho), before = 0;
     for (int iteration = 0; iteration < a.iterations && r > 0; ++iteration) {
@@ -315,25 +386,53 @@ __global__ void __launch_bounds__(kThreads, 768 / kThreads) twsc_block_kernel(Tw
             __syncthreads();
         }
         float primal = 0.f, dc = 0.f, dz = 0.f;
-        for (int e = lane; e < r * n; e += lanes) {
-            const int k = e / n, j = e % n;
-            Real value, y = dual[e];
-            if (uniform) {
-                if (iteration > 0) dual[e] = y += before * (coef[e] - aux[e]);
-                const Real right = data[e] + Real(0.5) * (rho * aux[e] - y) * column[j];
-                value = right / (eigen[k] + Real(0.5) * rho * column[j]);
-            } else {
-                value = 0;
-                for (int i = 0; i < r; ++i) value += gram[i * r + k] * projected[i * n + j];
-            }
-            const Real temp = value + y / rho;
-            const Real z = copysign(fmax(fabs(temp) - Real(1) / rho, Real(0)), temp);
-            const float p = value - z, cchange = value - coef[e], zchange = z - aux[e];
+        // The shrinkage of one element, and its terms of the norms in the
+        // thread's element order.
+        const Real inverse_rho = Real(1) / rho;
+        const auto shrink = [&](Real value, Real y, Real coef_was, Real aux_was) {
+            const Real temp = value + y * inverse_rho;
+            const Real z = copysign(fmax(fabs(temp) - inverse_rho, Real(0)), temp);
+            const float p = value - z, cchange = value - coef_was, zchange = z - aux_was;
             primal += p * p;
             dc += cchange * cchange;
             dz += zchange * zchange;
-            coef[e] = value;
-            aux[e] = z;
+            return z;
+        };
+        if (held) {
+            // The thread's elements in for_elements order, unrolled so that
+            // the registers are named.
+            int k = lane / n, j = lane % n;
+#pragma unroll
+            for (int t = 0; t < kHeld; ++t) {
+                if (k < r) {
+                    const int e = k * n + j;
+                    const Real coef_was = coef[e];
+                    Real y = held_dual[t];
+                    if (iteration > 0) held_dual[t] = y += before * (coef_was - held_aux[t]);
+                    const Real right = data[e] + Real(0.5) * (rho * held_aux[t] - y) * column[j];
+                    const Real value = __fdividef(right, eigen[k] + Real(0.5) * rho * column[j]);
+                    held_aux[t] = shrink(value, y, coef_was, held_aux[t]);
+                    coef[e] = value;
+                }
+                k += lanes / n;
+                j += lanes % n;
+                if (j >= n) j -= n, ++k;
+            }
+        } else {
+            for_elements(r, n, [&](int k, int j) {
+                const int e = k * n + j;
+                Real value, y = dual[e];
+                if (uniform) {
+                    if (iteration > 0) dual[e] = y += before * (coef[e] - aux[e]);
+                    const Real right = data[e] + Real(0.5) * (rho * aux[e] - y) * column[j];
+                    value = __fdividef(right, eigen[k] + Real(0.5) * rho * column[j]);
+                } else {
+                    value = 0;
+                    for (int i = 0; i < r; ++i) value += gram[i * r + k] * projected[i * n + j];
+                }
+                aux[e] = shrink(value, y, coef[e], aux[e]);
+                coef[e] = value;
+            });
         }
         primal = warp_sum(primal);
         dc = warp_sum(dc);
@@ -368,7 +467,7 @@ __global__ void __launch_bounds__(kThreads, 768 / kThreads) twsc_block_kernel(Tw
     // group, U (diag(s') C) for a wide one.
     Real* mix = rhs;
     if (uniform) {
-        for (int e = lane; e < r * n; e += lanes) coef[e] *= tall ? scale[e / n] : spectrum[e / n];
+        for_elements(r, n, [&](int k, int j) { coef[k * n + j] *= tall ? scale[k] : spectrum[k]; });
         __syncthreads();
         for_runs(tall ? n : 0, n, [=](int j, int l, int count) {
             Real sum[kWays];
@@ -414,15 +513,17 @@ namespace {
 struct Placement {
     int threads;         // per block
     int bound;           // the kernel instance
+    bool divide;         // divide and conquer for the eigen step (cap above kWarpEigen)
     bool shared_matrices;
     bool shared_values;
     std::size_t shared;  // bytes per block
     int resident;        // blocks the device runs at a time
 };
 
-// About two threads per matrix row: the eigensolver is bound by one thread's
-// chain, so blocks per SM count for more than threads per block (measured on
-// sm_120, 2026-10-12; none of this enters the output). The matrix goes to
+// About two threads per matrix row: blocks per SM count for more than
+// threads per block (measured on sm_120, 2026-10-12 with QL; with divide and
+// conquer, 128 threads at cap 32 and 256 at cap 64 measured 0.85 to 0.87,
+// 2026-10-14; none of this enters the output). The matrix goes to
 // shared memory when a block may hold it. An SM then runs sm / (block +
 // 1 KiB) blocks (the driver's share, measured; the size in units of 256
 // bytes), up to the kernel's register bound; the solver's slow scratch joins
@@ -436,6 +537,7 @@ Placement place(int cap) {
     Placement p{};
     p.threads = cap <= 16 ? 32 : cap <= 32 ? 64 : cap <= 64 ? 128 : 256;
     p.bound = p.threads <= 64 ? 64 : p.threads <= 128 ? 128 : 256;
+    p.divide = cap > kWarpEigen;
     const std::size_t matrix = static_cast<std::size_t>(cap) * cap * sizeof(TwscReal);
     p.shared_matrices = matrix + block_scratch_bytes<TwscReal>(cap, p.bound, false) <= static_cast<std::size_t>(per_block);
     const auto bytes = [&](bool values) { return block_scratch_bytes<TwscReal>(cap, p.bound, values) + (p.shared_matrices ? matrix : 0); };
@@ -485,6 +587,7 @@ void twsc_filter_groups(const TwscGroupArgs& args, cudaStream_t stream) {
     TwscGroupArgs a = args;
     a.shared_matrices = p.shared_matrices;
     a.shared_values = p.shared_values;
+    a.work_reals = static_cast<long long>(twsc_work_reals(m, a.group));
     const auto launch = [&](auto kernel) {
         if (p.shared > (48u << 10)) {
             NSS_CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, static_cast<int>(p.shared)));
@@ -492,9 +595,12 @@ void twsc_filter_groups(const TwscGroupArgs& args, cudaStream_t stream) {
         kernel<<<a.batch, p.threads, p.shared, stream>>>(a);
     };
     switch (p.bound) {
-        case 64: launch(twsc_block_kernel<TwscReal, 64>); break;
-        case 128: launch(twsc_block_kernel<TwscReal, 128>); break;
-        default: launch(twsc_block_kernel<TwscReal, 256>); break;
+        case 64:
+            if (p.divide) launch(twsc_block_kernel<TwscReal, 64, true>);
+            else launch(twsc_block_kernel<TwscReal, 64, false>);
+            break;
+        case 128: launch(twsc_block_kernel<TwscReal, 128, true>); break;
+        default: launch(twsc_block_kernel<TwscReal, 256, true>); break;
     }
     NSS_CUDA_CHECK_LAUNCH();
 }
