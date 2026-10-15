@@ -119,11 +119,11 @@ times the groups, so `cfast=0` is the faster call there.
 On the device the transform and its inverse are one kernel each on the
 uploaded planes, and the three planes run one after the other on the
 instance's stream. RGB 1080p on an RTX 5080, `sigma=3`, `block_size=4,
-block_step=4, group_size=32, search_window=20`: 13.1 fps at `iters=2` and 9.0
-at `iters=3` with the fast path, 6.9 and 4.6 without (gray: 38 and 27 fps).
+block_step=4, group_size=32, search_window=20`: 13.1 fps at `iters=2` and 8.8
+at `iters=3` with the fast path, 9.0 and 6.1 without (gray: 39 and 26 fps).
 The joint filter needs `group_size=64` to reach the same quality at that block
-size (2.7 and 1.9 fps). The default call on a 128x128 RGB frame takes 0.40 s
-with the fast path (4 rounds) and 1.7 s without; `block_step=8, group_size=8,
+size (3.9 and 2.7 fps). The default call on a 128x128 RGB frame takes 0.36 s
+with the fast path (4 rounds) and 1.6 s without; `block_step=8, group_size=8,
 iters=2` at 1080p runs at 33 fps with it and 36 without (see "When it pays").
 
 ## Device parameters
@@ -161,8 +161,8 @@ How the streams, the memory limit and the rolling output behave across filters i
   non-converged groups; `_NSSSvdDoubleGroups` and `_NSSSylvesterResidual` are
   CPU-solver diagnostics and are reported as 0.
 - **Speed.** The default settings remain very heavy (one 64x64
-  eigendecomposition per pixel position per round): about 0.33 s for a 128x128
-  frame on an RTX 5080 (0.40 s in RGB with 4 rounds; 1.7 s with `cfast=0`),
+  eigendecomposition per pixel position per round): about 0.29 s for a 128x128
+  frame on an RTX 5080 (0.36 s in RGB with 4 rounds; 1.6 s with `cfast=0`),
   against about 190 s on 16 CPU threads. The fast call above (`block_step=8,
   group_size=8, iters=2`) runs 1080p at about 97 fps in gray and 33 fps in RGB
   (36 with `cfast=0`).

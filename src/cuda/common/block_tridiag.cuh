@@ -24,6 +24,12 @@ __device__ __forceinline__ Real block_eigen_rcp(Real x) {
     else return Real(1) / x;
 }
 
+// Four reals loaded as one (the reflectors of a step of block_eigen_dc).
+template <class Real>
+struct alignas(4 * sizeof(Real)) BlockEigenQuad {
+    Real x[4];
+};
+
 // Reals of the scratch of block_eigen_dc (any memory, read by every thread).
 __host__ __device__ constexpr int block_eigen_dc_reals(int k) { return 3 * k * k + 20 * k + 8; }
 
@@ -32,16 +38,16 @@ __host__ __device__ constexpr int block_eigen_dc_reals(int k) { return 3 * k * k
 // Eisenstat): the matrix is torn into leaves of at most 16 by rank-one
 // pieces, each leaf is solved by warp_eigen on one warp, and the nodes of a
 // level are merged together up the tree. The vectors in the tridiagonal
-// basis are kept as rows of z (k x k); at the end the reflectors take them to
-// the eigenvectors, one per row of a. d becomes the eigenvalues, in no order.
-// The block has at least k threads, a multiple of 32; scratch:
+// basis are kept as rows of a (k x k, its contents are not read); at the end
+// the reflectors take them to the eigenvectors. d becomes the eigenvalues, in
+// no order. The block has at least k threads, a multiple of 32; scratch:
 // block_eigen_dc_reals(k) reals of any memory.
 template <class Real>
 __device__ void block_eigen_dc(Real* a, const Real* reflectors, int k, Real* d, const Real* e, Real* scratch) {
     const int lane = threadIdx.x, lanes = blockDim.x, warp = lane >> 5, warps = lanes >> 5;
     const Real eps = sizeof(Real) == 8 ? Real(2.2e-16) : Real(1.2e-7);
-    Real* z = scratch;
-    Real* u = z + k * k;      // the secular vectors of a merge (K x K); first the leaves' matrices
+    Real* z = a;  // the vectors (in the block's shared memory)
+    Real* u = scratch + k * k;  // the secular vectors of a merge (K x K); first the leaves' matrices
     Real* tmp = u + k * k;    // a merge's new rows (n x n)
     Real* lam = tmp + k * k;  // eigenvalues of the rows of z
     Real* ds = lam + k;       // sorted values, weights and rows of a merge
@@ -60,9 +66,10 @@ __device__ void block_eigen_dc(Real* a, const Real* reflectors, int k, Real* d, 
     int* org = dsrc + k;
     int* rr = org + k;  // deflating rotations: rows
     int* counts = rr + 2 * k;
-    int leaves = 1;
-    while ((k + leaves - 1) / leaves > kWarpEigen) leaves *= 2;
-    const auto bound = [=](int p) { return p * k / leaves; };
+    int shift = 0;  // leaves = 1 << shift
+    while (((k + (1 << shift) - 1) >> shift) > kWarpEigen) ++shift;
+    const int leaves = 1 << shift;
+    const auto bound = [=](int p) { return (p * k) >> shift; };
     __syncthreads();
     // The tears: T = diag(T1 - |b| e_last e_last', T2 - |b| e_0 e_0') + |b| v v'.
     for (int p = 1 + lane; p < leaves; p += lanes) {
@@ -271,48 +278,99 @@ __device__ void block_eigen_dc(Real* a, const Real* reflectors, int k, Real* d, 
                 if (c0 + q < n) to[q] = acc[q];
         }
         __syncthreads();
-        for (int j = lane; j < k; j += lanes) {
-            const int p = node_of(j), lo = bound(p * 2 * width), n = bound((p + 1) * 2 * width) - lo, t = j - lo;
-            for (int c = 0; c < n; ++c) z[j * k + lo + c] = tmp[lo * k + t * n + c];
-            lam[j] = newlam[j];
+        // A row a warp (neighbouring threads write neighbouring columns).
+        for (int j = warp; j < k; j += warps) {
+            const int p = node_of(j), lo = bound(p * 2 * width), n = bound((p + 1) * 2 * width) - lo;
+            for (int c = lane & 31; c < n; c += 32) z[j * k + lo + c] = tmp[lo * k + (j - lo) * n + c];
         }
+        for (int j = lane; j < k; j += lanes) lam[j] = newlam[j];
         __syncthreads();
     }
     // a <- z Q^T = z H_{k - 3} ... H_0 (reflectors: row j holds tau at j and
-    // u beyond), row by row without barriers: two threads a row, each a half
-    // of the columns, from a column skewed by the row so that the rows of a
-    // warp read different banks.
-    for (int i = lane; i < k * k; i += lanes) a[i] = z[i];
+    // u beyond), four reflectors a step. The scratch is free from here: the
+    // reflectors of step b, H_{4b + 3} ... H_{4b}, go there as one quad of
+    // their components a column (zero up to the reflector's own row; a
+    // missing or empty reflector is all zeros), with their tau and the
+    // products of their vectors (v_m . v_i, m > i) beside (the quads take at
+    // most k (k + 1) reals and the alignment, before tmp).
+    using Quad = BlockEigenQuad<Real>;
+    const int steps = (k - 2 + 3) / 4;
+    Quad* quads = reinterpret_cast<Quad*>((reinterpret_cast<unsigned long long>(scratch) + sizeof(Quad) - 1) / sizeof(Quad) * sizeof(Quad));
+    Real* coefficients = tmp;  // 10 a step: tau of 4b .. 4b + 3, then the products
+    for (int i = lane; i < steps * k; i += lanes) {
+        const int b = i / k, c = i % k;
+        Quad q;
+#pragma unroll
+        for (int m = 0; m < 4; ++m) {
+            const int j = 4 * b + m;
+            q.x[m] = j < k - 2 && c > j && reflectors[j * k + j] != Real(0) ? reflectors[j * k + c] : Real(0);
+        }
+        quads[i] = q;
+        if (c < 4) {
+            const int j = 4 * b + c;
+            coefficients[10 * b + c] = j < k - 2 ? reflectors[j * k + j] : Real(0);
+        }
+    }
+    __syncthreads();
+    for (int i = lane; i < steps * 6; i += lanes) {
+        // The pairs (m, i): (1, 0), (2, 0), (2, 1), (3, 0), (3, 1), (3, 2).
+        const int b = i / 6, pair = i % 6;
+        const int m = pair < 1 ? 1 : pair < 3 ? 2 : 3, o = pair - (m * (m - 1)) / 2;
+        Real sum = 0;
+        for (int c = 4 * b + 1; c < k; ++c) {
+            const Quad q = quads[b * k + c];
+            sum += q.x[m] * q.x[o];
+        }
+        coefficients[10 * b + 4 + pair] = sum;
+    }
     __syncthreads();
     {
-        // Every lane of a warp runs every step (the shuffle, and the
-        // __syncwarp that orders a step's writes of one half of a row before
-        // the next step's reads of the other); a lane past the rows has no
-        // columns.
+        // Row by row without barriers: two threads a row, each a half of the
+        // columns, from a column skewed by the row so that the rows of a warp
+        // read different banks. Every lane of a warp runs every step (the
+        // shuffles, and the __syncwarp that orders a step's writes of one
+        // half of a row before the next step's reads of the other); a lane
+        // past the rows has no columns.
         const int per = lanes >= 2 * k ? 2 : 1, r = lane / per, part = lane % per;
         if (lane < 32 * ((per * k + 31) / 32)) {
             Real* row = a + min(r, k - 1) * k;
-            for (int j = k - 3; j >= 0; --j) {
+            for (int b = steps - 1; b >= 0; --b) {
                 __syncwarp();
-                const Real* v = reflectors + j * k;
-                const Real tau = v[j];
-                if (tau == Real(0)) continue;
-                const int len = k - j - 1, half = (len + per - 1) / per;
+                const Quad* v = quads + b * k;
+                const Real* f = coefficients + 10 * b;
+                const int j = 4 * b, len = k - j - 1, half = (len + per - 1) / per;
                 const int from = r < k ? part * half : len, to = min(len, from + half);
                 const int skew = r % len;
-                Real sum = 0;
+                Real dot[4] = {0, 0, 0, 0};
                 for (int t = from, c = j + 1 + (from + skew) % len; t < to; ++t) {
-                    sum += row[c] * v[c];
+                    const Quad q = v[c];
+                    const Real x = row[c];
+#pragma unroll
+                    for (int m = 0; m < 4; ++m) dot[m] += x * q.x[m];
                     if (++c == k) c = j + 1;
                 }
                 if (per == 2) {
-                    const Real other = __shfl_xor_sync(0xffffffffu, sum, 1);
-                    sum = part == 0 ? sum + other : other + sum;
+#pragma unroll
+                    for (int m = 0; m < 4; ++m) {
+                        const Real other = __shfl_xor_sync(0xffffffffu, dot[m], 1);
+                        dot[m] = part == 0 ? dot[m] + other : other + dot[m];
+                    }
                 }
-                const Real scale = tau * sum;
+                // H_{j + 3} first: each scale takes off what the ones before
+                // it moved along its vector.
+                const Real s3 = f[3] * dot[3];
+                const Real s2 = f[2] * (dot[2] - s3 * f[9]);
+                const Real s1 = f[1] * (dot[1] - s3 * f[8] - s2 * f[6]);
+                const Real s0 = f[0] * (dot[0] - s3 * f[7] - s2 * f[5] - s1 * f[4]);
                 if (r >= k) continue;
                 for (int t = from, c = j + 1 + (from + skew) % len; t < to; ++t) {
-                    row[c] = fma(-scale, v[c], row[c]);
+                    const Quad q = v[c];
+                    Real x = row[c];
+                    x = fma(-s3, q.x[3], x);
+                    x = fma(-s2, q.x[2], x);
+                    x = fma(-s1, q.x[1], x);
+                    x = fma(-s0, q.x[0], x);
+                    row[c] = x;
                     if (++c == k) c = j + 1;
                 }
             }
