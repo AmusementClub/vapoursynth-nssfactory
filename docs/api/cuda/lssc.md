@@ -45,18 +45,27 @@ How the streams and the memory limit behave across filters is in the [shared not
 
 - **Device-resident.** Patch packing, k-means, the dictionary (DCT atoms,
   sampled patches, one K-SVD round), the per-cluster sparse coding, the
-  reconstruction and the aggregation run on the device. The host only
-  sequences the steps and keeps index bookkeeping (cluster member lists and
-  the k-means round control).
-- **Numerics.** The K-SVD sparse codes use FP64 correlations and solves as on
-  the CPU; an atom's rank-one update takes the dominant singular triplet from
-  an FP64 power iteration instead of a full SVD. Everything else is FP32.
+  reconstruction and the aggregation run on the device, the k-means rounds and
+  cluster member lists included. The host only queues the steps.
+- **Numerics.** Everything is FP32. The K-SVD sparse codes (OMP) take their
+  correlations and solves in FP32 where the CPU uses FP64, and an atom's
+  rank-one update takes the dominant singular triplet from an FP32 power
+  iteration instead of the CPU's FP32 SVD. The group soft threshold's row
+  norms are summed by tiles of a cluster's members, not in the CPU's patch
+  order.
   - The output is not bit-identical to the CPU, but is inside the 60 dB gate
-    (139–141 dB on the frozen references) and run-to-run identical.
+    (137–141 dB on the frozen references) and run-to-run identical.
 - **Memory.** The coefficients cost `min(256, patches)` floats per grid patch,
   so a dense `block_step` on a large frame takes that much device memory.
-- **Speed.** The dictionary update is sequential over the atoms, so the gain
-  over the CPU is small: about 1–2x the CPU plugin at 16 threads for 1080p.
+  Without a limit (or where the limit leaves room) a stream also holds up to
+  two more sets of its input-side buffers (input plane, patches, assignments,
+  dictionary, k-means scratch: about 17 MB each at 1080p) so that the next
+  planes are clustered while one is coded, and frames are staged in pinned
+  host memory, a plane-sized region per denoised plane, three frames in
+  flight for gray (25 MB at 1080p) and two for RGB (50 MB).
+- **Speed.** On an RTX 5080 with one stream (the default; more streams add
+  nothing), 2026-10-15: gray 1080p 340 fps, RGB 1080p 111, `block_step=4` 83;
+  14–22x the CPU plugin at 16 threads.
 
 ## Pitfalls
 
