@@ -19,7 +19,7 @@ core.nss_cuda.TWSC(clip clip[, float[] sigma = 3.0, int estimate_sigma = 0,
                    int block_size = 8, int block_step = 1, int group_size = 90,
                    int search_window = 60, int bm_range, int radius = 0,
                    int ps_num = 2, int ps_range = 4, float lambda2 = 1.0,
-                   clip rclip = None, int iters = 12, float delta = 0.0,
+                   clip rclip = None, int iters = 12 (4 with cfast), float delta = 0.0,
                    int admm_iter = 10, float rho = 0.5, float mu = 1.1,
                    float tol = 1e-6, int cfast = 1,
                    string temporal_mode = "rolling", int rolling_chunk = 4,
@@ -37,7 +37,7 @@ core.nss_cuda.TWSC(clip clip[, float[] sigma = 3.0, int estimate_sigma = 0,
 | `block_step` | 1 | [1, block] | Reference-patch stride. **The default is 1 (every position)** — overriding it is the single largest speed lever: positions scale as `1/step^2`, so `block_step=8` is ~64x fewer groups. |
 | `group_size` | 90 | [1, 256] | Matched patches per group. 90 follows the paper's high-quality regime; 8–16 trades quality for large speedups. |
 | `search_window` | 60 | [1, 129] | Matching window edge. `bm_range=r` means `2r+1`; passing both is an error. |
-| `iters` | 12 | [1, 64] | Outer iterations (re-match and re-solve per round). Nearly linear cost; 12 is the balanced default, 2–4 for quick work. |
+| `iters` | 12; 4 with `cfast` | [1, 64] | Outer iterations (re-match and re-solve per round). Nearly linear cost; 12 is the balanced default, 2–4 for quick work. When the fast color path applies the default is 4 (see [Rounds](#fast-color-path-cfast)). |
 | `radius` | 0 | [0, 16] | Temporal radius. >0 makes the filter temporal: finished, normal-height frames by default (`temporal_mode`, below). |
 | `rclip` | none | clip | Reference clip guiding matching. |
 | `cfast` | 1 | 0 / 1 | Fast color path: an RGB frame whose three channels share one given `sigma` is filtered as three opponent-color planes, each alone, instead of as stacked three-channel patches. See [Fast color path](#fast-color-path-cfast). `cfast=0` keeps the joint filter. |
@@ -60,7 +60,7 @@ Each output frame stamps: `_NSSSigma` (per-plane, in 8-bit units),
 `_NSSGroups`, `_NSSADMMMaxIterGroups`, `_NSSSvdDoubleGroups`,
 `_NSSSylvesterResidual`, `_NSSBlockSize`, `_NSSGroupSize`, `_NSSBlockStep`,
 `_NSSSearchWindow`, `_NSSIterations`, `_NSSCFast` (1 when the fast color
-path ran) and `_NSSModelVersion=5`.
+path ran) and `_NSSModelVersion=6`.
 
 ## Fast color path (`cfast`)
 
@@ -87,22 +87,28 @@ It applies when all of these hold, and the joint filter runs otherwise:
 `rclip` goes through the same transform. `_NSSCFast` on the frame is 1 when
 the path ran. `_NSSGroups` counts the groups of the three planes.
 
-**Rounds.** A plane of the fast path behaves like a Gray clip: it needs far
-fewer rounds than the joint filter. Measured on the device plugin (DIV2K, 18
-images, 256x256 crops, PSNR to the clean image, sigma 5 / 15 / 25 / 50),
-against the joint filter with the same arguments:
+**Rounds.** A plane of the fast path behaves like a Gray clip and needs fewer
+rounds than the joint filter, so **`iters` defaults to 4 when the fast path
+applies** (12 otherwise; an explicit `iters` is always taken, and
+`_NSSIterations` reports the rounds that ran). Measured on the device plugin
+with the default geometry (DIV2K, 18 images, 256x256 crops, PSNR to the clean
+image), against the joint filter at its 12 rounds:
 
-| Arguments (`block_step=4` in all) | `cfast=1` against `cfast=0` |
-|---|---|
-| defaults, `iters=12` | -0.54 / -0.71 / -0.78 / -0.87 dB |
-| defaults, `iters=5` | +2.11 / +2.85 / +3.12 / +3.33 dB |
-| `block_size=4, group_size=32, search_window=20, iters=3` | +1.79 / +2.97 / +3.52 / +4.27 dB |
+| `cfast=1`, rounds | sigma 5 / 15 / 25 / 50 / 75 / 100 | Time |
+|---|---|---|
+| 3 | -0.01 / -0.05 / +0.02 / +0.21 / +0.37 / +0.44 dB | 0.17 |
+| 4 (default) | +0.14 / +0.15 / +0.20 / +0.29 / +0.40 / +0.46 dB | 0.22 |
+| 5 | +0.12 / +0.10 / +0.11 / +0.18 / +0.27 / +0.33 dB | 0.27 |
+| 8 | -0.15 / -0.26 / -0.27 / -0.28 / -0.19 / -0.10 dB | 0.43 |
+| 12 | -0.56 / -0.76 / -0.83 / -0.97 / -0.78 / -0.60 dB | 0.64 |
 
-With `iters=5` the fast path is 0.1 to 0.2 dB above the joint filter's 12
-rounds; with the default 12 rounds it over-smooths. **Set `iters` to 3 to 5
-when the fast path applies**, or `cfast=0` to keep the joint result. Filtering
-R, G and B alone, without the transform, measured 2 dB below the joint
-filter.
+At 4 rounds 15 of the 108 cases are below the joint filter, by up to 1.2 dB,
+most of them on one image (0.7 dB on average over its sigma levels);
+`cfast=0` keeps the joint result. With a smaller geometry the gap to the joint
+filter at the same arguments is larger: `block_size=4, block_step=4,
+group_size=32, search_window=20, iters=3` measured +1.79 / +2.97 / +3.52 /
++4.27 dB at sigma 5 / 15 / 25 / 50. Filtering R, G and B alone, without the
+transform, measured 2 dB below the joint filter.
 
 **When it pays.** A group's dictionary has `min(rows, group_size)` atoms, with
 `rows = block_size^2` per channel. The fast path shrinks it only when
@@ -116,9 +122,9 @@ instance's stream. RGB 1080p on an RTX 5080, `sigma=3`, `block_size=4,
 block_step=4, group_size=32, search_window=20`: 13.1 fps at `iters=2` and 9.0
 at `iters=3` with the fast path, 6.9 and 4.6 without (gray: 38 and 27 fps).
 The joint filter needs `group_size=64` to reach the same quality at that block
-size (2.7 and 1.9 fps). The default call on a 128x128 RGB frame takes 1.1 s
-with the fast path and 1.7 s without; `block_step=8, group_size=8, iters=2` at
-1080p runs at 33 fps with it and 36 without (see "When it pays").
+size (2.7 and 1.9 fps). The default call on a 128x128 RGB frame takes 0.40 s
+with the fast path (4 rounds) and 1.7 s without; `block_step=8, group_size=8,
+iters=2` at 1080p runs at 33 fps with it and 36 without (see "When it pays").
 
 ## Device parameters
 
@@ -156,10 +162,10 @@ How the streams, the memory limit and the rolling output behave across filters i
   CPU-solver diagnostics and are reported as 0.
 - **Speed.** The default settings remain very heavy (one 64x64
   eigendecomposition per pixel position per round): about 0.33 s for a 128x128
-  frame on an RTX 5080 (1.1 s in RGB; 1.7 s with `cfast=0`), against about
-  190 s on 16 CPU threads. The fast call above (`block_step=8, group_size=8,
-  iters=2`) runs 1080p at about 97 fps in gray and 33 fps in RGB (36 with
-  `cfast=0`).
+  frame on an RTX 5080 (0.40 s in RGB with 4 rounds; 1.7 s with `cfast=0`),
+  against about 190 s on 16 CPU threads. The fast call above (`block_step=8,
+  group_size=8, iters=2`) runs 1080p at about 97 fps in gray and 33 fps in RGB
+  (36 with `cfast=0`).
 - **Memory.** Besides its device buffers an instance keeps pinned host
   staging for two frames in flight, so that one stream stays busy while
   another thread copies; under a `memory_limit_mb` that leaves no room for

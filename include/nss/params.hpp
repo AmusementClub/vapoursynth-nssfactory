@@ -92,6 +92,9 @@ inline constexpr int kTwscDefaultBlock = 8;
 inline constexpr int kTwscDefaultStep = 1;
 inline constexpr int kTwscDefaultGroup = 90;
 inline constexpr int kTwscDefaultIters = 12;
+// Rounds when cfast filters RGB plane by plane (twsc_color_split): a plane
+// behaves like a gray clip and over-smooths at the joint filter's 12.
+inline constexpr int kTwscDefaultCfastIters = 4;
 
 inline constexpr int kNcsrDefaultBlock = 8;
 inline constexpr int kNcsrDefaultStep = 8;
