@@ -32,9 +32,10 @@ env:
   PKG_LABEL: ${{ inputs.label }}
 
 jobs:
-  # Linux CPU packages. Both need glibc 2.34 and the libstdc++ of GCC 13 or
-  # newer (Ubuntu 24.04 or later); arm64 is built with the NEON release
-  # toolchain (GCC 15) and carries its libstdc++ statically for that reason.
+  # Linux CPU packages, both for Ubuntu 24.04 or later: x86-64 needs glibc
+  # 2.34 and the libstdc++ of GCC 13; arm64 is built with the NEON release
+  # toolchain (GCC 15), needs glibc 2.38 and carries its libstdc++ statically
+  # (the system's on Ubuntu 24.04 is older than GCC 15's).
   build-linux:
     name: build-linux (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
