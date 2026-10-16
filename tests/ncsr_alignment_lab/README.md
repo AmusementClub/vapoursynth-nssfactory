@@ -25,8 +25,9 @@ are spatial (`radius=0`), without `rclip`; the harness selects the same explicit
 parameters for paired variants. This code is a bounded research implementation,
 not a hardened public environment-variable API.
 
-Run `../ncsr_alignment.py` with both baseline and candidate plugin paths, identical
-saved fixtures, CPU0 affinity and an idle SMT sibling. Every worker preloads
+The campaign driver `tests/ncsr_alignment.py` and its report were removed once the
+experiments finished (`git show 303f8d4^:tests/ncsr_alignment.py`). It ran both
+baseline and candidate plugin paths with identical saved fixtures, CPU0 affinity and an idle SMT sibling. Every worker preloads
 source frames, warms once, measures complete subsequent frames, and verifies
 exact output repeatability. Training is not cached across frames or excluded
 from timing. The trace contains per-inner-iteration estimated sigma, threshold
