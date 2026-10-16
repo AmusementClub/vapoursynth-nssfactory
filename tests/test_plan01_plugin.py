@@ -17,7 +17,11 @@ import itertools
 import json
 import os
 from pathlib import Path
-import resource
+
+try:
+    import resource  # POSIX only; the peak RSS is a report field, not a check
+except ImportError:
+    resource = None
 
 import numpy as np
 import vapoursynth as vs
@@ -252,7 +256,7 @@ def main():
     reject(lambda: core.nss.NCSR(gray, delta=-0.5), "delta in [0, 1]")
     reject(lambda: core.nss.MCWNNM(rgb, delta=2.0), "delta in [0, 1]")
     rows.append(dict(test="failure_and_recovery", passed=True))
-    report = dict(passed=True, checks=len(rows), cases=rows, peak_rss=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
+    report = dict(passed=True, checks=len(rows), cases=rows, peak_rss=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss if resource else None,
                   plugin_sha256=hashlib.sha256(Path(os.environ["NSS_SO"]).read_bytes()).hexdigest(),
                   numpy=np.__version__, vapoursynth=str(vs.__version__))
     if args.out:
