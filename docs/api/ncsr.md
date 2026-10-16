@@ -18,8 +18,9 @@ core.nss.NCSR(clip clip[, float[] sigma = 3.0, int block_size = 8,
               int block_step = 8, int group_size = 8, int bm_range = 7,
               int radius = 0, int ps_num = 2, int ps_range = 4,
               clip rclip = None, int iters = 2, float delta = 0.1,
-              string temporal_mode = "legacy", int rolling_chunk = 4,
-              int rolling_cache_chunks, int rolling_cache_limit, int memory_limit_mb])
+              int memory_limit_mb, string temporal_mode = "legacy",
+              int rolling_chunk = 4, int rolling_cache_chunks,
+              int rolling_cache_limit])
 ```
 
 ## Primary parameters

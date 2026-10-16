@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-// VapourSynth plane <-> device transfers through pinned staging (D12: frames
+// VapourSynth plane <-> device transfers through pinned staging (frames
 // enter and leave as CPU VSFrames). Each call needs its own staging region
 // until the stream has finished with it.
 #pragma once

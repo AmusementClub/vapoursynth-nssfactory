@@ -5,7 +5,7 @@
 // Welsch weight exp(-sum * h2_inv_norm), and accumulated symmetrically: pixel
 // p receives the neighbour at p + o with w1(p) and the mirrored neighbour at
 // p - o with w2(p - o). Every pixel is owned by one thread, so results are
-// run-to-run identical (D17).
+// run-to-run identical.
 #pragma once
 
 #include <cuda_runtime.h>

@@ -641,6 +641,9 @@ int mcwnnm_filter_group_batch(McwnnmFilterBatchItem* items, int count) {
     return first_error;
 }
 
+// NCSR group filter over a batch: items are bucketed by shape (see
+// bucket_order) and each group is centralized, coded and reconstructed; every
+// item gets a status. Returns 0, or nonzero on failure (batch_contract.hpp).
 int ncsr_filter_group_batch(NcsrFilterBatchItem* items, int count) {
     if (count == 0) {
         return 0;
@@ -712,7 +715,6 @@ int ncsr_filter_group_batch(NcsrFilterBatchItem* items, int count) {
             float* U = item.work;
             float* S = U + m * n;
             float* mean = S + n;
-            float* B = mean + m;
             group_center_sub(item.group, m, n, item.lda, mean);
             a[pos] = item.group;
             lda[pos] = item.lda;

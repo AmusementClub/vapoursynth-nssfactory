@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // nss_cuda.NLM. Arguments and errors come from parse_nlm with the "nss_cuda"
-// prefix (D14); the whole frame (distances, box sums, weights, accumulation,
-// normalization) runs on the device (D3).
+// prefix; the whole frame (distances, box sums, weights, accumulation,
+// normalization) runs on the device.
 //
 // Two paths. The tile path runs a frame as one launch: the window frames stay
 // on the device in a cache shared by the streams, so that a frame is uploaded
@@ -508,7 +508,7 @@ void VS_CC freeFilter(void* instance, VSCore*, const VSAPI*) {
 }
 
 void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI* vsapi) {
-    // Same validation order and text as nss.NLM (D14).
+    // Same validation order and text as nss.NLM.
     auto d = std::make_unique<NlmData>();
     d->node = nss::get_node(vsapi, in, "clip", 0, nullptr);
     d->vi = *vsapi->getVideoInfo(d->node);

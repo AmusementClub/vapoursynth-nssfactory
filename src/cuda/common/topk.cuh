@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // Deterministic block-wide top-K over match keys. A key is a total order on
 // (finite first, distance, t, y, x), so the selected set and its order do not
-// depend on thread scheduling (D17). Candidates stream through a fixed-size
+// depend on thread scheduling. Candidates stream through a fixed-size
 // shared buffer: the current top-K occupies [0, K) and each chunk fills the
 // rest before one bitonic sort.
 #pragma once

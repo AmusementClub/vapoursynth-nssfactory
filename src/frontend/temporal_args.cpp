@@ -3,7 +3,6 @@
 #include "frontend/args.hpp"
 #include "frontend/validate.hpp"
 
-#include <cstdint>
 #include <stdexcept>
 #include <string>
 
@@ -71,9 +70,6 @@ void aggregate_rolling(const VSAPI* vsapi, const VSMap* in, VSMap* out, VSCore* 
     vsapi->mapConsumeNode(args, "clip", vsapi->mapGetNode(out, "clip", 0, nullptr), maReplace);
     vsapi->mapConsumeNode(args, "src", vsapi->mapGetNode(in, "clip", 0, nullptr), maReplace);
     vsapi->mapSetInt(args, "radius", map_int(vsapi, in, "radius", default_radius), maReplace);
-    int device_err = 0;
-    const int64_t device = vsapi->mapGetInt(in, "device_id", 0, &device_err);
-    if (!device_err) vsapi->mapSetInt(args, "device_id", device, maReplace);
     VSMap* result = vsapi->invoke(plugin, "VAggregate", args);
     vsapi->freeMap(args);
     if (const char* error = vsapi->mapGetError(result)) {

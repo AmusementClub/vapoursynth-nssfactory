@@ -41,6 +41,11 @@ struct WnnmBatchResult {
     float weight = 1.f;
 };
 
+// One plane of one center: its reference patches in raster order, matched (on
+// refs, predictively over the window when temporal) and shrunk in batch
+// windows, then added to num/den per window slice in raster order. emit_fat
+// writes the 2R+1 num/den slices for VAggregate; otherwise the center's
+// estimate is finished into dst (the source where no group reached).
 void process_plane_batched(const float* const* srcs, const float* const* refs, int ntemp, int t0, float* dst,
                            int width, int height, int sstride, int dstride, float sigma, int block, int group, int step,
                            int bm_range, int ps_num, int ps_range, int radius, int residual, int adaptive,
@@ -171,6 +176,9 @@ void process_plane_batched(const float* const* srcs, const float* const* refs, i
     }
 }
 
+// Frame n: the 2R+1 window frames (and rclip's, which guide the matching),
+// then each plane through process_plane_batched; a plane with sigma 0 is
+// copied (its identity slices when temporal).
 const VSFrame* VS_CC wnnmGetFrame(int n, int activationReason, void* instanceData, void** frameData,
                                   VSFrameContext* frameCtx, VSCore* core, const VSAPI* vsapi) {
     auto* d = static_cast<WnnmData*>(instanceData);
@@ -225,13 +233,11 @@ const VSFrame* VS_CC wnnmGetFrame(int n, int activationReason, void* instanceDat
 
         nss::ResourceVector<const float*> srcs(static_cast<std::size_t>(ntemp));
         nss::ResourceVector<const float*> refs(static_cast<std::size_t>(ntemp));
-        int strides[nss::kBmMaxRadius * 2 + 1];
         for (int t = 0; t < ntemp; ++t) {
             srcs[static_cast<std::size_t>(t)] =
                 frames_owned.readPlane(srcf[static_cast<std::size_t>(t)], plane, sstride);
             refs[static_cast<std::size_t>(t)] =
                 frames_owned.readPlane(reff[static_cast<std::size_t>(t)], plane, sstride);
-            strides[t] = sstride;
         }
 
         const int slices = ntemp;

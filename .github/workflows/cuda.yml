@@ -1,12 +1,46 @@
 # SPDX-License-Identifier: GPL-2.0-only
 # CUDA backend (libnss_cuda) compile lanes. Runners have no GPU: these lanes
-# prove the toolchain/architecture contract (D13) and the plugin's no-device
-# load path; numerical and performance gates run on a GPU host (docs/cuda-plan.md).
+# prove the toolchain and architecture contract (the minimum and newest
+# toolkits build, the fat binary carries the expected cubins and PTX) and the
+# plugin's no-device load path; numerical and performance gates run on a GPU host.
 name: cuda
 
 on:
+  # Branches are tested through their pull request (see linux.yml). Only changes
+  # that reach libnss_cuda or its tests start these lanes: they take about 45
+  # runner minutes, almost all of it nvcc.
   push:
+    branches: [master]
+    paths:
+      - src/cuda/**
+      - src/frontend/**
+      - src/cpu/bm/dct_codelet_*.hpp  # compared with the CUDA copies
+      - include/**
+      - cmake/**
+      - CMakeLists.txt
+      - tests/cuda/**
+      - tests/test_plugin_interface.py
+      - tests/test_temporal_rolling.py
+      - tests/test_bm3d_final.py
+      - .github/workflows/cuda.yml
   pull_request:
+    paths:
+      - src/cuda/**
+      - src/frontend/**
+      - src/cpu/bm/dct_codelet_*.hpp  # compared with the CUDA copies
+      - include/**
+      - cmake/**
+      - CMakeLists.txt
+      - tests/cuda/**
+      - tests/test_plugin_interface.py
+      - tests/test_temporal_rolling.py
+      - tests/test_bm3d_final.py
+      - .github/workflows/cuda.yml
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 jobs:
   linux:

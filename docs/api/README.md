@@ -40,8 +40,8 @@ page).
   the matching; denoising still applies to `clip`.
 - **`bm_range` and `search_window`**: `search_window = 2 * bm_range + 1`.
   TWSC and NLH accept either (not both); the others take `bm_range`.
-- **`memory_limit_mb`**: caps the filter's working memory. Exceeding it is an
-  error, never a silent change of output.
+- **`memory_limit_mb`**: caps the filter's working memory; without it there is
+  no cap. Exceeding it is an error, never a silent change of output.
 - **Frame properties**: NLH and TWSC stamp per-frame `_NSS*` properties (the
   resolved shapes, sigma, model version, solver statistics); the other filters
   stamp none.
@@ -66,9 +66,14 @@ out = core.nss.VAggregate(fat, clip, radius=1)                          # finish
 out = core.nss.WNNM(clip, sigma=5, radius=1, temporal_mode="rolling")   # the same in one call
 ```
 
+On the CPU only BM3D computes rolling chunks itself. For WNNM, MCWNNM, NCSR,
+TWSC and NLH, `"rolling"` is the intermediate reduced by `VAggregate` inside
+the call: same result, same cost and memory as the two calls above, and
+`rolling_chunk` and the cache arguments are checked but change nothing.
+
 NLM is temporal through its own `d` argument and always returns finished
 frames; LSSC has no temporal mode. The GPU plugin returns finished frames by
-default.
+default and rolls every temporal filter on the device.
 
 ### VAggregate
 

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-// nss_cuda.WNNM: parse_wnnm with the "nss_cuda" prefix (D14) around the
+// nss_cuda.WNNM: parse_wnnm with the "nss_cuda" prefix around the
 // shared group driver and the WNNM group kernel. rclip guides matching only.
 #include "cuda/common/gram_group.hpp"
 #include "cuda/common/group_driver.hpp"
@@ -14,7 +14,7 @@ namespace nss_cuda {
 namespace {
 
 void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI* vsapi) {
-    // Same validation order and text as nss.WNNM (D14).
+    // Same validation order and text as nss.WNNM.
     const auto temporal = nss::frontend::parse_temporal(vsapi, in, nss::kWnnmDefaultRadius, "WNNM", "nss_cuda", kDefaultTemporalMode, kRollingCache);
     GroupFilterConfig config;
     config.name = "WNNM";

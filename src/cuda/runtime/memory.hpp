@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // Owning device / pinned-host allocations charged to the filter's resource
-// budget (memory_limit_mb, D14), plus a bump arena for per-frame scratch.
+// budget (memory_limit_mb), plus a bump arena for per-frame scratch.
 #pragma once
 
 #include "cuda/runtime/error.hpp"

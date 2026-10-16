@@ -51,6 +51,11 @@ int householder_qr(int m, int n, const float* A, int lda, float* R, int ldr, flo
     return householder_qr_hwy(m, n, A, lda, nullptr, 0, R, ldr, W, Vh, beta, false);
 }
 
+// SVD of a square n x n matrix by one-sided Jacobi: U starts as A and its
+// column pairs are rotated (at most 32 sweeps) until each pair is orthogonal
+// within kJacobiCorrelationTolerance, the rotations accumulating in V. The
+// singular values are U's column norms (zero below the rank floor), U's
+// columns are normalized, and the triplets are sorted by descending value.
 void jacobi_svd_n(int n, const float* A, int lda, float* U, int ldu, float* S, float* Vt, int ldvt, float* V) {
     copy_mat(A, lda, U, ldu, n, n);
     for (int i = 0; i < n * n; ++i) {
@@ -180,6 +185,11 @@ int svd_mn(int m, int n, const float* A, int lda, float* U, int ldu, float* S, f
 
 }  // namespace
 
+// Economy SVD A = U diag(S) Vt of an m x n matrix (at most kSvdMaxM x
+// kSvdMaxN). Returns -1 for invalid arguments or a nonfinite input or result.
+// Inputs whose squares could overflow are scaled first and S scaled back;
+// m < n takes its own path. Scratch is `work` when it holds
+// 4mn + 4n^2 + n floats, else a per-thread pool.
 int svd_economy(int m, int n, const float* A, int lda, float* U, int ldu, float* S, float* Vt, int ldvt,
                 float* work, int work_floats) {
     if (m <= 0 || n <= 0 || m > kSvdMaxM || n > kSvdMaxN || !A || !U || !S || !Vt ||

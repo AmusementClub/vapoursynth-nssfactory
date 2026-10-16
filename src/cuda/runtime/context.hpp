@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
-// Filter-creation helpers shared by every nss_cuda filter: the D14 backend
-// argument tail, device acquisition with the D13 support policy, and the
+// Filter-creation helpers shared by every nss_cuda filter: the backend
+// argument tail, device acquisition with the architecture support policy, and the
 // per-thread device guard used inside getFrame.
 #pragma once
 
@@ -13,7 +13,7 @@
 
 namespace nss_cuda {
 
-// Appended to every shared k<Filter>Signature (D14).
+// Appended to every shared k<Filter>Signature.
 inline constexpr const char* kBackendSignature = "device_id:int:opt;num_streams:int:opt;";
 // One stream unless num_streams asks for more. More slots hide the per-frame
 // host staging copies behind device work (1080p BM3D: 286 fps with 2, 357
@@ -43,7 +43,7 @@ struct BackendArgs {
 BackendArgs parse_backend_args(const VSAPI* vsapi, const VSMap* in, const char* filter);
 
 // Resolves device_id: unsupported devices are a creation error, JIT-only
-// devices log one warning per device and process (D13). Throws
+// devices log one warning per device and process. Throws
 // std::invalid_argument with the "nss_cuda.<filter>: " prefix.
 DeviceInfo acquire_device(int device_id, const char* filter, VSCore* core, const VSAPI* vsapi);
 

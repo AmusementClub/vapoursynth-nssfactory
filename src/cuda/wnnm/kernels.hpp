@@ -6,7 +6,7 @@
 // the adaptive weight 1 / kept.
 //
 // The SVD is taken through the Gram matrix: A^T A = V S^2 V^T by cyclic
-// Jacobi, X = A (V diag(s'/s) V^T), all in FP32. The D15 study measured the
+// Jacobi, X = A (V diag(s'/s) V^T), all in FP32. A precision study measured the
 // FP64 Gram/eigen variant at 0.2-0.8x the CPU with no gate benefit (FP32 is
 // 86-143 dB against nss.WNNM on the frozen references).
 #pragma once

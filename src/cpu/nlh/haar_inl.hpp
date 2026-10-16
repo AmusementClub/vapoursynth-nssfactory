@@ -201,10 +201,8 @@ static inline hn::Vec<hn::ScalableTag<float>> Haar16VecFwd(hn::Vec<hn::ScalableT
 }
 
 static inline hn::Vec<hn::ScalableTag<float>> Haar16VecInv(hn::Vec<hn::ScalableTag<float>> v) {
-    const hn::ScalableTag<float> d16;
     const hn::Half<hn::ScalableTag<float>> d8;
     const hn::Half<hn::Half<hn::ScalableTag<float>>> d4;
-    const auto s16 = hn::Set(d16, kHaarInvSqrt2);
     const auto s4 = hn::Set(d4, kHaarInvSqrt2);
     auto lo8 = hn::LowerHalf(d8, v);
     const auto hi8 = hn::UpperHalf(d8, v);

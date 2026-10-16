@@ -93,6 +93,11 @@ static void SsdRow4Candidates8(const float* self, const float* candidates, int s
 }
 #endif
 
+// Exhaustive matching of the 4 x 4 block at (cx, cy) within bm_range, clamped
+// to the plane, a candidate per vector lane: out[0] is the reference itself,
+// then the nearest candidates by SSD in match_less order (the SSD reproduces
+// Highway's 4-lane reduction order). Returns the number of matches, at most
+// min(group, kBmMaxGroup).
 int SpatialMatch4Fast(const float* ref, int stride, int width, int height, int cx, int cy, int bm_range, int group,
                       Match* out, bool avx2_enabled) {
 #if HWY_MAX_BYTES >= 16

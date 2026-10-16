@@ -2,14 +2,14 @@
 // Weighted patch aggregation into num/den planes (num += w * v, den += w per
 // covered pixel, as nss::unpack_patch), optionally into 2R+1 temporal slices.
 //
-// OrderedAggregator is deterministic (D17): patches are binned per output
+// OrderedAggregator is deterministic (the same sums from run to run): patches are binned per output
 // tile with a stable radix sort keyed by tile, so each tile sums its patches
 // in patch-id order. Callers number patches in the CPU commit order (raster
 // reference index, then group position), which then is also the CPU's
 // per-pixel accumulation order. FixedTarget is the other deterministic
 // route, for kernels that aggregate their own output: exact fixed-point sums
 // by integer atomics. aggregate_atomic is the float-atomic alternative kept
-// for the D17 measurement; its sums depend on scheduling.
+// for measurement; its sums depend on scheduling.
 #pragma once
 
 #include "cuda/runtime/memory.hpp"

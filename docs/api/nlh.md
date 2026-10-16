@@ -18,14 +18,14 @@ to both stages. Omitted fields come from the preset below.
 ## Signature
 
 ```python
-core.nss.NLH(clip clip[, float[] sigma, string noise_model = "auto",
-             int[] block_size, int[] block_step, int[] group_size,
-             int[] search_window, int bm_range, int radius = 0,
-             int ps_num = 2, int ps_range = 4, int[] q, clip rclip = None,
-             int basic_iters, float lambda_basic, float hard_strength,
-             int wiener_iters, float wiener_sigma_scale,
+core.nss.NLH(clip clip[, float[] sigma, int[] block_size, int[] block_step,
+             int[] group_size, int bm_range, int radius = 0, int ps_num = 2,
+             int ps_range = 4, int[] q, clip rclip = None,
+             string noise_model = "auto", int[] search_window, int basic_iters,
+             float lambda_basic, float hard_strength, int wiener_iters,
+             float wiener_sigma_scale, int memory_limit_mb,
              string temporal_mode = "legacy", int rolling_chunk = 4,
-             int rolling_cache_chunks, int rolling_cache_limit, int memory_limit_mb])
+             int rolling_cache_chunks, int rolling_cache_limit])
 ```
 
 ## Primary parameters

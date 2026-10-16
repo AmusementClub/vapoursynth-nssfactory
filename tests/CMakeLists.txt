@@ -1,4 +1,13 @@
 # SPDX-License-Identifier: GPL-2.0-only
+# Per-ISA variants (`test_x avx2`, `test_x avx3`) pin one Highway target. They
+# add coverage only in dynamic mode; a pinned avx2 or avx3 build has a single
+# x86 target, which the plain test already runs. The plain test stays in dynamic
+# mode as well: it runs the best compiled target, AVX3_ZEN4 on Zen 4.
+set(NSS_TEST_ISA_VARIANTS FALSE)
+if(NSS_HWY_X86 AND NSS_HWY_TARGET_MODE STREQUAL "dynamic")
+  set(NSS_TEST_ISA_VARIANTS TRUE)
+endif()
+
 add_executable(test_backend test_backend.cpp)
 add_executable(test_ncsr_hq test_ncsr_hq.cpp ncsr_alignment_lab/alignment_lab.cpp)
 # Keep the frozen oracle's original CPU-library ISA/FMA compilation contract
@@ -14,7 +23,7 @@ add_test(NAME test_match_joint COMMAND test_match_joint)
 add_executable(test_gemm_precise test_gemm_precise.cpp)
 target_link_libraries(test_gemm_precise PRIVATE nss_cpu nss_workspace)
 add_test(NAME test_gemm_precise COMMAND test_gemm_precise)
-if(NSS_HWY_X86)
+if(NSS_TEST_ISA_VARIANTS)
   foreach(isa avx2 avx3)
     foreach(hq_test test_ncsr_hq test_match_joint test_gemm_precise)
       add_test(NAME ${hq_test}_${isa} COMMAND ${hq_test} ${isa})
@@ -53,7 +62,7 @@ add_test(NAME test_nlh_pixel_match COMMAND test_nlh_pixel_match)
 add_executable(test_nlh_defaults test_nlh_defaults.cpp)
 target_link_libraries(test_nlh_defaults PRIVATE nss_cpu nss_workspace)
 add_test(NAME test_nlh_defaults COMMAND test_nlh_defaults)
-if(NSS_HWY_X86)
+if(NSS_TEST_ISA_VARIANTS)
   foreach(isa avx2 avx3)
     add_test(NAME test_nlh_noise_${isa} COMMAND test_nlh_noise ${isa})
     set_tests_properties(test_nlh_noise_${isa} PROPERTIES SKIP_RETURN_CODE 77)
@@ -71,7 +80,7 @@ nss_cc_flags(NSS_TEST_SVDVAL_FLAGS -ffp-contract=off)
 target_compile_options(test_twsc_svd_validation PRIVATE ${NSS_TEST_SVDVAL_FLAGS})
 target_link_libraries(test_twsc_svd_validation PRIVATE nss_cpu nss_workspace)
 add_test(NAME test_twsc_svd_validation COMMAND test_twsc_svd_validation)
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
+if(NSS_TEST_ISA_VARIANTS)
   foreach(isa avx2 avx3)
     add_test(NAME test_twsc_svd_validation_${isa} COMMAND test_twsc_svd_validation ${isa})
     set_tests_properties(test_twsc_svd_validation_${isa} PROPERTIES SKIP_RETURN_CODE 77)
@@ -156,7 +165,7 @@ foreach(name mcwnnm twsc nlh ncsr lssc)
   endif()
 endforeach()
 
-if(NSS_HWY_X86)
+if(NSS_TEST_ISA_VARIANTS)
   foreach(isa avx2 avx3)
     foreach(name common mcwnnm batch)
       add_test(NAME test_${name}_${isa} COMMAND test_${name} ${isa})
@@ -173,7 +182,7 @@ add_executable(test_bitwise_kernels test_bitwise_kernels.cpp)
 target_include_directories(test_bitwise_kernels PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(test_bitwise_kernels PRIVATE nss_cpu nss_workspace)
 add_test(NAME test_bitwise_kernels COMMAND test_bitwise_kernels)
-if(NSS_HWY_X86)
+if(NSS_TEST_ISA_VARIANTS)
   foreach(isa avx2 avx3)
     add_test(NAME test_bitwise_kernels_${isa} COMMAND test_bitwise_kernels ${isa})
     set_tests_properties(test_bitwise_kernels_${isa} PROPERTIES SKIP_RETURN_CODE 77)
@@ -287,6 +296,19 @@ if(VapourSynth_FOUND)
     set_tests_properties(test_temporal_rolling PROPERTIES
       LABELS "plugin"
       SKIP_RETURN_CODE 77)
+    # Shapes, formats, rolling concurrency and resource limits of the plugin.
+    add_test(NAME test_plan01_plugin
+             COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_plan01_plugin.py"
+                     --out "${CMAKE_CURRENT_BINARY_DIR}/plan01-plugin.json")
+    set_tests_properties(test_plan01_plugin PROPERTIES
+      LABELS "plugin"
+      ENVIRONMENT "NSS_SO=$<TARGET_FILE:nss>")
+    # NLH's resolved preset (model version 6) for every format and noise model.
+    add_test(NAME test_nlh_presets_plugin
+             COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_nlh_presets_plugin.py"
+                     --plugin "$<TARGET_FILE:nss>" --profiles "${CMAKE_CURRENT_SOURCE_DIR}/data/nlh_presets_v6.json"
+                     --out "${CMAKE_CURRENT_BINARY_DIR}/nlh-presets-plugin.json")
+    set_tests_properties(test_nlh_presets_plugin PROPERTIES LABELS "plugin")
     # BM3D chroma=1 (CBM3D): shared groups from plane 0.
     add_test(NAME test_bm3d_chroma
              COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_bm3d_chroma.py"

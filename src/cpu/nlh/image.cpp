@@ -9,6 +9,11 @@
 namespace nss {
 namespace {
 using namespace image_detail;
+// One NLH stage over the window's center. Planes of one size form a
+// geometry matched together on `matching` (the external reference, else the
+// basic estimate for the Wiener stage, else the data); each reference patch's
+// group of pixels is filtered in the Haar domain (hard threshold, or the
+// Wiener gain against `basic`) and added to the per-plane sums returned.
 Accumulator nlh_pass(const ImageSequence& data, const ImageSequence& basic, const ImageSequence* external,
                      int planes, int center, int block, int step, int group, int q, int window,
                      const NlhImageOptions& options, bool wiener, ImageFilterStats& stats) {
@@ -79,6 +84,9 @@ Accumulator nlh_pass(const ImageSequence& data, const ImageSequence& basic, cons
 }
 } // namespace
 
+// Blind noise estimate of one frame: planes of one size (at least 8 x 8) are
+// estimated together from blocks matched on `guide`; sets each plane's sigma
+// and sigma_units.
 void nlh_estimate_frame_sigma(ImageFrame& frame, const ImageFrame& guide, int planes) {
     if (planes < 1 || planes > 3) throw std::invalid_argument("nss.NLH: invalid noise-estimation plane count");
     std::array<bool, 3> used{};

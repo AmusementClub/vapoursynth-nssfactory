@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // Image-load probe: a trivial kernel whose first launch forces the driver to
-// pick the device's cubin or JIT-compile the embedded PTX (D13).
+// pick the device's cubin or JIT-compile the embedded PTX.
 #include "cuda/runtime/device.hpp"
 
 #include <cuda_runtime.h>

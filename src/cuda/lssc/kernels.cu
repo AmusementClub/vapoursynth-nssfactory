@@ -369,7 +369,7 @@ __global__ void sample_kernel(LsscWork w) {
 
 // nss::lssc_omp (sparsity 8) in FP32 (the CPU takes the correlations,
 // Cholesky solve and residual in FP64; FP32 measured the same against it on
-// the references, 2026-10-15) for one sample per block: the atoms'
+// the references) for one sample per block: the atoms'
 // correlations in parallel, the first strict maximum picked in atom order, the
 // support's normal equations in parallel and their solve by one thread.
 __global__ void __launch_bounds__(kThreads) omp_kernel(LsscWork w) {

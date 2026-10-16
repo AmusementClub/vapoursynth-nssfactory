@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // Device side of FixedTarget (aggregate.hpp): one weighted sample into the
 // fixed-point accumulators. Integer addition is associative and commutative,
-// so the atomics give the same sums in any order (D17) for any input.
+// so the atomics give the same sums in any order for any input.
 #pragma once
 
 #include "cuda/common/aggregate.hpp"

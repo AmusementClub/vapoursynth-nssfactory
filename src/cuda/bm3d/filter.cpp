@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // nss_cuda.BM3D. Arguments, defaults and errors come from the shared
 // frontend (parse_bm3d / parse_temporal_mode / parse_rolling with the
-// "nss_cuda" prefix, D14); the node itself is the shared group driver
+// "nss_cuda" prefix); the node itself is the shared group driver
 // (common/group_driver.hpp) around the BM3D group kernel. `ref` is the guide
 // clip: it drives matching and supplies the Wiener reference cube.
 #include "cuda/bm3d/kernels.hpp"
@@ -16,7 +16,7 @@ namespace nss_cuda {
 namespace {
 
 void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI* vsapi) {
-    // Same validation order as nss.BM3D so shared errors match (D14).
+    // Same validation order as nss.BM3D so shared errors match.
     const int radius = nss::map_int(vsapi, in, "radius", 0);
     const bool rolling =
         nss::frontend::parse_temporal_mode(vsapi, in, radius, "BM3D", "nss_cuda", kDefaultTemporalMode) ==

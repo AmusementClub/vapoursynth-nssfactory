@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
-// libnss_cuda entry point (namespace nss_cuda). Filters are registered phase
-// by phase per docs/cuda-plan.md; each one reuses its frontend parse_<filter>
-// with the "nss_cuda" prefix and the backend argument tail (D14).
+// libnss_cuda entry point (namespace nss_cuda). Each filter reuses its
+// frontend parse_<filter> with the "nss_cuda" prefix and appends the backend
+// arguments (device_id, num_streams) to the CPU plugin's signature.
 #include "cuda/runtime/device.hpp"
 #include "nss/version.hpp"
 

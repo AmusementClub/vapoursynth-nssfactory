@@ -10,99 +10,92 @@
 
 namespace nss::frontend {
 
-Bm3dParams parse_bm3d(const VSAPI* vsapi, const VSMap* in, const VSVideoInfo& vi, const VSVideoInfo* ref_vi,
-                      const char* ns) {
-    if (!is_const_32f(vi)) fail(ns, "BM3D", "constant Gray/YUV/RGB 32-bit float required");
-    if (ref_vi && !same_video(vi, *ref_vi)) fail(ns, "BM3D", "ref must match clip");
-    Bm3dParams p;
-    const int np = vi.format.numPlanes;
+namespace {
+
+// sigma per plane, checked and taken through the BM3D noise profile (0 stays
+// 0, the plane is copied). `given` keeps the values as passed.
+void parse_sigma(const VSAPI* vsapi, const VSMap* in, int np, const char* ns, Bm3dParams& p, float given[3]) {
     map_float_array(vsapi, in, "sigma", p.sigma, np, kBmDefaultSigma);
-    float sigma_given[3]{p.sigma[0], p.sigma[1], p.sigma[2]};
+    std::copy_n(p.sigma, 3, given);
     for (int i = 0; i < np; ++i) {
         if (!finite_bits(p.sigma[i]) || p.sigma[i] < 0.f) fail(ns, "BM3D", "sigma must be finite and non-negative");
         if (p.sigma[i] != 0.f) p.sigma[i] = NoiseProfile::bm3d_effective(p.sigma[i]);
     }
-    map_inherit_int(vsapi, in, "block_size", p.block_size, np, kBmBlock);
-    map_inherit_int(vsapi, in, "group_size", p.group_size, np, kBmGroup);
-    if (vsapi->mapNumElements(in, "block_step") <= 0) {
-        for (int i = 0; i < np; ++i) p.block_step[i] = std::min(kBmDefaultStep, p.block_size[i]);
+}
+
+// A per-plane argument whose default follows another one: min(fallback,
+// limit[i]) when it is not given.
+void map_adaptive(const VSAPI* vsapi, const VSMap* in, const char* key, int* out, int np, int fallback,
+                  const int* limit) {
+    if (vsapi->mapNumElements(in, key) <= 0) {
+        for (int i = 0; i < np; ++i) out[i] = std::min(fallback, limit[i]);
     } else {
-        map_inherit_int(vsapi, in, "block_step", p.block_step, np, kBmDefaultStep);
+        map_inherit_int(vsapi, in, key, out, np, fallback);
     }
-    map_int_array(vsapi, in, "bm_range", p.bm_range, np, kBmDefaultRange);
-    if (vsapi->mapNumElements(in, "ps_num") <= 0) {
-        for (int i = 0; i < np; ++i) p.ps_num[i] = std::min(kBmDefaultPsNum, p.group_size[i]);
-    } else {
-        map_inherit_int(vsapi, in, "ps_num", p.ps_num, np, kBmDefaultPsNum);
-    }
-    map_int_array(vsapi, in, "ps_range", p.ps_range, np, kBmDefaultPsRange);
-    p.radius = map_int(vsapi, in, "radius", 0);
-    if (p.radius < 0 || p.radius > kBmMaxRadius) fail(ns, "BM3D", "radius must be in [0, 16]");
+}
+
+// CBM3D: one set of groups, found on plane 0, serves the three planes.
+void parse_chroma(const VSAPI* vsapi, const VSMap* in, const VSVideoInfo& vi, const char* ns, Bm3dParams& p) {
     const int chroma = map_int(vsapi, in, "chroma", 0);
     if (chroma != 0 && chroma != 1) fail(ns, "BM3D", "chroma must be 0 or 1");
     p.chroma = chroma != 0;
-    if (p.chroma) {
-        if (vi.format.colorFamily != cfYUV || vi.format.subSamplingW != 0 || vi.format.subSamplingH != 0) {
-            fail(ns, "BM3D", "chroma requires a YUV 4:4:4 clip");
-        }
-        // One set of groups, found on plane 0, serves the three planes.
-        for (int i = 1; i < np; ++i) {
-            p.block_size[i] = p.block_size[0];
-            p.group_size[i] = p.group_size[0];
-            p.block_step[i] = p.block_step[0];
-            p.bm_range[i] = p.bm_range[0];
-            p.ps_num[i] = p.ps_num[0];
-            p.ps_range[i] = p.ps_range[0];
-        }
+    if (!p.chroma) return;
+    if (vi.format.colorFamily != cfYUV || vi.format.subSamplingW != 0 || vi.format.subSamplingH != 0) {
+        fail(ns, "BM3D", "chroma requires a YUV 4:4:4 clip");
     }
-    const int final = map_int(vsapi, in, "final", 0);
-    if (final != 0 && final != 1) fail(ns, "BM3D", "final must be 0 or 1");
-    p.final = final != 0;
-    const bool sigma_basic = vsapi->mapNumElements(in, "sigma_basic") > 0;
-    const bool block_basic = vsapi->mapNumElements(in, "block_size_basic") > 0;
-    const bool group_basic = vsapi->mapNumElements(in, "group_size_basic") > 0;
-    if (!p.final && (sigma_basic || block_basic || group_basic)) {
-        fail(ns, "BM3D", "sigma_basic, block_size_basic and group_size_basic require final=1");
+    for (int i = 1; i < vi.format.numPlanes; ++i) {
+        p.block_size[i] = p.block_size[0];
+        p.group_size[i] = p.group_size[0];
+        p.block_step[i] = p.block_step[0];
+        p.bm_range[i] = p.bm_range[0];
+        p.ps_num[i] = p.ps_num[0];
+        p.ps_range[i] = p.ps_range[0];
     }
-    if (p.final && ref_vi) fail(ns, "BM3D", "use only one of final and ref");
-    if (p.final) {
-        // The basic stage: its own sigma, block and group where given, the
-        // call's otherwise; block_step and ps_num as given, or adapted to it.
-        if (sigma_basic) map_float_array(vsapi, in, "sigma_basic", sigma_given, np, kBmDefaultSigma);
-        const bool step_given = vsapi->mapNumElements(in, "block_step") > 0;
-        const bool ps_given = vsapi->mapNumElements(in, "ps_num") > 0;
-        for (int i = 0; i < np; ++i) {
-            p.block_size_basic[i] = p.block_size[i];
-            p.group_size_basic[i] = p.group_size[i];
-        }
-        if (block_basic) map_inherit_int(vsapi, in, "block_size_basic", p.block_size_basic, np, kBmBlock);
-        if (group_basic) map_inherit_int(vsapi, in, "group_size_basic", p.group_size_basic, np, kBmGroup);
-        for (int i = 0; i < np; ++i) {
-            const int plane = p.chroma ? 0 : i;
-            p.block_size_basic[i] = p.block_size_basic[plane];
-            p.group_size_basic[i] = p.group_size_basic[plane];
-            if (!finite_bits(sigma_given[i]) || sigma_given[i] < 0.f) {
-                fail(ns, "BM3D", "sigma_basic must be finite and non-negative");
-            }
-            p.sigma_basic[i] = sigma_given[i] != 0.f ? NoiseProfile::bm3d_effective(sigma_given[i]) : 0.f;
-            if (!bm_allowed_block(p.block_size_basic[i])) {
-                fail(ns, "BM3D", "block_size_basic must be one of 1, 2, 4, 8, 12, 16, 32");
-            }
-            if (!bm_allowed_group(p.group_size_basic[i])) {
-                fail(ns, "BM3D", "group_size_basic must be one of 1, 2, 4, 8, 16, 32, 64");
-            }
-            if (p.block_size_basic[i] > plane_width(vi, i) || p.block_size_basic[i] > plane_height(vi, i)) {
-                fail(ns, "BM3D", "block_size_basic must not exceed plane dimensions");
-            }
-            p.block_step_basic[i] = step_given ? p.block_step[i] : std::min(kBmDefaultStep, p.block_size_basic[i]);
-            p.ps_num_basic[i] = ps_given ? p.ps_num[i] : std::min(kBmDefaultPsNum, p.group_size_basic[i]);
-            if (p.block_step_basic[i] > p.block_size_basic[i]) {
-                fail(ns, "BM3D", "block_step must be in [1, block_size_basic]");
-            }
-            if (p.ps_num_basic[i] > p.group_size_basic[i]) fail(ns, "BM3D", "ps_num must be in [1, group_size_basic]");
-        }
-    }
+}
+
+// final=1, the basic stage: its own sigma, block and group where given, the
+// call's otherwise; block_step and ps_num as given, or adapted to it.
+void parse_basic_stage(const VSAPI* vsapi, const VSMap* in, const VSVideoInfo& vi, const char* ns, bool sigma_basic,
+                       bool block_basic, bool group_basic, float sigma_given[3], Bm3dParams& p) {
+    const int np = vi.format.numPlanes;
+    if (sigma_basic) map_float_array(vsapi, in, "sigma_basic", sigma_given, np, kBmDefaultSigma);
+    const bool step_given = vsapi->mapNumElements(in, "block_step") > 0;
+    const bool ps_given = vsapi->mapNumElements(in, "ps_num") > 0;
     for (int i = 0; i < np; ++i) {
+        p.block_size_basic[i] = p.block_size[i];
+        p.group_size_basic[i] = p.group_size[i];
+    }
+    if (block_basic) map_inherit_int(vsapi, in, "block_size_basic", p.block_size_basic, np, kBmBlock);
+    if (group_basic) map_inherit_int(vsapi, in, "group_size_basic", p.group_size_basic, np, kBmGroup);
+    for (int i = 0; i < np; ++i) {
+        const int plane = p.chroma ? 0 : i;
+        p.block_size_basic[i] = p.block_size_basic[plane];
+        p.group_size_basic[i] = p.group_size_basic[plane];
+        if (!finite_bits(sigma_given[i]) || sigma_given[i] < 0.f) {
+            fail(ns, "BM3D", "sigma_basic must be finite and non-negative");
+        }
+        p.sigma_basic[i] = sigma_given[i] != 0.f ? NoiseProfile::bm3d_effective(sigma_given[i]) : 0.f;
+        if (!bm_allowed_block(p.block_size_basic[i])) {
+            fail(ns, "BM3D", "block_size_basic must be one of 1, 2, 4, 8, 12, 16, 32");
+        }
+        if (!bm_allowed_group(p.group_size_basic[i])) {
+            fail(ns, "BM3D", "group_size_basic must be one of 1, 2, 4, 8, 16, 32, 64");
+        }
+        if (p.block_size_basic[i] > plane_width(vi, i) || p.block_size_basic[i] > plane_height(vi, i)) {
+            fail(ns, "BM3D", "block_size_basic must not exceed plane dimensions");
+        }
+        p.block_step_basic[i] = step_given ? p.block_step[i] : std::min(kBmDefaultStep, p.block_size_basic[i]);
+        p.ps_num_basic[i] = ps_given ? p.ps_num[i] : std::min(kBmDefaultPsNum, p.group_size_basic[i]);
+        if (p.block_step_basic[i] > p.block_size_basic[i]) {
+            fail(ns, "BM3D", "block_step must be in [1, block_size_basic]");
+        }
+        if (p.ps_num_basic[i] > p.group_size_basic[i]) fail(ns, "BM3D", "ps_num must be in [1, group_size_basic]");
+    }
+}
+
+// The shape checks of every plane (the final stage's, with final=1).
+void check_planes(const VSVideoInfo& vi, const char* ns, const Bm3dParams& p) {
+    for (int i = 0; i < vi.format.numPlanes; ++i) {
         if (!bm_allowed_block(p.block_size[i])) fail(ns, "BM3D", "block_size must be one of 1, 2, 4, 8, 12, 16, 32");
         if (!bm_allowed_group(p.group_size[i])) fail(ns, "BM3D", "group_size must be one of 1, 2, 4, 8, 16, 32, 64");
         if (p.block_size[i] > plane_width(vi, i) || p.block_size[i] > plane_height(vi, i))
@@ -113,6 +106,41 @@ Bm3dParams parse_bm3d(const VSAPI* vsapi, const VSMap* in, const VSVideoInfo& vi
         if (p.bm_range[i] < 1 || p.bm_range[i] > kBmMaxRange) fail(ns, "BM3D", "bm_range must be in [1, 64]");
         if (p.ps_range[i] < 0 || p.ps_range[i] > kBmMaxRange) fail(ns, "BM3D", "ps_range must be in [0, 64]");
     }
+}
+
+}  // namespace
+
+// Arguments are read and checked in a fixed order (the order of the error a
+// call gets is part of the interface).
+Bm3dParams parse_bm3d(const VSAPI* vsapi, const VSMap* in, const VSVideoInfo& vi, const VSVideoInfo* ref_vi,
+                      const char* ns) {
+    if (!is_const_32f(vi)) fail(ns, "BM3D", "constant Gray/YUV/RGB 32-bit float required");
+    if (ref_vi && !same_video(vi, *ref_vi)) fail(ns, "BM3D", "ref must match clip");
+    Bm3dParams p;
+    const int np = vi.format.numPlanes;
+    float sigma_given[3];
+    parse_sigma(vsapi, in, np, ns, p, sigma_given);
+    map_inherit_int(vsapi, in, "block_size", p.block_size, np, kBmBlock);
+    map_inherit_int(vsapi, in, "group_size", p.group_size, np, kBmGroup);
+    map_adaptive(vsapi, in, "block_step", p.block_step, np, kBmDefaultStep, p.block_size);
+    map_int_array(vsapi, in, "bm_range", p.bm_range, np, kBmDefaultRange);
+    map_adaptive(vsapi, in, "ps_num", p.ps_num, np, kBmDefaultPsNum, p.group_size);
+    map_int_array(vsapi, in, "ps_range", p.ps_range, np, kBmDefaultPsRange);
+    p.radius = map_int(vsapi, in, "radius", 0);
+    if (p.radius < 0 || p.radius > kBmMaxRadius) fail(ns, "BM3D", "radius must be in [0, 16]");
+    parse_chroma(vsapi, in, vi, ns, p);
+    const int final = map_int(vsapi, in, "final", 0);
+    if (final != 0 && final != 1) fail(ns, "BM3D", "final must be 0 or 1");
+    p.final = final != 0;
+    const bool sigma_basic = vsapi->mapNumElements(in, "sigma_basic") > 0;
+    const bool block_basic = vsapi->mapNumElements(in, "block_size_basic") > 0;
+    const bool group_basic = vsapi->mapNumElements(in, "group_size_basic") > 0;
+    if (!p.final && (sigma_basic || block_basic || group_basic)) {
+        fail(ns, "BM3D", "sigma_basic, block_size_basic and group_size_basic require final=1");
+    }
+    if (p.final && ref_vi) fail(ns, "BM3D", "use only one of final and ref");
+    if (p.final) parse_basic_stage(vsapi, in, vi, ns, sigma_basic, block_basic, group_basic, sigma_given, p);
+    check_planes(vi, ns, p);
     return p;
 }
 

@@ -16,15 +16,15 @@ blind = core.nss.TWSC(clip, estimate_sigma=1)          # per-frame sigma
 ## Signature
 
 ```python
-core.nss.TWSC(clip clip[, float[] sigma = 3.0, int estimate_sigma = 0,
-              int block_size = 8, int block_step = 8, int group_size = 8,
-              int search_window = 60, int bm_range, int radius = 0,
-              int ps_num = 2, int ps_range = 4, float lambda2 = 1.0,
-              clip rclip = None, int iters = 2, float delta = 0.0,
+core.nss.TWSC(clip clip[, float[] sigma = 3.0, int block_size = 8,
+              int block_step = 8, int group_size = 8, int bm_range,
+              int radius = 0, int ps_num = 2, int ps_range = 4,
+              float lambda2 = 1.0, clip rclip = None, int iters = 2,
+              float delta = 0.0, int estimate_sigma = 0, int search_window = 60,
               int admm_iter = 10, float rho = 0.5, float mu = 1.1,
-              float tol = 1e-6, int cfast = 1,
+              float tol = 1e-6, int cfast = 1, int memory_limit_mb,
               string temporal_mode = "legacy", int rolling_chunk = 4,
-              int rolling_cache_chunks, int rolling_cache_limit, int memory_limit_mb])
+              int rolling_cache_chunks, int rolling_cache_limit])
 ```
 
 ## Primary parameters

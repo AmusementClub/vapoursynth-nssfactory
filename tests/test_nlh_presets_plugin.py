@@ -16,8 +16,18 @@ import traceback
 import numpy as np
 import vapoursynth as vs
 
-from nlh_defaults_inputs import file_sha, save_json
 from test_full_image_plugin import make_clip, values
+
+
+def file_sha(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def save_json(path, data):
+    path = Path(path)
+    temporary = path.with_suffix(path.suffix + '.tmp')
+    temporary.write_text(json.dumps(data, indent=2, allow_nan=False) + '\n')
+    temporary.replace(path)
 
 
 def pair(value):
@@ -73,7 +83,7 @@ def main():
     parser.add_argument('--model-version', type=int, default=6)
     args = parser.parse_args()
     out = Path(args.out)
-    out.mkdir(parents=True, exist_ok=False)
+    out.mkdir(parents=True, exist_ok=True)  # verification.json is replaced whole
     contract = json.loads(Path(args.profiles).read_text())
     profiles = contract['profiles']
     if set(profiles) != {'gray-low', 'gray-high', 'rgb'}:

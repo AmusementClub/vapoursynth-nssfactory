@@ -173,10 +173,6 @@ public:
         }
     }
 
-    float threshold() const {
-        return n_ == cap_ && n_ > 0 ? p_[worst_].dist : std::numeric_limits<float>::infinity();
-    }
-
     void adopt(int n) {
         n_ = std::clamp(n, 0, cap_);
         if (n_) scan();

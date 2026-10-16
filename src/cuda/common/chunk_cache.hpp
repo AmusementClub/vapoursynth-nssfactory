@@ -71,12 +71,15 @@ public:
         store->count = count;
         store->frame_bytes = frame_bytes_;
         store->plane_offset = plane_offset_;
-        store->pool = stores_;
         {
-            std::lock_guard lock(stores_->mu);
-            if (!stores_->free.empty()) {
-                store->bytes = std::move(stores_->free.back());
-                stores_->free.pop_back();
+            std::lock_guard lock(mu_);  // clear() replaces the pool
+            store->pool = stores_;
+        }
+        {
+            std::lock_guard lock(store->pool->mu);
+            if (!store->pool->free.empty()) {
+                store->bytes = std::move(store->pool->free.back());
+                store->pool->free.pop_back();
             }
         }
         if (!store->bytes.get()) store->bytes = PinnedBuffer(frame_bytes_ * chunk_, budget_);

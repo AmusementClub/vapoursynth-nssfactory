@@ -9,7 +9,7 @@
 namespace nss_cuda {
 namespace {
 
-// Precision of the solver workspace (D15).
+// Precision of the solver workspace (FP32; see twsc_real_bytes).
 using TwscReal = float;
 
 constexpr double kNoiseFloor = 1e-6;  // nss::kTwscNoiseFloor
@@ -109,7 +109,7 @@ __device__ __forceinline__ void for_runs(int outers, int inners, Body body) {
 // window 20 at 1080p against block_eigen: group 10 0.92, 12 1.02, 14 1.12,
 // 16 1.22; joint RGB group 12 0.99, 14 1.05; light, group 8, 0.95), and at
 // cap 32 on four warps it took 220k instructions a group against 148k (RTX
-// 5080, 2026-10-14). Caps above 16 (kDc instances) take divide and conquer
+// 5080). Caps above 16 (kDc instances) take divide and conquer
 // on the tridiagonal matrix (block_eigen_dc) with the group's ADMM arrays,
 // idle then, as its scratch; the QL chain it replaces was a quarter of a
 // 64 x 64 block's samples (default call, 128 x 128: gray 1.42, RGB 1.37,
@@ -521,9 +521,9 @@ struct Placement {
 };
 
 // About two threads per matrix row: blocks per SM count for more than
-// threads per block (measured on sm_120, 2026-10-12 with QL; with divide and
-// conquer, 128 threads at cap 32 and 256 at cap 64 measured 0.85 to 0.87,
-// 2026-10-14; none of this enters the output). The matrix goes to
+// threads per block (measured on sm_120 with QL; with divide and conquer, 128
+// threads at cap 32 and 256 at cap 64 measured 0.85 to 0.87; none of this
+// enters the output). The matrix goes to
 // shared memory when a block may hold it. An SM then runs sm / (block +
 // 1 KiB) blocks (the driver's share, measured; the size in units of 256
 // bytes), up to the kernel's register bound; the solver's slow scratch joins

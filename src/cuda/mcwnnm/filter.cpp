@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-// nss_cuda.MCWNNM: parse_mcwnnm with the "nss_cuda" prefix (D14) around the
+// nss_cuda.MCWNNM: parse_mcwnnm with the "nss_cuda" prefix around the
 // shared group driver in joint three-channel mode and the MCWNNM ADMM group
 // kernel. rclip guides matching in the first outer round only. Temporal
 // output rolls on the device for any number of rounds.
@@ -15,7 +15,7 @@ namespace nss_cuda {
 namespace {
 
 void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI* vsapi) {
-    // Same validation order and text as nss.MCWNNM (D14).
+    // Same validation order and text as nss.MCWNNM.
     const auto temporal = nss::frontend::parse_temporal(vsapi, in, nss::kWnnmDefaultRadius, "MCWNNM", "nss_cuda",
                                                         kDefaultTemporalMode, kRollingCache);
     GroupFilterConfig config;
