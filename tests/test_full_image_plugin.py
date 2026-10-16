@@ -170,7 +170,7 @@ class Suite:
         source,_=make_clip(core,vs.GRAYS,frames=1,width=16,height=16)
         for sigma in (3,20,20+1e-9,40,40+1e-9,60,60+1e-9,100):
             _,props=values(core.nss.TWSC(source,sigma=sigma,iters=1,block_step=7,search_window=1),0)
-            assert props['_NSSBlockSize']==8 and props['_NSSGroupSize']==90,(sigma,props)
+            assert props['_NSSBlockSize']==8 and props['_NSSGroupSize']==8,(sigma,props)
         calibration=dict(lambda_basic=.6,hard_strength=1.,wiener_iters=2,wiener_sigma_scale=.08)
         a,props=values(core.nss.NLH(source,sigma=3,block_size=4,block_step=4,group_size=8,q=2,search_window=5,basic_iters=1,**calibration),0)
         b,_=values(core.nss.NLH(source,sigma=3,block_size=[4,4],block_step=[4,4],group_size=[8,8],q=[2,2],bm_range=2,basic_iters=1,**calibration),0)
@@ -209,7 +209,7 @@ class Suite:
                 # Bound runtime while exercising the actual image path for
                 # every block with positive and nonconstant estimated noise.
                 options=dict(noise,block_size=block,group_size=2,iters=1,search_window=3)
-                for step,expected in (({},1),(dict(block_step=block),block)):
+                for step,expected in (({},min(8,block)),(dict(block_step=block),block)):
                     pixels,props=values(core.nss.TWSC(noisy,**options,**step),0)
                     assert props['_NSSBlockStep']==expected,(block,noise,props)
                     assert np.isfinite(pixels[0]).all()
@@ -224,16 +224,16 @@ class Suite:
         # The default geometry is stable across sigma levels and can be checked
         # before requesting any source frame.
         for sigma in (3,20,20+1e-9,40,60,60+1e-9,100):
-            node=core.nss.TWSC(source,sigma=sigma,ps_num=90)
+            node=core.nss.TWSC(source,sigma=sigma,ps_num=8)
             assert node is not None
-            try: core.nss.TWSC(source,sigma=sigma,ps_num=91)
+            try: core.nss.TWSC(source,sigma=sigma,ps_num=9)
             except vs.Error as error: assert 'ps_num exceeds resolved group_size' in str(error),error
-            else: raise AssertionError((sigma,91,'must fail during creation'))
-        try: core.nss.TWSC(source,ps_num=91)
+            else: raise AssertionError((sigma,9,'must fail during creation'))
+        try: core.nss.TWSC(source,ps_num=9)
         except vs.Error as error: assert 'ps_num exceeds resolved group_size' in str(error),error
         else: raise AssertionError('default group must be validated during creation')
         assert core.nss.TWSC(source,sigma=3,group_size=96,ps_num=96) is not None
-        try: core.nss.TWSC(source,estimate_sigma=1,ps_num=91)
+        try: core.nss.TWSC(source,estimate_sigma=1,ps_num=9)
         except vs.Error as error: assert 'ps_num exceeds resolved group_size' in str(error),error
         else: raise AssertionError('estimated sigma must use the fixed default group')
 
@@ -314,14 +314,14 @@ class Suite:
         for extra in off:
             _,props=values(core.nss.TWSC(source,**args,**extra),1)
             assert props['_NSSCFast']==0,(extra,props)
-        # Without iters the fast path takes 4 rounds and the joint filter 12.
+        # Without iters every path takes the default 2 rounds.
         quick={k:v for k,v in args.items() if k!='iters'}
-        for extra,rounds in ((dict(sigma=4),4),(dict(sigma=4,cfast=0),12),(dict(sigma=4,iters=7),7),
-                             (dict(sigma=[4,4,3]),12),(dict(estimate_sigma=1),12),(dict(sigma=4,radius=1,ps_range=1),12)):
+        for extra,rounds in ((dict(sigma=4),2),(dict(sigma=4,cfast=0),2),(dict(sigma=4,iters=7),7),
+                             (dict(sigma=[4,4,3]),2),(dict(estimate_sigma=1),2),(dict(sigma=4,radius=1,ps_range=1),2)):
             _,props=values(core.nss.TWSC(source,**quick,**extra),1)
             assert props['_NSSIterations']==rounds,(extra,props['_NSSIterations'])
         _,props=values(core.nss.TWSC(make_clip(core,vs.GRAYS,frames=3,width=24,height=20)[0],sigma=4,**quick),1)
-        assert props['_NSSIterations']==12,props['_NSSIterations']
+        assert props['_NSSIterations']==2,props['_NSSIterations']
         for fmt in (vs.GRAYS,vs.YUV444PS,vs.YUV420PS):
             other,_=make_clip(core,fmt,frames=1,width=24,height=20)
             on,props=values(core.nss.TWSC(other,sigma=4,**args),0);none,_=values(core.nss.TWSC(other,sigma=4,cfast=0,**args),0)

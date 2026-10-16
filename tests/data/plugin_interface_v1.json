@@ -20877,20 +20877,10 @@
    "error": "nss: ps_num outside supported range"
   },
   "TWSC|GRAYS|ps_num=16": {
-   "ok": {
-    "format": "GrayS",
-    "frames": 4,
-    "height": 40,
-    "width": 48
-   }
+   "error": "nss.TWSC: ps_num exceeds resolved group_size"
   },
   "TWSC|GRAYS|ps_num=17": {
-   "ok": {
-    "format": "GrayS",
-    "frames": 4,
-    "height": 40,
-    "width": 48
-   }
+   "error": "nss.TWSC: ps_num exceeds resolved group_size"
   },
   "TWSC|GRAYS|ps_num=2": {
    "ok": {
@@ -20909,12 +20899,7 @@
    }
   },
   "TWSC|GRAYS|ps_num=33": {
-   "ok": {
-    "format": "GrayS",
-    "frames": 4,
-    "height": 40,
-    "width": 48
-   }
+   "error": "nss.TWSC: ps_num exceeds resolved group_size"
   },
   "TWSC|GRAYS|ps_num=4": {
    "ok": {
@@ -20925,12 +20910,7 @@
    }
   },
   "TWSC|GRAYS|ps_num=65": {
-   "ok": {
-    "format": "GrayS",
-    "frames": 4,
-    "height": 40,
-    "width": 48
-   }
+   "error": "nss.TWSC: ps_num exceeds resolved group_size"
   },
   "TWSC|GRAYS|ps_num=7": {
    "ok": {
@@ -20949,12 +20929,7 @@
    }
   },
   "TWSC|GRAYS|ps_num=9": {
-   "ok": {
-    "format": "GrayS",
-    "frames": 4,
-    "height": 40,
-    "width": 48
-   }
+   "error": "nss.TWSC: ps_num exceeds resolved group_size"
   },
   "TWSC|GRAYS|ps_range=-1": {
    "error": "nss: ps_range outside supported range"
@@ -22705,20 +22680,10 @@
    "error": "nss: ps_num outside supported range"
   },
   "TWSC|RGBS|ps_num=16": {
-   "ok": {
-    "format": "RGBS",
-    "frames": 4,
-    "height": 40,
-    "width": 48
-   }
+   "error": "nss.TWSC: ps_num exceeds resolved group_size"
   },
   "TWSC|RGBS|ps_num=17": {
-   "ok": {
-    "format": "RGBS",
-    "frames": 4,
-    "height": 40,
-    "width": 48
-   }
+   "error": "nss.TWSC: ps_num exceeds resolved group_size"
   },
   "TWSC|RGBS|ps_num=2": {
    "ok": {
@@ -22737,12 +22702,7 @@
    }
   },
   "TWSC|RGBS|ps_num=33": {
-   "ok": {
-    "format": "RGBS",
-    "frames": 4,
-    "height": 40,
-    "width": 48
-   }
+   "error": "nss.TWSC: ps_num exceeds resolved group_size"
   },
   "TWSC|RGBS|ps_num=4": {
    "ok": {
@@ -22753,12 +22713,7 @@
    }
   },
   "TWSC|RGBS|ps_num=65": {
-   "ok": {
-    "format": "RGBS",
-    "frames": 4,
-    "height": 40,
-    "width": 48
-   }
+   "error": "nss.TWSC: ps_num exceeds resolved group_size"
   },
   "TWSC|RGBS|ps_num=7": {
    "ok": {
@@ -22777,12 +22732,7 @@
    }
   },
   "TWSC|RGBS|ps_num=9": {
-   "ok": {
-    "format": "RGBS",
-    "frames": 4,
-    "height": 40,
-    "width": 48
-   }
+   "error": "nss.TWSC: ps_num exceeds resolved group_size"
   },
   "TWSC|RGBS|ps_range=-1": {
    "error": "nss: ps_range outside supported range"
@@ -24538,20 +24488,10 @@
    "error": "nss: ps_num outside supported range"
   },
   "TWSC|YUV420PS|ps_num=16": {
-   "ok": {
-    "format": "YUV420PS",
-    "frames": 4,
-    "height": 40,
-    "width": 48
-   }
+   "error": "nss.TWSC: ps_num exceeds resolved group_size"
   },
   "TWSC|YUV420PS|ps_num=17": {
-   "ok": {
-    "format": "YUV420PS",
-    "frames": 4,
-    "height": 40,
-    "width": 48
-   }
+   "error": "nss.TWSC: ps_num exceeds resolved group_size"
   },
   "TWSC|YUV420PS|ps_num=2": {
    "ok": {
@@ -24570,12 +24510,7 @@
    }
   },
   "TWSC|YUV420PS|ps_num=33": {
-   "ok": {
-    "format": "YUV420PS",
-    "frames": 4,
-    "height": 40,
-    "width": 48
-   }
+   "error": "nss.TWSC: ps_num exceeds resolved group_size"
   },
   "TWSC|YUV420PS|ps_num=4": {
    "ok": {
@@ -24586,12 +24521,7 @@
    }
   },
   "TWSC|YUV420PS|ps_num=65": {
-   "ok": {
-    "format": "YUV420PS",
-    "frames": 4,
-    "height": 40,
-    "width": 48
-   }
+   "error": "nss.TWSC: ps_num exceeds resolved group_size"
   },
   "TWSC|YUV420PS|ps_num=7": {
    "ok": {
@@ -24610,12 +24540,7 @@
    }
   },
   "TWSC|YUV420PS|ps_num=9": {
-   "ok": {
-    "format": "YUV420PS",
-    "frames": 4,
-    "height": 40,
-    "width": 48
-   }
+   "error": "nss.TWSC: ps_num exceeds resolved group_size"
   },
   "TWSC|YUV420PS|ps_range=-1": {
    "error": "nss: ps_range outside supported range"
