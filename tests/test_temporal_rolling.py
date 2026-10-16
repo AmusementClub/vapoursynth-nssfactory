@@ -5,7 +5,9 @@
 Rolling returns normalized frames with the source's size. Filters whose rolling
 mode is legacy + VAggregate inside the plugin must match the explicit chain bit
 for bit; a filter with its own rolling path (--native-rolling, a comma list) is held to
---min-psnr instead. radius 0 ignores the mode.
+--min-psnr instead. radius 0 ignores the mode. A plugin without VAggregate (the
+device) reduces inside its filters with nss.VAggregate's arithmetic in IEEE
+float32: the chain is then that reduction, done here.
 
 usage: test_temporal_rolling.py --plugin PATH [--namespace NS] [--native-rolling F1,F2] [--min-psnr DB]
                                 [--default-mode legacy|rolling]
@@ -27,8 +29,10 @@ CASES = (
     ("WNNM", vs.GRAYS, dict(sigma=5.0, radius=1, **LIGHT)),
     ("WNNM", vs.GRAYS, dict(sigma=5.0, radius=2, rolling_chunk=2, **LIGHT)),
     ("MCWNNM", vs.RGBS, dict(sigma=5.0, radius=1, iters=1, **LIGHT)),
+    ("MCWNNM", vs.RGBS, dict(sigma=5.0, radius=2, iters=2, rolling_chunk=2, **LIGHT)),
     ("NCSR", vs.GRAYS, dict(sigma=5.0, radius=1, iters=1, **LIGHT)),
     ("NCSR", vs.GRAYS, dict(sigma=5.0, radius=1, iters=2, **LIGHT)),
+    ("NCSR", vs.GRAYS, dict(sigma=5.0, radius=2, iters=3, delta=0.3, rolling_chunk=2, **LIGHT)),
     ("NLH", vs.GRAYS, dict(sigma=5.0, radius=1)),
     ("TWSC", vs.GRAYS, dict(sigma=5.0, radius=1, block_step=6, group_size=8, iters=1)),
 )
@@ -55,6 +59,26 @@ def frames(node):
     return [[np.asarray(f[p]).copy() for p in range(f.format.num_planes)] for f in node.frames()]
 
 
+def reduced(fat, src, radius):
+    """VAggregate of the fat clip in IEEE float32: slices summed in ascending
+    center order, then den == 1 -> num, den > 1e-12 -> num / den, else src."""
+    fats, srcs, out = frames(fat), frames(src), []
+    for n, planes in enumerate(srcs):
+        centers = range(max(0, n - radius), min(len(fats) - 1, n + radius) + 1)
+        frame = []
+        for p, s in enumerate(planes):
+            h = s.shape[0]
+            num, den = np.zeros_like(s), np.zeros_like(s)
+            for c in centers:
+                k = 2 * (n - c + radius)
+                num = num + fats[c][p][k * h:(k + 1) * h]
+                den = den + fats[c][p][(k + 1) * h:(k + 2) * h]
+            with np.errstate(divide="ignore", invalid="ignore"):
+                frame.append(np.where(den == 1, num, np.where(den > np.float32(1e-12), num / den, s)))
+        out.append(frame)
+    return out
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--plugin", required=True)
@@ -75,8 +99,7 @@ def main():
         src = source(core, fmt)
         make = getattr(ns, name)
         rolling = make(src, temporal_mode="rolling", **kw)
-        chain = ns.VAggregate(make(src, temporal_mode="legacy", **{k: v for k, v in kw.items() if k != "rolling_chunk"}),
-                             src, radius=kw["radius"])
+        fat = make(src, temporal_mode="legacy", **{k: v for k, v in kw.items() if k != "rolling_chunk"})
         label = f"{args.namespace}.{name} {', '.join(f'{k}={v}' for k, v in kw.items())}"
         # With no temporal_mode the backend's default applies: fat on the CPU, finished frames on the device.
         default = make(src, **{k: v for k, v in kw.items() if k != "rolling_chunk"})
@@ -88,10 +111,10 @@ def main():
             print(f"FAIL {label}: rolling output is {rolling.width}x{rolling.height}x{rolling.num_frames}")
             failures += 1
             continue
-        a, b = frames(rolling), frames(chain)
+        a = frames(rolling)
+        b = frames(ns.VAggregate(fat, src, radius=kw["radius"])) if hasattr(ns, "VAggregate") else reduced(fat, src, kw["radius"])
         worst = max(float(np.max(np.abs(pa - pb))) for fa, fb in zip(a, b) for pa, pb in zip(fa, fb))
-        single_round = kw.get("iters", 1) == 1
-        if name in device and (name != "NCSR" or single_round):
+        if name in device:
             mse = max(float(np.mean((pa - pb) ** 2)) for fa, fb in zip(a, b) for pa, pb in zip(fa, fb))
             psnr = 200.0 if mse == 0 else -10 * np.log10(mse)
             ok, note = psnr >= args.min_psnr, f"psnr {psnr:.2f} dB"

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // nss_cuda.MCWNNM: parse_mcwnnm with the "nss_cuda" prefix (D14) around the
 // shared group driver in joint three-channel mode and the MCWNNM ADMM group
-// kernel. rclip guides matching in the first outer round only.
+// kernel. rclip guides matching in the first outer round only. Temporal
+// output rolls on the device for any number of rounds.
 #include "cuda/common/group_driver.hpp"
 #include "cuda/mcwnnm/kernels.hpp"
 #include "frontend/mcwnnm_args.hpp"
@@ -15,6 +16,8 @@ namespace {
 
 void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI* vsapi) {
     // Same validation order and text as nss.MCWNNM (D14).
+    const auto temporal = nss::frontend::parse_temporal(vsapi, in, nss::kWnnmDefaultRadius, "MCWNNM", "nss_cuda",
+                                                        kDefaultTemporalMode, kRollingCache);
     GroupFilterConfig config;
     config.name = "MCWNNM";
     config.model = nss::Model::MCWNNM;
@@ -30,7 +33,8 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     }
     nss::validate_group_planes(config.vi, p.sigma, p.block_size);
     config.radius = p.radius;
-    config.mode = GroupMode::Legacy;
+    config.mode = temporal.rolling ? GroupMode::Rolling : GroupMode::Legacy;
+    config.rolling = temporal.params;
     config.channels = 3;
     config.iters = p.iters;
     config.delta = p.delta;
@@ -75,16 +79,11 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     group_filter_install(std::move(config), out, core, vsapi);
 }
 
-void VS_CC create_temporal(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI* vsapi) {
-    nss::frontend::create_temporal(create, in, out, core, vsapi, nss::kWnnmDefaultRadius, "MCWNNM", "nss_cuda",
-                                   kDefaultTemporalMode, kRollingCache);
-}
-
 }  // namespace
 
 void register_mcwnnm(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
     static const std::string args = signature(nss::frontend::kMcwnnmSignature);
-    vspapi->registerFunction("MCWNNM", args.c_str(), "clip:vnode;", nss::checked_create<create_temporal, kDefaultMemoryLimitMb>, nullptr, plugin);
+    vspapi->registerFunction("MCWNNM", args.c_str(), "clip:vnode;", nss::checked_create<create, kDefaultMemoryLimitMb>, nullptr, plugin);
 }
 
 }  // namespace nss_cuda

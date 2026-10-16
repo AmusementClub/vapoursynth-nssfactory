@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // nss_cuda.NCSR: parse_ncsr with the "nss_cuda" prefix (D14) around the
 // shared group driver (outer rounds with delta relaxation) and the NCSR group
-// kernel. rclip guides matching in the first round only.
+// kernel. rclip guides matching in the first round only. Temporal output rolls
+// on the device for any number of rounds.
 #include "cuda/common/gram_group.hpp"
 #include "cuda/common/group_driver.hpp"
 #include "cuda/ncsr/kernels.hpp"
@@ -32,10 +33,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     }
     nss::validate_group_planes(config.vi, p.sigma, p.block_size);
     config.radius = p.radius;
-    // The driver's rolling mode covers a single round; more rounds aggregate
-    // the fat intermediate with nss_cuda.VAggregate instead.
-    const bool device_rolling = temporal.rolling && p.iters == 1;
-    config.mode = device_rolling ? GroupMode::Rolling : GroupMode::Legacy;
+    config.mode = temporal.rolling ? GroupMode::Rolling : GroupMode::Legacy;
     config.rolling = temporal.params;
     config.iters = p.iters;
     config.delta = p.delta;
@@ -69,11 +67,8 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         args.scratch = l.scratch;
         ncsr_filter_groups(args, l.stream);
     };
-    config.scratch_floats = [](const GroupPlane& g, bool) { return gram_scratch_floats(g.group); };
+    config.scratch_floats = [](const GroupPlane& g, bool) { return gram_scratch_floats(g.group, true); };
     group_filter_install(std::move(config), out, core, vsapi);
-    if (temporal.rolling && !device_rolling) {
-        nss::frontend::aggregate_rolling(vsapi, in, out, core, nss::kWnnmDefaultRadius, "NCSR", "nss_cuda");
-    }
 }
 
 }  // namespace

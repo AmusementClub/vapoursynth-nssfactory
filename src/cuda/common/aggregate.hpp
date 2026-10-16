@@ -130,6 +130,11 @@ void aggregate_finish(const float* num, const float* den, const float* src, int 
 void accumulate_slice(float* acc_num, float* acc_den, const float* num, const float* den, std::size_t count,
                       cudaStream_t stream);
 
+// acc_num += src, acc_den += 1 over `count` floats: the identity slice a
+// bypassed plane contributes to its own center (the others contribute zeros,
+// which leave a sum that starts at +0 unchanged).
+void accumulate_identity(float* acc_num, float* acc_den, const float* src, std::size_t count, cudaStream_t stream);
+
 // x += delta * (y - x) over `count` floats (nss::iter_regularize): relaxes the
 // current estimate toward the noisy input between outer iterations.
 void iter_regularize(float* x, const float* y, std::size_t count, float delta, cudaStream_t stream);

@@ -129,6 +129,8 @@ dominant cost driver is `block_step` (positions scale as `1/step^2`), then
 
 ## CUDA
 
-`core.nss_cuda.BM3D` and `core.nss_cuda.VAggregate` take the same arguments. What is specific to the device
+`core.nss_cuda.BM3D` takes the same arguments. What is specific to the device
 (extra arguments, temporal output, memory, numerics, speed) is in the
-[CUDA page](cuda/bm3d.md) and [cuda/vaggregate.md](cuda/vaggregate.md).
+[CUDA page](cuda/bm3d.md). `VAggregate` is the CPU plugin's alone: the device
+filters return finished frames, and `nss.VAggregate` reduces their legacy
+intermediate.

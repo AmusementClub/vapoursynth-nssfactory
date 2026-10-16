@@ -104,6 +104,27 @@ __device__ __forceinline__ void singular_order(const float* g, float* s, int* or
     }
 }
 
+// For thread `lane` of a group's N threads (finish_lane): the singular value
+// sqrt(max(eigenvalue, 0)) of g's diagonal entry `lane`, and its place in
+// singular_order's order (larger values first, equal ones by index), with
+// constant indices only.
+template <int N>
+__device__ __forceinline__ int singular_place(const float* g, int lane, float* value) {
+    const auto singular = [&](int i) {
+        const float lambda = g[i * N + i];
+        return lambda > 0.f ? sqrtf(lambda) : 0.f;
+    };
+    const float mine = singular(lane);
+    int place = 0;
+#pragma unroll
+    for (int i = 0; i < N; ++i) {
+        const float s = singular(i);
+        place += s > mine || (s == mine && i < lane);
+    }
+    *value = mine;
+    return place;
+}
+
 // gram_shrink. g: N x N symmetric Gram matrix (full storage), replaced by M. v: N x N
 // workspace. rank: number of singular values that can be nonzero. Returns the
 // number of kept singular values.

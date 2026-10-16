@@ -28,8 +28,8 @@ count; treat them as cost tiers, not promises.
 (`block_step=8, group_size=8, iters=2`); their true defaults are substantially
 heavier (see the per-page performance notes). All other rows are exact defaults.
 
-The CUDA plugin `libnss_cuda` (namespace `nss_cuda`) has the same filters with
-the same arguments. Everything specific to it, with a page per function, is in the
+The CUDA plugin `libnss_cuda` (namespace `nss_cuda`) has the same denoisers with
+the same arguments (`VAggregate` is the CPU plugin's alone). Everything specific to it, with a page per function, is in the
 [CUDA reference](cuda/README.md).
 
 ## Conventions shared by every filter

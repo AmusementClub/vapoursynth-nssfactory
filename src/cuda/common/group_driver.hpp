@@ -103,7 +103,11 @@ struct GroupFilterConfig {
     // Outer rounds (MCWNNM, NCSR): every round after the first relaxes the
     // estimate toward the input by delta, re-matches on the estimate (the
     // guide only drives the first round) and filters the estimate again.
-    // Rolling mode requires channels == 1 and iters == 1.
+    // With a temporal radius the estimates are those of one center's window
+    // (as the CPU's fat output): a rolling center runs its rounds before the
+    // last on estimates of its own and adds only the last to the sums.
+    // A joint unit's estimates hold all its channels. Rolling mode requires
+    // fused planes when iters > 1.
     int iters = 1;
     float delta = 0.f;
     // Extra device floats per reference group (second argument: guide present).

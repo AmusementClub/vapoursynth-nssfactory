@@ -340,6 +340,13 @@ __global__ void accumulate_slice_kernel(float* acc_num, float* acc_den, const fl
     acc_den[i] += den[i];
 }
 
+__global__ void accumulate_identity_kernel(float* acc_num, float* acc_den, const float* src, std::size_t count) {
+    const std::size_t i = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= count) return;
+    acc_num[i] += src[i];
+    acc_den[i] += 1.f;
+}
+
 __global__ void regularize_kernel(float* x, const float* y, std::size_t count, float delta) {
     const std::size_t i = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (i >= count) return;
@@ -509,6 +516,13 @@ void accumulate_slice(float* acc_num, float* acc_den, const float* num, const fl
     if (count == 0) return;
     accumulate_slice_kernel<<<static_cast<unsigned>((count + 255) / 256), 256, 0, stream>>>(acc_num, acc_den, num, den,
                                                                                          count);
+    NSS_CUDA_CHECK_LAUNCH();
+}
+
+void accumulate_identity(float* acc_num, float* acc_den, const float* src, std::size_t count, cudaStream_t stream) {
+    if (count == 0) return;
+    accumulate_identity_kernel<<<static_cast<unsigned>((count + 255) / 256), 256, 0, stream>>>(acc_num, acc_den, src,
+                                                                                            count);
     NSS_CUDA_CHECK_LAUNCH();
 }
 

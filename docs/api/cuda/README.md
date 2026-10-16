@@ -1,8 +1,10 @@
 # nss_cuda.* API Reference
 
 `libnss_cuda` is the CUDA plugin (namespace `nss_cuda`), built with
-`-DNSS_ENABLE_CUDA=ON`. It has all nine filters of the CPU plugin, one page
-each below. A page describes every argument of its function (default, range,
+`-DNSS_ENABLE_CUDA=ON`. It has the eight denoisers of the CPU plugin, one page
+each below. `VAggregate` stays on the CPU plugin: every temporal device filter
+returns finished frames itself, and `nss.VAggregate` reduces the device's
+legacy output. A page describes every argument of its function (default, range,
 meaning), the device arguments, and what is specific to the device (memory,
 numerics, measured speed). This page has what the filters share. The papers
 and the reasoning behind the defaults are on the CPU pages; the models and
@@ -11,7 +13,6 @@ the defaults are the same on both plugins.
 | Function | CUDA page (all arguments) | CPU page (algorithm, paper) |
 |---|---|---|
 | `core.nss_cuda.BM3D` | [bm3d.md](bm3d.md) | [bm3d.md](../bm3d.md) |
-| `core.nss_cuda.VAggregate` | [vaggregate.md](vaggregate.md) | [bm3d.md](../bm3d.md) |
 | `core.nss_cuda.NLM` | [nlm.md](nlm.md) | [nlm.md](../nlm.md) |
 | `core.nss_cuda.WNNM` | [wnnm.md](wnnm.md) | [wnnm.md](../wnnm.md) |
 | `core.nss_cuda.MCWNNM` | [mcwnnm.md](mcwnnm.md) | [mcwnnm.md](../mcwnnm.md) |
@@ -77,19 +78,19 @@ returns normal-height frames; LSSC has no temporal mode.)
 
 | Parameter | Default | Range | Meaning |
 |---|---|---|---|
-| `temporal_mode` | `"rolling"` | rolling / legacy | `"rolling"` returns finished frames; `"legacy"` returns the fat intermediate for `VAggregate`, exactly as the CPU plugin does. |
+| `temporal_mode` | `"rolling"` | rolling / legacy | `"rolling"` returns finished frames; `"legacy"` returns the fat intermediate, exactly as the CPU plugin does, for `nss.VAggregate`. |
 | `rolling_chunk` | 4 | [1, 64] | Frames accumulated per rolling chunk. |
 | `rolling_cache_chunks` | 1 | [1, 64] | Finished chunks kept for later frame requests at first. Given alone, the cache stays at this size. |
 | `rolling_cache_limit` | 16 | [1, 64], >= `rolling_cache_chunks` | What the cache may grow to. It keeps one more chunk each time two requests miss on chunks it dropped recently, so alternating between positions settles after a few misses. Under `memory_limit_mb` it grows only into what the limit leaves. (On the CPU the two arguments name one fixed size.) |
 
-- BM3D, WNNM and single-round NCSR keep the temporal accumulation on the
-  device and copy back only final frames. MCWNNM, NLH and TWSC (and NCSR with
-  more rounds) reduce the fat intermediate with `nss_cuda.VAggregate` inside
-  the filter; the rolling arguments only matter where the accumulation stays
-  on the device.
+- Every temporal filter keeps the temporal accumulation (and every outer
+  round) on the device and copies back only final frames. A chunk that
+  follows the one before it on a stream carries on from it, so each center
+  runs once in sequential rendering.
 - `temporal_mode="legacy"` is for mixing backends or keeping an existing
   script unchanged: the fat intermediate is a plain VS frame with versioned
-  properties, so either backend's `VAggregate` can reduce it.
+  properties, and `nss.VAggregate` from the CPU plugin reduces it (within a
+  few ulp of the device's own reduction: the CPU divides with fast-math).
 - The finished-frame mode needs more memory than legacy.
 - Sequential rendering, a chained second stage and a temporal filter
   downstream compute each chunk once. Fully random access costs a chunk per
