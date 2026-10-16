@@ -93,7 +93,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
-    args.out.mkdir(parents=True, exist_ok=False)
+    # Rerunnable in one build tree: summary.json and pixels.npz are replaced
+    # whole, and a failure capture from an earlier run must not linger.
+    args.out.mkdir(parents=True, exist_ok=True)
+    (args.out / "failure.npz").unlink(missing_ok=True)
     core = vs.core
     core.max_cache_size = 32
     core.std.LoadPlugin(path=os.environ["NSS_SO"])

@@ -11,13 +11,14 @@ explicit, separately recorded exploration policies.
 cmake -S . -B artifacts/lssc-native-build -G Ninja \
   -DCMAKE_BUILD_TYPE=Release -DNSS_LSSC_EXPLORER=ON
 cmake --build artifacts/lssc-native-build -j 4
-OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 \
-  .venv-paper/bin/python -m pytest -q tests/lssc_paper
+ctest --test-dir artifacts/lssc-native-build -R '^test_lssc_native_smoke$'
 ```
 
-`native.py` checks the C ABI and supports an alternate library through
-`NSS_LSSC_NATIVE_LIBRARY`. The opt-in C++ implementation lives in `native/`.
-There is no runtime Python dependency added to the production plugin.
+The opt-in C++ implementation lives in `native/`; `test_lssc_native_smoke` is its
+sanitizer/ABI smoke. The Python adapter, its numerical SVD/KKT tests and the
+campaign drivers were removed once the exploration finished
+(`git show 6a07acb:tests/lssc_paper/native.py`, and the same for `test_native.py`,
+`native_campaign.py`, `native_audit.py`, `native_sweep.py`).
 
 ## Retained definitions
 
@@ -110,19 +111,6 @@ Parallel scheduling and GPU paths are not introduced speculatively.
 
 ## Evidence
 
-`native_campaign.py` keeps each variant in a separate persistent process,
-alternates measured order, verifies output/pilot/dictionary FP64 repeat hashes,
-and records end-to-end adapter timing separately from native stage timing. It
-archives the source and copies the exact loaded library before each campaign.
-Warm passes, hashes, serialization and clean-image metrics are outside timing.
-Inputs are preloaded (`timed_source_fills=0`). Failures remain in the results.
-
-`native_audit.py` compares a saved fixed-D FP64 control to frozen P2/SVD at whole
-image, every-group membership and sampled-support/refit levels. This is not
-author-MEX equivalence or validation of a changed learning algorithm.
-
-`native_sweep.py` verifies existing fixture hashes and runs cases serially.
-`experiments/learning-v1.json` is an explicit exploration grid, not defaults.
-For C4, `--require-cpu0` requires the verified two-thread SMT lane, records CPU
-activity and rejects the whole paired set if any variant exceeds 1% sibling
-activity or has steal. macOS local timings carry no C4 acceptance claim.
+The exploration's evidence (paired campaigns, the fixed-D audit against frozen
+P2/SVD, serial sweeps of hashed fixtures) lives in the artifact archive; the
+drivers that produced it are in the history (see above).
