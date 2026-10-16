@@ -5,7 +5,7 @@
 // ordered by (finite first, distance, t, y, x); spatial search scans the
 // clamped (2r+1)^2 window; temporal search is the predictive ps_num/ps_range
 // layering of collect_temporal. Distances are summed in a different order
-// than the CPU SIMD trees, so near-ties may resolve differently (D9/D16).
+// than the CPU SIMD trees, so near-ties may resolve differently (CPU and GPU are compared by PSNR, not bitwise).
 #pragma once
 
 #include <cuda_runtime.h>

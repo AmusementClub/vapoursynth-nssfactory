@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-// nss_cuda.NCSR: parse_ncsr with the "nss_cuda" prefix (D14) around the
+// nss_cuda.NCSR: parse_ncsr with the "nss_cuda" prefix around the
 // shared group driver (outer rounds with delta relaxation) and the NCSR group
 // kernel. rclip guides matching in the first round only. Temporal output rolls
 // on the device for any number of rounds.
@@ -16,7 +16,7 @@ namespace nss_cuda {
 namespace {
 
 void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI* vsapi) {
-    // Same validation order and text as nss.NCSR (D14).
+    // Same validation order and text as nss.NCSR.
     const auto temporal = nss::frontend::parse_temporal(vsapi, in, nss::kWnnmDefaultRadius, "NCSR", "nss_cuda", kDefaultTemporalMode, kRollingCache);
     GroupFilterConfig config;
     config.name = "NCSR";

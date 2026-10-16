@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-// nss_cuda.LSSC: parse_lssc with the "nss_cuda" prefix (D14) around the
+// nss_cuda.LSSC: parse_lssc with the "nss_cuda" prefix around the
 // device pipeline of lssc/kernels.hpp, one plane at a time. The host only
 // sequences the steps and handles index bookkeeping: the LCG sample positions
 // and the constant DCT atoms.
@@ -377,7 +377,7 @@ std::unique_ptr<Slot> make_slot(const LsscData& d) {
 }
 
 void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI* vsapi) {
-    // Same validation order and text as nss.LSSC (D14).
+    // Same validation order and text as nss.LSSC.
     auto data = std::make_unique<LsscData>();
     LsscData& d = *data;
     d.node = nss::get_node(vsapi, in, "clip", 0, nullptr);

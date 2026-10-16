@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-// num_streams execution slots per filter instance (plan.md §6.3). getFrame
+// num_streams execution slots per filter instance. getFrame
 // leases a slot for the whole frame; extra VapourSynth threads wait instead of
 // creating unbounded streams/buffers.
 #pragma once

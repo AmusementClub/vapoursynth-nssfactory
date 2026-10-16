@@ -195,6 +195,9 @@ HWY_INLINE void Dct8Butterfly(D d8, hn::Vec<D> block[8]) {
 }
 
 #endif
+// The orthonormal 8-point DCT-II (inverse: DCT-III) of eight lines held one
+// sample per vector (x0..x7, a line per lane) into y: the butterfly scaled by
+// 1/4 when experiment bit 8 is set, otherwise the cosine-table products.
 template <class D>
 HWY_INLINE void Dct8Apply(D d, hn::Vec<D> x0, hn::Vec<D> x1, hn::Vec<D> x2, hn::Vec<D> x3, hn::Vec<D> x4,
                           hn::Vec<D> x5, hn::Vec<D> x6, hn::Vec<D> x7, bool inverse, hn::Vec<D>* y) {
@@ -784,33 +787,70 @@ void TransformLines(float* base, int n, int line_stride, int sample_stride, int 
 
 #if NSS_BM_EXPERIMENT & 128
 struct DctMemo {
-    struct Entry {std::uint64_t hash=0,epoch=0; Bm3dPatchKey key{}; bool keyed=false; std::vector<float> input,output;};
-    std::vector<Entry> table;int block=0;
-    std::uint64_t epoch=1;
-    void transform(float* data,int b,int group,const Bm3dPatchKey* keys){
-        int area=b*b;
-        if(block!=b){block=b;table=std::vector<Entry>(std::min(2048,std::max(1,4194304/(2*area*4+int(sizeof(Entry))))));}
-        for(int g=0;g<group;++g){
-            float* v=data+g*area;std::uint64_t h=1469598103934665603ull;
-            const bool keyed=keys && keys[g].frame;
-            if(keyed){const auto& key=keys[g];h^=reinterpret_cast<std::uintptr_t>(key.frame)>>6;h=(h^std::uint64_t(key.x))*1099511628211ull;h=(h^std::uint64_t(key.y))*1099511628211ull;h^=std::uint64_t(key.stride);}
-            else for(int i=0;i<area;++i){std::uint32_t word;std::memcpy(&word,v+i,4);h=(h^word)*1099511628211ull;}
-            auto& e=table[h%table.size()];
-            const bool same=keyed ? e.keyed && e.key==keys[g] : !e.keyed && e.input.size()==std::size_t(area)&&std::memcmp(e.input.data(),v,area*4)==0;
-            if(e.epoch==epoch&&e.hash==h&&same){std::memcpy(v,e.output.data(),area*4);continue;}
-            e.hash=h;e.epoch=epoch;e.keyed=keyed;
-            if(keyed){e.key=keys[g];e.input.clear();}else e.input.assign(v,v+area);
-            bool done=false;
+    struct Entry {
+        std::uint64_t hash = 0, epoch = 0;
+        Bm3dPatchKey key{};
+        bool keyed = false;
+        std::vector<float> input, output;
+    };
+    std::vector<Entry> table;
+    int block = 0;
+    std::uint64_t epoch = 1;
+    void transform(float* data, int b, int group, const Bm3dPatchKey* keys) {
+        int area = b * b;
+        if (block != b) {
+            block = b;
+            table = std::vector<Entry>(std::min(2048, std::max(1, 4194304 / (2 * area * 4 + int(sizeof(Entry))))));
+        }
+        for (int g = 0; g < group; ++g) {
+            float* v = data + g * area;
+            std::uint64_t h = 1469598103934665603ull;
+            const bool keyed = keys && keys[g].frame;
+            if (keyed) {
+                const auto& key = keys[g];
+                h ^= reinterpret_cast<std::uintptr_t>(key.frame) >> 6;
+                h = (h ^ std::uint64_t(key.x)) * 1099511628211ull;
+                h = (h ^ std::uint64_t(key.y)) * 1099511628211ull;
+                h ^= std::uint64_t(key.stride);
+            } else
+                for (int i = 0; i < area; ++i) {
+                    std::uint32_t word;
+                    std::memcpy(&word, v + i, 4);
+                    h = (h ^ word) * 1099511628211ull;
+                }
+            auto& e = table[h % table.size()];
+            const bool same = keyed ? e.keyed && e.key == keys[g]
+                                    : !e.keyed && e.input.size() == std::size_t(area) &&
+                                          std::memcmp(e.input.data(), v, area * 4) == 0;
+            if (e.epoch == epoch && e.hash == h && same) {
+                std::memcpy(v, e.output.data(), area * 4);
+                continue;
+            }
+            e.hash = h;
+            e.epoch = epoch;
+            e.keyed = keyed;
+            if (keyed) {
+                e.key = keys[g];
+                e.input.clear();
+            } else
+                e.input.assign(v, v + area);
+            bool done = false;
 #ifndef NSS_DISABLE_BM3D_B12_FAST
-            if(b==12)done=detail::dct12_2d_batch_fast(v,1,false);
+            if (b == 12) done = detail::dct12_2d_batch_fast(v, 1, false);
 #endif
-            if(b==16)done=detail::dct16_2d_batch_fast(v,1,false);
-            if(!done){DctLines(v,b,b,1,b,false);DctLines(v,b,1,b,b,false);}
-            e.output.assign(v,v+area);
+            if (b == 16) done = detail::dct16_2d_batch_fast(v, 1, false);
+            if (!done) {
+                DctLines(v, b, b, 1, b, false);
+                DctLines(v, b, 1, b, b, false);
+            }
+            e.output.assign(v, v + area);
         }
     }
 };
-DctMemo& dct_memo(){static thread_local DctMemo memo;return memo;}
+DctMemo& dct_memo() {
+    static thread_local DctMemo memo;
+    return memo;
+}
 #endif
 void Bm3dFilterGroup(float* patches, int lda, int group, int k, int block, float sigma, bool wiener,
                      const float* ref_patches, float* weight_out, float* work, unsigned avx2_features = NSS_AVX2_REQUESTED
@@ -1292,7 +1332,7 @@ void Bm3dFilter8(const float* src, int sstride, const Match* matches, int k, flo
 // Line transforms: the orthonormal 4-point pair, the 8-point FFTW butterflies
 // (4x the orthonormal transform) and the generated orthonormal codelets for
 // 12, 16, 32 and 64. Same mathematics as the generic path, so the same strength;
-// only rounding differs (contracts/tolerances.json, numeric_equivalent).
+// only rounding differs (numerically equivalent, not bit-identical).
 #if HWY_MAX_BYTES >= 32
 template <int N>
 constexpr float kFusedLineGain = N == 8 ? 4.f : 1.f;
@@ -1569,7 +1609,7 @@ bool Bm3dFilterFused(int block, int group, const float* const* srcs, const int* 
         return true;
     NSS_FUSED(4, 4) NSS_FUSED(4, 8) NSS_FUSED(4, 16) NSS_FUSED(4, 32) NSS_FUSED(4, 64)
     NSS_FUSED(8, 4) NSS_FUSED(8, 8) NSS_FUSED(8, 16) NSS_FUSED(8, 32) NSS_FUSED(8, 64)
-    // 12 / 8 keeps its own path: the template measured 0.95x there (C4, paired).
+    // 12 / 8 keeps its own path: the template measured 0.95x there (paired runs on one host).
     NSS_FUSED(12, 4) NSS_FUSED(12, 16) NSS_FUSED(12, 32) NSS_FUSED(12, 64)
     NSS_FUSED(16, 4) NSS_FUSED(16, 8) NSS_FUSED(16, 16) NSS_FUSED(16, 32)
     NSS_FUSED(32, 4) NSS_FUSED(32, 8) NSS_FUSED(32, 16)

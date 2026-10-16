@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // nss_cuda.NLH and nss_cuda.TWSC: parse_full_image with the "nss_cuda" prefix
-// (D14) around a device-resident full-image pipeline (the CPU nlh_image /
+// around a device-resident full-image pipeline (the CPU nlh_image /
 // twsc_image models). Both upload the request window, optionally estimate the
 // noise blind, iterate over every frame of the window and return the final
 // frame or the fat intermediate. The rolling mode (the default with a radius)
@@ -66,7 +66,7 @@ constexpr std::size_t kFramesInFlight = 2;
 // Aggregation capacity per arena byte (patches); small groups are capped by
 // it. TWSC sizes it to the patches its arena holds when that is more: at
 // block 4 / group 32, 9300 instead of 6144 groups a batch, about 5% at 1080p
-// for 10 MiB of sort arrays (RTX 5080, 2026-10-14).
+// for 10 MiB of sort arrays (RTX 5080).
 constexpr std::size_t kArenaBytesPerPatch = 1024;
 
 struct Shape {
@@ -1408,7 +1408,7 @@ void allocate(ImageData& d, const MemoryPlan& plan) {
 }
 
 void create(const VSMap* in, VSMap* out, VSCore* core, const VSAPI* api, nss::Model model) {
-    // Same validation order and text as nss.NLH / nss.TWSC (D14): the
+    // Same validation order and text as nss.NLH / nss.TWSC: the
     // temporal arguments first.
     const auto temporal = nss::frontend::parse_temporal(api, in, 0, model == nss::Model::TWSC ? "TWSC" : "NLH", "nss_cuda",
                                                         kDefaultTemporalMode, kRollingCache);

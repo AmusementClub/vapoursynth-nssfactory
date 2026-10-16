@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-// Device discovery and the D13 support classification for libnss_cuda.
+// Device discovery and the architecture support classification for libnss_cuda.
 // Host C++ only: no kernels are declared here except the load probe.
 #pragma once
 
@@ -8,7 +8,7 @@
 
 namespace nss_cuda {
 
-// D13: native = a compiled cubin runs on the device (same major, cubin minor
+// Support: native = a compiled cubin runs on the device (same major, cubin minor
 // <= device minor); jit = only the embedded PTX can be JIT-compiled (untested,
 // best effort); unsupported = no image can run (below the oldest PTX target).
 enum class Support { native, jit, unsupported };

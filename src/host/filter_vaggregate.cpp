@@ -26,6 +26,13 @@ struct VAggData : nss::VAggregateParams {
     VSVideoInfo vi_src{};
 };
 
+// Frame n of the aggregate. Every intermediate frame c within radius of n
+// holds n's contribution in slice n - c + radius (numerator rows at
+// 2 * slice * h, the denominator's h rows after them); a selected plane
+// becomes sum(num) / sum(den), with the source where nothing contributed,
+// and the other planes are copied from src. The intermediates must carry
+// valid identities of one model; the output keeps the model stamp and drops
+// the fat-layout properties.
 const VSFrame* VS_CC vaggGetFrame(int n, int activationReason, void* instanceData, void** frameData,
                                   VSFrameContext* frameCtx, VSCore* core, const VSAPI* vsapi) {
     auto* d = static_cast<VAggData*>(instanceData);

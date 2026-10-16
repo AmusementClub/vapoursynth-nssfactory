@@ -80,6 +80,10 @@ void fill_patch_atoms(float* D, int m, int atoms, int ldd, const float* patches,
     }
 }
 
+// K-SVD-style dictionary update in place: the first min(n, 256) patches are
+// coded 8-sparse by OMP, then each atom is refit by an SVD of the residual of
+// the patches that use it, `iters` times. Returns false when `work` is
+// smaller than lssc_dict_work_floats; trivial inputs leave D unchanged.
 bool ksvd_lite_workspace(float* D, int m, int atoms, int ldd, const float* patches, int n, int lda, int iters,
                          float* work, int work_floats, bool avx2_gemm) {
     if (iters < 1 || n < 2 || atoms < 1) {

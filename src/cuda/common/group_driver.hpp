@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // Shared host driver for patch-group filters (BM3D, WNNM, MCWNNM, NCSR): the
-// D19 temporal driver plus everything else a filter node needs around its
+// Temporal driver plus everything else a filter node needs around its
 // group kernel. A filter parses its arguments, fills a GroupFilterConfig and
 // supplies `launch`, which turns one batch of matched groups into filtered
 // patches and aggregation metadata; the driver owns

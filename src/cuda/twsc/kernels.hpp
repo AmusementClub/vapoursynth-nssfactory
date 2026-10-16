@@ -57,7 +57,7 @@ __host__ __device__ inline std::size_t twsc_work_reals(int m, int group) {
     const std::size_t r = static_cast<std::size_t>(m < group ? m : group);
     return static_cast<std::size_t>(m) + 2 * group + 3 * r + 2 + 2 * r * r + m * r + 6 * r * group + 6 * r;
 }
-// Bytes of one real of the solver workspace (the D15 precision choice).
+// Bytes of one real of the solver workspace (FP32: FP64 measured slower with no quality benefit).
 std::size_t twsc_real_bytes();
 
 // Groups whose blocks the device runs at a time. The blocks of a launch take

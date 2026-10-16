@@ -148,6 +148,12 @@ int lssc_omp(const float* y, int m, const float* D, int atoms, int ldd, int spar
 }
 
 
+// LSSC of one plane into num/den (cleared first): the patches on the `step`
+// grid are clustered (lssc_cluster_workspace), one dictionary is built from
+// them (lssc_dict_init_workspace), each cluster's patches are coded jointly
+// by ISTA against it (lssc_reconstruct_prepared), and every reconstructed
+// patch is added to num with weight 1 (den counts). `work` is the caller's
+// scratch.
 void lssc_denoise_plane(const float* src, int width, int height, int sstride, float* num, float* den, int buf_stride,
                         int block, int step, float sigma, float* work, int work_floats) {
     if (!src || !num || !den || width < 1 || height < 1 || sstride < width || buf_stride < width) {

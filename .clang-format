@@ -1,0 +1,27 @@
+# Formatting of the shipping sources. Apply to new and edited code; generated
+# codelets (src/cpu/bm/dct_codelet_*.hpp, src/cuda/bm3d/dct_codelet*) are
+# never reformatted, and include order is left alone (Highway's
+# foreach_target re-includes depend on it).
+BasedOnStyle: Google
+IndentWidth: 4
+ColumnLimit: 120
+AccessModifierOffset: -4
+PointerAlignment: Left
+DerivePointerAlignment: false
+SortIncludes: Never
+IncludeBlocks: Preserve
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AllowShortLoopsOnASingleLine: true
+AllowShortFunctionsOnASingleLine: All
+AllowShortBlocksOnASingleLine: Empty
+AllowShortLambdasOnASingleLine: Inline
+BinPackArguments: true
+BinPackParameters: true
+AlignAfterOpenBracket: Align
+ReflowComments: false
+SpacesBeforeTrailingComments: 2
+AlignTrailingComments:
+  Kind: Leave
+AlignConsecutiveAssignments: false
+AlignConsecutiveDeclarations: false
+Cpp11BracedListStyle: true

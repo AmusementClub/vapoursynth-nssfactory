@@ -31,6 +31,12 @@ struct NcsrData : nss::NcsrParams {
     nss::Workspace ws;
 };
 
+// Frame n: per plane, the window frames become the first estimates (and are
+// kept as the noisy input); each of `iters` rounds relaxes the estimates
+// toward the noisy frames by `delta` (after the first), matches on them (on
+// rclip in the first round) and runs the NCSR groups into num/den. The fat
+// output takes the last round's slices, the spatial output its finished
+// center. A plane with sigma 0 is copied (identity slices when temporal).
 const VSFrame* VS_CC ncsrGetFrame(int n, int activationReason, void* instanceData, void** frameData,
                                   VSFrameContext* frameCtx, VSCore* core, const VSAPI* vsapi) {
     auto* d = static_cast<NcsrData*>(instanceData);
