@@ -164,7 +164,6 @@ void lssc_denoise_plane(const float* src, int width, int height, int sstride, fl
     }
 
     const int nx = lssc_axis_count(width, block, step);
-    const int ny = lssc_axis_count(height, block, step);
     const int np = lssc_grid_count(width, height, block, step);
     if (np < 1) {
         return;

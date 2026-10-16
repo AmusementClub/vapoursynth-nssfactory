@@ -31,6 +31,7 @@ inline int sliding_batch(const float* image,int stride,int w,int h,const MatchBa
             top[q].add(Match{cx,cy,0,static_cast<float>(std::max(0.,d)),1});
         }
     }
-    for(int q=0;q<count;++q)counts[q]=1+top[q].finish();return 0;
+    for(int q=0;q<count;++q)counts[q]=1+top[q].finish();
+    return 0;
 }
 }

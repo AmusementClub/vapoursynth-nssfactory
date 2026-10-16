@@ -405,7 +405,6 @@ const VSFrame* VS_CC bm3dGetFrame(int n, int activationReason, void* instanceDat
                 }
                 continue;
             }
-            const int slices = 2 * d->radius + 1;
             nss::host_detail::temporal_identity(outp, dstride, srcp, sstride, pw, ph, d->radius);
             continue;
         }
@@ -425,18 +424,17 @@ const VSFrame* VS_CC bm3dGetFrame(int n, int activationReason, void* instanceDat
                 static_cast<int>(frames_owned.getStride(reff[static_cast<std::size_t>(t)], plane) / sizeof(float));
         }
         const int slices = 2 * d->radius + 1;
+#if NSS_BM_REUSE
+        const std::size_t need = static_cast<std::size_t>(slices) * 2 * static_cast<std::size_t>(pw) * ph;
+#else
         const int block = d->block_size[plane];
         const int group = d->group_size[plane];
-        const int area = block * block;
-        const std::size_t need = static_cast<std::size_t>(slices) * 2 * static_cast<std::size_t>(pw) * ph
-#if !NSS_BM_REUSE
-                                 +
+        const std::size_t need = static_cast<std::size_t>(slices) * 2 * static_cast<std::size_t>(pw) * ph +
                                  static_cast<std::size_t>(nss::bm3d_filter_work_floats(group, block)) +
-                                 static_cast<std::size_t>(group) * static_cast<std::size_t>(area) *
+                                 static_cast<std::size_t>(group) * static_cast<std::size_t>(block * block) *
                                      (d->ref != nullptr ? 2u : 1u) +
-                                 64
+                                 64;
 #endif
-                                 ;
         float* scratch = d->ws.get(need);
         process_plane_batched(srcs.data(), refs.data(), ntemp, t0, src_strides.data(), ref_strides.data(), outp, pw,
                               ph, dstride, dstride,

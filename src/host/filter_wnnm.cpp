@@ -225,13 +225,11 @@ const VSFrame* VS_CC wnnmGetFrame(int n, int activationReason, void* instanceDat
 
         nss::ResourceVector<const float*> srcs(static_cast<std::size_t>(ntemp));
         nss::ResourceVector<const float*> refs(static_cast<std::size_t>(ntemp));
-        int strides[nss::kBmMaxRadius * 2 + 1];
         for (int t = 0; t < ntemp; ++t) {
             srcs[static_cast<std::size_t>(t)] =
                 frames_owned.readPlane(srcf[static_cast<std::size_t>(t)], plane, sstride);
             refs[static_cast<std::size_t>(t)] =
                 frames_owned.readPlane(reff[static_cast<std::size_t>(t)], plane, sstride);
-            strides[t] = sstride;
         }
 
         const int slices = ntemp;

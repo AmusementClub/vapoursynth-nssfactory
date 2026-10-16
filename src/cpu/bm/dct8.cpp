@@ -3,7 +3,6 @@
 #include "nss/avx2_policy.hpp"
 #if NSS_BM_EXPERIMENT & 128
 #include <cstdlib>
-#include <cstdio>
 #include <cstdint>
 #endif
 #include "nss/cpu_api.hpp"
@@ -787,8 +786,7 @@ void TransformLines(float* base, int n, int line_stride, int sample_stride, int 
 struct DctMemo {
     struct Entry {std::uint64_t hash=0,epoch=0; Bm3dPatchKey key{}; bool keyed=false; std::vector<float> input,output;};
     std::vector<Entry> table;int block=0;
-    std::uint64_t hits=0,misses=0,epoch=1;
-    ~DctMemo(){if(std::getenv("NSS_BM_STATS"))std::fprintf(stderr,"{\"dct_cache_hits\":%llu,\"dct_cache_misses\":%llu,\"budget_bytes\":4194304}\n",(unsigned long long)hits,(unsigned long long)misses);}
+    std::uint64_t epoch=1;
     void transform(float* data,int b,int group,const Bm3dPatchKey* keys){
         int area=b*b;
         if(block!=b){block=b;table=std::vector<Entry>(std::min(2048,std::max(1,4194304/(2*area*4+int(sizeof(Entry))))));}
@@ -799,8 +797,8 @@ struct DctMemo {
             else for(int i=0;i<area;++i){std::uint32_t word;std::memcpy(&word,v+i,4);h=(h^word)*1099511628211ull;}
             auto& e=table[h%table.size()];
             const bool same=keyed ? e.keyed && e.key==keys[g] : !e.keyed && e.input.size()==std::size_t(area)&&std::memcmp(e.input.data(),v,area*4)==0;
-            if(e.epoch==epoch&&e.hash==h&&same){++hits;std::memcpy(v,e.output.data(),area*4);continue;}
-            ++misses;e.hash=h;e.epoch=epoch;e.keyed=keyed;
+            if(e.epoch==epoch&&e.hash==h&&same){std::memcpy(v,e.output.data(),area*4);continue;}
+            e.hash=h;e.epoch=epoch;e.keyed=keyed;
             if(keyed){e.key=keys[g];e.input.clear();}else e.input.assign(v,v+area);
             bool done=false;
 #ifndef NSS_DISABLE_BM3D_B12_FAST

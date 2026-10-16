@@ -294,7 +294,6 @@ int staging_regions(const Driver& d) {
 }
 
 void plan_planes(Driver& d) {
-    const bool w = has_guide(d);
     std::size_t frame_bytes = 0;
     for (int plane = 0; plane < d.vi.format.numPlanes; ++plane) {
         GroupPlane& p = d.planes[plane];
@@ -1300,8 +1299,6 @@ std::shared_ptr<ChunkStore> compute_chunk(Driver* d, int start, int count, VSFra
     }();
     Staging& g = *staging;
     DeviceGuard guard(d->device.index);
-    const int radius = d->radius;
-    const int nframes = d->vi.numFrames;
     const bool w = guide_clip(*d);
     nss::FrameScope frames(vsapi);
     auto store = d->cache.make_store(start, count);

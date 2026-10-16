@@ -712,7 +712,6 @@ int ncsr_filter_group_batch(NcsrFilterBatchItem* items, int count) {
             float* U = item.work;
             float* S = U + m * n;
             float* mean = S + n;
-            float* B = mean + m;
             group_center_sub(item.group, m, n, item.lda, mean);
             a[pos] = item.group;
             lda[pos] = item.lda;
