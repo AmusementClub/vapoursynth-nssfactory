@@ -7,12 +7,12 @@ VapourSynth plugin directory.
 
 | Package | Plugin | Runs on |
 |---|---|---|
-| `linux-x86_64` | `libnss.so` | glibc 2.34 and the libstdc++ of GCC 13 or newer: Ubuntu 24.04, Debian 13, Fedora 39 or later |
+| `linux-x86_64` | `libnss.so` | x86-64 with AVX2; glibc 2.34 and the libstdc++ of GCC 13 or newer: Ubuntu 24.04, Debian 13, Fedora 39 or later |
 | `linux-arm64` | `libnss.so` | glibc 2.38 or newer (libstdc++ is built in): Ubuntu 24.04, Debian 13, Fedora 39 or later |
-| `macos-arm64` | `libnss.dylib` | Apple silicon |
-| `windows-x86_64` | `libnss.dll` | Windows x86-64 with AVX2 |
+| `macos-arm64` | `libnss.dylib` | Apple silicon, macOS 13.3 or newer |
+| `windows-x86_64` | `libnss.dll` | Windows x86-64 with AVX2 and the Microsoft Visual C++ 2015–2022 Redistributable (x64) |
 | `linux-x86_64-cuda` | `libnss_cuda.so` | as `linux-x86_64`, with an NVIDIA driver for CUDA 12.9 or newer |
-| `windows-x86_64-cuda` | `libnss_cuda.dll` | an NVIDIA driver for CUDA 12.9 or newer |
+| `windows-x86_64-cuda` | `libnss_cuda.dll` | an NVIDIA driver for CUDA 12.9 or newer and the Visual C++ Redistributable as above |
 
 On an older Linux (Ubuntu 22.04, Debian 12) the plugin fails to load with a
 `GLIBCXX` version error; build it from source there.
