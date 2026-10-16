@@ -4,7 +4,8 @@
 Gray / YUV420 / YUV444 / RGB (shared luma-guided matching, area-averaged
 guide for subsampled chroma), both noise models, stage shapes (block, step,
 group, q, window), iteration counts, bypassed planes, rclip and the temporal
-radius (legacy + VAggregate, including clip boundary frames). Each case must
+radius (legacy + nss.VAggregate and the rolling mode, including clip boundary
+frames). Each case must
 reach the NLH tolerance (tests/data/cuda_tolerances_v1.json), be run-to-run
 identical and carry the CPU's diagnostic frame properties. Exits 77 without
 VapourSynth or a CUDA device.
@@ -144,8 +145,11 @@ def main():
     for label, clip, kw in temporal:
         r = kw["radius"]
         check(label, clip, core.nss.VAggregate(core.nss.NLH(clip, **kw), clip, radius=r),
-              core.nss_cuda.VAggregate(core.nss_cuda.NLH(clip, temporal_mode="legacy", **kw), clip, radius=r),
-              core.nss_cuda.VAggregate(core.nss_cuda.NLH(clip, temporal_mode="legacy", **kw), clip, radius=r))
+              core.nss.VAggregate(core.nss_cuda.NLH(clip, temporal_mode="legacy", **kw), clip, radius=r),
+              core.nss.VAggregate(core.nss_cuda.NLH(clip, temporal_mode="legacy", **kw), clip, radius=r))
+        # The default rolling mode.
+        check(label + " rolling", clip, core.nss.VAggregate(core.nss.NLH(clip, **kw), clip, radius=r),
+              core.nss_cuda.NLH(clip, **kw), core.nss_cuda.NLH(clip, **kw))
     # Repeated create/free must not leak device memory or fail.
     for _ in range(2 if args.quick else 10):
         core.nss_cuda.NLH(gray, sigma=5, **small).get_frame(0)

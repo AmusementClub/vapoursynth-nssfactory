@@ -44,11 +44,14 @@ add_test(NAME test_cuda_backend_forced_jit
 set_tests_properties(test_cuda_backend_forced_jit PROPERTIES ENVIRONMENT "CUDA_FORCE_PTX_JIT=1")
 # D14 parity against the CPU golden. Filters still pending in docs/cuda-plan.md
 # are expected to be missing; each phase removes the filters it delivers.
+# VAggregate is the CPU's alone: every temporal nss_cuda filter rolls itself,
+# and legacy output from the device is reduced with nss.VAggregate.
 set(NSS_CUDA_PENDING_FILTERS "")
 add_test(NAME test_cuda_plugin_interface
          COMMAND ${Python3_EXECUTABLE} "${PROJECT_SOURCE_DIR}/tests/test_plugin_interface.py"
                  --plugin "${NSS_CUDA_PLUGIN}" --namespace nss_cuda
                  --backend-args device_id,num_streams --expect-missing "${NSS_CUDA_PENDING_FILTERS}"
+                 --cpu-only VAggregate
                  --default-temporal rolling --rolling-cache adaptive)
 set_tests_properties(test_cuda_backend test_cuda_backend_forced_jit test_cuda_plugin_interface PROPERTIES
   LABELS cuda SKIP_RETURN_CODE 77)
@@ -57,12 +60,17 @@ add_test(NAME test_cuda_stress
          COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/stress_cuda.py" --cuda "${NSS_CUDA_PLUGIN}"
                  --cycles 6 --frames 12)
 set_tests_properties(test_cuda_stress PROPERTIES LABELS cuda SKIP_RETURN_CODE 77)
-# Rolling against legacy + VAggregate; BM3D, WNNM and NCSR roll on the device.
+# Rolling against legacy + VAggregate; BM3D, WNNM, MCWNNM and NCSR roll on the device.
 add_test(NAME test_cuda_temporal_rolling
          COMMAND ${Python3_EXECUTABLE} "${PROJECT_SOURCE_DIR}/tests/test_temporal_rolling.py"
-                 --plugin "${NSS_CUDA_PLUGIN}" --namespace nss_cuda --native-rolling BM3D,WNNM,NCSR
+                 --plugin "${NSS_CUDA_PLUGIN}" --namespace nss_cuda --native-rolling BM3D,WNNM,MCWNNM,NCSR
                  --default-mode rolling)
 set_tests_properties(test_cuda_temporal_rolling PROPERTIES LABELS cuda SKIP_RETURN_CODE 77)
+# NLH and TWSC rolling against their legacy output reduced, bit for bit, in
+# every request order, chunk size and stream count.
+add_test(NAME test_cuda_image_rolling
+         COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_cuda_image_rolling.py" --cuda "${NSS_CUDA_PLUGIN}")
+set_tests_properties(test_cuda_image_rolling PROPERTIES LABELS cuda SKIP_RETURN_CODE 77)
 # BM3D final=1 against the two calls it stands for, bit for bit.
 add_test(NAME test_cuda_bm3d_final
          COMMAND ${Python3_EXECUTABLE} "${PROJECT_SOURCE_DIR}/tests/test_bm3d_final.py"

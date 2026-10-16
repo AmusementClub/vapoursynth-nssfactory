@@ -13,10 +13,11 @@ every signature must be the CPU signature followed by exactly the
 --backend-args tail, error text must match with the "nss." prefix replaced,
 and filters listed in --expect-missing may be absent or partial: their
 creation probes (and VAggregate's while BM3D is listed) are skipped, but a
-present listed filter's signature is still checked.
+present listed filter's signature is still checked. Filters listed in
+--cpu-only belong to the CPU plugin alone and must be absent.
 
 usage: test_plugin_interface.py --plugin PATH [--golden FILE] [--write]
-                                [--namespace NS --backend-args A,B --expect-missing F1,F2]
+                                [--namespace NS --backend-args A,B --expect-missing F1,F2 --cpu-only F3]
 """
 import argparse
 import json
@@ -60,12 +61,14 @@ def main():
     parser.add_argument("--namespace", default="nss")
     parser.add_argument("--backend-args", default="")
     parser.add_argument("--expect-missing", default="")
+    parser.add_argument("--cpu-only", default="")
     parser.add_argument("--default-temporal", choices=("legacy", "rolling"), default="legacy")
     parser.add_argument("--rolling-cache", choices=("fixed", "adaptive"), default="fixed")
     args = parser.parse_args()
     ns = args.namespace
     backend_args = [a for a in args.backend_args.split(",") if a]
     expect_missing = {f for f in args.expect_missing.split(",") if f}
+    cpu_only = {f for f in args.cpu_only.split(",") if f}
     if args.write and ns != "nss":
         raise SystemExit("--write only regenerates the CPU golden")
 
@@ -107,7 +110,7 @@ def main():
         return "".join(item + ";" for item in items[:len(items) - len(backend_args)])
 
     shared = {name: cpu_signature(name) for name in functions}
-    skipped = set(expect_missing)
+    skipped = set(expect_missing) | cpu_only
     if "BM3D" in skipped:
         skipped.add("VAggregate")
     # A backend without a usable device cannot create filters: check the
@@ -194,13 +197,14 @@ def main():
         # A listed filter may be absent; when it is already present (partially
         # implemented) its signature is still checked, only its probes skip.
         golden["functions"] = {k: v for k, v in golden["functions"].items()
-                               if (k not in expect_missing or k in shared) and k not in ("Version", "Backend")}
+                               if (k not in expect_missing or k in shared) and k not in cpu_only
+                               and k not in ("Version", "Backend")}
         golden["cases"] = {key: ({"error": prefix.sub(ns + ".", value["error"])} if "error" in value else value)
                            for key, value in golden["cases"].items() if key.split("|")[0] not in skipped}
         partial = sorted(expect_missing & set(functions))
         if partial:
             print(f"note: {partial} present but listed in --expect-missing: signatures checked, probes skipped")
-    problems = []
+    problems = [f"{name}: registered, but --cpu-only" for name in sorted(cpu_only & set(functions))]
     if golden["functions"] != shared:
         for key in sorted(set(golden["functions"]) | set(shared)):
             if golden["functions"].get(key) != shared.get(key):

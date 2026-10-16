@@ -5,7 +5,7 @@ Gray / YUV420 / YUV444 / RGB (joint matching over the noisy planes of equal
 geometry), equal and unequal row weights, small and large groups (the serial
 and the block solver, Gram of either side), rounds with delta, the ADMM
 schedule, bypassed planes, rclip and the temporal radius (legacy +
-VAggregate, including clip boundary frames). Each case must reach the TWSC
+nss.VAggregate and the rolling mode, including clip boundary frames). Each case must reach the TWSC
 tolerance (tests/data/cuda_tolerances_v1.json) and be run-to-run identical.
 Exits 77 without VapourSynth or a CUDA device.
 
@@ -146,8 +146,11 @@ def main():
     for label, clip, kw in temporal:
         r = kw["radius"]
         check(label, clip, core.nss.VAggregate(core.nss.TWSC(clip, **kw), clip, radius=r),
-              core.nss_cuda.VAggregate(core.nss_cuda.TWSC(clip, temporal_mode="legacy", **kw), clip, radius=r),
-              core.nss_cuda.VAggregate(core.nss_cuda.TWSC(clip, temporal_mode="legacy", **kw), clip, radius=r))
+              core.nss.VAggregate(core.nss_cuda.TWSC(clip, temporal_mode="legacy", **kw), clip, radius=r),
+              core.nss.VAggregate(core.nss_cuda.TWSC(clip, temporal_mode="legacy", **kw), clip, radius=r))
+        # The default rolling mode.
+        check(label + " rolling", clip, core.nss.VAggregate(core.nss.TWSC(clip, **kw), clip, radius=r),
+              core.nss_cuda.TWSC(clip, **kw), core.nss_cuda.TWSC(clip, **kw))
     # Repeated create/free must not leak device memory or fail.
     for _ in range(2 if args.quick else 10):
         core.nss_cuda.TWSC(gray, sigma=5, **light).get_frame(0)

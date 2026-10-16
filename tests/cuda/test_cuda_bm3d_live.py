@@ -3,8 +3,9 @@
 """nss_cuda.BM3D vs nss.BM3D on small random clips for every legal
 block_size x group_size, basic and ref (Wiener) stages, Gray and RGB, plus
 the temporal paths (radius 1/2): legacy + VAggregate against the CPU,
-rolling within rounding of legacy + VAggregate on the GPU, and VAggregate across
-backends (the fat intermediate is a backend-neutral VS frame contract).
+rolling within rounding of the GPU's legacy output reduced in IEEE float32
+(the arithmetic of nss.VAggregate), and nss.VAggregate of the GPU's fat
+output (a backend-neutral VS frame contract).
 Each case must reach the BM3D tolerance (tests/data/cuda_tolerances_v1.json)
 and be run-to-run identical. Exits 77 without VapourSynth or a CUDA device.
 
@@ -49,7 +50,38 @@ def make_clip(core, fmt, width, height, seed, length=2):
     return core.std.ModifyFrame(blank, blank, fill)
 
 
+class Reduced:
+    """Legacy output reduced as nss.VAggregate does it (slices summed in
+    ascending center order, identity rule), in IEEE float32: the CPU's
+    reduction divides in a fast-math TU, up to 2 ulp away (2026-10-03)."""
+
+    def __init__(self, fat, src, radius):
+        self.fat, self.src, self.radius = fat, src, radius
+
+    def planes(self, n):
+        first, last = max(0, n - self.radius), min(self.fat.num_frames - 1, n + self.radius)
+        fats = [self.fat.get_frame(c) for c in range(first, last + 1)]
+        src = self.src.get_frame(n)
+        out = []
+        for p in range(src.format.num_planes):
+            s = np.asarray(src[p])
+            h = s.shape[0]
+            num = np.zeros_like(s)
+            den = np.zeros_like(s)
+            for c, fat in zip(range(first, last + 1), fats):
+                a = np.asarray(fat[p])
+                k = 2 * (n - c + self.radius)
+                num = num + a[k * h:(k + 1) * h]
+                den = den + a[(k + 1) * h:(k + 2) * h]
+            with np.errstate(divide="ignore", invalid="ignore"):
+                done = np.where(den == 1, num, np.where(den > np.float32(1e-12), num / den, s))
+            out.append(done.astype(np.float64))
+        return out
+
+
 def frame_planes(node, n=0):
+    if isinstance(node, Reduced):
+        return node.planes(n)
     f = node.get_frame(n)
     return [np.array(f[p], dtype=np.float64) for p in range(f.format.num_planes)]
 
@@ -69,7 +101,7 @@ def temporal(core, quick, floor):
         for radius in (1, 2):
             kw = dict(sigma=10, radius=radius, bm_range=5)
             cpu = core.nss.VAggregate(core.nss.BM3D(clip, **kw), clip, radius=radius)
-            gpu = core.nss_cuda.VAggregate(core.nss_cuda.BM3D(clip, temporal_mode="legacy", **kw), clip, radius=radius)
+            gpu = Reduced(core.nss_cuda.BM3D(clip, temporal_mode="legacy", **kw), clip, radius)
             rolling = core.nss_cuda.BM3D(clip, rolling_chunk=4, **kw)  # rolling is the device default
             rolling_again = core.nss_cuda.BM3D(clip, rolling_chunk=4, **kw)
             # Chunks asked for in order carry on from one another on the device; asked for backwards each one
@@ -78,8 +110,7 @@ def temporal(core, quick, floor):
             single = core.nss_cuda.BM3D(clip, rolling_chunk=1, **kw)
             fresh = core.nss_cuda.BM3D(clip, rolling_chunk=2, **kw)
             backwards = {n: frame_planes(fresh, n) for n in reversed(range(clip.num_frames))}
-            mixed_a = core.nss.VAggregate(core.nss_cuda.BM3D(clip, temporal_mode="legacy", **kw), clip, radius=radius)
-            mixed_b = core.nss_cuda.VAggregate(core.nss.BM3D(clip, **kw), clip, radius=radius)
+            mixed = core.nss.VAggregate(core.nss_cuda.BM3D(clip, temporal_mode="legacy", **kw), clip, radius=radius)
             for n in range(clip.num_frames):
                 label = f"temporal r{radius} {clip.format.name} frame {n}"
                 a, b = frame_planes(cpu, n), frame_planes(gpu, n)
@@ -93,30 +124,27 @@ def temporal(core, quick, floor):
                 # (8 ulp measured, 2026-10-06).
                 rolled = frame_planes(rolling, n)
                 if not within_ulp(rolled, b, ulps=32):
-                    failures.append(f"{label}: rolling differs from legacy + VAggregate by > 32 ulp")
+                    failures.append(f"{label}: rolling differs from legacy reduced by > 32 ulp")
                 if any(not np.array_equal(x, y) for x, y in zip(rolled, frame_planes(rolling_again, n))):
                     failures.append(f"{label}: rolling not run-to-run identical")
                 if any(not np.array_equal(x, y) for x, y in zip(frame_planes(carried, n), backwards[n])):
                     failures.append(f"{label}: rolling chunks that carry on differ from chunks that start afresh")
                 if any(not np.array_equal(x, y) for x, y in zip(frame_planes(single, n), backwards[n])):
                     failures.append(f"{label}: rolling chunks of one frame differ from chunks that start afresh")
-                # Same fat input and summation order on both backends; the GPU
-                # divides with IEEE rounding while the CPU fast-math TU was
-                # measured up to 2 ulp off (2026-10-03), so allow a few ulp.
-                if not within_ulp(frame_planes(mixed_a, n), b):
-                    failures.append(f"{label}: nss.VAggregate(nss_cuda.BM3D) differs from nss_cuda.VAggregate by > 4 ulp")
-                if not within_ulp(frame_planes(mixed_b, n), a):
-                    failures.append(f"{label}: nss_cuda.VAggregate(nss.BM3D) differs from nss.VAggregate by > 4 ulp")
-                again = frame_planes(core.nss_cuda.VAggregate(core.nss_cuda.BM3D(clip, temporal_mode="legacy", **kw), clip, radius=radius), n)
+                # The same summation order; the CPU fast-math TU divides up to
+                # 2 ulp off IEEE rounding (2026-10-03), so allow a few ulp.
+                if not within_ulp(frame_planes(mixed, n), b):
+                    failures.append(f"{label}: nss.VAggregate(nss_cuda.BM3D) differs from IEEE reduction by > 4 ulp")
+                again = Reduced(core.nss_cuda.BM3D(clip, temporal_mode="legacy", **kw), clip, radius).planes(n)
                 if any(not np.array_equal(x, y) for x, y in zip(b, again)):
                     failures.append(f"{label}: not run-to-run identical")
     # A shape that sorts and sums its patches in a fixed order (16 / 32 does not aggregate in the filter kernel):
-    # rolling is legacy + VAggregate bit for bit there, with chunks that carry on, chunks that start afresh and
+    # rolling is legacy reduced in IEEE float32 bit for bit there, with chunks that carry on, chunks that start afresh and
     # chunks of one frame.
     clip = clips[0]
     for radius in (1, 2):
         kw = dict(sigma=10, radius=radius, bm_range=5, block_size=16, group_size=32)
-        legacy = core.nss_cuda.VAggregate(core.nss_cuda.BM3D(clip, temporal_mode="legacy", **kw), clip, radius=radius)
+        legacy = Reduced(core.nss_cuda.BM3D(clip, temporal_mode="legacy", **kw), clip, radius)
         nodes = {chunk: core.nss_cuda.BM3D(clip, rolling_chunk=chunk, **kw) for chunk in (1, 2, 4)}
         fresh = core.nss_cuda.BM3D(clip, rolling_chunk=2, **kw)
         backwards = {n: frame_planes(fresh, n) for n in reversed(range(clip.num_frames))}
@@ -125,7 +153,7 @@ def temporal(core, quick, floor):
             cases += 1
             for label, got in [(f"chunk {c}", frame_planes(node, n)) for c, node in nodes.items()] + [("backwards", backwards[n])]:
                 if any(not np.array_equal(x, y) for x, y in zip(want, got)):
-                    failures.append(f"temporal r{radius} 16 / 32 frame {n}: rolling ({label}) differs from legacy + VAggregate")
+                    failures.append(f"temporal r{radius} 16 / 32 frame {n}: rolling ({label}) differs from legacy reduced")
     return cases, worst, failures
 
 
@@ -152,7 +180,7 @@ def chroma(core, quick, floor):
             failures.append(f"{label}: not run-to-run identical")
         for radius in (1, 2):
             t = dict(kw, radius=radius)
-            legacy = core.nss_cuda.VAggregate(gpu_bm3d(clip, temporal_mode="legacy", **t), clip, radius=radius)
+            legacy = Reduced(gpu_bm3d(clip, temporal_mode="legacy", **t), clip, radius)
             rolling = gpu_bm3d(clip, rolling_chunk=3, **t)
             fresh = gpu_bm3d(clip, rolling_chunk=3, **t)
             backwards = {n: frame_planes(fresh, n) for n in reversed(range(clip.num_frames))}
@@ -160,7 +188,7 @@ def chroma(core, quick, floor):
             for n in range(clip.num_frames):
                 rolled = frame_planes(rolling, n)
                 if not within_ulp(rolled, frame_planes(legacy, n), ulps=32):
-                    failures.append(f"{label} r{radius} frame {n}: rolling differs from legacy + VAggregate by > 32 ulp")
+                    failures.append(f"{label} r{radius} frame {n}: rolling differs from legacy reduced by > 32 ulp")
                 if any(not np.array_equal(x, y) for x, y in zip(rolled, backwards[n])):
                     failures.append(f"{label} r{radius} frame {n}: chunks that carry on differ from chunks that start afresh")
         for name, a, b in pairs:

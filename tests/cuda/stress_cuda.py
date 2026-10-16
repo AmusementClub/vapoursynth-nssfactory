@@ -68,13 +68,14 @@ def main():
     builders = [
         ("BM3D", lambda: n.BM3D(gray, sigma=5)),
         ("BM3D rolling", lambda: n.BM3D(gray, sigma=5, radius=1)),
-        ("BM3D legacy", lambda: n.VAggregate(n.BM3D(gray, sigma=5, radius=1, temporal_mode="legacy"), gray, radius=1)),
+        ("BM3D legacy", lambda: n.BM3D(gray, sigma=5, radius=1, temporal_mode="legacy")),
         ("NLM", lambda: n.NLM(rgb)),
         ("WNNM", lambda: n.WNNM(gray, sigma=5)),
         ("MCWNNM", lambda: n.MCWNNM(rgb, sigma=5)),
         ("NCSR", lambda: n.NCSR(gray, sigma=5)),
         ("NLH", lambda: n.NLH(gray, sigma=5, basic_iters=1)),
         ("TWSC", lambda: n.TWSC(gray, sigma=5, **light)),
+        ("TWSC rolling", lambda: n.TWSC(gray, sigma=5, radius=1, **light)),
         ("LSSC", lambda: n.LSSC(gray, sigma=5)),
     ]
     if args.only:

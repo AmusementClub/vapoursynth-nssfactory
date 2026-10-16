@@ -83,10 +83,12 @@ Install `libnss.so` into the VapourSynth plugin directory.
 
 `-DNSS_ENABLE_CUDA=ON` also builds `libnss_cuda` (namespace `nss_cuda`). It
 needs nvcc from CUDA 12.4 or newer; Windows builds use nvcc with MSVC `cl.exe`.
-All nine filters are available under the same arguments as `nss`, plus
+All eight denoisers are available under the same arguments as `nss`, plus
 `device_id` and `num_streams`; with `radius > 0` they return finished frames
-by default. The [CUDA reference](docs/api/cuda/README.md) has the arguments, the
-temporal output, memory, numerics, driver requirements and measured speed.
+by default, aggregated on the device. `VAggregate` is the CPU plugin's alone:
+`nss.VAggregate` reduces the device's `temporal_mode="legacy"` output. The
+[CUDA reference](docs/api/cuda/README.md) has the arguments, the temporal
+output, memory, numerics, driver requirements and measured speed.
 
 - **Default architectures:** native code for sm_75, sm_86, sm_89 and sm_120,
   plus compute_75 PTX. Toolkits older than 12.8 cannot target sm_120, so RTX 50

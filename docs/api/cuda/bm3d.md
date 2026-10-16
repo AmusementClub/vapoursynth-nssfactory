@@ -15,7 +15,7 @@ color = core.nss_cuda.BM3D(yuv444, sigma=[25, 15, 15], chroma=1)
 temporal = core.nss_cuda.BM3D(clip, sigma=25, radius=1)
 # The CPU plugin's two-step form, for mixing backends or debugging.
 fat = core.nss_cuda.BM3D(clip, sigma=25, radius=1, temporal_mode="legacy")
-temporal = core.nss_cuda.VAggregate(fat, clip, radius=1)
+temporal = core.nss.VAggregate(fat, clip, radius=1)       # the CPU plugin's VAggregate
 ```
 
 ## Signature
@@ -114,7 +114,7 @@ matching is a large part of the work.
 | `device_id` | 0 | device index | CUDA device the instance runs on. One instance uses one device; `core.nss_cuda.Backend(device_id)` reports whether it is supported. |
 | `num_streams` | 1 | [1, 16] | Frames (or temporal chunks) the instance has in flight on the device at once. Each stream owns its device buffers, so memory grows with it. |
 | `memory_limit_mb` | none | > 0 | Caps the instance's device and pinned host memory. The internal batches are fitted to it and the output does not change; a limit that cannot hold the streams is a creation error. Without it the filter takes what its plan needs. |
-| `temporal_mode` | `"rolling"` | rolling / legacy | With `radius > 0`: `"rolling"` returns finished, normal-height frames; `"legacy"` returns the fat intermediate for `VAggregate`, as the CPU plugin does. |
+| `temporal_mode` | `"rolling"` | rolling / legacy | With `radius > 0`: `"rolling"` returns finished, normal-height frames; `"legacy"` returns the fat intermediate, as the CPU plugin does; reduce it with `nss.VAggregate`. |
 | `rolling_chunk` | 4 | [1, 64] | Frames accumulated per rolling chunk. |
 | `rolling_cache_chunks` | 1 | [1, 64] | Finished chunks kept for later frame requests at first. Given alone, the cache stays at this size. |
 | `rolling_cache_limit` | 16 | [1, 64], >= `rolling_cache_chunks` | What the chunk cache may grow to: it keeps one more chunk each time two requests miss on chunks it dropped recently. Under `memory_limit_mb` it grows only into what the limit leaves. |
@@ -148,10 +148,12 @@ How the streams, the memory limit and the rolling output behave across filters i
     frames: as exact fixed-point sums for the shapes that aggregate inside
     the filter kernel (below), in ascending order as the CPU does for the
     rest.
-  - It agrees with `nss_cuda.VAggregate(nss_cuda.BM3D(..., radius=R,
-    temporal_mode="legacy"))` to rounding (8 ulp measured) for the former
+  - It agrees with the legacy intermediate reduced in IEEE float32 (the
+    arithmetic of `VAggregate`) to rounding (8 ulp measured) for the former
     shapes and bit for bit for the latter.
-- **Reducing the legacy intermediate.** See [VAggregate](vaggregate.md).
+- **Reducing the legacy intermediate.** `nss.VAggregate` from the CPU plugin
+  (see [bm3d.md](../bm3d.md)); there is no `nss_cuda.VAggregate`. It agrees
+  with an IEEE reduction within a few ulp (its division is fast-math).
 - **`final=1`.** The basic estimate stays on the device: one upload and one
   download per plane instead of three and two. The legacy intermediate with
   `final=1` is the two calls chained.
@@ -207,5 +209,5 @@ How the streams, the memory limit and the rolling output behave across filters i
 - Array parameters are per-plane: `block_size=[8,16]` is legal on YUV.
 - With `radius > 0` and `temporal_mode="legacy"` the output is a **taller
   intermediate**, not a viewable frame: pass it through
-  `core.nss_cuda.VAggregate(out, clip, radius=radius)`. The default mode
+  `core.nss.VAggregate(out, clip, radius=radius)`. The default mode
   returns finished frames.

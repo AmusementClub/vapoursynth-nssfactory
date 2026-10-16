@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: GPL-2.0-only
 """nss_cuda.WNNM vs nss.WNNM on small random clips across block and group
 sizes (every group kernel capacity), residual centering, adaptive
-aggregation, rclip and the temporal radius (legacy + VAggregate, including
-clip boundary frames). Each case must reach the WNNM tolerance
-(tests/data/cuda_tolerances_v1.json) and be run-to-run identical. Exits 77
-without VapourSynth or a CUDA device.
+aggregation, rclip and the temporal radius (legacy + nss.VAggregate and the
+rolling mode, including clip boundary frames). Each case must reach the WNNM
+tolerance (tests/data/cuda_tolerances_v1.json) and be run-to-run identical.
+Exits 77 without VapourSynth or a CUDA device.
 
 usage: test_cuda_wnnm_live.py --cpu PATH --cuda PATH [--quick]
 """
@@ -126,8 +126,11 @@ def main():
     for label, clip, kw in temporal:
         r = kw["radius"]
         check(label, clip, core.nss.VAggregate(core.nss.WNNM(clip, **kw), clip, radius=r),
-              core.nss_cuda.VAggregate(core.nss_cuda.WNNM(clip, temporal_mode="legacy", **kw), clip, radius=r),
-              core.nss_cuda.VAggregate(core.nss_cuda.WNNM(clip, temporal_mode="legacy", **kw), clip, radius=r))
+              core.nss.VAggregate(core.nss_cuda.WNNM(clip, temporal_mode="legacy", **kw), clip, radius=r),
+              core.nss.VAggregate(core.nss_cuda.WNNM(clip, temporal_mode="legacy", **kw), clip, radius=r))
+        # The default rolling mode.
+        check(label + " rolling", clip, core.nss.VAggregate(core.nss.WNNM(clip, **kw), clip, radius=r),
+              core.nss_cuda.WNNM(clip, **kw), core.nss_cuda.WNNM(clip, **kw))
     # Repeated create/free must not leak device memory or fail.
     for _ in range(2 if args.quick else 20):
         core.nss_cuda.WNNM(gray, sigma=5).get_frame(0)

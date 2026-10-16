@@ -133,7 +133,7 @@ iters=2` at 1080p runs at 33 fps with it and 36 without (see "When it pays").
 | `device_id` | 0 | device index | CUDA device the instance runs on. One instance uses one device; `core.nss_cuda.Backend(device_id)` reports whether it is supported. |
 | `num_streams` | 1 | [1, 16] | Frames (or temporal chunks) the instance has in flight on the device at once. Each stream owns its device buffers, so memory grows with it. |
 | `memory_limit_mb` | none | > 0 | Caps the instance's device and pinned host memory. The internal batches are fitted to it and the output does not change; a limit that cannot hold the streams is a creation error. Without it the filter takes what its plan needs. |
-| `temporal_mode` | `"rolling"` | rolling / legacy | With `radius > 0`: `"rolling"` returns finished, normal-height frames; `"legacy"` returns the fat intermediate for `VAggregate`, as the CPU plugin does. |
+| `temporal_mode` | `"rolling"` | rolling / legacy | With `radius > 0`: `"rolling"` returns finished, normal-height frames; `"legacy"` returns the fat intermediate, as the CPU plugin does; reduce it with `nss.VAggregate`. |
 | `rolling_chunk` | 4 | [1, 64] | Frames accumulated per rolling chunk. |
 | `rolling_cache_chunks` | 1 | [1, 64] | Finished chunks kept for later frame requests at first. Given alone, the cache stays at this size. |
 | `rolling_cache_limit` | 16 | [1, 64], >= `rolling_cache_chunks` | What the chunk cache may grow to: it keeps one more chunk each time two requests miss on chunks it dropped recently. Under `memory_limit_mb` it grows only into what the limit leaves. |
@@ -145,8 +145,19 @@ How the streams, the memory limit and the rolling output behave across filters i
 - **Device-resident.** The blind noise estimate, the joint matching, the
   per-group dictionary and ADMM solve, the aggregation and every round run on
   the device.
-- **Temporal output.** The fat intermediate is reduced with
-  `nss_cuda.VAggregate` inside the filter.
+- **Temporal output.** The rolling mode (the default) runs every center of a
+  chunk on the device and adds the centers' slices there, in the order and
+  with the rule of `VAggregate`: the same frames as the legacy intermediate
+  reduced, bit for bit. A chunk that follows the one before it keeps the
+  window frames on the device (one upload a frame).
+  - 1080p `radius=1` with `block_step=8, group_size=8, iters=2`, one stream:
+    47.2 fps against 43.5 when the fat intermediate was reduced on the host
+    (`radius=2`: 32.8 against 29.3).
+  - The ring of 2R+1 source frames, the open sums and the frame being
+    finished cost 80 MiB of device memory at gray 1080p `radius=1`; the
+    smallest accepted `memory_limit_mb` is 531 MiB (428 for legacy output).
+  - Rolling frames carry the source's properties and the contribution
+    stamp, not the `_NSS*` diagnostics (as `nss.VAggregate`'s output).
 - **Numerics.** The dictionary comes from an FP32 eigendecomposition of the
   Gram matrix of the smaller group side (Householder tridiagonalization,
   then divide and conquer when the matrix is larger than 16 x 16 and
@@ -178,5 +189,5 @@ How the streams, the memory limit and the rolling output behave across filters i
 - `estimate_sigma` and explicit `sigma` are mutually exclusive (creation-time
   error).
 - `ps_num > group_size` is an error after resolution.
-- `temporal_mode="legacy"` output needs a `VAggregate` call; the default mode
+- `temporal_mode="legacy"` output needs an `nss.VAggregate` call; the default mode
   returns finished frames.

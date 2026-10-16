@@ -3,7 +3,9 @@
 // (D14) around a device-resident full-image pipeline (the CPU nlh_image /
 // twsc_image models). Both upload the request window, optionally estimate the
 // noise blind, iterate over every frame of the window and return the final
-// frame or the fat intermediate.
+// frame or the fat intermediate. The rolling mode (the default with a radius)
+// runs that work for every center of a chunk and adds the centers' slices on
+// the device (see compute_chunk).
 //
 // NLH: RGB -> YUV, Basic rounds (mix with the input, match on the luma guide,
 // hard threshold, per-pixel aggregation, finish), one Wiener round for the
@@ -17,6 +19,7 @@
 // group, weighted aggregation and finish; the last round runs for the center
 // only.
 #include "cuda/common/aggregate.hpp"
+#include "cuda/common/chunk_cache.hpp"
 #include "cuda/common/match.hpp"
 #include "cuda/nlh/kernels.hpp"
 #include "cuda/twsc/kernels.hpp"
@@ -37,9 +40,11 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -95,6 +100,18 @@ struct Slot {
     DeviceBuffer guide_ptrs, data_ptrs, basic_ptrs;           // device pointer arrays
     DeviceBuffer arena, totals, stalled;
     std::unique_ptr<OrderedAggregator> aggregator;
+    // Rolling: the source (and reference) frames of a ring of 2R+1 (frame f
+    // in cell f % (2R+1), its planes at a plane_floats stride, as the source
+    // has them), each plane's sums of the frames still open (a ring of 2R+1
+    // slices of num, then as many of den) and the frame being finished.
+    DeviceBuffer ring, reference_ring, sums, out;
+    // Guarded by ImageData::roll_mu. Chunks take a ticket when they are
+    // planned and run on the slot in ticket order, so a chunk can carry on
+    // from the one planned before it.
+    int next_start = -1;  // the chunk that can carry on after the planned ones
+    std::uint64_t issued = 0, serving = 0;
+    std::uint64_t chain = 0;  // counts the chunks that started afresh
+    std::uint64_t failed_chain = ~0ull;
 };
 
 // Pinned staging of one frame in flight: its uploads, then its downloads. A
@@ -126,6 +143,17 @@ struct ImageData : nss::FullImageParams {
     std::size_t plane_floats = 0, arena_bytes = 0, max_patches = 0;
     std::unique_ptr<SlotPool<Slot>> pool;
     std::unique_ptr<SlotPool<Staging>> staging;
+    // Rolling (temporal_mode="rolling" with a radius): chunks run on the
+    // slots by turn instead of from the pool.
+    bool rolling = false;
+    nss::RollingParams roll{};
+    std::vector<Slot*> slots;
+    std::mutex roll_mu;
+    std::condition_variable roll_cv;
+    PlanOrder order;
+    std::size_t frame_bytes = 0;  // a finished frame, its planes back to back (tight rows)
+    std::array<std::size_t, 3> plane_offset{};
+    ChunkCache cache;
     int radius() const { return model == nss::Model::TWSC ? twsc.radius : nlh.radius; }
     const char* name() const { return model == nss::Model::TWSC ? "TWSC" : "NLH"; }
 };
@@ -625,18 +653,352 @@ void run_nlh(Frame& f, const nss::NlhImageOptions& o) {
     }
 }
 
+// Stages plane c of a source or reference frame into pinned memory (tight
+// rows) and rejects it if any sample is an infinity or a NaN.
+void stage_checked(const ImageData& d, const VSAPI* api, const VSFrame* frame, int c, std::uint8_t* staging) {
+    const std::size_t row_bytes = static_cast<std::size_t>(d.width[c]) * sizeof(float);
+    stage_plane(api->getReadPtr(frame, c), api->getStride(frame, c), row_bytes, d.height[c], staging);
+    const auto* samples = reinterpret_cast<const std::uint32_t*>(staging);
+    const std::size_t floats = static_cast<std::size_t>(d.width[c]) * d.height[c];
+    std::uint32_t bad = 0;  // an all-ones exponent is an infinity or a NaN
+    for (std::size_t i = 0; i < floats; ++i) bad |= static_cast<std::uint32_t>((samples[i] & 0x7f800000u) == 0x7f800000u);
+    if (bad) throw std::invalid_argument("nss: nonfinite source/reference sample");
+}
+
+double sigma_units(const Frame& f, int t, int c) {
+    return f.units[t][c] >= 0 ? f.units[t][c] : static_cast<double>(f.sigma[t][c]) * 255;
+}
+
+struct CenterWork {
+    bool bypass = true;  // every plane of the center has sigma 0: nothing ran
+    nss::NlhImageOptions o;
+};
+
+// The work of one center once its window is on the device (s.input and
+// s.reference, slot t = frame first + t, as the source has it): the colour
+// transforms, the blind estimate, and the model's rounds, which leave the
+// center's slices of every window frame in s.num / s.den (f.accum).
+CenterWork run_center(Frame& f) {
+    const ImageData& d = f.d;
+    Slot& s = f.s;
+    const int planes = d.planes;
+    for (int t = 0; t < f.count; ++t) {
+        for (int c = 0; c < planes; ++c) {
+            f.sigma[t][c] = d.sigma[c] / 255.f;
+            f.units[t][c] = d.sigma_units[c];
+        }
+    }
+    for (int t = 0; t < f.count && d.rgb; ++t) {
+        nlh_rgb_to_yuv(f.plane(s.input, t, 0), f.plane(s.input, t, 1), f.plane(s.input, t, 2), d.plane_floats, false,
+                       s.stream);
+        if (!d.estimate) nss::nlh_rgb_sigma_to_yuv(f.sigma[t], f.units[t]);
+        if (d.reference) {
+            nlh_rgb_to_yuv(f.plane(s.reference, t, 0), f.plane(s.reference, t, 1), f.plane(s.reference, t, 2),
+                           d.plane_floats, true, s.stream);
+        }
+    }
+    for (int t = 0; t < f.count && d.split; ++t) {
+        twsc_opponent(f.plane(s.input, t, 0), f.plane(s.input, t, 1), f.plane(s.input, t, 2), d.plane_floats, false, s.stream);
+        if (d.reference) {
+            twsc_opponent(f.plane(s.reference, t, 0), f.plane(s.reference, t, 1), f.plane(s.reference, t, 2), d.plane_floats,
+                          false, s.stream);
+        }
+    }
+    if (d.estimate) {
+        NSS_CUDA_RANGE("image.estimate");
+        for (int t = 0; t < f.count; ++t) estimate_sigma(f, t);
+    }
+    CenterWork w;
+    for (int c = 0; c < planes; ++c) w.bypass = w.bypass && f.sigma[f.center][c] == 0;
+    const bool twsc = d.model == nss::Model::TWSC;
+    if (!twsc) {
+        // nss::nlh_resolve_options: a bypassed center resolves from itself alone.
+        double max_sigma = 0;
+        int available = 16;
+        for (int c = 0; c < planes; ++c) {
+            const double units = sigma_units(f, f.center, c);
+            if (!(units >= 0) || !std::isfinite(units)) throw std::invalid_argument("nss.NLH: invalid preset sigma");
+            max_sigma = std::max(max_sigma, units);
+            for (int t = w.bypass ? f.center : 0; t < (w.bypass ? f.center + 1 : f.count); ++t) {
+                if (f.sigma[t][c] > 0) available = std::min({available, d.width[c], d.height[c]});
+            }
+        }
+        w.o = nss::nlh_resolve_preset(max_sigma, available, d.nlh);
+    }
+    if (!w.bypass) {
+        if (twsc) run_twsc(f);
+        else run_nlh(f, w.o);
+    }
+    return w;
+}
+
 void diagnostic_ints(const VSAPI* api, VSMap* props, const char* key, const int* values, int count) {
     std::int64_t data[2]{values[0], count > 1 ? values[1] : 0};
     if (api->mapSetIntArray(props, key, data, count)) throw std::bad_alloc();
+}
+
+// Rolling. A chunk [start, start + count) needs every center whose window
+// reaches it, [start - R, start + count - 1 + R], each run as a legacy center
+// is (run_center); its slices are added to the sums of the frames from the
+// chunk's first on, in ascending center order, and a frame is finished as
+// soon as its last center has run: nss.VAggregate's sums and rule (an IEEE
+// division; den == 1 divides exactly) on the legacy slices, so the output is
+// the legacy intermediate reduced, bit for bit. A chunk that follows the last
+// one planned on a slot carries on from it: the centers up to start - 1 + R
+// have run and the frames up to start - 1 + 2R are in the ring, so it runs R
+// centers past its end and uploads each of its frames once. Any other chunk
+// starts afresh 2R centers (and frames) earlier.
+constexpr std::uint64_t kCarryBacklog = 3;  // chunks waiting on a slot before another slot is preferred
+
+int roll_ring(const ImageData& d) { return 2 * d.radius() + 1; }
+int roll_reach(const ImageData& d) { return 2 * d.radius(); }
+
+// Plane c of `frame` in the source ring (planes planes a cell) or the
+// reference ring (reference_planes a cell).
+float* ring_plane(const ImageData& d, const Slot& s, int frame, int c) {
+    return s.ring.as<float>() + (static_cast<std::size_t>(frame % roll_ring(d)) * d.planes + c) * d.plane_floats;
+}
+float* reference_ring_plane(const ImageData& d, const Slot& s, int frame, int c) {
+    return s.reference_ring.as<float>() +
+           (static_cast<std::size_t>(frame % roll_ring(d)) * d.reference_planes + c) * d.plane_floats;
+}
+// The open sums of plane c of `frame`.
+float* roll_num(const ImageData& d, const Slot& s, int frame, int c) {
+    return s.sums.as<float>() + (static_cast<std::size_t>(c) * roll_ring(d) + frame % roll_ring(d)) * d.plane_floats;
+}
+float* roll_den(const ImageData& d, const Slot& s, int frame, int c) {
+    return roll_num(d, s, frame, c) + static_cast<std::size_t>(d.planes) * roll_ring(d) * d.plane_floats;
+}
+
+// A chunk's turn on a slot: planned at construction (the slot, whether it
+// carries on, its centers and the frames to upload), run between enter() and
+// leave(). If a chunk fails, those planned to carry on from it fail too.
+struct RollTurn {
+    ImageData& d;
+    Slot* slot = nullptr;
+    bool carry = false;
+    int first_center = 0, last_center = -1;
+    std::vector<int> uploads;  // in upload order
+    std::uint64_t ticket = 0, chain = 0;
+    bool entered = false, left = false;
+
+    RollTurn(ImageData& data, int start, int count) : d(data) {
+        const int radius = d.radius(), nframes = d.vi.numFrames;
+        // Everything that can throw comes before the slot's state changes: a
+        // ticket nobody holds would stop the chunks behind it.
+        last_center = std::min(start + count - 1 + radius, nframes - 1);
+        const int last_frame = std::min(start + count - 1 + 2 * radius, nframes - 1);
+        uploads.reserve(static_cast<std::size_t>(count + 2 * roll_reach(d)));
+        std::lock_guard lock(d.roll_mu);
+        const auto backlog = [](const Slot* s) { return s->issued - s->serving; };
+        Slot* idle = d.slots.front();
+        for (Slot* s : d.slots) {
+            if (s->next_start == start && s->failed_chain != s->chain && !slot) slot = s;
+            if (backlog(s) < backlog(idle)) idle = s;
+        }
+        // Carrying on saves 2R centers, unless the slot is far behind.
+        carry = slot && (backlog(slot) < kCarryBacklog || backlog(idle) >= backlog(slot));
+        if (!carry) slot = idle;
+        first_center = carry ? std::min(start + radius, last_center + 1) : std::max(0, start - radius);
+        const int first_frame = carry ? std::min(start - 1 + 2 * radius, nframes - 1) + 1 : std::max(0, start - 2 * radius);
+        for (int frame = first_frame; frame <= last_frame; ++frame) uploads.push_back(frame);
+        if (!carry) ++slot->chain;
+        ticket = slot->issued++;
+        chain = slot->chain;
+        slot->next_start = start + count;
+    }
+    RollTurn(const RollTurn&) = delete;
+    RollTurn& operator=(const RollTurn&) = delete;
+
+    void enter() {
+        std::unique_lock lock(d.roll_mu);
+        d.roll_cv.wait(lock, [&] { return slot->serving == ticket; });
+        entered = true;
+        if (slot->failed_chain == chain) {
+            throw std::runtime_error(std::string("nss_cuda.") + d.name() + ": an earlier chunk of this run failed");
+        }
+    }
+    void leave() { finish(false); }
+    ~RollTurn() {
+        if (left) return;
+        if (!entered) {
+            std::unique_lock lock(d.roll_mu);
+            d.roll_cv.wait(lock, [&] { return slot->serving == ticket; });
+        }
+        finish(true);
+    }
+
+private:
+    void finish(bool failed) {
+        {
+            std::lock_guard lock(d.roll_mu);
+            if (failed) {
+                slot->failed_chain = chain;
+                if (slot->chain == chain) slot->next_start = -1;
+            }
+            ++slot->serving;
+            left = true;
+        }
+        d.roll_cv.notify_all();
+    }
+};
+
+// The chunk [start, start + count): its frames are staged before the turn and
+// the result is in the store once the staging's event has passed.
+std::shared_ptr<ChunkStore> compute_chunk(ImageData& d, int start, int count, VSFrameContext* ctx, const VSAPI* api) {
+    d.order.wait_for_previous(start, d.roll.rolling_chunk, d.cache);
+    auto staging = [&] {
+        NSS_CUDA_RANGE("image.staging");
+        return d.staging->acquire();
+    }();
+    Staging& g = *staging;
+    DeviceGuard guard(d.device.index);
+    nss::FrameScope owned(api);
+    auto store = d.cache.make_store(start, count);
+    const int radius = d.radius(), nframes = d.vi.numFrames;
+    const std::size_t per_frame = static_cast<std::size_t>(d.planes + d.reference_planes);
+    const auto region = [&](std::size_t upload, int k) {
+        return g.bytes.as<std::uint8_t>() + (upload * per_frame + k) * d.plane_floats * sizeof(float);
+    };
+    RollTurn turn(d, start, count);
+    d.order.planned(start, d.roll.rolling_chunk);
+    {
+        NSS_CUDA_RANGE("image.stage_in");
+        for (std::size_t i = 0; i < turn.uploads.size(); ++i) {
+            const VSFrame* frame = owned.getFrameFilter(turn.uploads[i], d.node, ctx);
+            for (int c = 0; c < d.planes; ++c) stage_checked(d, api, frame, c, region(i, c));
+            owned.freeFrame(frame);
+            if (d.reference) {
+                const VSFrame* ref = owned.getFrameFilter(turn.uploads[i], d.reference, ctx);
+                for (int c = 0; c < d.reference_planes; ++c) stage_checked(d, api, ref, c, region(i, d.planes + c));
+                owned.freeFrame(ref);
+            }
+        }
+    }
+    NSS_CUDA_RANGE("image.queue");
+    turn.enter();
+    Slot& s = *turn.slot;
+    struct Drain {
+        cudaStream_t stream;
+        bool armed = true;
+        ~Drain() {
+            if (armed) cudaStreamSynchronize(stream);
+        }
+    } drain{s.stream};
+    const auto floats = [&](int c) { return static_cast<std::size_t>(d.width[c]) * d.height[c]; };
+    const auto row_bytes = [&](int c) { return static_cast<std::size_t>(d.width[c]) * sizeof(float); };
+    if (!turn.carry) NSS_CUDA_CHECK(cudaMemsetAsync(s.sums.get(), 0, s.sums.bytes(), s.stream));
+    std::size_t uploaded = 0;
+    const auto upload_through = [&](int last) {
+        for (; uploaded < turn.uploads.size() && turn.uploads[uploaded] <= last; ++uploaded) {
+            const int frame = turn.uploads[uploaded];
+            for (int c = 0; c < d.planes; ++c) {
+                upload_staged(region(uploaded, c), row_bytes(c), d.height[c], ring_plane(d, s, frame, c), row_bytes(c),
+                              s.stream);
+            }
+            for (int c = 0; c < d.reference_planes; ++c) {
+                upload_staged(region(uploaded, d.planes + c), row_bytes(c), d.height[c],
+                              reference_ring_plane(d, s, frame, c), row_bytes(c), s.stream);
+            }
+        }
+    };
+    // A finished frame goes through s.out into the store (stream order keeps
+    // the next finish behind the download); its sums are a later frame's from
+    // here on.
+    const auto finish = [&](int frame) {
+        for (int c = 0; c < d.planes; ++c) {
+            float* result = s.out.as<float>() + static_cast<std::size_t>(c) * d.plane_floats;
+            aggregate_finish(roll_num(d, s, frame, c), roll_den(d, s, frame, c), ring_plane(d, s, frame, c), d.width[c],
+                             d.height[c], d.width[c], result, s.stream);
+            begin_download(result, row_bytes(c), row_bytes(c), d.height[c], store->plane(frame - start, c), s.stream);
+            NSS_CUDA_CHECK(cudaMemsetAsync(roll_num(d, s, frame, c), 0, floats(c) * sizeof(float), s.stream));
+            NSS_CUDA_CHECK(cudaMemsetAsync(roll_den(d, s, frame, c), 0, floats(c) * sizeof(float), s.stream));
+        }
+    };
+    int out = start;
+    for (int center = turn.first_center; center <= turn.last_center; ++center) {
+        const int first = nss::host_detail::temporal_first(center, radius);
+        const int last = nss::host_detail::temporal_last(center, radius, nframes);
+        upload_through(last);
+        // The window as a legacy center has it: slot t is frame first + t.
+        Frame f{d, s, g, last - first + 1, center - first};
+        for (int t = 0; t < f.count; ++t) {
+            for (int c = 0; c < d.planes; ++c) {
+                NSS_CUDA_CHECK(cudaMemcpyAsync(f.plane(s.input, t, c), ring_plane(d, s, first + t, c),
+                                               floats(c) * sizeof(float), cudaMemcpyDeviceToDevice, s.stream));
+            }
+            for (int c = 0; c < d.reference_planes; ++c) {
+                NSS_CUDA_CHECK(cudaMemcpyAsync(f.plane(s.reference, t, c), reference_ring_plane(d, s, first + t, c),
+                                               floats(c) * sizeof(float), cudaMemcpyDeviceToDevice, s.stream));
+            }
+        }
+        const CenterWork work = run_center(f);
+        // The center's slice of every open frame (the legacy fat rows). A
+        // plane left alone has the identity slices: the source with weight 1
+        // for its own center, zeros (which change no sum) for the others.
+        for (int t = 0; t < f.count; ++t) {
+            const int frame = first + t;
+            if (frame < out) continue;
+            for (int c = 0; c < d.planes; ++c) {
+                if (work.bypass || (!d.estimate && d.sigma[c] == 0)) {
+                    if (frame == center) {
+                        accumulate_identity(roll_num(d, s, frame, c), roll_den(d, s, frame, c),
+                                            ring_plane(d, s, frame, c), floats(c), s.stream);
+                    }
+                    continue;
+                }
+                accumulate_slice(roll_num(d, s, frame, c), roll_den(d, s, frame, c), f.accum(s.num, c, t),
+                                 f.accum(s.den, c, t), floats(c), s.stream);
+            }
+        }
+        for (; out < start + count && std::min(out + radius, nframes - 1) <= center; ++out) finish(out);
+    }
+    for (; out < start + count; ++out) finish(out);
+    NSS_CUDA_CHECK(cudaEventRecord(g.done, s.stream));
+    drain.armed = false;
+    turn.leave();
+    NSS_CUDA_RANGE("image.wait");
+    NSS_CUDA_CHECK(cudaEventSynchronize(g.done));
+    return store;
+}
+
+// A frame of the rolling output: from its chunk, with the source frame's
+// properties and the contribution stamp (as nss.VAggregate leaves them).
+const VSFrame* rolling_frame(ImageData& d, int n, VSFrameContext* ctx, VSCore* core, const VSAPI* api) {
+    const int start = n / d.roll.rolling_chunk * d.roll.rolling_chunk;
+    const int count = std::min(d.roll.rolling_chunk, d.vi.numFrames - start);
+    auto chunk = d.cache.get(start, [&] { return compute_chunk(d, start, count, ctx, api); });
+    // The output frame is planned per staging set: holding one bounds the
+    // frames being copied out (and the stores they read) under the limit.
+    auto lease = d.staging->acquire();
+    nss::ResourceScope scope(d.budget);
+    nss::FrameScope owned(api);
+    const VSFrame* src = owned.getFrameFilter(n, d.node, ctx);
+    VSFrame* dst = owned.newVideoFrame(&d.vi.format, d.vi.width, d.vi.height, src, core);
+    nss::stamp_contribution(dst, 0, n, d.model, api);
+    owned.freeFrame(src);
+    for (int c = 0; c < d.planes; ++c) {
+        const std::size_t row_bytes = static_cast<std::size_t>(d.width[c]) * sizeof(float);
+        vsh::bitblt(api->getWritePtr(dst, c), api->getStride(dst, c), chunk->plane(n - chunk->start, c), row_bytes,
+                    row_bytes, d.height[c]);
+    }
+    return owned.keep(dst);
 }
 
 const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameContext* ctx, VSCore* core,
                         const VSAPI* api) {
     auto& d = *static_cast<ImageData*>(instance);
     const int radius = d.radius();
-    const int first = nss::host_detail::temporal_first(n, radius);
-    const int last = nss::host_detail::temporal_last(n, radius, d.vi.numFrames);
+    int first = nss::host_detail::temporal_first(n, radius);
+    int last = nss::host_detail::temporal_last(n, radius, d.vi.numFrames);
     if (activation == arInitial) {
+        if (d.rolling) {
+            // Always the full chunk window: a cache hit seen now may be evicted before arAllFramesReady.
+            const int start = n / d.roll.rolling_chunk * d.roll.rolling_chunk;
+            const int count = std::min(d.roll.rolling_chunk, d.vi.numFrames - start);
+            first = std::max(0, start - roll_reach(d));
+            last = nss::host_detail::temporal_last(start + count - 1, roll_reach(d), d.vi.numFrames);
+        }
         for (int frame = first; frame <= last; ++frame) {
             api->requestFrameFilter(frame, d.node, ctx);
             if (d.reference) api->requestFrameFilter(frame, d.reference, ctx);
@@ -645,6 +1007,7 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
     }
     if (activation != arAllFramesReady) return nullptr;
     NSS_CUDA_RANGE("image.frame");
+    if (d.rolling) return rolling_frame(d, n, ctx, core, api);
     // The staging set is leased before the output frame is allocated, so at
     // most that many frames are in flight.
     auto staging = d.staging->acquire();
@@ -667,14 +1030,8 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
     std::vector<Upload> uploads;
     std::vector<const VSFrame*> source(count);
     const auto stage = [&](const VSFrame* frame, int t, int c, bool reference) {
-        const std::size_t row_bytes = static_cast<std::size_t>(d.width[c]) * sizeof(float);
         const int region = static_cast<int>(uploads.size());
-        stage_plane(api->getReadPtr(frame, c), api->getStride(frame, c), row_bytes, d.height[c], region_at(region));
-        const auto* samples = reinterpret_cast<const std::uint32_t*>(region_at(region));
-        const std::size_t floats = static_cast<std::size_t>(d.width[c]) * d.height[c];
-        std::uint32_t bad = 0;  // an all-ones exponent is an infinity or a NaN
-        for (std::size_t i = 0; i < floats; ++i) bad |= static_cast<std::uint32_t>((samples[i] & 0x7f800000u) == 0x7f800000u);
-        if (bad) throw std::invalid_argument("nss: nonfinite source/reference sample");
+        stage_checked(d, api, frame, c, region_at(region));
         uploads.push_back({region, t, c, reference});
     };
     for (int t = 0; t < count; ++t) {
@@ -708,62 +1065,16 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
                       row_bytes, s.stream);
     }
     const int region = static_cast<int>(uploads.size());
-    for (int t = 0; t < f.count; ++t) {
-        for (int c = 0; c < planes; ++c) {
-            f.sigma[t][c] = d.sigma[c] / 255.f;
-            f.units[t][c] = d.sigma_units[c];
-        }
-    }
-    for (int t = 0; t < f.count && d.rgb; ++t) {
-        nlh_rgb_to_yuv(f.plane(s.input, t, 0), f.plane(s.input, t, 1), f.plane(s.input, t, 2), d.plane_floats, false,
-                       s.stream);
-        if (!d.estimate) nss::nlh_rgb_sigma_to_yuv(f.sigma[t], f.units[t]);
-        if (d.reference) {
-            nlh_rgb_to_yuv(f.plane(s.reference, t, 0), f.plane(s.reference, t, 1), f.plane(s.reference, t, 2),
-                           d.plane_floats, true, s.stream);
-        }
-    }
-    for (int t = 0; t < f.count && d.split; ++t) {
-        twsc_opponent(f.plane(s.input, t, 0), f.plane(s.input, t, 1), f.plane(s.input, t, 2), d.plane_floats, false, s.stream);
-        if (d.reference) {
-            twsc_opponent(f.plane(s.reference, t, 0), f.plane(s.reference, t, 1), f.plane(s.reference, t, 2), d.plane_floats,
-                          false, s.stream);
-        }
-    }
-    if (d.estimate) {
-        NSS_CUDA_RANGE("image.estimate");
-        for (int t = 0; t < f.count; ++t) estimate_sigma(f, t);
-    }
-    const auto sigma_units = [&](int t, int c) {
-        return f.units[t][c] >= 0 ? f.units[t][c] : static_cast<double>(f.sigma[t][c]) * 255;
-    };
-    bool bypass = true;
-    for (int c = 0; c < planes; ++c) bypass = bypass && f.sigma[f.center][c] == 0;
-    const bool twsc = d.model == nss::Model::TWSC;
-    nss::NlhImageOptions o;
-    if (!twsc) {
-        // nss::nlh_resolve_options: a bypassed center resolves from itself alone.
-        double max_sigma = 0;
-        int available = 16;
-        for (int c = 0; c < planes; ++c) {
-            const double units = sigma_units(f.center, c);
-            if (!(units >= 0) || !std::isfinite(units)) throw std::invalid_argument("nss.NLH: invalid preset sigma");
-            max_sigma = std::max(max_sigma, units);
-            for (int t = bypass ? f.center : 0; t < (bypass ? f.center + 1 : f.count); ++t) {
-                if (f.sigma[t][c] > 0) available = std::min({available, d.width[c], d.height[c]});
-            }
-        }
-        o = nss::nlh_resolve_preset(max_sigma, available, d.nlh);
-    }
-
     VSFrame* dst = owned.newVideoFrame(&d.output.format, d.output.width, d.output.height, source[f.center], core);
     nss::stamp_contribution(dst, radius, n, d.model, api);
+    const CenterWork work = run_center(f);
+    const bool bypass = work.bypass;
+    const nss::NlhImageOptions& o = work.o;
+    const bool twsc = d.model == nss::Model::TWSC;
     const int slices = 2 * radius + 1;
     const int rows = radius ? 2 * slices : 1;
     const int downloads = region;
     if (!bypass) {
-        if (twsc) run_twsc(f);
-        else run_nlh(f, o);
         if (d.split) {
             // Each plane's estimate, then back to RGB before the planes are copied out.
             for (int c = 0; c < planes; ++c) {
@@ -834,7 +1145,7 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
 
     auto* props = api->getFramePropertiesRW(dst);
     double sigmas[3]{};
-    for (int c = 0; c < planes; ++c) sigmas[c] = sigma_units(f.center, c);
+    for (int c = 0; c < planes; ++c) sigmas[c] = sigma_units(f, f.center, c);
     if (api->mapSetFloatArray(props, "_NSSSigma", sigmas, planes) ||
         api->mapSetInt(props, "_NSSGroups", static_cast<std::int64_t>(f.groups), maReplace) ||
         api->mapSetInt(props, "_NSSADMMMaxIterGroups", f.stalled, maReplace) ||
@@ -873,6 +1184,7 @@ void VS_CC freeFilter(void* instance, VSCore*, const VSAPI*) {
         DeviceGuard guard(d->device.index);
         d->pool.reset();
         d->staging.reset();
+        d->cache.clear();
     }
     delete d;
 }
@@ -897,6 +1209,14 @@ std::unique_ptr<Slot> make_slot(const ImageData& d) {
     slot->arena = DeviceBuffer(d.arena_bytes, d.budget);
     slot->totals = DeviceBuffer(3 * sizeof(double), d.budget);
     slot->stalled = DeviceBuffer(sizeof(int), d.budget);
+    if (d.rolling) {
+        const std::size_t plane_bytes = d.plane_floats * sizeof(float);
+        const std::size_t ring = static_cast<std::size_t>(roll_ring(d));
+        slot->ring = DeviceBuffer(ring * d.planes * plane_bytes, d.budget);
+        if (d.reference) slot->reference_ring = DeviceBuffer(ring * d.reference_planes * plane_bytes, d.budget);
+        slot->sums = DeviceBuffer(2 * ring * d.planes * plane_bytes, d.budget);
+        slot->out = DeviceBuffer(d.planes * plane_bytes, d.budget);
+    }
     if (d.model == nss::Model::TWSC) {
         slot->aggregator =
             std::make_unique<OrderedAggregator>(d.width[0], d.height[0], d.max_frames, d.max_patches, d.budget, true,
@@ -910,7 +1230,10 @@ std::unique_ptr<Slot> make_slot(const ImageData& d) {
 }
 
 void create(const VSMap* in, VSMap* out, VSCore* core, const VSAPI* api, nss::Model model) {
-    // Same validation order and text as nss.NLH / nss.TWSC (D14).
+    // Same validation order and text as nss.NLH / nss.TWSC (D14): the
+    // temporal arguments first.
+    const auto temporal = nss::frontend::parse_temporal(api, in, 0, model == nss::Model::TWSC ? "TWSC" : "NLH", "nss_cuda",
+                                                        kDefaultTemporalMode, kRollingCache);
     auto data = std::make_unique<ImageData>();
     ImageData& d = *data;
     d.model = model;
@@ -927,8 +1250,10 @@ void create(const VSMap* in, VSMap* out, VSCore* core, const VSAPI* api, nss::Mo
         if (text.rfind("nss.NLH:", 0) != 0) throw;
         throw std::invalid_argument("nss_cuda" + text.substr(3));
     }
+    d.rolling = temporal.rolling;
+    d.roll = temporal.params;
     d.output = d.vi;
-    if (d.radius()) d.output.height = nss::checked_fat_height(d.vi.height, d.radius());
+    if (d.radius() && !d.rolling) d.output.height = nss::checked_fat_height(d.vi.height, d.radius());
     d.backend = parse_backend_args(api, in, d.name());
     d.device = acquire_device(d.backend.device_id, d.name(), core, api);
     d.budget = nss::current_budget();
@@ -944,6 +1269,8 @@ void create(const VSMap* in, VSMap* out, VSCore* core, const VSAPI* api, nss::Mo
         d.width[c] = nss::plane_width(d.vi, c);
         d.height[c] = nss::plane_height(d.vi, c);
         d.plane_floats = std::max(d.plane_floats, static_cast<std::size_t>(d.width[c]) * d.height[c]);
+        d.plane_offset[c] = d.frame_bytes;
+        d.frame_bytes += static_cast<std::size_t>(d.width[c]) * d.height[c] * sizeof(float);
     }
     {
         std::array<bool, 3> used{};
@@ -960,14 +1287,23 @@ void create(const VSMap* in, VSMap* out, VSCore* core, const VSAPI* api, nss::Mo
     // Memory plan: the window planes, staging and the output frame are fixed
     // per slot; the group arena takes what the budget leaves, up to
     // kArenaBytes, and must hold one group of the largest possible shape.
+    // Rolling stages a chunk's frames instead of a window and the fat
+    // download, keeps the ring, its sums and the finished frame on the
+    // device, and holds host chunk stores: one being built per slot, the
+    // cache (beside the slots) and the output frames copied out of them.
     const std::size_t plane_bytes = d.plane_floats * sizeof(float);
     const int rows = d.radius() ? 2 * (2 * d.radius() + 1) : 1;
-    const int staging_regions = d.max_frames * (d.planes + d.reference_planes) + d.planes * rows;
-    const std::size_t device_planes = static_cast<std::size_t>(d.max_frames) * (3 * 4 + (d.reference ? 3 : 0) + 1);
+    const int ring = 2 * d.radius() + 1;
+    const std::size_t chunk_bytes = d.rolling ? d.frame_bytes * d.roll.rolling_chunk : 0;
+    const int staging_regions = d.rolling ? (d.roll.rolling_chunk + 4 * d.radius()) * (d.planes + d.reference_planes)
+                                          : d.max_frames * (d.planes + d.reference_planes) + d.planes * rows;
+    const std::size_t device_planes =
+        static_cast<std::size_t>(d.max_frames) * (3 * 4 + (d.reference ? 3 : 0) + 1) +
+        (d.rolling ? static_cast<std::size_t>(ring) * (3 * d.planes + d.reference_planes) + d.planes : 0);
+    const std::size_t output_bytes = d.rolling ? 2 * d.frame_bytes + chunk_bytes : plane_bytes * d.planes * rows;
     // NLH accumulators: 64-bit sums per plane and 32-bit counts per geometry.
     const std::size_t accumulators = twsc ? 0 : static_cast<std::size_t>(d.max_frames) * (2 * d.planes + d.geometries);
-    const std::size_t fixed =
-        plane_bytes * (device_planes + staging_regions + accumulators) + plane_bytes * d.planes * rows;
+    const std::size_t fixed = plane_bytes * (device_planes + staging_regions + accumulators) + output_bytes;
     // The largest group over the possible resolved shapes (NLH: block <= 16).
     const int max_group = twsc ? d.twsc.group : std::max({d.nlh.group[0], d.nlh.group[1], 16});
     const int max_q = std::max({d.nlh.q[0], d.nlh.q[1], 4});
@@ -992,7 +1328,12 @@ void create(const VSMap* in, VSMap* out, VSCore* core, const VSAPI* api, nss::Mo
     const auto slot_bytes = [&](std::size_t arena) {
         return fixed + arena + arena / bytes_per_patch * sort_bytes + bins + (1u << 16);
     };
-    const std::size_t limit = d.budget ? d.budget->snapshot().limit : SIZE_MAX;
+    const std::size_t total = d.budget ? d.budget->snapshot().limit : SIZE_MAX;
+    const std::size_t shared_cache = chunk_bytes * (d.rolling ? d.roll.cache_chunks : 0);
+    if (total != SIZE_MAX && total <= shared_cache) {
+        throw std::invalid_argument(std::string("nss_cuda.") + d.name() + ": memory_limit_mb is too small for the rolling cache");
+    }
+    const std::size_t limit = total == SIZE_MAX ? SIZE_MAX : total - shared_cache;
     if (!d.backend.streams_explicit) {
         d.backend.num_streams = static_cast<int>(std::clamp<std::size_t>(limit / slot_bytes(arena_cap), 1, kDefaultStreams));
     }
@@ -1001,7 +1342,10 @@ void create(const VSMap* in, VSMap* out, VSCore* core, const VSAPI* api, nss::Mo
         throw std::invalid_argument(std::string("nss_cuda.") + d.name() +
                                     ": memory_limit_mb is too small for this clip: each of the " +
                                     std::to_string(d.backend.num_streams) + " stream(s) needs at least " +
-                                    std::to_string((slot_bytes(one_group) >> 20) + 1) + " MiB");
+                                    std::to_string((slot_bytes(one_group) >> 20) + 1) + " MiB" +
+                                    (shared_cache ? ", plus " + std::to_string((shared_cache >> 20) + 1) +
+                                                        " MiB for the rolling cache"
+                                                  : ""));
     }
     d.arena_bytes = arena_cap;
     if (share != SIZE_MAX && slot_bytes(arena_cap) > share) {
@@ -1014,18 +1358,29 @@ void create(const VSMap* in, VSMap* out, VSCore* core, const VSAPI* api, nss::Mo
     // per stream is in `fixed`; more keep a stream busy while other threads
     // copy, where the limit leaves room beside the full arena.
     const std::size_t streams = static_cast<std::size_t>(d.backend.num_streams);
-    const std::size_t set_bytes = plane_bytes * staging_regions + plane_bytes * d.planes * rows;
+    const std::size_t set_bytes = plane_bytes * staging_regions + output_bytes;
     std::size_t extra = std::max(streams, kFramesInFlight) - streams;
     if (limit != SIZE_MAX) {
         const std::size_t used = streams * slot_bytes(d.arena_bytes);
         extra = std::min(extra, limit > used ? (limit - used) / set_bytes : 0);
     }
     const int staging_sets = static_cast<int>(streams + extra);
+    // Under a limit the rolling cache grows only into what the plan leaves over.
+    int cache_cap = d.roll.cache_limit;
+    if (d.rolling && limit != SIZE_MAX) {
+        const std::size_t used = streams * slot_bytes(d.arena_bytes) + extra * set_bytes;
+        const std::size_t spare = limit > used ? (limit - used) / chunk_bytes : 0;
+        cache_cap = static_cast<int>(std::min<std::size_t>(d.roll.cache_limit, d.roll.cache_chunks + spare));
+    }
 
     {
         DeviceGuard guard(d.device.index);
         std::vector<std::unique_ptr<Slot>> slots;
         for (int i = 0; i < d.backend.num_streams; ++i) slots.push_back(make_slot(d));
+        for (const auto& slot : slots) d.slots.push_back(slot.get());
+        if (d.rolling) {
+            d.cache.configure(d.roll.rolling_chunk, d.frame_bytes, d.plane_offset, d.roll.cache_chunks, cache_cap, d.budget);
+        }
         std::vector<std::unique_ptr<Staging>> sets;
         for (int i = 0; i < staging_sets; ++i) {
             auto set = std::make_unique<Staging>();
@@ -1049,16 +1404,10 @@ void create(const VSMap* in, VSMap* out, VSCore* core, const VSAPI* api, nss::Mo
 }
 
 void VS_CC create_nlh(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI* api) {
-    const auto plain = [](const VSMap* i, VSMap* o, void*, VSCore* c, const VSAPI* a) {
-        create(i, o, c, a, nss::Model::NLH);
-    };
-    nss::frontend::create_temporal(plain, in, out, core, api, 0, "NLH", "nss_cuda", kDefaultTemporalMode, kRollingCache);
+    create(in, out, core, api, nss::Model::NLH);
 }
 void VS_CC create_twsc(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI* api) {
-    const auto plain = [](const VSMap* i, VSMap* o, void*, VSCore* c, const VSAPI* a) {
-        create(i, o, c, a, nss::Model::TWSC);
-    };
-    nss::frontend::create_temporal(plain, in, out, core, api, 0, "TWSC", "nss_cuda", kDefaultTemporalMode, kRollingCache);
+    create(in, out, core, api, nss::Model::TWSC);
 }
 
 }  // namespace

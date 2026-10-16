@@ -57,7 +57,7 @@ core.nss_cuda.MCWNNM(clip clip[, float[] sigma = 3.0, int block_size = 8,
 | `device_id` | 0 | device index | CUDA device the instance runs on. One instance uses one device; `core.nss_cuda.Backend(device_id)` reports whether it is supported. |
 | `num_streams` | 1 | [1, 16] | Frames (or temporal chunks) the instance has in flight on the device at once. Each stream owns its device buffers, so memory grows with it. |
 | `memory_limit_mb` | none | > 0 | Caps the instance's device and pinned host memory. The internal batches are fitted to it and the output does not change; a limit that cannot hold the streams is a creation error. Without it the filter takes what its plan needs. |
-| `temporal_mode` | `"rolling"` | rolling / legacy | With `radius > 0`: `"rolling"` returns finished, normal-height frames; `"legacy"` returns the fat intermediate for `VAggregate`, as the CPU plugin does. |
+| `temporal_mode` | `"rolling"` | rolling / legacy | With `radius > 0`: `"rolling"` returns finished, normal-height frames; `"legacy"` returns the fat intermediate, as the CPU plugin does; reduce it with `nss.VAggregate`. |
 | `rolling_chunk` | 4 | [1, 64] | Frames accumulated per rolling chunk. |
 | `rolling_cache_chunks` | 1 | [1, 64] | Finished chunks kept for later frame requests at first. Given alone, the cache stays at this size. |
 | `rolling_cache_limit` | 16 | [1, 64], >= `rolling_cache_chunks` | What the chunk cache may grow to: it keeps one more chunk each time two requests miss on chunks it dropped recently. Under `memory_limit_mb` it grows only into what the limit leaves. |
@@ -68,8 +68,18 @@ How the streams, the memory limit and the rolling output behave across filters i
 
 - **Device-resident.** The joint three-channel matching, the ADMM solve of
   every group, the aggregation and all outer rounds run on the device.
-- **Temporal output.** The fat intermediate is reduced with
-  `nss_cuda.VAggregate` inside the filter.
+- **Temporal output.** The rolling mode (the default) runs every round on the
+  device for any `iters`. As in the CPU's fat output, each center's rounds
+  before the last work on estimates of that center's own window (all three
+  channels, finished from its groups alone, then relaxed toward the noisy
+  frames by `delta`); the last round adds to the rolling sums. It agrees with
+  the legacy intermediate reduced by `VAggregate` to 148 dB on the test clips.
+  - A stream holds the window, the rolling fixed-point sums and, with
+    `iters > 1`, the 2R+1 estimates of its center and their fixed-point sums,
+    for three channels: RGB 1080p `radius=1` takes 918 MiB of device memory
+    above a bare context (414 with the earlier legacy-inside path), and the
+    smallest accepted `memory_limit_mb` is 1183 MiB (679 before); `iters=1`
+    558 MiB and 827 MiB, `radius=2` 1390 MiB and 1752 MiB.
 - **Numerics.** Each ADMM step shrinks through the FP32 Gram matrix with a
   cyclic Jacobi eigensolver that starts from the eigenvectors of the step
   before. The iteration runs on one small matrix pair per channel (the
@@ -78,10 +88,10 @@ How the streams, the memory limit and the rolling output behave across filters i
   - The output is not bit-identical to the CPU, but is inside the 60 dB gate
     (135–142 dB on the frozen references).
   - The output is run-to-run identical: every group is solved in a fixed
-    order. Spatial output aggregates from inside the filter kernel with
-    integer atomics on fixed-point sums (exact, so independent of the
-    order); temporal output sorts its patches and sums them in a fixed
-    order.
+    order. Spatial and rolling output aggregates from inside the filter
+    kernel with integer atomics on fixed-point sums (exact, so independent
+    of the order); legacy temporal output sorts its patches and sums them in
+    a fixed order.
   - Groups of up to 8 patches run as three kernels: the channel Gram
     matrices and the output read the patches with 8 threads per group, and
     the ADMM runs one thread per group. Larger groups run 16 or 32 threads
@@ -93,11 +103,17 @@ How the streams, the memory limit and the rolling output behave across filters i
 - **Memory.** The ADMM state costs about 2.5 KiB of device memory per group
   at the defaults.
 
+## Speed
+
+RGB 1080p, RTX 5080 with a Ryzen 5950X, one stream, 2026-10-16: default 178 fps,
+`radius=1` 113 (`iters=1`: 169), `radius=2` 90. Before the rolling mode ran on the
+device (legacy + reduction on the host) `radius=1` took 39 fps (`iters=1`: 40).
+
 ## Pitfalls
 
 - Input must be RGBS (three planes); for Gray use WNNM instead.
 - The `mu=1.001` default keeps rho nearly constant across inner iterations,
   matching the authors; do not raise it without checking quality.
-- `temporal_mode="legacy"` output needs a `VAggregate` call; the default mode
+- `temporal_mode="legacy"` output needs an `nss.VAggregate` call; the default mode
   returns finished frames.
 - No `_NSS*` frame properties.

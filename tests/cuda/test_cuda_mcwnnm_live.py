@@ -4,7 +4,7 @@
 block and group sizes (every group kernel capacity), residual centering,
 adaptive aggregation, the ADMM schedule, outer rounds, per-channel sigma
 (including bypassed channels), rclip and the temporal radius (legacy +
-VAggregate, including clip boundary frames). Each case must reach the MCWNNM
+nss.VAggregate and the rolling mode, including clip boundary frames). Each case must reach the MCWNNM
 tolerance (tests/data/cuda_tolerances_v1.json) and be run-to-run identical.
 Exits 77 without VapourSynth or a CUDA device.
 
@@ -109,6 +109,9 @@ def main():
     temporal = [
         ("rgb r1", rgb, dict(sigma=5, radius=1, **small)),
         ("yuv444 r2 g16", yuv, dict(sigma=5, radius=2, group_size=16, block_step=4, **small)),
+        ("rgb r1 bypassed channel", rgb, dict(sigma=[5, 0, 3], radius=1, **small)),
+        ("rgb r1 iters1", rgb, dict(sigma=5, radius=1, iters=1, **small)),
+        ("rgb r2 iters3 rclip", rgb, dict(sigma=5, radius=2, iters=3, delta=0.3, rclip=guide, **small)),
     ]
     if args.quick:
         # Every kernel capacity with a short ADMM schedule (sanitizer runs).
@@ -140,8 +143,11 @@ def main():
     for label, clip, kw in temporal:
         r = kw["radius"]
         check(label, clip, core.nss.VAggregate(core.nss.MCWNNM(clip, **kw), clip, radius=r),
-              core.nss_cuda.VAggregate(core.nss_cuda.MCWNNM(clip, temporal_mode="legacy", **kw), clip, radius=r),
-              core.nss_cuda.VAggregate(core.nss_cuda.MCWNNM(clip, temporal_mode="legacy", **kw), clip, radius=r))
+              core.nss.VAggregate(core.nss_cuda.MCWNNM(clip, temporal_mode="legacy", **kw), clip, radius=r),
+              core.nss.VAggregate(core.nss_cuda.MCWNNM(clip, temporal_mode="legacy", **kw), clip, radius=r))
+        # The default rolling mode, every round on the device.
+        check(label + " rolling", clip, core.nss.VAggregate(core.nss.MCWNNM(clip, **kw), clip, radius=r),
+              core.nss_cuda.MCWNNM(clip, **kw), core.nss_cuda.MCWNNM(clip, **kw))
     # Repeated create/free must not leak device memory or fail.
     for _ in range(2 if args.quick else 20):
         core.nss_cuda.MCWNNM(rgb, sigma=5).get_frame(0)

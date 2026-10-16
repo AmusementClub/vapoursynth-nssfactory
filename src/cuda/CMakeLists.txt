@@ -139,7 +139,6 @@ add_library(nss_cuda SHARED
   ncsr/filter.cpp
   common/image_filter.cpp
   nlm/filter.cpp
-  vaggregate/filter.cpp
   wnnm/filter.cpp
 )
 set_target_properties(nss_cuda PROPERTIES

@@ -194,11 +194,13 @@ def build(core, ns, clip, c):
             out[key] = value
         return out
     args = resolve(c["args"])
-    if c["aggregate"]:
-        # The case reduces the fat intermediate itself; the device default is rolling.
+    # The CPU reduces its fat intermediate with VAggregate. The device has no
+    # VAggregate: its default temporal mode, rolling, is that reduction.
+    aggregate = c["aggregate"] and hasattr(plugin, "VAggregate")
+    if aggregate:
         args.setdefault("temporal_mode", "legacy")
     node = getattr(plugin, c["filter"])(clip, **args)
-    if c["aggregate"]:
+    if aggregate:
         node = plugin.VAggregate(node, clip, radius=c["aggregate"])
     return node
 

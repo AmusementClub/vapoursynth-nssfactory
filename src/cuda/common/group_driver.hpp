@@ -106,8 +106,8 @@ struct GroupFilterConfig {
     // With a temporal radius the estimates are those of one center's window
     // (as the CPU's fat output): a rolling center runs its rounds before the
     // last on estimates of its own and adds only the last to the sums.
-    // Rolling mode requires channels == 1 (no joint units), and fused planes
-    // when iters > 1.
+    // A joint unit's estimates hold all its channels. Rolling mode requires
+    // fused planes when iters > 1.
     int iters = 1;
     float delta = 0.f;
     // Extra device floats per reference group (second argument: guide present).

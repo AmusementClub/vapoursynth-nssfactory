@@ -2,6 +2,7 @@
 // Shared host driver for patch-group filters (see group_driver.hpp).
 #include "cuda/common/group_driver.hpp"
 #include "cuda/common/aggregate.hpp"
+#include "cuda/common/chunk_cache.hpp"
 #include "cuda/common/match.hpp"
 #include "cuda/runtime/frame_io.hpp"
 #include "cuda/runtime/memory.hpp"
@@ -19,11 +20,8 @@
 #include <array>
 #include <condition_variable>
 #include <cstdint>
-#include <deque>
-#include <list>
 #include <memory>
 #include <mutex>
-#include <set>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -113,34 +111,6 @@ struct Staging {
     }
 };
 
-// Pinned blocks for chunk stores, reused so that a chunk neither allocates
-// nor faults in fresh pages. A block goes back when its chunk is dropped.
-struct StorePool {
-    std::mutex mu;
-    std::vector<PinnedBuffer> free;
-};
-
-// The finished frames of one chunk. The device downloads straight into it.
-struct ChunkStore {
-    int start = 0, count = 0;
-    PinnedBuffer bytes;  // rolling_chunk frames, each its planes back to back (tight rows)
-    std::size_t frame_bytes = 0;
-    std::array<std::size_t, 3> plane_offset{};
-    std::shared_ptr<StorePool> pool;
-    // Final plane of frame start + i.
-    float* plane(int i, int p) const {
-        return reinterpret_cast<float*>(bytes.as<std::uint8_t>() + i * frame_bytes + plane_offset[p]);
-    }
-    ChunkStore() = default;
-    ChunkStore(const ChunkStore&) = delete;
-    ChunkStore& operator=(const ChunkStore&) = delete;
-    ~ChunkStore() {
-        if (!pool || !bytes.get()) return;
-        std::lock_guard lock(pool->mu);
-        pool->free.push_back(std::move(bytes));
-    }
-};
-
 struct Driver : GroupFilterConfig {
     std::size_t plane_floats = 0;  // largest plane (tight pitch)
     int ntemp = 1;                 // 2R+1
@@ -165,19 +135,13 @@ struct Driver : GroupFilterConfig {
     std::mutex roll_mu;
     std::condition_variable roll_cv;
 
-    // Rolling chunk cache (LRU) and chunks being computed. The cache holds
-    // cache_size chunks and grows to cache_cap when chunks it dropped are
-    // asked for again (two such misses per step).
-    std::shared_ptr<StorePool> stores;
+    // Rolling chunk cache: it holds cache_size chunks at first and grows to
+    // cache_cap (both settled by plan_planes).
     std::size_t frame_bytes = 0;
     std::array<std::size_t, 3> plane_offset{};
     int cache_size = 1, cache_cap = 1;
-    std::deque<int> dropped;  // starts of recently dropped chunks
-    int dropped_hits = 0;
-    std::mutex cache_mu;
-    std::condition_variable cache_cv;
-    std::list<std::shared_ptr<const ChunkStore>> cache;
-    std::set<int> computing;
+    ChunkCache cache;
+    PlanOrder order;
 };
 
 // A guide clip comes from the host; the device also holds guide frames when
@@ -366,8 +330,8 @@ void plan_planes(Driver& d) {
     const std::size_t device_planes = (rolling ? 0 : static_cast<std::size_t>(device_frames(d))) +
                                       static_cast<std::size_t>(d.channels) *
                                           ((any_ordered(d) ? 2 * d.ntemp : 0) + 1 + (d.iters > 1 ? d.ntemp : 0)) +
-                                      (any_fused(d) ? 2 + 4 * static_cast<std::size_t>(rolling ? (d.iters > 1 ? d.ntemp : 0)
-                                                                                         : d.channels)
+                                      (any_fused(d) ? 2 + 4 * static_cast<std::size_t>(d.channels) *
+                                                              (rolling ? (d.iters > 1 ? d.ntemp : 0) : 1)
                                                     : 0);
     const std::size_t total = d.budget ? d.budget->snapshot().limit : SIZE_MAX;
     int max_w = 1, max_h = 1;
@@ -582,12 +546,13 @@ std::unique_ptr<Slot> make_slot(const Driver& d) {
     std::vector<const float*> estimate_ptrs;
     if (rolling && d.iters > 1) {
         for (int t = 0; t < d.ntemp; ++t) {
-            slot->estimates.emplace_back(plane_bytes, d.budget);
+            slot->estimates.emplace_back(unit_bytes, d.budget);
             estimate_ptrs.push_back(slot->estimates.back().as<float>());
         }
+        const std::size_t round_cells = d.plane_floats * d.ntemp * d.channels;
         slot->estimate_ptrs = DeviceBuffer(d.ntemp * sizeof(float*), d.budget);
-        slot->round_num = DeviceBuffer(d.plane_floats * d.ntemp * sizeof(unsigned long long), d.budget);
-        slot->round_den = DeviceBuffer(d.plane_floats * d.ntemp * sizeof(unsigned long long), d.budget);
+        slot->round_num = DeviceBuffer(round_cells * sizeof(unsigned long long), d.budget);
+        slot->round_den = DeviceBuffer(round_cells * sizeof(unsigned long long), d.budget);
     }
     if (any_ordered(d)) {
         slot->num = DeviceBuffer(unit_bytes * d.ntemp, d.budget);
@@ -1110,9 +1075,10 @@ void queue_plane(Driver& d, RollTurn& turn, int plane, int start, int count, Chu
             }
         }
     };
+    // A joint unit's kernel adds to every channel, written or not.
     const auto clear_sums = [&](int cell_index) {
         for (int c = 0; c < channels; ++c) {
-            if (!d.channel_out[c]) continue;
+            if (d.shared_match && !d.channel_out[c]) continue;
             const std::size_t cell = c * ring_floats + static_cast<std::size_t>(cell_index) * p.floats;
             if (p.fused) {
                 fixed_clear(FixedTarget{fixed.num + cell, fixed.den + cell}, p.floats, s.stream);
@@ -1246,33 +1212,40 @@ void queue_plane(Driver& d, RollTurn& turn, int plane, int start, int count, Chu
         }
         // Every round of a center but the last, as the legacy output does it
         // for its center alone: the round's sums cover the window's frames
-        // (slot t in slice t), and each window frame's estimate is finished
-        // from them (unchanged where nothing covers it), then relaxed toward
-        // its noisy frame for the next round, which matches and filters the
-        // estimates. Returns the device pointer array of the estimates.
+        // (slot t in slice t; a joint unit's channels each have nt slices),
+        // and each window frame's estimate is finished from them (unchanged
+        // where nothing covers it), then relaxed toward its noisy frame for
+        // the next round, which matches and filters the estimates. Every
+        // channel of a unit is finished: the next round matches on all of
+        // them. Returns the device pointer array of the estimates.
         const float* const* rounds(int center) {
             FixedTarget sums{s.round_num.as<unsigned long long>(), s.round_den.as<unsigned long long>(), p.width,
                              p.floats};
             sums.slices = sums.slice_ring = nt;
+            sums.channel_step = ring_floats;
+            const std::size_t unit_floats = p.floats * channels;
             const auto noisy = [&](int t) {
                 return r.src_frames[temporal_slot_frame(center, t, radius, nframes) % ring].as<float>();
             };
             const float* const* estimates = s.estimate_ptrs.as<const float*>();
             for (int iter = 0; iter + 1 < d.iters; ++iter) {
-                fixed_clear(sums, p.floats * nt, s.stream);
+                fixed_clear(sums, ring_floats * channels, s.stream);
                 for (int t = 0; t < nt && iter > 0; ++t) {
-                    iter_regularize(s.estimates[t].as<float>(), noisy(t), p.floats, d.delta, s.stream);
+                    iter_regularize(s.estimates[t].as<float>(), noisy(t), unit_floats, d.delta, s.stream);
                 }
                 filter_center(d, s, p, center, p.wiener && iter == 0, &sums, iter > 0 ? estimates : nullptr);
                 for (int t = 0; t < nt; ++t) {
-                    const std::size_t slice = static_cast<std::size_t>(t) * p.floats;
-                    fixed_finish(FixedTarget{sums.num + slice, sums.den + slice, p.width, p.floats}, p.block,
-                                 iter > 0 ? s.estimates[t].as<float>() : noisy(t), p.width, p.height,
-                                 s.fixed_rows.as<unsigned long long>(), s.estimates[t].as<float>(), s.stream);
+                    for (int c = 0; c < channels; ++c) {
+                        const std::size_t slice = c * ring_floats + static_cast<std::size_t>(t) * p.floats;
+                        float* const estimate = s.estimates[t].as<float>() + c * p.floats;
+                        fixed_finish(FixedTarget{sums.num + slice, sums.den + slice, p.width, p.floats}, p.block,
+                                     iter > 0 ? estimate : noisy(t) + c * p.floats, p.width, p.height,
+                                     s.fixed_rows.as<unsigned long long>(), estimate, s.stream);
+                    }
                 }
             }
             for (int t = 0; t < nt; ++t) {
-                iter_regularize(s.estimates[t].as<float>(), noisy(t), p.floats, d.delta, s.stream);
+                iter_regularize(s.estimates[t].as<float>(), noisy(t), unit_floats, d.delta, s.stream);
             }
             return estimates;
         }
@@ -1320,6 +1293,7 @@ void queue_plane(Driver& d, RollTurn& turn, int plane, int start, int count, Chu
 // staged before a slot is taken and the results are copied out after it has
 // been given back, as for a spatial frame.
 std::shared_ptr<ChunkStore> compute_chunk(Driver* d, int start, int count, VSFrameContext* ctx, const VSAPI* vsapi) {
+    d->order.wait_for_previous(start, d->rolling.rolling_chunk, d->cache);
     auto staging = [&] {
         NSS_CUDA_RANGE("group.staging");
         return d->staging->acquire();
@@ -1330,20 +1304,7 @@ std::shared_ptr<ChunkStore> compute_chunk(Driver* d, int start, int count, VSFra
     const int nframes = d->vi.numFrames;
     const bool w = guide_clip(*d);
     nss::FrameScope frames(vsapi);
-    auto store = std::make_shared<ChunkStore>();
-    store->start = start;
-    store->count = count;
-    store->frame_bytes = d->frame_bytes;
-    store->plane_offset = d->plane_offset;
-    store->pool = d->stores;
-    {
-        std::lock_guard lock(d->stores->mu);
-        if (!d->stores->free.empty()) {
-            store->bytes = std::move(d->stores->free.back());
-            d->stores->free.pop_back();
-        }
-    }
-    if (!store->bytes.get()) store->bytes = PinnedBuffer(d->frame_bytes * d->rolling.rolling_chunk, d->budget);
+    auto store = d->cache.make_store(start, count);
 
     const int clips = w ? 2 : 1;
     // A unit of several channels is planes[0]; its channels that are not
@@ -1383,6 +1344,7 @@ std::shared_ptr<ChunkStore> compute_chunk(Driver* d, int start, int count, VSFra
                 turns.push_back(std::make_unique<RollTurn>(*d, active[first + i], start, count, lock));
             }
         }
+        if (first == 0) d->order.planned(start, d->rolling.rolling_chunk);
         {
             NSS_CUDA_RANGE("group.stage_in");
             for (std::size_t j = 0; j < step; ++j) {
@@ -1431,51 +1393,7 @@ std::shared_ptr<ChunkStore> compute_chunk(Driver* d, int start, int count, VSFra
 
 std::shared_ptr<const ChunkStore> rolling_chunk(Driver* d, int start, int count, VSFrameContext* ctx,
                                                 const VSAPI* vsapi) {
-    std::unique_lock lock(d->cache_mu);
-    for (;;) {
-        for (auto it = d->cache.begin(); it != d->cache.end(); ++it) {
-            if ((*it)->start == start) {
-                auto hit = *it;
-                d->cache.splice(d->cache.begin(), d->cache, it);
-                return hit;
-            }
-        }
-        if (!d->computing.count(start)) break;
-        d->cache_cv.wait(lock);  // another thread is computing this chunk
-    }
-    // A miss on a chunk the cache dropped recently: after two of them the
-    // cache keeps one more chunk, up to cache_cap.
-    if (d->cache_size < d->cache_cap) {
-        const auto again = std::find(d->dropped.begin(), d->dropped.end(), start);
-        if (again != d->dropped.end()) {
-            d->dropped.erase(again);
-            if (++d->dropped_hits >= 2) {
-                d->dropped_hits = 0;
-                ++d->cache_size;
-            }
-        }
-    }
-    d->computing.insert(start);
-    lock.unlock();
-    std::shared_ptr<ChunkStore> computed;
-    try {
-        computed = compute_chunk(d, start, count, ctx, vsapi);
-    } catch (...) {
-        lock.lock();
-        d->computing.erase(start);
-        d->cache_cv.notify_all();
-        throw;
-    }
-    lock.lock();
-    d->computing.erase(start);
-    d->cache.push_front(computed);
-    while (static_cast<int>(d->cache.size()) > d->cache_size) {
-        d->dropped.push_back(d->cache.back()->start);
-        d->cache.pop_back();
-    }
-    while (d->dropped.size() > static_cast<std::size_t>(std::max(8, 2 * d->cache_cap))) d->dropped.pop_front();
-    d->cache_cv.notify_all();
-    return computed;
+    return d->cache.get(start, [&] { return compute_chunk(d, start, count, ctx, vsapi); });
 }
 
 const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameContext* ctx, VSCore* core,
@@ -1508,6 +1426,9 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
     const int start = n / d->rolling.rolling_chunk * d->rolling.rolling_chunk;
     const int count = std::min(d->rolling.rolling_chunk, nframes - start);
     auto chunk = rolling_chunk(d, start, count, ctx, vsapi);
+    // The output frame is planned per staging set: holding one bounds the
+    // frames being copied out (and the stores they read) under the limit.
+    auto lease = d->staging->acquire();
     nss::ResourceScope resource_scope(d->budget);
     nss::FrameScope frames(vsapi);
     const VSFrame* src = frames.getFrameFilter(n, d->node, ctx);
@@ -1530,7 +1451,6 @@ void VS_CC freeFilter(void* instance, VSCore*, const VSAPI*) {
         d->pool.reset();
         d->staging.reset();
         d->cache.clear();
-        d->stores.reset();
     }
     delete d;
 }
@@ -1545,9 +1465,6 @@ void group_filter_install(GroupFilterConfig&& config, VSMap* out, VSCore* core, 
     d->vi_out = d->vi;
     if (d->mode == GroupMode::Legacy) d->vi_out.height = nss::checked_fat_height(d->vi.height, d->radius);
     d->budget = nss::current_budget();
-    if (d->mode == GroupMode::Rolling && d->channels > 1 && !d->shared_match) {
-        throw std::logic_error(prefix(*d) + "rolling mode does not support joint filters");
-    }
     // A rolling center's rounds before the last add into fixed-point sums.
     for (const GroupPlane& p : d->planes) {
         if (d->mode == GroupMode::Rolling && d->iters > 1 && p.active && !p.fused) {
@@ -1590,7 +1507,7 @@ void group_filter_install(GroupFilterConfig&& config, VSMap* out, VSCore* core, 
     }
     DeviceGuard guard(d->device.index);
     plan_planes(*d);
-    d->stores = std::make_shared<StorePool>();
+    d->cache.configure(d->rolling.rolling_chunk, d->frame_bytes, d->plane_offset, d->cache_size, d->cache_cap, d->budget);
     std::vector<std::unique_ptr<Slot>> slots;
     for (int i = 0; i < d->backend.num_streams; ++i) slots.push_back(make_slot(*d));
     for (auto& slot : slots) d->slots.push_back(slot.get());
