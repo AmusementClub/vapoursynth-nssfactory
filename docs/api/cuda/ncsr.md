@@ -86,15 +86,19 @@ How the streams, the memory limit and the rolling output behave across filters i
   - Groups of up to 8 patches run as three kernels: the Gram matrices and
     the reconstruction read the patches with 8 threads per group, and the
     eigen step runs one thread per group in registers. Larger groups run 16
-    or 32 threads per group with a round-robin parallel Jacobi.
+    or 32 threads per group: up to 16 patches with a round-robin parallel
+    Jacobi, 17 to 32 with Householder tridiagonalization and divide and
+    conquer (closer to the CPU than the Jacobi there, and 2.3x faster; it
+    takes 14.5 KiB of device scratch per group of a batch).
 
 ## Speed
 
 1080p, RTX 5080 with a Ryzen 5950X, one stream, 2026-10-16: default (gray) 516 fps,
-`block_step=4` 266, `group_size=16` 177, `group_size=32, block_step=4` 5.7, RGB 195,
-`radius=1` 310 (`iters=1`: 456). The 16-thread CPU plugin on the same host: 35.8,
-6.8, 3.0, 0.084, 8.4 and 11.7 (21.6). The spatial default is bound by the host's
-frame copies (about 600 fps with `iters=1`); more streams do not raise it.
+`block_step=4` 266, `group_size=16` 177, `group_size=32, block_step=4` 13.3, RGB 195,
+`radius=1` 310 (`iters=1`: 456); `group_size=32` with the default step 50. The
+16-thread CPU plugin on the same host: 35.8, 6.8, 3.0, 0.084, 8.4 and 11.7 (21.6).
+The spatial default is bound by the host's frame copies (about 600 fps with
+`iters=1`); more streams do not raise it.
 
 ## Pitfalls
 

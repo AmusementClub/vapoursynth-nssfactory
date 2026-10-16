@@ -46,6 +46,8 @@ __device__ __forceinline__ void sorted_columns(const float* g, const float* v, f
 
 struct NcsrModel {
     float sigma;
+    // Centred groups: the tridiagonal eigen step is accurate (gram_group.cuh).
+    static constexpr bool kDivideAndConquer = true;
     __device__ bool center() const { return true; }
 
     // Column weights exp(-distance / h) (nss::ncsr_group_weights); returns
@@ -109,17 +111,8 @@ struct NcsrModel {
                                  int lane) const {
         float weight[N];
         const float inverse = weights<N>(matches, n, area, weight);
-        const auto singular = [&](int i) {
-            const float lambda = g[i * N + i];
-            return lambda > 0.f ? sqrtf(lambda) : 0.f;
-        };
-        const float si = singular(lane);
-        int place = 0;
-#pragma unroll
-        for (int i = 0; i < N; ++i) {
-            const float s = singular(i);
-            place += s > si || (s == si && i < lane);
-        }
+        float si;
+        const int place = singular_place<N>(g, lane, &si);
         __syncthreads();  // every eigenvalue is read before C overwrites g
         float* const row = g + lane * N;
         if (!(sigma > 0.f)) {

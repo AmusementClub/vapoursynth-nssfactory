@@ -16,7 +16,8 @@
 // registers and a cyclic Jacobi sweep.
 // Above 8: N threads per group (two groups to a block of 32 at N = 16), with
 // the two N x N matrices in shared memory and the round-robin parallel Jacobi
-// of block_jacobi.cuh.
+// of block_jacobi.cuh, or at N = 32 for a model with kDivideAndConquer,
+// block_eigen's divide and conquer (block_tridiag.cuh).
 // Thread j owns Gram row j and output column j. (One thread per group does
 // not scale there: registers cannot hold the matrices, a per-thread stack
 // frame of that size makes the driver reserve unbudgeted device memory, and
@@ -38,10 +39,22 @@
 //     `finish` with `codes` on the group's N threads, thread `lane` writing
 //     row `lane` of C; every thread of the block calls it (it holds a barrier
 //     between reading the eigenvalues and writing C).
+//   static constexpr int kLaneFinishMax = 16;
+//     finish_lane only up to that N (WNNM: at 32 its lane-0 shrink is
+//     cheaper than every lane placing all 32 values, 0.97).
+//   static constexpr bool kDivideAndConquer = true;
+//     groups of 17 to 32 take Householder tridiagonalization and divide and
+//     conquer for the eigen step (a third of the Jacobi's time on 32 x 32
+//     Gram matrices) and need gram_scratch_floats(group, true). Its accuracy
+//     is absolute (about eps |G|) where the Jacobi's is relative: right for
+//     centred groups (NCSR: closer to the CPU in every case measured), not for
+//     uncentred ones with one dominant eigenvalue (WNNM's default: 104 to 80 dB
+//     against the CPU at block 16).
 #pragma once
 
 #include "cuda/common/aggregate.hpp"
 #include "cuda/common/block_jacobi.cuh"
+#include "cuda/common/block_tridiag.cuh"
 #include "cuda/common/fixed_accumulate.cuh"
 #include "cuda/common/gram_group.hpp"
 #include "cuda/common/gram_shrink.cuh"
@@ -69,18 +82,30 @@ struct GramGroupArgs {
     FixedTarget fused{};        // with num set: aggregate here; values and patches are unused
     float* scratch = nullptr;   // batch * gram_scratch_floats(group)
 };
+static_assert(kGramDcFloats == block_eigen_dc_reals(32), "gram_scratch_floats");
 
+
+template <class Model, class = void>
+struct GramDivide : std::false_type {};
+template <class Model>
+struct GramDivide<Model, std::void_t<decltype(Model::kDivideAndConquer)>>
+    : std::bool_constant<Model::kDivideAndConquer> {};
 
 template <class Model, class = void>
 struct GramLaneFinish : std::false_type {};
 template <class Model>
 struct GramLaneFinish<Model, std::void_t<decltype(&Model::template finish_lane<16>)>> : std::true_type {};
+template <class Model, class = void>
+struct GramLaneFinishMax : std::integral_constant<int, 32> {};
+template <class Model>
+struct GramLaneFinishMax<Model, std::void_t<decltype(Model::kLaneFinishMax)>>
+    : std::integral_constant<int, Model::kLaneFinishMax> {};
 
 // N threads per group and 32 / N groups per block, so that the warp is full
 // (a block's groups share the barriers and nothing else). A block's last
 // groups may lie beyond the batch: they run as empty groups and store nothing.
 template <int N, class Model>
-__global__ void gram_block_kernel(GramGroupArgs a, Model model) {
+__device__ __forceinline__ void gram_block(const GramGroupArgs& a, const Model& model) {
     constexpr int kGroups = 32 / N;
     __shared__ float g_all[kGroups][N * N], v_all[kGroups][N * N], cs_all[kGroups][N + 2], weight_all[kGroups];
     __shared__ int flag;
@@ -135,8 +160,23 @@ __global__ void gram_block_kernel(GramGroupArgs a, Model model) {
 #pragma unroll
     for (int k = 0; k < N; ++k) g[lane * N + k] = acc[k];
     __syncthreads();
-    block_jacobi<float>(g, v, N, cs, &flag, true, lane, N);
-    if constexpr (GramLaneFinish<Model>::value) {
+    if constexpr (N == 32 && GramDivide<Model>::value) {
+        // Householder tridiagonalization and divide and conquer (one group
+        // a block of 32; eig_bench.cu: 0.14 against 0.47 ms per 1000
+        // matrices). The reflectors take v until the vectors, rows of g, are
+        // copied to its columns; the eigenvalues go to g's diagonal
+        // (block_jacobi's contract).
+        __shared__ float fast[block_eigen_fast_reals(N)], values[block_eigen_slow_reals(N)];
+        block_eigen<float, true>(g, v, N, fast, values, a.scratch + static_cast<long long>(blockIdx.x) * kGramDcFloats);
+        __syncthreads();
+        for (int e = lane; e < N * N; e += N) v[e] = g[(e % N) * N + e / N];
+        __syncthreads();
+        for (int e = lane; e < N * N; e += N) g[e] = e / N == e % N ? values[e / N] : 0.f;
+        __syncthreads();
+    } else {
+        block_jacobi<float>(g, v, N, cs, &flag, true, lane, N);
+    }
+    if constexpr (GramLaneFinish<Model>::value && N <= GramLaneFinishMax<Model>::value) {
         const float w = model.template finish_lane<N>(g, v, m, n, area, lane);
         if (lane == 0 && live) weight = w;
     } else if (lane == 0 && live) {
@@ -182,6 +222,19 @@ __global__ void gram_block_kernel(GramGroupArgs a, Model model) {
         a.patches[static_cast<long long>(r) * a.group + j] =
             j < n ? AggregatePatch{m[j].x, m[j].y, m[j].t, weight} : AggregatePatch{0, 0, -1, 0.f};
     }
+}
+
+template <int N, class Model>
+__global__ void gram_block_kernel(GramGroupArgs a, Model model) {
+    gram_block<N>(a, model);
+}
+// With divide and conquer at N = 32 a launch bound keeps three one-warp
+// blocks a scheduler (168 registers; 185 left two: NCSR groups of 32 1.13x,
+// stack unchanged). WNNM's kernel has 168 without one, and any bound changed
+// its code: 0.91.
+template <int N, class Model>
+__global__ void __launch_bounds__(32, 12) gram_block_bounded_kernel(GramGroupArgs a, Model model) {
+    gram_block<N>(a, model);
 }
 
 // Up to 8 columns: three kernels, so that the eigen step runs in registers
@@ -365,7 +418,12 @@ void launch_gram_groups(const GramGroupArgs& args, const Model& model, cudaStrea
     } else if (args.group <= 16) {
         gram_block_kernel<16, Model><<<(batch + 1) / 2, 32, 0, stream>>>(args, model);
     } else {
-        gram_block_kernel<32, Model><<<batch, 32, 0, stream>>>(args, model);  // nss::kWnnmMaxGroup
+        if constexpr (GramDivide<Model>::value) {
+            if (!args.scratch) throw std::logic_error("nss_cuda: groups above 16 need the eigen scratch");
+            gram_block_bounded_kernel<32, Model><<<batch, 32, 0, stream>>>(args, model);  // nss::kWnnmMaxGroup
+        } else {
+            gram_block_kernel<32, Model><<<batch, 32, 0, stream>>>(args, model);
+        }
     }
     NSS_CUDA_CHECK_LAUNCH();
 }
