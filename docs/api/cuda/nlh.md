@@ -26,15 +26,16 @@ The blind estimate is a matching pass per frame; give `sigma` when it is known.
 ## Signature
 
 ```python
-core.nss_cuda.NLH(clip clip[, float[] sigma, string noise_model = "auto",
-                  int[] block_size, int[] block_step, int[] group_size,
-                  int[] search_window, int bm_range, int radius = 0,
+core.nss_cuda.NLH(clip clip[, float[] sigma, int[] block_size, int[] block_step,
+                  int[] group_size, int bm_range, int radius = 0,
                   int ps_num = 2, int ps_range = 4, int[] q, clip rclip = None,
+                  string noise_model = "auto", int[] search_window,
                   int basic_iters, float lambda_basic, float hard_strength,
                   int wiener_iters, float wiener_sigma_scale,
-                  string temporal_mode = "rolling", int rolling_chunk = 4,
-                  int rolling_cache_chunks = 1, int rolling_cache_limit = 16,
-                  int memory_limit_mb, int device_id = 0, int num_streams = 1])
+                  int memory_limit_mb, string temporal_mode = "rolling",
+                  int rolling_chunk = 4, int rolling_cache_chunks = 1,
+                  int rolling_cache_limit = 16, int device_id = 0,
+                  int num_streams = 1])
 ```
 
 Two-stage array parameters take `[Basic, Wiener]`; a single value broadcasts

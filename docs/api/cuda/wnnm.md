@@ -31,10 +31,10 @@ core.nss_cuda.WNNM(clip clip[, float[] sigma = 3.0, int block_size = 8,
                    int block_step = 8, int group_size = 8, int bm_range = 7,
                    int radius = 0, int ps_num = 2, int ps_range = 4,
                    int residual = 0, int adaptive_aggregation = 1,
-                   clip rclip = None,
+                   clip rclip = None, int memory_limit_mb,
                    string temporal_mode = "rolling", int rolling_chunk = 4,
                    int rolling_cache_chunks = 1, int rolling_cache_limit = 16,
-                   int memory_limit_mb, int device_id = 0, int num_streams = 1])
+                   int device_id = 0, int num_streams = 1])
 ```
 
 ## Primary parameters

@@ -66,9 +66,14 @@ out = core.nss.VAggregate(fat, clip, radius=1)                          # finish
 out = core.nss.WNNM(clip, sigma=5, radius=1, temporal_mode="rolling")   # the same in one call
 ```
 
+On the CPU only BM3D computes rolling chunks itself. For WNNM, MCWNNM, NCSR,
+TWSC and NLH, `"rolling"` is the intermediate reduced by `VAggregate` inside
+the call: same result, same cost and memory as the two calls above, and
+`rolling_chunk` and the cache arguments are checked but change nothing.
+
 NLM is temporal through its own `d` argument and always returns finished
 frames; LSSC has no temporal mode. The GPU plugin returns finished frames by
-default.
+default and rolls every temporal filter on the device.
 
 ### VAggregate
 

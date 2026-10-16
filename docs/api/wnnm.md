@@ -15,10 +15,10 @@ hiq  = core.nss.WNNM(clip, sigma=25, block_step=4, group_size=16)
 core.nss.WNNM(clip clip[, float[] sigma = 3.0, int block_size = 8,
               int block_step = 8, int group_size = 8, int bm_range = 7,
               int radius = 0, int ps_num = 2, int ps_range = 4,
-              int residual = 0, int adaptive_aggregation = 1,
-              clip rclip = None,
-              string temporal_mode = "legacy", int rolling_chunk = 4,
-              int rolling_cache_chunks, int rolling_cache_limit, int memory_limit_mb])
+              int residual = 0, int adaptive_aggregation = 1, clip rclip = None,
+              int memory_limit_mb, string temporal_mode = "legacy",
+              int rolling_chunk = 4, int rolling_cache_chunks,
+              int rolling_cache_limit])
 ```
 
 ## Primary parameters

@@ -19,8 +19,9 @@ core.nss.MCWNNM(clip clip[, float[] sigma = 3.0, int block_size = 8,
                 int residual = 1, int adaptive_aggregation = 0,
                 clip rclip = None, int admm_iter = 10, float rho = 3.0,
                 float mu = 1.001, int iters = 2, float delta = 0.1,
-                string temporal_mode = "legacy", int rolling_chunk = 4,
-                int rolling_cache_chunks, int rolling_cache_limit, int memory_limit_mb])
+                int memory_limit_mb, string temporal_mode = "legacy",
+                int rolling_chunk = 4, int rolling_cache_chunks,
+                int rolling_cache_limit])
 ```
 
 ## Primary parameters

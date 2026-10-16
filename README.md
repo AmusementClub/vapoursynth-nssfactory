@@ -9,9 +9,9 @@ from their papers, with reproducible numerics.
 | `libnss` | `nss` | CPU: x86-64 with AVX2 or newer (Linux, Windows), arm64 with NEON (macOS, Linux) |
 | `libnss_cuda` | `nss_cuda` | NVIDIA GPUs of compute capability 7.5 or newer (Linux, Windows) |
 
-Both plugins take the same arguments and give the same results (the GPU
-within 60 dB PSNR of the CPU). Input is constant-format 32-bit float Gray, YUV
-or RGB. The project is a work in progress.
+Both plugins take the same arguments and give the same results (the GPU's
+output is 60 dB PSNR or more from the CPU's). Input is constant-format 32-bit
+float Gray, YUV or RGB. The project is a work in progress.
 
 ## Filters
 
@@ -54,6 +54,9 @@ out = core.nss_cuda.WNNM(clip, sigma=5, radius=1)     # temporal
   reproducibility.
 
 ## Building
+
+Release packages need no build; their system requirements are in
+[Building](docs/api/building.md#release-packages). From source:
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release            # add -DNSS_ENABLE_CUDA=ON for the GPU plugin
