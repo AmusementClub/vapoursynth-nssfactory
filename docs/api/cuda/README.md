@@ -1,106 +1,95 @@
-# nss_cuda.* API Reference
+# nss_cuda.* Reference
 
-`libnss_cuda` is the CUDA plugin (namespace `nss_cuda`), built with
-`-DNSS_ENABLE_CUDA=ON`. It has the eight denoisers of the CPU plugin, one page
-each below. `VAggregate` stays on the CPU plugin: every temporal device filter
-returns finished frames itself, and `nss.VAggregate` reduces the device's
-legacy output. A page describes every argument of its function (default, range,
-meaning), the device arguments, and what is specific to the device (memory,
-numerics, measured speed). This page has what the filters share. The papers
-and the reasoning behind the defaults are on the CPU pages; the models and
-the defaults are the same on both plugins.
+`libnss_cuda` (namespace `nss_cuda`) runs the eight denoisers of the CPU
+plugin on NVIDIA GPUs. The arguments, defaults and models are the same; the
+output agrees with the CPU plugin to 60 dB PSNR or better (not bit for bit)
+and is identical from run to run on a given GPU, driver and build. Each page
+below describes every argument of one function; the papers and the reasoning
+behind the defaults are on the CPU pages.
 
-| Function | CUDA page (all arguments) | CPU page (algorithm, paper) |
+## Speed
+
+Frames per second at 1080p, default arguments, on an RTX 5080 (Ryzen 9 5950X
+host), one instance. Median over a set of nine test images with Gaussian
+noise of sigma 3; the images differ by a few percent.
+
+| Filter | YUV420 | RGB | Temporal, `radius=1` (YUV420 / RGB) |
+|---|---:|---:|---:|
+| [BM3D](bm3d.md) | 500 | 275 | 435 / 215 |
+| [NLM](nlm.md) | 550 | 225 | (temporal by default, `d=1`) |
+| [WNNM](wnnm.md) | 490 | 270 | 420 / 200 |
+| [MCWNNM](mcwnnm.md) | — | 200 | — / 130 |
+| [NCSR](ncsr.md) | 390 | 215 | 255 / 125 |
+| [LSSC](lssc.md) | 190 | 125 | (no temporal mode) |
+| [NLH](nlh.md) | 37 | 31 | 13 / 13 |
+| [TWSC](twsc.md) | 66 | 34 | |
+
+- NLH runs its default blind noise estimation; giving `sigma` skips it.
+- TWSC's default is a speed setting. Its quality geometry (`block_step=1,
+  group_size=90, iters=12`) denoises 8 to 10 dB better and takes about 80 s
+  per YUV420 1080p frame and 45 s per RGB frame; its page has the trade-offs.
+- MCWNNM takes RGB only.
+- The CPU plugin's speed is on the [CPU API guide](../README.md).
+
+## Functions
+
+| Function | GPU page (all arguments) | CPU page (algorithm, paper) |
 |---|---|---|
 | `core.nss_cuda.BM3D` | [bm3d.md](bm3d.md) | [bm3d.md](../bm3d.md) |
 | `core.nss_cuda.NLM` | [nlm.md](nlm.md) | [nlm.md](../nlm.md) |
 | `core.nss_cuda.WNNM` | [wnnm.md](wnnm.md) | [wnnm.md](../wnnm.md) |
 | `core.nss_cuda.MCWNNM` | [mcwnnm.md](mcwnnm.md) | [mcwnnm.md](../mcwnnm.md) |
 | `core.nss_cuda.NCSR` | [ncsr.md](ncsr.md) | [ncsr.md](../ncsr.md) |
+| `core.nss_cuda.LSSC` | [lssc.md](lssc.md) | [lssc.md](../lssc.md) |
 | `core.nss_cuda.NLH` | [nlh.md](nlh.md) | [nlh.md](../nlh.md) |
 | `core.nss_cuda.TWSC` | [twsc.md](twsc.md) | [twsc.md](../twsc.md) |
-| `core.nss_cuda.LSSC` | [lssc.md](lssc.md) | [lssc.md](../lssc.md) |
 
 ```python
-core.nss_cuda.Version()               # version:data
-core.nss_cuda.Backend([int device_id])  # device, driver/runtime versions, support level
+core.nss_cuda.Version()                 # version:data
+core.nss_cuda.Backend([int device_id])  # device, driver and runtime versions, support level
 ```
+
+`VAggregate` is the CPU plugin's alone: the GPU filters return finished
+frames, and `core.nss.VAggregate` reduces their legacy temporal output.
 
 ## Shared by every filter
 
-Each filter takes the same arguments as its `nss` counterpart, plus
-`device_id` and `num_streams` at the end of the argument list, and gives the
-same errors under the `nss_cuda` name. The one difference in behaviour is the
-temporal output (below). Outputs agree with the CPU plugin to 60 dB PSNR or
-better (not bit-for-bit; the gate is in `tests/data/cuda_tolerances_v1.json`)
-and are identical from run to run on a given GPU, driver and build.
-
-### Input and common conventions
-
-- **Input**: constant-format 32-bit float Gray, YUV or RGB clips only. Integer
-  or variable-format input is rejected at creation time.
-- **`sigma` units**: the 8-bit noise standard deviation (0–255 scale), one
-  value per processed plane; a single value broadcasts. `sigma=0` bypasses
-  that plane. NLH estimates sigma per frame when it is omitted; TWSC does the
-  same with `estimate_sigma=1`.
-- **`rclip` / `ref`**: an optional reference clip (same format and size) that
-  guides matching; denoising still targets `clip`.
-- **`bm_range` and `search_window`**: `search_window = 2 * bm_range + 1`.
-  Passing both is an error. TWSC and NLH accept either; the others take
-  `bm_range`.
-- **Diagnostics**: NLH and TWSC stamp per-frame `_NSS*` frame properties; the
-  other filters emit none.
-
-### Device arguments
+Each filter takes the arguments of its `nss` counterpart (same names,
+defaults, ranges and error messages, under the `nss_cuda` name) plus these:
 
 | Parameter | Default | Range | Meaning |
 |---|---|---|---|
-| `device_id` | 0 | device index | CUDA device index. One filter instance uses one device. |
-| `num_streams` | 1 | [1, 16] | How many frames (or temporal chunks) an instance has in flight on the device at once. Each stream owns its device buffers. |
-| `memory_limit_mb` | none | > 0 | Caps the instance's device and pinned host memory (see below). |
+| `device_id` | 0 | device index | The GPU the instance runs on. `core.nss_cuda.Backend(device_id)` reports whether it is supported. |
+| `num_streams` | 1 | [1, 16] | Frames (or temporal chunks) in flight on the GPU at once. One stream keeps the GPU busy; each extra stream adds its own buffers. |
+| `memory_limit_mb` | none | > 0 | Caps the instance's GPU and pinned host memory; the work is batched to fit, the output does not change, and a limit too small for the streams is an error when the filter is created. Without it the filter takes what it needs. |
 
-- **`num_streams`.** The host copies of several frames (or temporal chunks)
-  run around one stream, which keeps the device busy for the fast filters:
-  1080p BM3D on an RTX 5080 runs at about 790 fps with one stream and with
-  three, and at `radius = 1` at about 310 fps with one and 350 with three.
-- **`memory_limit_mb`** has no default in `nss_cuda`: without it the filter
-  takes what its plan needs, and a device allocation that fails is reported
-  as the CUDA out-of-memory error. With it, the value caps the instance's
-  device and pinned host memory and the internal batches are fitted to it; a
-  limit that cannot hold the streams is a creation error. Nothing degrades
-  silently in either case.
+Input conventions (`sigma`, `rclip`, `bm_range`, frame properties) are those
+of the [CPU plugin](../README.md#conventions).
 
 ### Temporal output
 
-With `radius > 0` the device filters return finished, normal-height frames:
-no `VAggregate` call is needed. (NLM is temporal through `d` and always
-returns normal-height frames; LSSC has no temporal mode.)
+With `radius > 0` the GPU filters return finished frames: the temporal
+accumulation, and every outer round of MCWNNM, NCSR and TWSC, stays on the
+GPU. NLM is temporal through `d`; LSSC has no temporal mode.
 
 | Parameter | Default | Range | Meaning |
 |---|---|---|---|
-| `temporal_mode` | `"rolling"` | rolling / legacy | `"rolling"` returns finished frames; `"legacy"` returns the fat intermediate, exactly as the CPU plugin does, for `nss.VAggregate`. |
-| `rolling_chunk` | 4 | [1, 64] | Frames accumulated per rolling chunk. |
-| `rolling_cache_chunks` | 1 | [1, 64] | Finished chunks kept for later frame requests at first. Given alone, the cache stays at this size. |
-| `rolling_cache_limit` | 16 | [1, 64], >= `rolling_cache_chunks` | What the cache may grow to. It keeps one more chunk each time two requests miss on chunks it dropped recently, so alternating between positions settles after a few misses. Under `memory_limit_mb` it grows only into what the limit leaves. (On the CPU the two arguments name one fixed size.) |
+| `temporal_mode` | `"rolling"` | rolling / legacy | `"rolling"` returns finished frames; `"legacy"` returns the CPU plugin's intermediate, for `core.nss.VAggregate`. |
+| `rolling_chunk` | 4 | [1, 64] | Frames computed together. |
+| `rolling_cache_chunks` | 1 | [1, 64] | Finished chunks kept for later frame requests at first. |
+| `rolling_cache_limit` | 16 | [1, 64], >= `rolling_cache_chunks` | What the cache may grow to when requests come back to chunks it dropped. (On the CPU the two arguments name one fixed size.) |
 
-- Every temporal filter keeps the temporal accumulation (and every outer
-  round) on the device and copies back only final frames. A chunk that
-  follows the one before it on a stream carries on from it, so each center
-  runs once in sequential rendering.
-- `temporal_mode="legacy"` is for mixing backends or keeping an existing
-  script unchanged: the fat intermediate is a plain VS frame with versioned
-  properties, and `nss.VAggregate` from the CPU plugin reduces it (within a
-  few ulp of the device's own reduction: the CPU divides with fast-math).
-- The finished-frame mode needs more memory than legacy.
-- Sequential rendering, a chained second stage and a temporal filter
-  downstream compute each chunk once. Fully random access costs a chunk per
-  miss; `temporal_mode="legacy"` does not depend on the order.
+- Rendering in order computes every frame once: each chunk carries on from
+  the one before it. Random access recomputes the frames around each chunk.
+- Rolling output agrees with the legacy intermediate reduced by `VAggregate`
+  (bit for bit for NLH and TWSC, to rounding for the others) and needs more
+  GPU memory than legacy output.
 
 ### Driver and GPU support
 
-- A prebuilt plugin needs a driver for the CUDA release it was built with
-  (12.9 for the release packages) or newer.
-- The default build has native code for sm_75, sm_86, sm_89 and sm_120, plus
-  compute_75 PTX. Other sm_75+ GPUs run the PTX through the driver JIT, which
-  is untested and best effort; `Backend()` reports which of the two a device
-  gets. Building is described in the repository `README.md`.
+- The release packages are built with CUDA 12.9 and need a driver for it or
+  newer.
+- Native code covers compute capability 7.5, 8.6, 8.9 and 12.0 (RTX 20, 30,
+  40 and 50 series). Other GPUs of 7.5 or newer run through the driver's PTX
+  JIT (untested, best effort); `Backend()` reports which one a device gets.
+- Building is described in [Building](../building.md).

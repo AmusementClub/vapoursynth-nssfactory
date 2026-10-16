@@ -18,7 +18,8 @@ core.nss.NCSR(clip clip[, float[] sigma = 3.0, int block_size = 8,
               int block_step = 8, int group_size = 8, int bm_range = 7,
               int radius = 0, int ps_num = 2, int ps_range = 4,
               clip rclip = None, int iters = 2, float delta = 0.1,
-              int memory_limit_mb])
+              string temporal_mode = "legacy", int rolling_chunk = 4,
+              int rolling_cache_chunks, int rolling_cache_limit, int memory_limit_mb])
 ```
 
 ## Primary parameters
@@ -31,7 +32,7 @@ core.nss.NCSR(clip clip[, float[] sigma = 3.0, int block_size = 8,
 | `group_size` | 8 | [1, 32] | Matched patches per group (columns of the PCA matrix). |
 | `bm_range` | 7 | [1, 64] | Search window radius. |
 | `iters` | 2 | [1, 64] | Outer re-estimation rounds; the second round re-matches on the current estimate. ~2x cost per extra round. |
-| `radius` | 0 | [0, 16] | Temporal radius. >0 returns the weighted intermediate for `VAggregate`. |
+| `radius` | 0 | [0, 16] | Temporal radius. >0 returns the weighted intermediate for `VAggregate`, or finished frames with `temporal_mode="rolling"` ([Temporal output](README.md#temporal-output)). |
 | `rclip` | none | clip | Reference clip guiding matching. |
 
 ## Secondary parameters
@@ -40,6 +41,7 @@ core.nss.NCSR(clip clip[, float[] sigma = 3.0, int block_size = 8,
 |---|---|---|---|
 | `delta` | 0.1 | [0, 1] | Relaxation mixing previous and current estimates between rounds. |
 | `ps_num` / `ps_range` | 2 / 4 | [1,group] / [1,64] | Predictive temporal search (with `radius > 0`). |
+| `temporal_mode`, `rolling_chunk`, `rolling_cache_chunks`, `rolling_cache_limit` | `"legacy"`, 4, 1, 1 | — | What `radius > 0` returns: see [Temporal output](README.md#temporal-output). |
 | `memory_limit_mb` | none | — | Workspace cap; fails instead of degrading. |
 
 ## Algorithm and paper
@@ -62,7 +64,7 @@ with `1/step^2 * bm_range^2`; per-group cost scales with the PCA/SVD solve at
 
 - `iters=1` skips the second matching round — sizeable speedup, visible
   quality change on textured noise; measure before shipping.
-- `radius > 0` output requires `VAggregate`.
+- `radius > 0` output needs `VAggregate` (or `temporal_mode="rolling"`).
 - No `_NSS*` frame properties on this filter.
 
 ## CUDA

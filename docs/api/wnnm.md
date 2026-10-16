@@ -17,7 +17,8 @@ core.nss.WNNM(clip clip[, float[] sigma = 3.0, int block_size = 8,
               int radius = 0, int ps_num = 2, int ps_range = 4,
               int residual = 0, int adaptive_aggregation = 1,
               clip rclip = None,
-              int memory_limit_mb])
+              string temporal_mode = "legacy", int rolling_chunk = 4,
+              int rolling_cache_chunks, int rolling_cache_limit, int memory_limit_mb])
 ```
 
 ## Primary parameters
@@ -29,7 +30,7 @@ core.nss.WNNM(clip clip[, float[] sigma = 3.0, int block_size = 8,
 | `block_step` | 8 | [1, block] | Reference-patch stride. The main quality/speed trade: positions scale as `1/step^2`. |
 | `group_size` | 8 | [1, 32] | Matched patches per group (SVD matrix columns). |
 | `bm_range` | 7 | [1, 64] | Search window radius (`2r+1`). |
-| `radius` | 0 | [0, 16] | Temporal radius. >0 returns the weighted intermediate for `VAggregate`. |
+| `radius` | 0 | [0, 16] | Temporal radius. >0 returns the weighted intermediate for `VAggregate`, or finished frames with `temporal_mode="rolling"` ([Temporal output](README.md#temporal-output)). |
 | `rclip` | none | clip | Reference clip guiding matching. |
 
 ## Secondary parameters
@@ -40,6 +41,7 @@ core.nss.WNNM(clip clip[, float[] sigma = 3.0, int block_size = 8,
 | `adaptive_aggregation` | 1 | 0 / 1 | Weight group contributions by their residual confidence when aggregating. Usually leave on. |
 | `ps_num` | 2 | [1, group] | Predictive-search seeds per temporal step (with `radius > 0`). |
 | `ps_range` | 4 | [1, 64] | Predictive-search window radius (temporal mode). |
+| `temporal_mode`, `rolling_chunk`, `rolling_cache_chunks`, `rolling_cache_limit` | `"legacy"`, 4, 1, 1 | — | What `radius > 0` returns: see [Temporal output](README.md#temporal-output). |
 | `memory_limit_mb` | none | — | Workspace cap; fails instead of degrading. |
 
 ## Algorithm and paper
@@ -61,9 +63,9 @@ Cost scales with `1/step^2` for matching plus per-group SVD work growing with
 
 ## Pitfalls
 
-- `radius > 0` output is the taller weighted intermediate and needs a
-  `VAggregate` call (`core.nss.VAggregate(out, clip, radius=radius)`) to get
-  the viewable frame.
+- `radius > 0` output is the taller weighted intermediate: pass it through
+  `core.nss.VAggregate(out, clip, radius=radius)`, or use
+  `temporal_mode="rolling"`.
 - `group_size=1` degenerates the SVD to per-patch shrinkage; legal but rarely
   useful.
 - This filter emits no `_NSS*` frame properties; diagnostics live on NLH/TWSC.

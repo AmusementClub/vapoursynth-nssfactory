@@ -19,7 +19,8 @@ core.nss.MCWNNM(clip clip[, float[] sigma = 3.0, int block_size = 8,
                 int residual = 1, int adaptive_aggregation = 0,
                 clip rclip = None, int admm_iter = 10, float rho = 3.0,
                 float mu = 1.001, int iters = 2, float delta = 0.1,
-                int memory_limit_mb])
+                string temporal_mode = "legacy", int rolling_chunk = 4,
+                int rolling_cache_chunks, int rolling_cache_limit, int memory_limit_mb])
 ```
 
 ## Primary parameters
@@ -32,7 +33,7 @@ core.nss.MCWNNM(clip clip[, float[] sigma = 3.0, int block_size = 8,
 | `group_size` | 8 | [1, 32] | Matched patches per group. |
 | `bm_range` | 7 | [1, 64] | Search window radius. |
 | `iters` | 2 | [1, 64] | Outer re-estimation rounds (re-match on the current estimate). Round 2 costs ~another full pass; reduce to 1 for a ~2x speedup when quality allows. |
-| `radius` | 0 | [0, 16] | Temporal radius. >0 returns the weighted intermediate for `VAggregate`. |
+| `radius` | 0 | [0, 16] | Temporal radius. >0 returns the weighted intermediate for `VAggregate`, or finished frames with `temporal_mode="rolling"` ([Temporal output](README.md#temporal-output)). |
 | `rclip` | none | clip | Reference clip guiding matching. |
 
 ## Secondary parameters
@@ -46,6 +47,7 @@ core.nss.MCWNNM(clip clip[, float[] sigma = 3.0, int block_size = 8,
 | `delta` | 0.1 | [0, 1] | Relaxation mixing the previous estimate between outer iterations. |
 | `adaptive_aggregation` | 0 | 0 / 1 | Residual-weighted aggregation (off by default here, unlike WNNM). |
 | `ps_num` / `ps_range` | 2 / 4 | [1,group] / [1,64] | Predictive temporal search (with `radius > 0`). |
+| `temporal_mode`, `rolling_chunk`, `rolling_cache_chunks`, `rolling_cache_limit` | `"legacy"`, 4, 1, 1 | — | What `radius > 0` returns: see [Temporal output](README.md#temporal-output). |
 | `memory_limit_mb` | none | — | Workspace cap; fails instead of degrading. |
 
 ## Algorithm and paper

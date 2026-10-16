@@ -87,7 +87,8 @@ CASES = [
     # LSSC has no temporal mode (radius>0 is rejected at creation).
     case("lssc-g1080", "LSSC", "g1080"),
     # TWSC (default geometry only on a small crop; it is ~hours/frame at 1080p)
-    case("twsc-g128-default", "TWSC", "g128"),
+    # The default geometry before 2026-10-16 (the default is the light shape since): the large-group solver.
+    case("twsc-g128-default", "TWSC", "g128", dict(block_step=1, group_size=90, iters=12)),
     case("twsc-g256-light", "TWSC", "g256", LIGHT_TWSC),
     case("twsc-g256-s25-light", "TWSC", "g256s25", dict(LIGHT_TWSC, sigma=25)),
     case("twsc-rgb256-light", "TWSC", "rgb256", LIGHT_TWSC),

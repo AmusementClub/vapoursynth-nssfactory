@@ -137,9 +137,6 @@ FullImageParams parse_full_image(const VSAPI* api, const VSMap* in, const VSVide
         fail_plain(ns, "bm_range and search_window are mutually exclusive");
     if (model == Model::TWSC) {
         parse_twsc(api, in, sigma_given, d, ns);
-        if (!present(api, in, "iters") &&
-            twsc_color_split(d.twsc, vi.format.colorFamily == cfRGB, d.estimate, d.sigma_units.data()))
-            d.twsc.iterations = kTwscDefaultCfastIters;
     } else {
         parse_nlh(api, in, vi, sigma_given, d, ns);
     }

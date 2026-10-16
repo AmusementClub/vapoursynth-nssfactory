@@ -612,7 +612,11 @@
   },
   "twsc-g128-default": {
    "aggregate": 0,
-   "args": {},
+   "args": {
+    "block_step": 1,
+    "group_size": 90,
+    "iters": 12
+   },
    "filter": "TWSC",
    "finite": true,
    "frames": [

@@ -1,25 +1,40 @@
 # nss_cuda.TWSC
 
-Trilateral weighted sparse coding on the device: given or blind sigma, Gray / YUV / RGB, spatial and temporal.
+Trilateral weighted sparse coding on the device: given or blind sigma, Gray /
+YUV / RGB, spatial and temporal.
 
-Every argument is described on this page. The algorithm, the paper and the
-reasoning behind the defaults are on the CPU page, [`nss.TWSC`](../twsc.md); the
-model and the defaults are the same on both plugins.
+Algorithm, paper and the reasoning behind the defaults: [`nss.TWSC`](../twsc.md).
 
 ```python
-out = core.nss_cuda.TWSC(clip, sigma=25)                    # balanced default
-fast = core.nss_cuda.TWSC(clip, sigma=25, block_step=8, group_size=8, iters=2)
+out = core.nss_cuda.TWSC(clip, sigma=25)                    # fast default
+best = core.nss_cuda.TWSC(clip, sigma=25, block_step=4, group_size=90, iters=12)   # quality
 blind = core.nss_cuda.TWSC(clip, estimate_sigma=1)          # per-frame sigma
 ```
+
+## Speed
+
+1080p, default arguments, RTX 5080, one instance; median over nine test images
+(see the [overview](README.md#speed)).
+
+| Call | YUV420 | RGB |
+|---|---:|---:|
+| default | 66 | 34 |
+
+The default is a speed setting. The quality geometry `block_step=1,
+group_size=90, iters=12` (4 on the fast color path) denoises 8 to 10 dB better
+at sigma 5 to 100 and takes about 80 s per YUV420 1080p frame and 45 s per RGB
+frame; `block_step=4` keeps its quality at a sixteenth of the groups. The
+[CPU page](../twsc.md#defaults-rationale-and-performance) has the
+measurements.
 
 ## Signature
 
 ```python
 core.nss_cuda.TWSC(clip clip[, float[] sigma = 3.0, int estimate_sigma = 0,
-                   int block_size = 8, int block_step = 1, int group_size = 90,
+                   int block_size = 8, int block_step = 8, int group_size = 8,
                    int search_window = 60, int bm_range, int radius = 0,
                    int ps_num = 2, int ps_range = 4, float lambda2 = 1.0,
-                   clip rclip = None, int iters = 12 (4 with cfast), float delta = 0.0,
+                   clip rclip = None, int iters = 2, float delta = 0.0,
                    int admm_iter = 10, float rho = 0.5, float mu = 1.1,
                    float tol = 1e-6, int cfast = 1,
                    string temporal_mode = "rolling", int rolling_chunk = 4,
@@ -34,10 +49,10 @@ core.nss_cuda.TWSC(clip clip[, float[] sigma = 3.0, int estimate_sigma = 0,
 | `sigma` | 3.0 | >= 0 | 8-bit noise stddev per plane. Controls denoising strength only — one geometry is kept for all noise levels. `sigma=0` bypasses the plane. Mutually exclusive with `estimate_sigma`. |
 | `estimate_sigma` | 0 | 0 / 1 | Estimate sigma per frame/channel instead of taking it (the NLH estimator: 8x8 blocks on every fourth position per axis). |
 | `block_size` | 8 | [1, 16] | Patch edge. |
-| `block_step` | 1 | [1, block] | Reference-patch stride. **The default is 1 (every position)** — overriding it is the single largest speed lever: positions scale as `1/step^2`, so `block_step=8` is ~64x fewer groups. |
-| `group_size` | 90 | [1, 256] | Matched patches per group. 90 follows the paper's high-quality regime; 8–16 trades quality for large speedups. |
+| `block_step` | min(8, block) | [1, block] | Reference-patch stride: positions scale as `1/step^2`. 4 keeps the quality of 1 (within 0.1 dB) at a sixteenth of the groups. |
+| `group_size` | 8 | [1, 256] | Matched patches per group. 90 follows the paper's high-quality regime (see [Speed](#speed)). |
 | `search_window` | 60 | [1, 129] | Matching window edge. `bm_range=r` means `2r+1`; passing both is an error. |
-| `iters` | 12; 4 with `cfast` | [1, 64] | Outer iterations (re-match and re-solve per round). Nearly linear cost; 12 is the balanced default, 2–4 for quick work. When the fast color path applies the default is 4 (see [Rounds](#fast-color-path-cfast)). |
+| `iters` | 2 | [1, 64] | Outer iterations (re-match and re-solve per round), nearly linear cost. With `group_size=90`: 12 for the joint filter, 4 on the fast color path. |
 | `radius` | 0 | [0, 16] | Temporal radius. >0 makes the filter temporal: finished, normal-height frames by default (`temporal_mode`, below). |
 | `rclip` | none | clip | Reference clip guiding matching. |
 | `cfast` | 1 | 0 / 1 | Fast color path: an RGB frame whose three channels share one given `sigma` is filtered as three opponent-color planes, each alone, instead of as stacked three-channel patches. See [Fast color path](#fast-color-path-cfast). `cfast=0` keeps the joint filter. |
@@ -64,128 +79,45 @@ path ran) and `_NSSModelVersion=6`.
 
 ## Fast color path (`cfast`)
 
-The joint filter stacks the three channels of a patch, so an RGB group has
-three times the rows of a gray one (192 against 64 at `block_size=8`) and its
-dictionary is that much larger. With `cfast=1` (the default) an RGB frame is
-instead:
+With `cfast=1` (the default) an RGB clip whose three channels have one given
+`sigma` (not `estimate_sigma`, and only with `radius=0`) is filtered as three
+opponent-color planes, each on its own, and, with the quality geometry, 4 rounds are best (12 joint). The
+conditions, the quality it was measured at and when it pays are on the
+[CPU page](../twsc.md#fast-color-path-cfast). `_NSSCFast` is 1 on frames where
+it ran.
 
-1. taken through an orthonormal opponent transform, `(R+G+B)/sqrt 3`,
-   `(R-B)/sqrt 2`, `(R-2G+B)/sqrt 6`. White noise of one sigma on the three
-   channels is white noise of the same sigma on the three planes;
-2. filtered plane by plane, each with its own matching, groups and rounds
-   (as a Gray clip of that plane would be, with the same arguments);
-3. transformed back after each plane's estimate is finished.
+- It pays when `group_size` is larger than `block_size^2` (the default 90
+  against 64): RGB 1080p, `sigma=3, block_size=4, block_step=4,
+  group_size=32, search_window=20` runs at 13.1 fps with it at `iters=2` and
+  9.0 without.
+- With a small group (the default `group_size=8`) the joint dictionary is no
+  larger and three planes are three times the groups: `cfast=0` is the faster
+  call there.
 
-It applies when all of these hold, and the joint filter runs otherwise:
+## Device and temporal parameters
 
-- the clip is RGB,
-- `sigma` is given (not `estimate_sigma=1`), positive, and the same for the
-  three channels,
-- `radius=0` (the weighted intermediate of `radius > 0` has one denominator
-  per plane and cannot be transformed back).
-
-`rclip` goes through the same transform. `_NSSCFast` on the frame is 1 when
-the path ran. `_NSSGroups` counts the groups of the three planes.
-
-**Rounds.** A plane of the fast path behaves like a Gray clip and needs fewer
-rounds than the joint filter, so **`iters` defaults to 4 when the fast path
-applies** (12 otherwise; an explicit `iters` is always taken, and
-`_NSSIterations` reports the rounds that ran). Measured on the device plugin
-with the default geometry (DIV2K, 18 images, 256x256 crops, PSNR to the clean
-image), against the joint filter at its 12 rounds:
-
-| `cfast=1`, rounds | sigma 5 / 15 / 25 / 50 / 75 / 100 | Time |
+| Parameter | Default | Meaning |
 |---|---|---|
-| 3 | -0.01 / -0.05 / +0.02 / +0.21 / +0.37 / +0.44 dB | 0.17 |
-| 4 (default) | +0.14 / +0.15 / +0.20 / +0.29 / +0.40 / +0.46 dB | 0.22 |
-| 5 | +0.12 / +0.10 / +0.11 / +0.18 / +0.27 / +0.33 dB | 0.27 |
-| 8 | -0.15 / -0.26 / -0.27 / -0.28 / -0.19 / -0.10 dB | 0.43 |
-| 12 | -0.56 / -0.76 / -0.83 / -0.97 / -0.78 / -0.60 dB | 0.64 |
+| `device_id`, `num_streams`, `memory_limit_mb` | 0, 1, none | The GPU, the frames in flight, and a memory cap; see [shared arguments](README.md#shared-by-every-filter). |
+| `temporal_mode`, `rolling_chunk`, `rolling_cache_chunks`, `rolling_cache_limit` | `"rolling"`, 4, 1, 16 | What `radius > 0` returns (finished frames by default); see [temporal output](README.md#temporal-output). |
 
-At 4 rounds 15 of the 108 cases are below the joint filter, by up to 1.2 dB,
-most of them on one image (0.7 dB on average over its sigma levels);
-`cfast=0` keeps the joint result. With a smaller geometry the gap to the joint
-filter at the same arguments is larger: `block_size=4, block_step=4,
-group_size=32, search_window=20, iters=3` measured +1.79 / +2.97 / +3.52 /
-+4.27 dB at sigma 5 / 15 / 25 / 50. Filtering R, G and B alone, without the
-transform, measured 2 dB below the joint filter.
+## Notes
 
-**When it pays.** A group's dictionary has `min(rows, group_size)` atoms, with
-`rows = block_size^2` per channel. The fast path shrinks it only when
-`group_size` is larger than `block_size^2`; with a small group (for example
-`group_size=8`) the joint dictionary is no larger, and three planes are three
-times the groups, so `cfast=0` is the faster call there.
-
-On the device the transform and its inverse are one kernel each on the
-uploaded planes, and the three planes run one after the other on the
-instance's stream. RGB 1080p on an RTX 5080, `sigma=3`, `block_size=4,
-block_step=4, group_size=32, search_window=20`: 13.1 fps at `iters=2` and 8.8
-at `iters=3` with the fast path, 9.0 and 6.1 without (gray: 39 and 26 fps).
-The joint filter needs `group_size=64` to reach the same quality at that block
-size (3.9 and 2.7 fps). The default call on a 128x128 RGB frame takes 0.36 s
-with the fast path (4 rounds) and 1.6 s without; `block_step=8, group_size=8,
-iters=2` at 1080p runs at 33 fps with it and 36 without (see "When it pays").
-
-## Device parameters
-
-| Parameter | Default | Range | Meaning |
-|---|---|---|---|
-| `device_id` | 0 | device index | CUDA device the instance runs on. One instance uses one device; `core.nss_cuda.Backend(device_id)` reports whether it is supported. |
-| `num_streams` | 1 | [1, 16] | Frames (or temporal chunks) the instance has in flight on the device at once. Each stream owns its device buffers, so memory grows with it. |
-| `memory_limit_mb` | none | > 0 | Caps the instance's device and pinned host memory. The internal batches are fitted to it and the output does not change; a limit that cannot hold the streams is a creation error. Without it the filter takes what its plan needs. |
-| `temporal_mode` | `"rolling"` | rolling / legacy | With `radius > 0`: `"rolling"` returns finished, normal-height frames; `"legacy"` returns the fat intermediate, as the CPU plugin does; reduce it with `nss.VAggregate`. |
-| `rolling_chunk` | 4 | [1, 64] | Frames accumulated per rolling chunk. |
-| `rolling_cache_chunks` | 1 | [1, 64] | Finished chunks kept for later frame requests at first. Given alone, the cache stays at this size. |
-| `rolling_cache_limit` | 16 | [1, 64], >= `rolling_cache_chunks` | What the chunk cache may grow to: it keeps one more chunk each time two requests miss on chunks it dropped recently. Under `memory_limit_mb` it grows only into what the limit leaves. |
-
-How the streams, the memory limit and the rolling output behave across filters is in the [shared notes](README.md#shared-by-every-filter).
-
-## On the device
-
-- **Device-resident.** The blind noise estimate, the joint matching, the
-  per-group dictionary and ADMM solve, the aggregation and every round run on
-  the device.
-- **Temporal output.** The rolling mode (the default) runs every center of a
-  chunk on the device and adds the centers' slices there, in the order and
-  with the rule of `VAggregate`: the same frames as the legacy intermediate
-  reduced, bit for bit. A chunk that follows the one before it keeps the
-  window frames on the device (one upload a frame).
-  - 1080p `radius=1` with `block_step=8, group_size=8, iters=2`, one stream:
-    47.2 fps against 43.5 when the fat intermediate was reduced on the host
-    (`radius=2`: 32.8 against 29.3).
-  - The ring of 2R+1 source frames, the open sums and the frame being
-    finished cost 80 MiB of device memory at gray 1080p `radius=1`; the
-    smallest accepted `memory_limit_mb` is 531 MiB (428 for legacy output).
-  - Rolling frames carry the source's properties and the contribution
-    stamp, not the `_NSS*` diagnostics (as `nss.VAggregate`'s output).
-- **Numerics.** The dictionary comes from an FP32 eigendecomposition of the
-  Gram matrix of the smaller group side (Householder tridiagonalization,
-  then divide and conquer when the matrix is larger than 16 x 16 and
-  implicit QL otherwise; cyclic Jacobi on one warp when it is 12 x 12 to
-  16 x 16, as at `block_size=4`), and the solver runs in FP32 (FP64 was
-  measured and gave the same agreement with the CPU).
-  - The output is not bit-identical to the CPU, but is inside the 60 dB gate
-    (93–143 dB on the frozen references, 142 dB on the fast color path) and
-    run-to-run identical.
+- **Accuracy.** 93–143 dB against the CPU plugin on the reference set (142 dB
+  on the fast color path); identical from run to run. The solver runs in FP32
+  (FP64 gave the same agreement).
 - **Frame properties.** `_NSSSigma`, `_NSSGroups` and the shape properties
-  match the CPU. `_NSSADMMMaxIterGroups` counts this backend's own
-  non-converged groups; `_NSSSvdDoubleGroups` and `_NSSSylvesterResidual` are
-  CPU-solver diagnostics and are reported as 0.
-- **Speed.** The default settings remain very heavy (one 64x64
-  eigendecomposition per pixel position per round): about 0.29 s for a 128x128
-  frame on an RTX 5080 (0.36 s in RGB with 4 rounds; 1.6 s with `cfast=0`),
-  against about 190 s on 16 CPU threads. The fast call above (`block_step=8,
-  group_size=8, iters=2`) runs 1080p at about 97 fps in gray and 33 fps in RGB
-  (36 with `cfast=0`).
-- **Memory.** Besides its device buffers an instance keeps pinned host
-  staging for two frames in flight, so that one stream stays busy while
-  another thread copies; under a `memory_limit_mb` that leaves no room for
-  the second set it runs with one.
+  match the CPU. `_NSSADMMMaxIterGroups` counts this plugin's own
+  non-converged groups; `_NSSSvdDoubleGroups` and `_NSSSylvesterResidual`
+  describe the CPU solver and are 0 here.
+- **Temporal output** is bit for bit the legacy intermediate reduced by
+  `VAggregate`, and takes about 80 MiB more than legacy output at gray 1080p
+  `radius=1`.
 
 ## Pitfalls
 
-- The balanced default is a quality-first configuration, not a realtime one:
-  always check whether you actually want `block_step=1`.
+- The default is the fast geometry; for quality pass the larger group and
+  more rounds (see [Speed](#speed)).
 - `estimate_sigma` and explicit `sigma` are mutually exclusive (creation-time
   error).
 - `ps_num > group_size` is an error after resolution.

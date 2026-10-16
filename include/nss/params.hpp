@@ -85,16 +85,14 @@ inline constexpr float kMcwnnmDefaultSigma = 3.0f;
 inline constexpr int kMcwnnmDefaultIters = 2;
 inline constexpr float kMcwnnmDefaultDelta = 0.1f;
 
-// TWSC uses one stable, balanced geometry by default. Sigma controls the
-// denoising strength; callers can override these fields independently when
-// trading quality for speed.
+// TWSC's default is a fast geometry, the same for every noise level (sigma
+// sets the strength). The quality geometry of the paper's regime is
+// block_step=1, group_size=90 and 12 rounds (4 on the fast color path), at
+// thousands of times the cost; callers override the fields independently.
 inline constexpr int kTwscDefaultBlock = 8;
-inline constexpr int kTwscDefaultStep = 1;
-inline constexpr int kTwscDefaultGroup = 90;
-inline constexpr int kTwscDefaultIters = 12;
-// Rounds when cfast filters RGB plane by plane (twsc_color_split): a plane
-// behaves like a gray clip and over-smooths at the joint filter's 12.
-inline constexpr int kTwscDefaultCfastIters = 4;
+inline constexpr int kTwscDefaultStep = 8;
+inline constexpr int kTwscDefaultGroup = 8;
+inline constexpr int kTwscDefaultIters = 2;
 
 inline constexpr int kNcsrDefaultBlock = 8;
 inline constexpr int kNcsrDefaultStep = 8;
