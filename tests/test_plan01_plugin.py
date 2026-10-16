@@ -64,7 +64,8 @@ def evaluate(node, n=0):
     stats = frame.props.get("_NSSResourceBytes")
     if stats is not None:
         owned = sum(int(v) for v in stats[:5])
-        if owned > frame.props["_NSSResourceLimit"]:
+        limit = frame.props["_NSSResourceLimit"]  # 0: no limit
+        if limit and owned > limit:
             raise AssertionError("reported resource limit exceeded")
     return arrays, dict(frame.props)
 

@@ -40,8 +40,8 @@ page).
   the matching; denoising still applies to `clip`.
 - **`bm_range` and `search_window`**: `search_window = 2 * bm_range + 1`.
   TWSC and NLH accept either (not both); the others take `bm_range`.
-- **`memory_limit_mb`**: caps the filter's working memory. Exceeding it is an
-  error, never a silent change of output.
+- **`memory_limit_mb`**: caps the filter's working memory; without it there is
+  no cap. Exceeding it is an error, never a silent change of output.
 - **Frame properties**: NLH and TWSC stamp per-frame `_NSS*` properties (the
   resolved shapes, sigma, model version, solver statistics); the other filters
   stamp none.

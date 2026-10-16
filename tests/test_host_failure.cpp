@@ -101,7 +101,7 @@ bool run(int failure, bool workspace_failure, std::size_t limit, bool expect_err
         data.radius = 1; data.vi_out = data.vi; data.vi_out.height = 96;
         data.sigma[0] = .01f;
         data.block_step[0] = 8; data.bm_range[0] = 1;
-        if (rolling) { data.ws.set_serial(); roll.rolling_chunk = 2; roll.cache_limit = 1; }
+        if (rolling) { roll.rolling_chunk = 2; roll.cache_limit = 1; }
         new_calls = 0; new_failure = allocation_failure; count_new = true;
         const VSFrame* result = rolling
             ? nss::checked_frame<rollingGetFrame>(2, arAllFramesReady, &roll, nullptr, nullptr, nullptr, &api)

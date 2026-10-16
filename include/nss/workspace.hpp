@@ -24,8 +24,8 @@ public:
     // a derived exception) and preserves the old pointer, capacity and contents.
     // get(0) returns a stable non-null allocation; destruction frees all buffers.
     float* get(std::size_t floats);
-    // Call before the first request; the caller must serialize all get/use
-    // operations for a serial workspace (rolling's compute_mu does this).
+    // One buffer for every thread. Call before the first request; the caller
+    // must then serialize all get/use operations.
     void set_serial();
     std::size_t buffer_count() const;
 

@@ -22,10 +22,12 @@
 
 #include <algorithm>
 #include <array>
+#include <condition_variable>
 #include <cstring>
 #include <list>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -528,13 +530,18 @@ struct RollingCarry {
     std::array<nss::ResourceVector<float>, 3> sums;
 };
 
+// Chunks are computed concurrently, each once: a thread that asks for a chunk
+// another thread is computing waits for it. A chunk that follows the last one
+// finished takes that chunk's carry when it starts (the same sums as running
+// the centers again), otherwise it starts afresh.
 struct RollingData {
     Bm3dData bm;
     int rolling_chunk = 4;
     int cache_limit = 1;
-    std::mutex cache_mu;
-    std::mutex compute_mu;
-    std::unique_ptr<RollingCarry> carry;  // guarded by compute_mu
+    std::mutex cache_mu;  // guards cache, computing and carry
+    std::condition_variable computed;
+    std::set<int> computing;
+    std::unique_ptr<RollingCarry> carry;
     std::list<std::shared_ptr<const RollingChunkStore>> cache;
 };
 
@@ -579,8 +586,9 @@ void rolling_write_plane(float* dst, int dstride, const RollingPlane& plane) {
 // CBM3D chunk: per center one pass that matches on plane 0 and filters the
 // active planes, each plane's contributions added to its target frames in
 // ascending center order (as legacy + VAggregate).
-void rolling_fill_chunk_chroma(RollingData* d, RollingChunkStore& store, int start, int count,
-                               VSFrameContext* frameCtx, const VSAPI* vsapi) {
+std::unique_ptr<RollingCarry> rolling_fill_chunk_chroma(RollingData* d, RollingChunkStore& store, int start, int count,
+                                                       const RollingCarry* carry, VSFrameContext* frameCtx,
+                                                       const VSAPI* vsapi) {
     nss::FrameScope frames_owned(vsapi);
     auto& bm = d->bm;
     const int r = bm.radius, ntemp = 2 * r + 1, nframes = bm.vi.numFrames;
@@ -594,7 +602,7 @@ void rolling_fill_chunk_chroma(RollingData* d, RollingChunkStore& store, int sta
     // As rolling_fill_chunk_carried: a ring of 2r + 1 target frames per
     // channel, carried on from the chunk before and left for the one behind.
     const int last = nss::host_detail::temporal_last(start + count - 1, r, nframes);
-    const RollingCarry* from = nch && d->carry && d->carry->start == start ? d->carry.get() : nullptr;
+    const RollingCarry* from = nch ? carry : nullptr;
     const int first = from ? nss::host_detail::temporal_last(start - 1, r, nframes) + 1 : std::max(0, start - r);
     const int carry_first = start + count;
     const int carry_targets = nch ? std::max(0, std::min(last + r, nframes - 1) - carry_first + 1) : 0;
@@ -710,7 +718,7 @@ void rolling_fill_chunk_chroma(RollingData* d, RollingChunkStore& store, int sta
             }
         }
     }
-    d->carry = std::move(next);
+    return next;
 }
 
 #if NSS_BM_RING
@@ -719,13 +727,13 @@ void rolling_fill_chunk_chroma(RollingData* d, RollingChunkStore& store, int sta
 // the first of them ran in this chunk or in the one before: a chunk that
 // follows the last one computed starts behind that chunk's centers with the
 // sums it left, and every chunk leaves the sums of the frames behind it.
-void rolling_fill_chunk_carried(RollingData* d, RollingChunkStore& store, int start, int count,
-                                VSFrameContext* frameCtx, const VSAPI* vsapi) {
+std::unique_ptr<RollingCarry> rolling_fill_chunk_carried(RollingData* d, RollingChunkStore& store, int start,
+                                                        int count, const RollingCarry* from, VSFrameContext* frameCtx,
+                                                        const VSAPI* vsapi) {
     nss::FrameScope frames_owned(vsapi);
     auto& bm = d->bm;
     const int r = bm.radius, ntemp = 2 * r + 1, nframes = bm.vi.numFrames, np = bm.vi.format.numPlanes;
     const int last = nss::host_detail::temporal_last(start + count - 1, r, nframes);
-    const RollingCarry* from = d->carry && d->carry->start == start ? d->carry.get() : nullptr;
     const int first = from ? nss::host_detail::temporal_last(start - 1, r, nframes) + 1 : std::max(0, start - r);
     const int carry_first = start + count;
     const int carry_targets = std::max(0, std::min(last + r, nframes - 1) - carry_first + 1);
@@ -839,26 +847,26 @@ void rolling_fill_chunk_carried(RollingData* d, RollingChunkStore& store, int st
             }
         }
     }
-    d->carry = std::move(next);
+    return next;
 }
 #endif
 
-bool rolling_fill_chunk(RollingData* d, RollingChunkStore& store, int start, int count, VSFrameContext* frameCtx,
-                        VSCore* core, const VSAPI* vsapi) {
-    (void)core;
+// Fills `store` with the chunk [start, start + count) and returns the sums it
+// leaves for the chunk behind it. `carry` holds those of the chunk before it
+// (or is null).
+std::unique_ptr<RollingCarry> rolling_fill_chunk(RollingData* d, RollingChunkStore& store, int start, int count,
+                                                 const RollingCarry* carry, VSFrameContext* frameCtx,
+                                                 const VSAPI* vsapi) {
+    (void)carry;
     nss::FrameScope frames_owned(vsapi);
     auto& bm=d->bm;
     const int r=bm.radius, ntemp=2*r+1, nframes=bm.vi.numFrames, np=bm.vi.format.numPlanes;
     store.start=start; store.count=count;
     store.frames.assign(count,RollingFrameStore{});
     for(auto& frame:store.frames) frame.planes.resize(np);
-    if (bm.chroma) {
-        rolling_fill_chunk_chroma(d, store, start, count, frameCtx, vsapi);
-        return true;
-    }
+    if (bm.chroma) return rolling_fill_chunk_chroma(d, store, start, count, carry, frameCtx, vsapi);
 #if NSS_BM_RING
-    rolling_fill_chunk_carried(d, store, start, count, frameCtx, vsapi);
-    return true;
+    return rolling_fill_chunk_carried(d, store, start, count, carry, frameCtx, vsapi);
 #endif
     // One center's fat plus target chunk accumulators, never all centers' fats.
     for(int plane=0;plane<np;++plane) {
@@ -951,7 +959,7 @@ bool rolling_fill_chunk(RollingData* d, RollingChunkStore& store, int start, int
             frames_owned.freeFrame(frame);
         }
     }
-    return true;
+    return nullptr;
 }
 
 const VSFrame* VS_CC rollingGetFrame(int n, int activationReason, void* instanceData, void** frameData,
@@ -982,44 +990,58 @@ const VSFrame* VS_CC rollingGetFrame(int n, int activationReason, void* instance
         return nullptr;
     }
 
+    std::shared_ptr<const RollingChunkStore> result;
+    std::unique_ptr<RollingCarry> carry;
+    {
+        std::unique_lock<std::mutex> lock(d->cache_mu);
+        for (;;) {
+            if (auto hit = rolling_find_chunk(d, start)) {
+                rolling_touch_chunk(d, start);
+                result = std::move(hit);
+                break;
+            }
+            if (!d->computing.count(start)) break;
+            d->computed.wait(lock);  // another thread is computing this chunk
+        }
+        if (!result) {
+            d->computing.insert(start);
+            if (d->carry && d->carry->start == start) carry = std::move(d->carry);
+        }
+    }
+    if (!result) {
+        // Whatever happens, the chunk is no longer being computed afterwards.
+        struct Computing {
+            RollingData* d;
+            int start;
+            ~Computing() {
+                {
+                    std::lock_guard<std::mutex> guard(d->cache_mu);
+                    d->computing.erase(start);
+                }
+                d->computed.notify_all();
+            }
+        } computing{d, start};
+        auto chunk_account = nss::make_resource_account(nss::ResourceKind::Inflight);
+        nss::ResourceScope chunk_scope(d->bm.budget, chunk_account);
+        auto computed = std::allocate_shared<RollingChunkStore>(nss::ResourceAllocator<RollingChunkStore>{});
+        auto next = rolling_fill_chunk(d, *computed, start, count, carry.get(), frameCtx, vsapi);
+        carry.reset();
+        std::lock_guard<std::mutex> guard(d->cache_mu);
+        d->cache.push_front(computed);
+        if (computed->account) computed->account->retag(nss::ResourceKind::Cached);
+        result = std::move(computed);
+        while (static_cast<int>(d->cache.size()) > d->cache_limit) {
+            if (d->cache.back()->account) d->cache.back()->account->retag(nss::ResourceKind::Pinned);
+            d->cache.pop_back();
+        }
+        // Keep the carry of the furthest chunk: the one behind it is the next asked for in order.
+        if (next && (!d->carry || next->start > d->carry->start)) d->carry = std::move(next);
+    }
+
     const VSFrame* srcn = frames_owned.getFrameFilter(n, d->bm.node, frameCtx);
     VSFrame* dst = frames_owned.newVideoFrame(&d->bm.vi.format, d->bm.vi.width, d->bm.vi.height, srcn, core);
     nss::stamp_contribution(dst, 0, n, nss::Model::BM3D, vsapi);
     frames_owned.freeFrame(srcn);
-
-    std::shared_ptr<const RollingChunkStore> result;
-    {
-        std::lock_guard<std::mutex> guard(d->cache_mu);
-        if (auto hit = rolling_find_chunk(d, start)) {
-            rolling_touch_chunk(d, start);
-            result = std::move(hit);
-        }
-    }
-    if (!result) {
-        std::lock_guard<std::mutex> compute(d->compute_mu);
-        {
-            std::lock_guard<std::mutex> guard(d->cache_mu);
-            if (auto hit = rolling_find_chunk(d, start)) {
-                rolling_touch_chunk(d, start);
-                result = std::move(hit);
-            }
-        }
-        if (!result) {
-            auto chunk_account = nss::make_resource_account(nss::ResourceKind::Inflight);
-            nss::ResourceScope chunk_scope(d->bm.budget, chunk_account);
-            auto computed = std::allocate_shared<RollingChunkStore>(nss::ResourceAllocator<RollingChunkStore>{});
-            rolling_fill_chunk(d, *computed, start, count, frameCtx, core, vsapi);
-            std::lock_guard<std::mutex> guard(d->cache_mu);
-            d->cache.push_front(computed);
-            if (computed->account) computed->account->retag(nss::ResourceKind::Cached);
-            result = std::move(computed);
-            while (static_cast<int>(d->cache.size()) > d->cache_limit) {
-                if (d->cache.back()->account) d->cache.back()->account->retag(nss::ResourceKind::Pinned);
-                d->cache.pop_back();
-            }
-        }
-    }
-
     const RollingFrameStore& local = result->frames[static_cast<std::size_t>(n - result->start)];
     for (int plane = 0; plane < d->bm.vi.format.numPlanes; ++plane) {
         const int dstride = static_cast<int>(frames_owned.getStride(dst, plane) / sizeof(float));
@@ -1085,7 +1107,6 @@ VSNode* create_rolling_bm3d(const VSMap* in, VSCore* core, const VSAPI* vsapi, V
         release_bm3d_nodes(d->bm, vsapi);
         return nullptr;
     };
-    d->bm.ws.set_serial();
     d->bm.vi_out = d->bm.vi;
     VSFilterDependency deps[2]{{d->bm.node, rpGeneral}, {d->bm.ref, rpGeneral}};
     const int ndeps = d->bm.ref ? 2 : 1;

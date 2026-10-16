@@ -30,7 +30,7 @@ inline void validate_group_planes(const VSVideoInfo& vi, const float* sigma, int
 bool validate_numeric_args(const VSAPI* vsapi, const VSMap* in, VSMap* out);
 
 // DefaultMb is the budget when memory_limit_mb is not given; 0 means no limit.
-template <auto Create, int DefaultMb = 1024>
+template <auto Create, int DefaultMb = 0>
 void VS_CC checked_create(const VSMap* in, VSMap* out, void* user_data, VSCore* core, const VSAPI* vsapi) {
     try {
         if (!validate_numeric_args(vsapi, in, out)) return;

@@ -103,7 +103,8 @@ def validate_resources(properties):
     peak, limit = properties['_NSSResourcePeak'], properties['_NSSResourceLimit']
     if not isinstance(counts, list) or len(counts) != 6 or any(not isinstance(n, int) or n < 0 for n in counts):
         raise AssertionError('invalid resource byte counters')
-    if not isinstance(peak, int) or not isinstance(limit, int) or not 0 <= peak <= limit or limit <= 0:
+    # A limit of 0 means none was set.
+    if not isinstance(peak, int) or not isinstance(limit, int) or peak < 0 or limit < 0 or (limit and peak > limit):
         raise AssertionError('resource peak exceeds the recorded budget')
     if sum(counts[:-1]) > peak:  # Framework references are reported but not owned.
         raise AssertionError('owned resource bytes exceed the recorded peak')
