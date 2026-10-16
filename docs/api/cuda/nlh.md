@@ -1,16 +1,27 @@
 # nss_cuda.NLH
 
-Non-local Haar transform denoising on the device: given or blind sigma, Gray / YUV / RGB, spatial and temporal.
+Non-local Haar transform denoising on the device: given or blind sigma, Gray /
+YUV / RGB, spatial and temporal.
 
-Every argument is described on this page. The algorithm, the paper and the
-reasoning behind the defaults are on the CPU page, [`nss.NLH`](../nlh.md); the
-model and the defaults are the same on both plugins.
+Algorithm, paper and the reasoning behind the defaults: [`nss.NLH`](../nlh.md).
 
 ```python
 out = core.nss_cuda.NLH(clip)                          # blind estimation
 awgn = core.nss_cuda.NLH(clip, sigma=25)               # explicit sigma
 custom = core.nss_cuda.NLH(clip, sigma=25, block_size=[6, 9], block_step=[3, 6])
 ```
+
+## Speed
+
+1080p, default arguments, RTX 5080, one instance; median over nine test images
+(see the [overview](README.md#speed)).
+
+| Call | YUV420 | RGB |
+|---|---:|---:|
+| default (blind sigma) | 37 | 31 |
+| `radius=1` | 13 | 13 |
+
+The blind estimate is a matching pass per frame; give `sigma` when it is known.
 
 ## Signature
 
@@ -89,49 +100,24 @@ Each output frame stamps `_NSSSigma`, `_NSSBlockSize`, `_NSSBlockStep`,
 `_NSSWienerSigmaScale`, and `_NSSModelVersion=6` — the resolved values actually
 executed, so blind runs can be audited per frame.
 
-## Device parameters
+## Device and temporal parameters
 
-| Parameter | Default | Range | Meaning |
-|---|---|---|---|
-| `device_id` | 0 | device index | CUDA device the instance runs on. One instance uses one device; `core.nss_cuda.Backend(device_id)` reports whether it is supported. |
-| `num_streams` | 1 | [1, 16] | Frames (or temporal chunks) the instance has in flight on the device at once. Each stream owns its device buffers, so memory grows with it. |
-| `memory_limit_mb` | none | > 0 | Caps the instance's device and pinned host memory. The internal batches are fitted to it and the output does not change; a limit that cannot hold the streams is a creation error. Without it the filter takes what its plan needs. |
-| `temporal_mode` | `"rolling"` | rolling / legacy | With `radius > 0`: `"rolling"` returns finished, normal-height frames; `"legacy"` returns the fat intermediate, as the CPU plugin does; reduce it with `nss.VAggregate`. |
-| `rolling_chunk` | 4 | [1, 64] | Frames accumulated per rolling chunk. |
-| `rolling_cache_chunks` | 1 | [1, 64] | Finished chunks kept for later frame requests at first. Given alone, the cache stays at this size. |
-| `rolling_cache_limit` | 16 | [1, 64], >= `rolling_cache_chunks` | What the chunk cache may grow to: it keeps one more chunk each time two requests miss on chunks it dropped recently. Under `memory_limit_mb` it grows only into what the limit leaves. |
+| Parameter | Default | Meaning |
+|---|---|---|
+| `device_id`, `num_streams`, `memory_limit_mb` | 0, 1, none | The GPU, the frames in flight, and a memory cap; see [shared arguments](README.md#shared-by-every-filter). |
+| `temporal_mode`, `rolling_chunk`, `rolling_cache_chunks`, `rolling_cache_limit` | `"rolling"`, 4, 1, 16 | What `radius > 0` returns (finished frames by default); see [temporal output](README.md#temporal-output). |
 
-How the streams, the memory limit and the rolling output behave across filters is in the [shared notes](README.md#shared-by-every-filter).
+## Notes
 
-## On the device
-
-- **Device-resident.** The whole frame pipeline runs on the device: the
-  RGB/YUV conversion, the blind noise estimate, every Basic round over the
-  request window, the Wiener round and the per-pixel aggregation.
-- **Temporal output.** The rolling mode (the default) runs every center of a
-  chunk on the device and adds the centers' slices there, in the order and
-  with the rule of `VAggregate`: the same frames as the legacy intermediate
-  reduced, bit for bit. A chunk that follows the one before it keeps the
-  window frames on the device (one upload a frame).
-  - 1080p `radius=1`, `sigma=3`, one stream: 28.5 fps against 27.0 when the
-    fat intermediate was reduced on the host (`radius=2`: 17.0 against 16.2).
-  - The ring of 2R+1 source frames, the open sums and the frame being
-    finished cost 80 MiB of device memory at gray 1080p `radius=1`; the
-    smallest accepted `memory_limit_mb` is 602 MiB (499 for legacy output).
-  - Rolling frames carry the source's properties and the contribution
-    stamp, not the `_NSS*` diagnostics (as `nss.VAggregate`'s output).
-- **Frame properties.** The `_NSS*` diagnostics match the CPU; `_NSSSigma` of
-  a blind estimate agrees to float precision.
-- **Numerics.** Matching, pixel selection, the Haar transform and the
-  thresholds follow the CPU model. The filtered values are summed in fixed
-  point (exact sums of values rounded to 2^-22, or 2^-21 for blocks above
-  8 x 8) where the CPU sums in FP64.
-  - The blind noise statistic and the Wiener gain are computed with pairs of
-    FP32 values (about 48 significant bits) in place of the CPU's FP64.
-  - The output is not bit-identical to the CPU, but is inside the 60 dB gate
-    (82–100 dB on the frozen references; the differences are coefficients
-    that fall on the other side of the hard threshold).
-  - The output is run-to-run identical.
+- **Accuracy.** 82–100 dB against the CPU plugin on the reference set (the
+  differences are coefficients on the other side of the hard threshold);
+  identical from run to run. The `_NSS*` properties match the CPU, and a
+  blind `_NSSSigma` agrees to float precision.
+- **Temporal output** is bit for bit the legacy intermediate reduced by
+  `VAggregate`. Its frames carry the source's properties, not the `_NSS*`
+  diagnostics (as `VAggregate`'s output does).
+- **Memory.** Rolling output takes about 80 MiB more than legacy output at
+  gray 1080p `radius=1`.
 
 ## Pitfalls
 

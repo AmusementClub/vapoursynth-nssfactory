@@ -21,7 +21,9 @@ core.nss.BM3D(clip clip[, clip ref, float[] sigma = 3.0, int[] block_size = 8,
               int[] group_size = 8, int[] block_step, int[] bm_range = 7,
               int radius = 0, int[] ps_num, int[] ps_range = 4, int chroma = 0,
               int final = 0, float[] sigma_basic, int[] block_size_basic,
-              int[] group_size_basic, int memory_limit_mb])
+              int[] group_size_basic, string temporal_mode = "legacy",
+              int rolling_chunk = 4, int rolling_cache_chunks, int rolling_cache_limit,
+              int memory_limit_mb])
 ```
 
 Array-typed parameters take one value per plane; a single value broadcasts.
@@ -37,7 +39,7 @@ Omitted `block_step` adapts to `min(8, block_size)` per plane; omitted
 | `block_step` | min(8, block) | [1, block] | Stride between reference patches. Halving it roughly quadruples positions (2D) — the main quality/speed trade. |
 | `group_size` | 8 | {1,2,4,8,16,32,64} | Maximum patches per 3D stack. More matches help at high noise; marginal at low noise. |
 | `bm_range` | 7 | [1, 64] | Search window radius (`window = 2*bm_range + 1`). Cost grows quadratically; motion/texture may justify a larger window. |
-| `radius` | 0 | [0, 16] | Temporal radius in frames. >0 switches output to the weighted intermediate for `VAggregate`. |
+| `radius` | 0 | [0, 16] | Temporal radius. >0 returns the weighted intermediate for `VAggregate`, or finished frames with `temporal_mode="rolling"` ([Temporal output](README.md#temporal-output)). |
 | `ref` | none | clip | External reference clip guiding both stages' matching (paper-style two-stage usage). |
 | `chroma` | 0 | {0, 1} | CBM3D for YUV 4:4:4 clips: groups are matched on plane 0 only (of `ref` when given) and all three planes are filtered with them. See "Color (CBM3D)". |
 
@@ -47,6 +49,7 @@ Omitted `block_step` adapts to `min(8, block_size)` per plane; omitted
 |---|---|---|---|
 | `ps_num` | min(2, group) | [1, group] | Predictive-search seeds kept per temporal step (only used with `radius > 0`). |
 | `ps_range` | 4 | [1, 64] | Predictive-search window radius around each seed (temporal mode). |
+| `temporal_mode`, `rolling_chunk`, `rolling_cache_chunks`, `rolling_cache_limit` | `"legacy"`, 4, 1, 1 | — | What `radius > 0` returns: see [Temporal output](README.md#temporal-output). |
 | `memory_limit_mb` | none | — | Workspace cap; fails instead of degrading. |
 
 ## Both stages in one call (`final`)
@@ -122,7 +125,8 @@ dominant cost driver is `block_step` (positions scale as `1/step^2`), then
 ## Pitfalls
 
 - With `radius > 0` the output is a **taller intermediate**, not a viewable
-  frame — pipe it through `core.nss.VAggregate(out, clip, radius=radius)`.
+  frame: pipe it through `core.nss.VAggregate(out, clip, radius=radius)`, or
+  use `temporal_mode="rolling"`.
 - `sigma` is in 8-bit units even though the clip is float32; 25 means the
   usual "25/255" noise.
 - Array parameters are per-plane: `block_size=[8,16]` is legal on YUV.

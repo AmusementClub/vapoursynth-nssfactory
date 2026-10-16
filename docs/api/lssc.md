@@ -25,7 +25,7 @@ core.nss.LSSC(clip clip[, float[] sigma = 3.0, int block_size = 8,
 | `sigma` | 3.0 | >= 0 | 8-bit noise stddev per plane. Drives the sparse-coding regularization. `sigma=0` bypasses the plane. |
 | `block_size` | 8 | {1,2,4,8,16} | Patch edge (power-of-two family only). Dictionary dimension is `block^2`. |
 | `block_step` | 8 | [1, block] | Reference-patch stride; positions scale as `1/step^2`. The main quality/speed trade. |
-| `radius` | 0 | [0, 16] | Temporal radius. >0 returns the weighted intermediate for `VAggregate`. |
+| `radius` | 0 | 0 only | Kept for the common signature: LSSC has no temporal mode, and `radius > 0` is rejected. |
 
 ## Secondary parameters
 

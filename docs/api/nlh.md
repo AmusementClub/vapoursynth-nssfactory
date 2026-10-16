@@ -24,7 +24,8 @@ core.nss.NLH(clip clip[, float[] sigma, string noise_model = "auto",
              int ps_num = 2, int ps_range = 4, int[] q, clip rclip = None,
              int basic_iters, float lambda_basic, float hard_strength,
              int wiener_iters, float wiener_sigma_scale,
-             int memory_limit_mb])
+             string temporal_mode = "legacy", int rolling_chunk = 4,
+             int rolling_cache_chunks, int rolling_cache_limit, int memory_limit_mb])
 ```
 
 ## Primary parameters
@@ -38,7 +39,7 @@ core.nss.NLH(clip clip[, float[] sigma, string noise_model = "auto",
 | `group_size` | [16, 16] | {2,4,8,16,32,64} | Pixel-matrix size per group (power of two). |
 | `search_window` | preset | [1, 129] | Matching window per stage. `bm_range=r` means `2r+1` on both stages; passing both is an error. |
 | `q` | preset | {2,4,8,16}, q <= block^2 | Haar coefficient rows kept per group (power of two). |
-| `radius` | 0 | [0, 16] | Temporal radius. >0 returns the weighted intermediate for `VAggregate`. |
+| `radius` | 0 | [0, 16] | Temporal radius. >0 returns the weighted intermediate for `VAggregate`, or finished frames with `temporal_mode="rolling"` ([Temporal output](README.md#temporal-output)). |
 | `rclip` | none | clip | Reference clip guiding matching. |
 
 ### Preset (resolved when fields are omitted)
@@ -78,6 +79,7 @@ values above remain the better choice.
 | `hard_strength` | preset | >= 0 | Scales the linear Basic threshold `2.025 * hard_strength * sigma_channel`. |
 | `wiener_sigma_scale` | preset | >= 0 | Noise scale inside the Wiener gain `r^2 / (r^2 + noise)`. |
 | `ps_num` / `ps_range` | 2 / 4 | [1,min(group)] / [1,64] | Predictive temporal search (`radius > 0`). |
+| `temporal_mode`, `rolling_chunk`, `rolling_cache_chunks`, `rolling_cache_limit` | `"legacy"`, 4, 1, 1 | — | What `radius > 0` returns: see [Temporal output](README.md#temporal-output). |
 | `memory_limit_mb` | none | — | Workspace cap; fails instead of degrading. |
 
 ## Diagnostics

@@ -1,180 +1,77 @@
 # vapoursynth-nssfactory
 
-A work-in-progress VapourSynth factory for classical NSS (non-local self-similarity) denoisers — NLM, BM3D, WNNM, MCWNNM, TWSC, NLH, NCSR, LSSC — honoring the pre-AI era of these algorithms.
+VapourSynth plugins for the classical non-local self-similarity (NSS)
+denoisers — BM3D, NLM, WNNM, MCWNNM, NCSR, LSSC, TWSC and NLH — implemented
+from their papers, with reproducible numerics.
 
-CPU plugin `libnss.so` / `libnss.dylib`, namespace `nss`. Linux x86-64 (AVX2 minimum), plus native AArch64/arm64 NEON builds in the recorded release matrix. Constant Gray / YUV / RGB 32-bit float clips only.
+| Plugin | Namespace | Runs on |
+|---|---|---|
+| `libnss` | `nss` | CPU: x86-64 with AVX2 or newer (Linux, Windows), arm64 with NEON (macOS, Linux) |
+| `libnss_cuda` | `nss_cuda` | NVIDIA GPUs of compute capability 7.5 or newer (Linux, Windows) |
 
-This project is WIP. Qualified NEON preview builds pass the release gates on Ubuntu 24.04 / GCC 15 / AArch64 and macOS 27 / M4 Max / arm64 with VapourSynth R75. CUDA and Vulkan are future routes.
+Both plugins take the same arguments and give the same results (the GPU
+within 60 dB PSNR of the CPU). Input is constant-format 32-bit float Gray, YUV
+or RGB. The project is a work in progress.
 
-The current source additionally uses mixed-precision LSSC OMP by default: FP32 correlation screening, ordered FP64 refinement, and the existing FP64 solve/residual. Published preview packages predate this change.
+## Filters
 
-On supported Apple ARM builds, LSSC reconstruction can select an opt-in SME matrix leaf for eligible long products. Packing, transpose and ordinary SIMD fallback use Highway; only the 27-line FP32 ZA outer-product leaf uses Arm ACLE intrinsics. `Backend()` keeps reporting the Highway target and additionally reports `lssc_sme_compiled` / `lssc_sme_available`; availability does not mean every shape uses SME. Enable with `-DNSS_ENABLE_LSSC_SME=ON` for the isolated SME candidate; the default is the Highway-only path. Published preview packages predate this change.
+| Filter | Method | Good for |
+|---|---|---|
+| [BM3D](docs/api/bm3d.md) | Block matching and 3D transform shrinkage; color (CBM3D) and two-stage modes | General use; the fastest |
+| [NLM](docs/api/nlm.md) | Non-local means | Light noise |
+| [WNNM](docs/api/wnnm.md) | Weighted nuclear norm minimization | Texture and edge retention |
+| [MCWNNM](docs/api/mcwnnm.md) | Multi-channel WNNM | RGB color noise |
+| [NCSR](docs/api/ncsr.md) | Nonlocally centralized sparse representation | Sparse-coding quality at moderate cost |
+| [LSSC](docs/api/lssc.md) | Learned simultaneous sparse coding | Structured noise, film grain |
+| [TWSC](docs/api/twsc.md) | Trilateral weighted sparse coding | Real-world noise |
+| [NLH](docs/api/nlh.md) | Non-local Haar transform with blind noise estimation | Real-world noise of unknown level |
 
 ## Usage
 
-See the [API guide](docs/api/README.md) for per-filter parameters, defaults,
-measured cost tiers and pitfalls.
-The CUDA plugin (`nss_cuda`) is documented in the
-[CUDA reference](docs/api/cuda/README.md).
-
 ```python
-core.nss.NLM(clip clip[, int d = 1, int a = 2, int s = 4, float h = 1.2, string channels = "AUTO", int wmode = 0, float wref = 1.0, clip rclip = None])
+import vapoursynth as vs
+core = vs.core
 
-core.nss.BM3D(clip clip[, clip ref, float[] sigma = 3.0, int[] block_size = 8, int[] group_size = 8, int[] block_step, int[] bm_range = 7, int radius = 0, int[] ps_num, int[] ps_range = 4, int chroma = 0, int final = 0, float[] sigma_basic, int[] block_size_basic, int[] group_size_basic])
-
-core.nss.WNNM(clip clip[, float[] sigma = 3.0, int block_size = 8, int block_step = 8, int group_size = 8, int bm_range = 7, int radius = 0, int ps_num = 2, int ps_range = 4, int residual = 0, int adaptive_aggregation = 1, clip rclip = None])
-
-core.nss.MCWNNM(clip clip[, float[] sigma = 3.0, int block_size = 8, int block_step = 8, int group_size = 8, int bm_range = 7, int radius = 0, int ps_num = 2, int ps_range = 4, int residual = 1, int adaptive_aggregation = 0, clip rclip = None, int admm_iter = 10, float rho = 3.0, float mu = 1.001, int iters = 2, float delta = 0.1])
-
-core.nss.TWSC(clip clip[, float[] sigma = 3.0, int estimate_sigma = 0, int block_size = 8, int block_step = 1, int group_size = 90, int search_window = 60, int bm_range, int radius = 0, int ps_num = 2, int ps_range = 4, float lambda2 = 1.0, clip rclip = None, int iters = 12 (4 with cfast), float delta = 0.0, int admm_iter = 10, float rho = 0.5, float mu = 1.1, float tol = 1e-6, int cfast = 1, int memory_limit_mb])
-
-core.nss.NLH(clip clip[, float[] sigma, string noise_model = "auto", int[] block_size, int[] block_step, int[] group_size, int[] search_window, int bm_range, int radius = 0, int ps_num = 2, int ps_range = 4, int[] q, clip rclip = None, int basic_iters, float lambda_basic, float hard_strength, int wiener_iters, float wiener_sigma_scale, int memory_limit_mb])
-
-core.nss.NCSR(clip clip[, float[] sigma = 3.0, int block_size = 8, int block_step = 8, int group_size = 8, int bm_range = 7, int radius = 0, int ps_num = 2, int ps_range = 4, clip rclip = None, int iters = 2, float delta = 0.1])
-
-core.nss.LSSC(clip clip[, float[] sigma = 3.0, int block_size = 8, int block_step = 8, int radius = 0])
-
-core.nss.VAggregate(clip clip, clip src[, int radius = 0, int[] planes])
-
-core.nss.Version()  # returns version:data
+clip = core.resize.Bicubic(src, format=vs.YUV420PS)   # 32-bit float input
+out = core.nss.BM3D(clip, sigma=5)                    # CPU
+out = core.nss_cuda.BM3D(clip, sigma=5)               # GPU, same arguments
+out = core.nss_cuda.WNNM(clip, sigma=5, radius=1)     # temporal
 ```
 
-With `radius = 0`, a temporal filter returns a normal-height spatial result. With `radius > 0` it returns
-the weighted intermediate for an explicit `VAggregate` call. LSSC has no temporal mode.
+- `sigma` is the noise standard deviation in 8-bit units (5 means 5/255).
+  NLH estimates it when it is omitted.
+- With `radius > 0` a filter is temporal. The GPU plugin returns finished
+  frames. The CPU plugin returns an intermediate for `core.nss.VAggregate`,
+  or finished frames with `temporal_mode="rolling"`.
 
-BM3D accepts `block_size` values 1, 2, 4, 8, 12, 16, and 32. The 12-point path is intended for
-high-noise DCT profiles; 8 remains the general-purpose default.
+## Documentation
 
-NLM currently supports `wmode=0` (Welsch) only.
+- [CPU API guide](docs/api/README.md): every filter's arguments, defaults,
+  paper and speed.
+- [CUDA reference](docs/api/cuda/README.md): the GPU plugin, its extra
+  arguments and its speed at 1080p.
+- [Building](docs/api/building.md): build options, platforms and
+  reproducibility.
 
-TWSC implements the complete three-weight ADMM objective; NLH uses iterative
-Basic/Wiener filtering with a calibrated linear threshold. Both take sigma as
-an 8-bit noise standard deviation. TWSC uses one balanced default
-(`block_size=8`, `block_step=1`, `group_size=90`, `iters=12`) across noise
-levels; sigma controls denoising strength rather than changing the compute
-geometry. With `cfast=1` (the default) an RGB clip whose channels share one
-given sigma is filtered as three opponent-color planes instead of as stacked
-three-channel patches, with 4 rounds unless `iters` is given (spatial frames
-only; `cfast=0` keeps the joint filter, see `docs/api/twsc.md`). NLH estimates noise when `sigma` is omitted, and any other omitted
-field falls back to one measured preset (the same for every format and
-noise level); explicit fields override only that field. Explicit `sigma=0` preserves that
-input plane. `bm_range=r` explicitly means `search_window=2*r+1`; supplying
-both is an error. See the API guide pages for [TWSC](docs/api/twsc.md) and
-[NLH](docs/api/nlh.md) for the full parameter and model details.
-
-## Compilation
-
-CMake ≥ 3.24, C++20, VapourSynth API4 headers. [Highway](https://github.com/google/highway) 1.4.0 is fetched at configure time.
+## Building
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release            # add -DNSS_ENABLE_CUDA=ON for the GPU plugin
 cmake --build build -j
 ```
 
-The first TWSC SVD-library milestone is opt-in and experimental. Set
-`-DNSS_ENABLE_SVD_LIBRARY=ON` only with an LP64 LAPACKE/DGESDD provider; CMake
-probes the header, symbols, `lapack_int` width and column-major ABI, then builds
-the isolated `test_twsc_svd_library` target. Automatic TWSC dispatch remains
-disabled while provider threading and resource bounds are being qualified.
-
-Install `libnss.so` into the VapourSynth plugin directory.
-
-### CUDA plugin
-
-`-DNSS_ENABLE_CUDA=ON` also builds `libnss_cuda` (namespace `nss_cuda`). It
-needs nvcc from CUDA 12.4 or newer; Windows builds use nvcc with MSVC `cl.exe`.
-All eight denoisers are available under the same arguments as `nss`, plus
-`device_id` and `num_streams`; with `radius > 0` they return finished frames
-by default, aggregated on the device. `VAggregate` is the CPU plugin's alone:
-`nss.VAggregate` reduces the device's `temporal_mode="legacy"` output. The
-[CUDA reference](docs/api/cuda/README.md) has the arguments, the temporal
-output, memory, numerics, driver requirements and measured speed.
-
-- **Default architectures:** native code for sm_75, sm_86, sm_89 and sm_120,
-  plus compute_75 PTX. Toolkits older than 12.8 cannot target sm_120, so RTX 50
-  GPUs run that PTX through the driver JIT.
-- **Other sm_75+ GPUs:** they also run the PTX through the driver JIT, which is
-  untested and best effort. JIT only works when the driver supports at least
-  the CUDA version the plugin was built with.
-- **Faster single-GPU builds:** set `-DNSS_CUDA_ARCHITECTURES=120-real`, for
-  example.
-
-`-DNSS_BUILD_CPU=OFF` configures only the CUDA plugin, without Highway or the
-CPU kernels and tests.
-
-```bash
-cmake -S . -B build-cuda -DCMAKE_BUILD_TYPE=Release -DNSS_ENABLE_CUDA=ON
-cmake --build build-cuda -j && ctest --test-dir build-cuda -L cuda
-```
-
-Fresh x86 builds also enable `NSS_AVX2_DEFAULTS=ON`, with configuration-scoped
-AVX2 ports validated on C4 and Ryzen 5950X. `NSS_AVX2_EXPERIMENT=0` adds no
-experimental candidates; use `-DNSS_AVX2_DEFAULTS=OFF -DNSS_AVX2_EXPERIMENT=0`
-to retain the AVX2 reference routes.
-
-AArch64 builds use `-DNSS_HWY_TARGET_MODE=neon` (also the ARM
-`dynamic` target policy), with `NSS_AVX2_DEFAULTS=OFF` and experiment 0.
-SVE/SVE2 are excluded until their separate port is validated. The
-`portable-test` mode selects Highway EMU128 for diagnostic comparisons;
-it requires a supported compiler (use Clang) and is not a release mode.
-Build macOS arm64 separately and load `libnss.dylib`.
-`core.nss.Backend()` reports compiled/runtime targets and an executed dispatch
-probe; this does not certify acceleration of every kernel.
-For native ARM build/host verification, run `tests/arm_native_gate.py --help`.
-It defaults to GCC 15 for NEON, requires fresh build/result paths and a native
-R75 runtime, and retains source/toolchain/backend identities and failure logs.
-The extended TWSC/NLH mathematical gates require NumPy and SciPy in the test
-Python environment; these are test dependencies, not plugin dependencies.
-The gate includes guarded tail/stride fixtures and a 762-case public shape and
-1/2/4-thread matrix. On Linux GCC, add `--sanitize` for ASan/UBSan; standalone
-C++ tests also check leaks, while the external Python/VS runtime has leak
-detection disabled. Pixel captures support separate cross-build comparisons.
-
-For a current source/build identity, generate a reproducibility manifest with:
-
-```sh
-python3 tests/source_manifest.py --out /tmp/nss-manifest.json --build <build-dir> \
-  --baseline-label <baseline> --candidate-label <candidate>
-```
-
-It records the
-commit, dirty status, non-ignored working-tree files, CMake identity and any
-attached plugin/input/quality/performance artifacts. A release manifest must be
-generated from the exact release source root, not from the current dirty tree.
-
-BM3D with block 4, 8, 12, 16 or 32 and a group of 4 to 64 uses a fused group filter on targets of 256 bits and
-wider, spatial and temporal. Spatial 8 / 8 keeps its dedicated kernel, and 12 / 8, 16 / 64, 32 / 32 and 32 / 64
-keep their previous paths. `-DNSS_BM_FUSED_TEMPLATE=OFF` restores the previous paths everywhere; outputs agree
-to rounding and to threshold decisions within the DCT error band.
-
-Fresh builds select `NSS_BM_EXPERIMENT=2305`: AVX3 SortedTopK for b8 groups of
-at least 16, BM3D patch/work reuse, and rolling target-ring/direct-scratch
-aggregation. The ordinary spatial b8/g8 route is largely unchanged. Existing
-CMake caches retain their previous setting; use `-DNSS_BM_EXPERIMENT=2305`
-to select the BM combination. For the pure-correctness reference use
-`-DNSS_BM_EXPERIMENT=0 -DNSS_AVX2_DEFAULTS=OFF -DNSS_AVX2_EXPERIMENT=0`.
-Cached-worst remains an alternative (`=2`); it cannot be combined with SortedTopK. Rolling remains explicitly requested through
-`temporal_mode="rolling"`; its improvements here are relative to unoptimized
-rolling, not a claim that it is faster than legacy mode.
-
-The FP64 TWSC G24/G32 batch path is enabled by default on fresh x86 builds after
-same-host complete-frame validation; use `-DNSS_TWSC_MIDGROUP_BATCH=OFF` for the
-scalar control. ARM keeps it off until a native full-frame timing gate is
-available. `-DNSS_GEMM_MULTI_ACCUM=ON` remains an opt-in exact
-float-product/FP64-accumulation GEMM candidate. A source manifest records both
-flags for each build.
+This needs CMake 3.24+, a C++20 compiler and the VapourSynth API4 headers
+(Highway is fetched at configure time); the GPU plugin also needs CUDA 12.4
+or newer. Copy the built plugin into the VapourSynth plugin directory. See
+[Building](docs/api/building.md) for the details.
 
 ## License
 
-GPLv2. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+GPLv2; see [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
-The length-12/16/32/64 DCT kernels in `src/cpu/bm/dct_codelet_*.hpp` (and their copies
-in `src/cuda/bm3d/`, compiled as scalar device code) are generated
-by [FFTW](https://www.fftw.org/) genfft (`gen_r2r`) and are distributed under
-GPLv2 or later. Copyright (c) 1997-1999, 2003, 2007-14 Massachusetts Institute
-of Technology and Matteo Frigo. They are mapped onto Highway and are not linked
-against `libfftw3`. Regenerate with `tools/gen_dct_codelets.sh`.
-
-### NEON numerical compatibility
-
-Cross-compiler/EMU outputs use the project's conditional numerical-tolerance policy; they are not guaranteed byte-identical. DCT/SSD near ties, iterative references and LSSC dictionary training can amplify ordinary rounding. FP64 LSSC OMP fixes a near-null residual artifact but has a separately reported migration cost against the older FP32 implementation. The default mixed-precision search retains FP64 refinement, solve and residual updates, with the full FP64 search as its numerical fallback.
+The length-12/16/32/64 DCT kernels (`src/cpu/bm/dct_codelet_*.hpp`, and their
+copies in `src/cuda/bm3d/`) are generated by [FFTW](https://www.fftw.org/)
+genfft (`gen_r2r`) and distributed under GPLv2 or later. Copyright (c)
+1997-1999, 2003, 2007-14 Massachusetts Institute of Technology and Matteo
+Frigo. They are not linked against `libfftw3`; regenerate them with
+`tools/gen_dct_codelets.sh`.

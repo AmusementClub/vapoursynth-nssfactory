@@ -2,15 +2,27 @@
 
 Weighted nuclear norm minimization on the device, spatial and temporal.
 
-Every argument is described on this page. The algorithm, the paper and the
-reasoning behind the defaults are on the CPU page, [`nss.WNNM`](../wnnm.md); the
-model and the defaults are the same on both plugins.
+Algorithm, paper and the reasoning behind the defaults: [`nss.WNNM`](../wnnm.md).
 
 ```python
 out = core.nss_cuda.WNNM(clip, sigma=25)                    # defaults
 hiq = core.nss_cuda.WNNM(clip, sigma=25, block_step=4, group_size=16)
 temporal = core.nss_cuda.WNNM(clip, sigma=25, radius=1)      # finished frames
 ```
+
+## Speed
+
+1080p, default arguments, RTX 5080, one instance; median over nine test images
+(see the [overview](README.md#speed)).
+
+| Call | YUV420 | RGB |
+|---|---:|---:|
+| default | 490 | 270 |
+| `radius=1` | 420 | 200 |
+
+Groups above 8 patches cost much more (an eigendecomposition per group): at
+1080p gray, `group_size=16` runs at about 330 fps and `group_size=32,
+block_step=4` at 14 fps.
 
 ## Signature
 
@@ -46,38 +58,17 @@ core.nss_cuda.WNNM(clip clip[, float[] sigma = 3.0, int block_size = 8,
 | `ps_num` | 2 | [1, group] | Predictive-search seeds per temporal step (with `radius > 0`). |
 | `ps_range` | 4 | [1, 64] | Predictive-search window radius (temporal mode). |
 
-## Device parameters
+## Device and temporal parameters
 
-| Parameter | Default | Range | Meaning |
-|---|---|---|---|
-| `device_id` | 0 | device index | CUDA device the instance runs on. One instance uses one device; `core.nss_cuda.Backend(device_id)` reports whether it is supported. |
-| `num_streams` | 1 | [1, 16] | Frames (or temporal chunks) the instance has in flight on the device at once. Each stream owns its device buffers, so memory grows with it. |
-| `memory_limit_mb` | none | > 0 | Caps the instance's device and pinned host memory. The internal batches are fitted to it and the output does not change; a limit that cannot hold the streams is a creation error. Without it the filter takes what its plan needs. |
-| `temporal_mode` | `"rolling"` | rolling / legacy | With `radius > 0`: `"rolling"` returns finished, normal-height frames; `"legacy"` returns the fat intermediate, as the CPU plugin does; reduce it with `nss.VAggregate`. |
-| `rolling_chunk` | 4 | [1, 64] | Frames accumulated per rolling chunk. |
-| `rolling_cache_chunks` | 1 | [1, 64] | Finished chunks kept for later frame requests at first. Given alone, the cache stays at this size. |
-| `rolling_cache_limit` | 16 | [1, 64], >= `rolling_cache_chunks` | What the chunk cache may grow to: it keeps one more chunk each time two requests miss on chunks it dropped recently. Under `memory_limit_mb` it grows only into what the limit leaves. |
+| Parameter | Default | Meaning |
+|---|---|---|
+| `device_id`, `num_streams`, `memory_limit_mb` | 0, 1, none | The GPU, the frames in flight, and a memory cap; see [shared arguments](README.md#shared-by-every-filter). |
+| `temporal_mode`, `rolling_chunk`, `rolling_cache_chunks`, `rolling_cache_limit` | `"rolling"`, 4, 1, 16 | What `radius > 0` returns (finished frames by default); see [temporal output](README.md#temporal-output). |
 
-How the streams, the memory limit and the rolling output behave across filters is in the [shared notes](README.md#shared-by-every-filter).
+## Notes
 
-## On the device
-
-- **Device-resident.** Matching, the per-group SVD shrinkage and the
-  aggregation all run on the device.
-- **Temporal output.** The temporal accumulation stays on the device.
-- **Numerics.** The SVD is taken through the FP32 Gram matrix with a cyclic
-  Jacobi eigensolver.
-  - The output is not bit-identical to the CPU, but is inside the 60 dB gate
-    (86–143 dB on the frozen references).
-  - The output is run-to-run identical: every group is solved in a fixed
-    order. Spatial and rolling output aggregates from inside the filter
-    kernel with integer atomics on fixed-point sums (exact, so independent
-    of the order); legacy temporal output sorts its patches and sums them in
-    a fixed order.
-  - Groups of up to 8 patches run as three kernels: the Gram matrices and
-    the reconstruction read the patches with 8 threads per group, and the
-    eigen step runs one thread per group in registers. Larger groups run 16
-    or 32 threads per group with a round-robin parallel Jacobi.
+- **Accuracy.** 86–143 dB against the CPU plugin on the reference set (the SVD
+  is taken through an FP32 Gram matrix); identical from run to run.
 
 ## Pitfalls
 
