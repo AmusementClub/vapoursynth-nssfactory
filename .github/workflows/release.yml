@@ -34,5 +34,5 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release create "${{ inputs.tag }}" --draft --target "${{ github.sha }}" --generate-notes \
-            dist/linux-x86_64/*.tar.gz dist/macos-arm64/*.tar.gz dist/windows-x86_64/*.zip \
+            dist/linux-x86_64/*.tar.gz dist/linux-arm64/*.tar.gz dist/macos-arm64/*.tar.gz dist/windows-x86_64/*.zip \
             dist/linux-x86_64-cuda/*.tar.gz dist/windows-x86_64-cuda/*.zip
