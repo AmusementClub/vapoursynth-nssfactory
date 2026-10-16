@@ -287,6 +287,19 @@ if(VapourSynth_FOUND)
     set_tests_properties(test_temporal_rolling PROPERTIES
       LABELS "plugin"
       SKIP_RETURN_CODE 77)
+    # Shapes, formats, rolling concurrency and resource limits of the plugin.
+    add_test(NAME test_plan01_plugin
+             COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_plan01_plugin.py"
+                     --out "${CMAKE_CURRENT_BINARY_DIR}/plan01-plugin.json")
+    set_tests_properties(test_plan01_plugin PROPERTIES
+      LABELS "plugin"
+      ENVIRONMENT "NSS_SO=$<TARGET_FILE:nss>")
+    # NLH's resolved preset (model version 6) for every format and noise model.
+    add_test(NAME test_nlh_presets_plugin
+             COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_nlh_presets_plugin.py"
+                     --plugin "$<TARGET_FILE:nss>" --profiles "${CMAKE_CURRENT_SOURCE_DIR}/data/nlh_presets_v6.json"
+                     --out "${CMAKE_CURRENT_BINARY_DIR}/nlh-presets-plugin.json")
+    set_tests_properties(test_nlh_presets_plugin PROPERTIES LABELS "plugin")
     # BM3D chroma=1 (CBM3D): shared groups from plane 0.
     add_test(NAME test_bm3d_chroma
              COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_bm3d_chroma.py"
