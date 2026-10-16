@@ -330,6 +330,21 @@ if(VapourSynth_FOUND)
     set_tests_properties(test_bm3d_rolling_carry PROPERTIES
       LABELS "plugin"
       SKIP_RETURN_CODE 77)
+    # Scripts that take the plugin from NSS_SO.
+    foreach(nso_test
+        test_backend_plugin         # Backend(): targets compiled, available and selected
+        test_bm3d_semantics         # temporal index, public sigma, disabled planes, concurrency
+        test_plan01_formats         # subsampled active planes, reference strides, borders
+        test_vaggregate_plugin      # VAggregate and temporal BM3D regressions
+        test_wnnm_zero_rank_plugin) # zero-rank WNNM through the host
+      add_test(NAME ${nso_test} COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/${nso_test}.py")
+      set_tests_properties(${nso_test} PROPERTIES LABELS "plugin" ENVIRONMENT "NSS_SO=$<TARGET_FILE:nss>")
+    endforeach()
+    # Public shapes, options and threading, with a pixel capture.
+    add_test(NAME test_neon_matrix
+             COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_neon_matrix.py"
+                     --out "${CMAKE_CURRENT_BINARY_DIR}/neon-matrix")
+    set_tests_properties(test_neon_matrix PROPERTIES LABELS "plugin" ENVIRONMENT "NSS_SO=$<TARGET_FILE:nss>")
   endif()
 endif()
 

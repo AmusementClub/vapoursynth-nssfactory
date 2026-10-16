@@ -75,6 +75,11 @@ to reproduce the exact measured binaries; do not apply an experimental adapter
 to the working public filter. The benchmark refuses a plugin without the HQ
 trace, preventing an accidental comparison against the older public model.
 
+The benchmark and report drivers (`tests/ncsr_hq_bench.py`, `tests/ncsr_hq_report.py`)
+were removed once the campaign finished; take them from the history with
+`git show 303f8d4^:tests/ncsr_hq_bench.py` (and the same for the report and
+`tests/paper_compare.py`, which both import). The campaign ran:
+
 ```sh
 taskset -c 0 python3 tests/ncsr_hq_bench.py campaign \
   --fixtures /path/to/fixtures128 \

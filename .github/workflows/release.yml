@@ -32,7 +32,10 @@ jobs:
       - name: create draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # .github/release-notes/<tag>.md, when present, goes before the generated notes.
         run: |
-          gh release create "${{ inputs.tag }}" --draft --target "${{ github.sha }}" --generate-notes \
+          notes=".github/release-notes/${{ inputs.tag }}.md"
+          if [ -f "$notes" ]; then set -- --notes-file "$notes"; else set --; fi
+          gh release create "${{ inputs.tag }}" --draft --target "${{ github.sha }}" --generate-notes "$@" \
             dist/linux-x86_64/*.tar.gz dist/linux-arm64/*.tar.gz dist/macos-arm64/*.tar.gz dist/windows-x86_64/*.zip \
             dist/linux-x86_64-cuda/*.tar.gz dist/windows-x86_64-cuda/*.zip

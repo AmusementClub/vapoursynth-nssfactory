@@ -141,6 +141,7 @@ jobs:
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
             -DNSS_HWY_TARGET_MODE=neon \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.3 \
             -DNSS_GIT_DESCRIBE="$PKG_LABEL" \
             -DVapourSynth_INCLUDE_DIR="$VapourSynth_INCLUDE_DIR" \
             -DPython3_EXECUTABLE="$GITHUB_WORKSPACE/.vsenv/bin/python3"
@@ -160,6 +161,12 @@ jobs:
         run: .vsenv/bin/python3 tests/test_parameter_bounds_plugin.py
         env:
           NSS_SO: ${{ github.workspace }}/build/libnss.dylib
+      - name: minimum macOS
+        # The runner's own macOS otherwise becomes the minimum; 13.3 is what
+        # the VapourSynth wheels require.
+        run: |
+          vtool -show-build build/libnss.dylib | tee build-version.txt
+          grep -qE 'minos 13\.3$' build-version.txt || { echo "libnss.dylib should need macOS 13.3"; exit 1; }
       - name: package
         run: |
           test -f build/libnss.dylib

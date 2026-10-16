@@ -29,7 +29,7 @@ def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def validate_results(junit, required, invocation_id, plugin_sha256, expected_cases=84):
+def validate_results(junit, required, invocation_id, plugin_sha256, expected_cases=85):
     cases = ET.parse(junit).getroot().findall('.//testcase')
     selected = []
     plugin_report = None
