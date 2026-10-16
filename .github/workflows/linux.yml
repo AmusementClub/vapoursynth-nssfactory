@@ -2,8 +2,18 @@
 name: linux-cpu
 
 on:
+  # Branches are tested through their pull request; a push to a branch with a
+  # pull request would otherwise run every job twice for the same commit.
   push:
+    branches: [master]
   pull_request:
+  workflow_dispatch:
+
+# A newer push to the same pull request cancels the run it supersedes; runs on
+# master always finish (they write the compiler cache).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 permissions:
   contents: read
