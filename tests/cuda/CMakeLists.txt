@@ -78,6 +78,10 @@ add_test(NAME test_cuda_bm3d_final
 set_tests_properties(test_cuda_bm3d_final PROPERTIES LABELS cuda SKIP_RETURN_CODE 77)
 # Live CPU-vs-GPU filter checks need the CPU plugin as the reference.
 if(TARGET nss)
+  add_test(NAME test_cuda_ncsr_variance_plugin
+           COMMAND ${Python3_EXECUTABLE} "${PROJECT_SOURCE_DIR}/tests/test_ncsr_variance_plugin.py"
+                   --plugin "${NSS_CUDA_PLUGIN}" --namespace nss_cuda --cpu "$<TARGET_FILE:nss>")
+  set_tests_properties(test_cuda_ncsr_variance_plugin PROPERTIES LABELS cuda SKIP_RETURN_CODE 77)
   foreach(filter bm3d nlm wnnm mcwnnm ncsr nlh twsc lssc)
     add_test(NAME test_cuda_${filter}_live
              COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_cuda_${filter}_live.py"

@@ -4,6 +4,12 @@ Nonlocally centralized sparse representation on the device, spatial and temporal
 
 Algorithm, paper and the reasoning behind the defaults: [`nss.NCSR`](../ncsr.md).
 
+更新後的 `r1` 附件採用與 CPU 相同的 NCSR 模型版本 3 方差修正：保留加權中心，
+以實際匹配欄位計算未加權二階矩，排除 CUDA 補齊欄位。
+遷移方式與已知畫質限制見 [CPU／CUDA 共用模型說明](../ncsr.md)。
+下列既有速度與精度數據屬修正前的量測，不能直接視為 v3 的驗證結果。
+原始 `r1` 附件為 v2；發行頁列出修正版來源 commit 與 SHA-256。
+
 ```python
 out = core.nss_cuda.NCSR(clip, sigma=25)                    # defaults
 hiq = core.nss_cuda.NCSR(clip, sigma=25, block_step=4)
@@ -88,4 +94,5 @@ The spatial default is bound by the host's frame copies (about 600 fps with
   quality change on textured noise.
 - `temporal_mode="legacy"` output needs an `nss.VAggregate` call; the default mode
   returns finished frames.
-- No `_NSS*` frame properties on this filter.
+- `temporal_mode="legacy"` 中間結果帶有 `_NSSFatVersion=2` 與
+  `_NSSModelVersion=3`；必須搭配支援 NCSR v3 的 `nss.VAggregate`。

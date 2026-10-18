@@ -71,8 +71,8 @@ struct NcsrModel {
     }
 
     // Code row s_i V[:, i] (column `column` of v scaled by si): weighted mean
-    // and deviation, then the centralized soft threshold; stored relative to
-    // s_i.
+    // and unweighted second moment about it, then the centralized soft
+    // threshold; stored relative to s_i. Only actual columns enter the moment.
     template <int N>
     __device__ void code_row(const float* v, int column, float si, const float* weight, float inverse, int n,
                              float* code) const {
@@ -89,9 +89,9 @@ struct NcsrModel {
 #pragma unroll
         for (int j = 0; j < N; ++j) {
             const float error = code[j] - mean;
-            variance = fmaf(weight[j] * error, error, variance);
+            if (j < n) variance = fmaf(error, error, variance);
         }
-        const float tau = 2.8284271247461903f * sigma2 / (sqrtf(variance * inverse) + epsilon);
+        const float tau = 2.8284271247461903f * sigma2 / (sqrtf(variance / static_cast<float>(n)) + epsilon);
         const float inv_s = 1.f / si;
 #pragma unroll
         for (int j = 0; j < N; ++j) {
