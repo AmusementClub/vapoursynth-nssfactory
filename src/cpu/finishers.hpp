@@ -68,12 +68,14 @@ inline void finish_ncsr_codes(float* group, int m, int n, int lda, float sigma, 
         float mean = 0.f;
         for (int col = 0; col < n; ++col) mean += weights[col] * row[col];
         mean *= inverse;
+        // Model v3: use every actual code column for the second moment.
+        // Reusing the beta weights collapses this moment when only self matches.
         float variance = 0.f;
         for (int col = 0; col < n; ++col) {
             const float error = row[col] - mean;
-            variance += weights[col] * error * error;
+            variance += error * error;
         }
-        row_tau[i] = map_constant * sigma2 / (std::sqrt(variance * inverse) + epsilon);
+        row_tau[i] = map_constant * sigma2 / (std::sqrt(variance / static_cast<float>(n)) + epsilon);
     }
     centralize(B, r, n, r, std::fabs(sigma), weights, row_tau);
 }

@@ -280,12 +280,14 @@ void NcsrFinishCodesRM(float* Brm, int r, int n, float sigma, const float* col_d
         float mean = 0.f;
         for (int col = 0; col < n; ++col) mean += weights[col] * row[col];
         mean *= inverse;
+        // Model v3: unweighted second moment about the weighted mean, as in
+        // finish_ncsr_codes; self-only weights must not erase group variation.
         float variance = 0.f;
         for (int col = 0; col < n; ++col) {
             const float error = row[col] - mean;
-            variance += weights[col] * error * error;
+            variance += error * error;
         }
-        const float ti_raw = map_constant * sigma2 / (std::sqrt(variance * inverse) + epsilon);
+        const float ti_raw = map_constant * sigma2 / (std::sqrt(variance / static_cast<float>(n)) + epsilon);
         // NcsrCentralizeCodes pass: its own accumulation order, in place.
         float s = 0.f;
         int j = 0;

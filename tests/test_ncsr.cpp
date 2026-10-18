@@ -3,6 +3,8 @@
 #include "nss/cpu_common.hpp"
 #include "nss/cpu_ncsr.hpp"
 #include "nss/params.hpp"
+#include "cpu/finishers.hpp"
+#include "hq_test_target.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -235,7 +237,70 @@ static int check_group_weights() {
     return 0;
 }
 
-int main() {
+
+// Independent FP64 code-domain oracle: bypass PCA so basis rounding cannot
+// hide a wrong second moment. Exercise both production layouts, including tails.
+static int check_variance_v3() {
+    int cases = 0;
+    for (int m : {1, 9, 64}) for (int n : {1, 3, 7, 8, 15, 16, 31, 32}) {
+        const int r = std::min(m, n);
+        for (float sigma : {0.f, 0.0001f, 0.01f, 0.1f}) for (int mode = 0; mode < 3; ++mode) {
+            std::vector<float> distance(n), cm(r * n + 2, 123.f), rm(r * n + 2, 123.f);
+            std::vector<double> weight(n), expected(r * n);
+            const float h = std::max(2.f * m * sigma * sigma, 1e-12f);
+            double sum = 0;
+            for (int j = 0; j < n; ++j) {
+                // Uniform, moderate, and self-only weights (the original bug).
+                distance[j] = mode == 0 ? 0.f : mode == 1 ? h * j : (j ? 1.f : 0.f);
+                weight[j] = std::exp(-static_cast<double>(distance[j]) / h);
+                sum += weight[j];
+                for (int i = 0; i < r; ++i) {
+                    const float v = ((i * 7 + j * 11) % 23 - 11) / 32.f;
+                    cm[1 + i + j * r] = rm[1 + i * n + j] = v;
+                }
+            }
+            for (int i = 0; i < r; ++i) {
+                double beta = 0;
+                for (int j = 0; j < n; ++j) beta += weight[j] * cm[1 + i + j * r];
+                beta /= sum;
+                double moment = 0;
+                for (int j = 0; j < n; ++j) {
+                    const double delta = cm[1 + i + j * r] - beta;
+                    moment += delta * delta / n;
+                }
+                const double tau = 2 * std::sqrt(2.) * sigma * sigma / (std::sqrt(moment) + 1e-12);
+                for (int j = 0; j < n; ++j) {
+                    const double v = cm[1 + i + j * r], delta = v - beta;
+                    expected[i + j * r] = sigma == 0 ? v :
+                        beta + std::copysign(std::max(std::abs(delta) - tau, 0.), delta);
+                }
+            }
+            nss::detail::finish_ncsr_codes(nullptr, m, n, m, sigma, distance.data(), cm.data() + 1,
+                nss::detail::ScalarCodeRows{}, nss::ncsr_group_weights, nss::ncsr_centralize_codes);
+            nss::ncsr_finish_codes_rm(rm.data() + 1, r, n, sigma, distance.data(), nullptr, m, m);
+            for (int i = 0; i < r; ++i) for (int j = 0; j < n; ++j) {
+                const double ref = expected[i + j * r];
+                for (float value : {cm[1 + i + j * r], rm[1 + i * n + j]}) {
+                    // contracts/tolerances.json fixed_group; no model-v2 golden.
+                    if (!std::isfinite(value) || std::abs(value - ref) > 2e-5 + 2e-4 * std::abs(ref)) {
+                        std::fprintf(stderr, "v3 oracle m=%d n=%d sigma=%g mode=%d got=%g expected=%g\n",
+                                     m, n, sigma, mode, value, ref);
+                        return 1;
+                    }
+                }
+            }
+            if (cm.front() != 123.f || cm.back() != 123.f || rm.front() != 123.f || rm.back() != 123.f)
+                return fail("NCSR code finisher overwrote guard");
+            ++cases;
+        }
+    }
+    std::printf("ncsr v3 independent FP64 oracle: %d cases, both layouts\n", cases);
+    return 0;
+}
+
+int main(int argc, char** argv) {
+    if (!hq_test_target(argc, argv)) return 77;
+    if (check_variance_v3() != 0) return 1;
     if (check_sigma0_identity() != 0) {
         return 1;
     }

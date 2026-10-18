@@ -24,6 +24,8 @@ inline int ncsr_denoise_work_floats(int width, int height, int block, int group)
 // col_w[j] ≥ 0; nullptr → equal weights. Rejects r or n above kSvdMaxN.
 // row_tau[i] overrides tau for code row i (nullptr → scalar tau).
 // Filter-group τ_i = 2√2 σ² / σ_θ(α−β) (TIP 2013 eq. 17, orthogonal PCA).
+// Model v3 uses σ_θ² = sum_j((α_j−β)²)/n over actual columns, without
+// distance weighting or noise-variance subtraction; β stays distance-weighted.
 void ncsr_centralize_codes(float* B, int r, int n, int ldb, float tau, const float* col_w = nullptr,
                            const float* row_tau = nullptr);
 

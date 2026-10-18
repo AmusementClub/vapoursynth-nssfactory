@@ -165,9 +165,11 @@ foreach(name mcwnnm twsc nlh ncsr lssc)
   endif()
 endforeach()
 
+target_include_directories(test_ncsr PRIVATE "${PROJECT_SOURCE_DIR}/src")
+
 if(NSS_TEST_ISA_VARIANTS)
   foreach(isa avx2 avx3)
-    foreach(name common mcwnnm batch)
+    foreach(name common mcwnnm batch ncsr)
       add_test(NAME test_${name}_${isa} COMMAND test_${name} ${isa})
       set_tests_properties(test_${name}_${isa} PROPERTIES SKIP_RETURN_CODE 77)
     endforeach()
@@ -282,6 +284,10 @@ if(VapourSynth_FOUND)
     set_tests_properties(test_full_image_plugin PROPERTIES
       LABELS "plugin;release"
       SKIP_RETURN_CODE 77)
+    add_test(NAME test_ncsr_variance_plugin
+             COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_ncsr_variance_plugin.py"
+                     --plugin "$<TARGET_FILE:nss>")
+    set_tests_properties(test_ncsr_variance_plugin PROPERTIES LABELS "plugin" SKIP_RETURN_CODE 77)
     # Frozen public creation interface (signatures, defaults, validation text).
     add_test(NAME test_plugin_interface
              COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_plugin_interface.py"
