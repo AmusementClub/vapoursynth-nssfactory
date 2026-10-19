@@ -129,7 +129,7 @@ __global__ void __launch_bounds__(kThreads) spatial_match_kernel(const float* pl
     }
     const Window w = spatial_window(g, cx, cy);
     BlockTopK<N> topk;
-    topk.init(keys, wanted - 1);
+    topk.init(keys, wanted - 1, detail::keys_pack(g.width, g.height, 1));
     if (staged) {
         const int sw = w.right - w.left + g.block;
         const int sh = w.bottom - w.top + g.block;
@@ -1014,8 +1014,9 @@ __global__ void __launch_bounds__(kThreads) predictive_match_kernel(MatchGeometr
     }
     const float* anchor_plane = tw.frames[t0];
     const float* anchor = anchor_plane + static_cast<long long>(cy) * g.pitch + cx;
+    const bool pack = detail::keys_pack(g.width, g.height, tw.ntemp);
     BlockTopK<N> topk;
-    topk.init(keys, wanted - 1);
+    topk.init(keys, wanted - 1, pack);
     scan_spatial(topk, anchor, g.pitch, anchor_plane, g.pitch, g.channel_step, 0, 0, g, spatial_window(g, cx, cy), cx,
                  cy, t0);
     const int spatial = topk.filled;
@@ -1058,7 +1059,7 @@ __global__ void __launch_bounds__(kThreads) predictive_match_kernel(MatchGeometr
                 xmax = max(xmax, min(max_x, centers[i].x + pr));
             }
             const float* plane = tw.frames[t];
-            topk.init(keys, local_k);
+            topk.init(keys, local_k, pack);
             if (ymax >= ymin && xmax >= xmin) {
                 const int bw = xmax - xmin + 1;
                 const int total = bw * (ymax - ymin + 1);
@@ -1131,7 +1132,7 @@ void launch_spatial(const float* plane, const MatchGeometry& g, const RasterGrid
                     DeviceMatch* out, int* counts, cudaStream_t stream) {
     const int span = g.lo() + g.hi();
     const std::size_t window = static_cast<std::size_t>(span + g.block) * (span + g.block) * g.channels * sizeof(float);
-    const bool staged = window + N * sizeof(MatchKey) <= kSharedBudget;
+    const bool staged = window + N * sizeof(MatchKey) + BlockTopK<N>::kSortBytes <= kSharedBudget;
     spatial_match_kernel<N><<<ref_count, kThreads, staged ? window : 0, stream>>>(plane, g, grid, ref_begin, out,
                                                                                     counts, staged);
 }
