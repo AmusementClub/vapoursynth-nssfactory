@@ -3,6 +3,8 @@
 #include "cuda/runtime/error.hpp"
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <climits>
 
 namespace nss_cuda {
@@ -1286,6 +1288,250 @@ __global__ void __launch_bounds__(kThreads) round_tile_kernel(LsscWork w, bool f
     }
 }
 
+// round_tile_kernel<Momentum> with both products on mma.m16n8k8 TF32 tensor
+// cores (sm_80+, m == 64, atoms % 64 == 0). Staging, momentum and order of
+// the round are those of round_tile_kernel; the products round their operands
+// to TF32 (FP32 accumulation), so the codes move from the CPU's (103 to 112 dB
+// against 137 to 141 on the references) at the same quality: the round 1.10x
+// with momentum, 1.29x without, LSSC 1080p 1.05x (docs/cuda-r2-gaps-20261019.md).
+// Warps 4 (patches) x 2 (32 columns); a lane holds patches 16 wm + lane / 4
+// (and + 8) at columns 32 wn + 8 t + 2 (lane % 4) + {0, 1}. On TF32 the rate is
+// the FMA pipe's: the gain is fewer instructions and shared loads per product.
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 800
+__device__ __forceinline__ unsigned round_tf32(float x) {
+    unsigned r;
+    asm("cvt.rna.tf32.f32 %0, %1;" : "=r"(r) : "f"(x));
+    return r;
+}
+#endif
+__device__ __forceinline__ void round_mma(float (&c)[4], const float (&a)[4], const float (&b)[2]) {
+#if __CUDA_ARCH__ >= 800
+    asm volatile("mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};"
+                 : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
+                 : "r"(round_tf32(a[0])), "r"(round_tf32(a[1])), "r"(round_tf32(a[2])), "r"(round_tf32(a[3])),
+                   "r"(round_tf32(b[0])), "r"(round_tf32(b[1])));
+#else
+    __trap();
+#endif
+}
+
+template <bool Momentum>
+__global__ void __launch_bounds__(kThreads) round_tile_mma_kernel(LsscWork w, bool first, float beta, const float* lipschitz) {
+    const LsscTiles tiles = lssc_tiles(w);
+    const int tile = blockIdx.x;
+    if (tile >= *tiles.count) return;
+    const int c = tiles.cluster[tile];
+    if (w.flags[w.clusters + c]) return;
+    const float mu = 0.9f / *lipschitz;
+    __shared__ __align__(16) float rs[kTileRows][kRoundPitch];
+    __shared__ __align__(16) float stage[kRoundRows][kRoundPitch];
+    __shared__ int member[kTile];
+    constexpr int m = 64;
+    const int atoms = w.atoms;
+    const int start = tiles.start[tile], size = min(kTile, w.offsets[c + 1] - start);
+    const float* scales = w.scale + c * atoms;
+    const float* scales_last = w.scale_last + c * atoms;
+    if (threadIdx.x < kTile) member[threadIdx.x] = threadIdx.x < size ? w.members[start + threadIdx.x] : -1;
+    __syncthreads();
+    const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+    const int wm = warp >> 1, wn = warp & 1, lr = lane >> 2, lc = lane & 3;
+    const int pm = wm * 16, pn = wn * 32;
+    {
+        const Quads y = quad_lanes(m, 6);
+        for (int q = y.q0; q < kTile / 4; q += y.step) {
+            float v[4];
+#pragma unroll
+            for (int u = 0; u < 4; ++u) {
+                const int j = member[4 * q + u];
+                v[u] = j >= 0 ? w.patches[static_cast<long long>(j) * m + y.i] : 0.f;
+            }
+            *reinterpret_cast<float4*>(&rs[y.i][4 * q]) = make_float4(v[0], v[1], v[2], v[3]);
+        }
+    }
+    if (!first) {
+        float acc[4][4] = {};
+        float(*codes)[kRoundPitch] = stage;
+        float(*rows)[kRoundPitch] = stage + kRoundChunk;
+        float code[kCodeLoads], scale, row[kRowLoads];
+        float code_last[Momentum ? kCodeLoads : 1], scale_last = 0.f;
+        const Quads lanes = quad_lanes(kRoundChunk, kRoundShift);
+        const auto fetch = [&](int kb) {
+            const int k = lanes.i;
+            scale = scales[kb + k];
+            if (Momentum) scale_last = scales_last[kb + k];
+#pragma unroll
+            for (int u = 0; u < kCodeLoads; ++u) {
+                const int j = member[4 * lanes.q0 + u];
+                const long long at = static_cast<long long>(j) * atoms + kb + k;
+                code[u] = j >= 0 ? w.coef[at] : 0.f;
+                if (Momentum) code_last[u] = j >= 0 ? w.coef_last[at] : 0.f;
+            }
+#pragma unroll
+            for (int u = 0; u < kRowLoads; ++u) row[u] = w.dict[kb * m + threadIdx.x + u * kThreads];
+        };
+        fetch(0);
+        for (int kb = 0; kb < atoms; kb += kRoundChunk) {
+            __syncthreads();
+            float z[4];
+#pragma unroll
+            for (int u = 0; u < 4; ++u) {
+                z[u] = code[u] * scale;
+                if (Momentum) {
+                    z[u] = extrapolate(z[u], code_last[u] * scale_last, beta);
+                    const int j = member[4 * lanes.q0 + u];
+                    if (j >= 0) w.coef_last[static_cast<long long>(j) * atoms + kb + lanes.i] = z[u];
+                }
+            }
+            *reinterpret_cast<float4*>(&codes[lanes.i][4 * lanes.q0]) = make_float4(z[0], z[1], z[2], z[3]);
+#pragma unroll
+            for (int u = 0; u < kRowLoads; ++u) {
+                const int e = threadIdx.x + u * kThreads;
+                rows[e >> 6][e & 63] = row[u];
+            }
+            __syncthreads();
+            if (kb + kRoundChunk < atoms) fetch(kb + kRoundChunk);
+#pragma unroll
+            for (int ks = 0; ks < kRoundChunk; ks += 8) {
+                const float a[4] = {codes[ks + lc][pm + lr], codes[ks + lc][pm + lr + 8], codes[ks + lc + 4][pm + lr],
+                                    codes[ks + lc + 4][pm + lr + 8]};
+#pragma unroll
+                for (int t = 0; t < 4; ++t) {
+                    const float b[2] = {rows[ks + lc][pn + 8 * t + lr], rows[ks + lc + 4][pn + 8 * t + lr]};
+                    round_mma(acc[t], a, b);
+                }
+            }
+        }
+        const bool live0 = member[pm + lr] >= 0, live1 = member[pm + lr + 8] >= 0;
+        __syncthreads();
+#pragma unroll
+        for (int t = 0; t < 4; ++t) {
+            const int x = pn + 8 * t + 2 * lc;
+            rs[x][pm + lr] = live0 ? rs[x][pm + lr] - acc[t][0] : 0.f;
+            rs[x + 1][pm + lr] = live0 ? rs[x + 1][pm + lr] - acc[t][1] : 0.f;
+            rs[x][pm + lr + 8] = live1 ? rs[x][pm + lr + 8] - acc[t][2] : 0.f;
+            rs[x + 1][pm + lr + 8] = live1 ? rs[x + 1][pm + lr + 8] - acc[t][3] : 0.f;
+        }
+    }
+    constexpr int count = kRoundRows, per_tile = m / count;
+    const int chunks = atoms / kTile * per_tile;
+    float next[kGradientLoads];
+    const Quads lanes = quad_lanes(count, 5);
+    const auto fetch_rows = [&](int s) {
+        const int abase = s / per_tile * kTile, ib = s % per_tile * count;
+#pragma unroll
+        for (int u = 0; u < kGradientLoads; ++u) {
+            const int a = 4 * (lanes.q0 + u / 4 * lanes.step) + u % 4;
+            next[u] = a < kTile ? w.gradient[(abase + a) * m + ib + lanes.i] : 0.f;
+        }
+    };
+    // Z of the lane's outputs of an atom tile (patches h, columns t, e).
+    const auto load_z = [&](int abase, float (&zr)[2][4][2]) {
+#pragma unroll
+        for (int h = 0; h < 2; ++h) {
+            const int j = member[pm + lr + 8 * h];
+#pragma unroll
+            for (int t = 0; t < 4; ++t) {
+                const int a = abase + pn + 8 * t + 2 * lc;
+                float2 z = make_float2(0.f, 0.f);
+                if (j >= 0) {
+                    const long long at = static_cast<long long>(j) * atoms + a;
+                    if (Momentum) {
+                        z = *reinterpret_cast<const float2*>(w.coef_last + at);
+                    } else if (!first) {
+                        const float2 code = *reinterpret_cast<const float2*>(w.coef + at);
+                        const float2 factor = *reinterpret_cast<const float2*>(scales + a);
+                        z = make_float2(code.x * factor.x, code.y * factor.y);
+                    }
+                }
+                zr[h][t][0] = z.x, zr[h][t][1] = z.y;
+            }
+        }
+    };
+    fetch_rows(0);
+    float acc[4][4];
+    float zr[2][4][2];
+    for (int s = 0; s < chunks; ++s) {
+        const int abase = s / per_tile * kTile;
+        if (s % per_tile == 0) {
+#pragma unroll
+            for (int t = 0; t < 4; ++t) acc[t][0] = acc[t][1] = acc[t][2] = acc[t][3] = 0.f;
+        }
+        __syncthreads();
+#pragma unroll
+        for (int u = 0; u < kGradientLoads; u += 4) {
+            const int q = lanes.q0 + u / 4 * lanes.step;
+            if (q < kTile / 4) *reinterpret_cast<float4*>(&stage[lanes.i][4 * q]) = make_float4(next[u], next[u + 1], next[u + 2], next[u + 3]);
+        }
+        __syncthreads();
+        if (s + 1 < chunks) fetch_rows(s + 1);
+        const int ib = s % per_tile * count;
+#pragma unroll
+        for (int ks = 0; ks < count; ks += 8) {
+            const float a[4] = {rs[ib + ks + lc][pm + lr], rs[ib + ks + lc][pm + lr + 8], rs[ib + ks + lc + 4][pm + lr],
+                                rs[ib + ks + lc + 4][pm + lr + 8]};
+#pragma unroll
+            for (int t = 0; t < 4; ++t) {
+                const float b[2] = {stage[ks + lc][pn + 8 * t + lr], stage[ks + lc + 4][pn + 8 * t + lr]};
+                round_mma(acc[t], a, b);
+            }
+        }
+        if (s % per_tile != per_tile - 1) continue;
+        load_z(abase, zr);
+        float square[4][2] = {}, largest[4][2] = {};
+        bool invalid = false;
+#pragma unroll
+        for (int h = 0; h < 2; ++h) {
+            const int j = member[pm + lr + 8 * h];
+            if (j < 0) continue;
+#pragma unroll
+            for (int t = 0; t < 4; ++t) {
+                const int a = abase + pn + 8 * t + 2 * lc;
+                const float v0 = fmaf(mu, acc[t][2 * h], zr[h][t][0]);
+                const float v1 = fmaf(mu, acc[t][2 * h + 1], zr[h][t][1]);
+                *reinterpret_cast<float2*>(w.coef_last + static_cast<long long>(j) * atoms + a) = make_float2(v0, v1);
+                square[t][0] = fmaf(v0, v0, square[t][0]);
+                square[t][1] = fmaf(v1, v1, square[t][1]);
+                largest[t][0] = fmaxf(largest[t][0], fabsf(v0));
+                largest[t][1] = fmaxf(largest[t][1], fabsf(v1));
+                invalid = invalid || !isfinite(v0) || !isfinite(v1);
+            }
+        }
+#pragma unroll
+        for (int x = 4; x < 32; x <<= 1) {
+#pragma unroll
+            for (int t = 0; t < 4; ++t) {
+#pragma unroll
+                for (int e = 0; e < 2; ++e) {
+                    square[t][e] += __shfl_xor_sync(~0u, square[t][e], x);
+                    largest[t][e] = fmaxf(largest[t][e], __shfl_xor_sync(~0u, largest[t][e], x));
+                }
+            }
+        }
+        if (invalid) atomicOr(w.flags + c, 1);
+        __syncthreads();
+        if (lr == 0) {
+#pragma unroll
+            for (int t = 0; t < 4; ++t) {
+#pragma unroll
+                for (int e = 0; e < 2; ++e) {
+                    stage[wm][pn + 8 * t + 2 * lc + e] = square[t][e];
+                    stage[4 + wm][pn + 8 * t + 2 * lc + e] = largest[t][e];
+                }
+            }
+        }
+        __syncthreads();
+        if (threadIdx.x < kTile) {
+            float norm2 = 0.f, top = 0.f;
+            for (int t = 0; t < 4; ++t) {
+                norm2 += stage[t][threadIdx.x];
+                top = fmaxf(top, stage[4 + t][threadIdx.x]);
+            }
+            tiles.norm2[static_cast<long long>(tile) * atoms + abase + threadIdx.x] = norm2;
+            atomicMax(tiles.largest + c * atoms + abase + threadIdx.x, __float_as_int(top));
+        }
+    }
+}
+
 // values = Y - D A (residual: the patches of active clusters) or D A (final).
 __global__ void __launch_bounds__(kThreads) product_tile_kernel(LsscWork w, bool residual) {
     __shared__ float as[kTileChunk][kTile + 1];  // codes: as[atom][patch]
@@ -1527,6 +1773,18 @@ void lssc_center(const LsscWork& w, cudaStream_t stream) {
     NSS_CUDA_CHECK_LAUNCH();
 }
 
+// TF32 mma needs compute capability 8.0; the answer is kept per device.
+static bool tensor_cores() {
+    int device = 0;
+    NSS_CUDA_CHECK(cudaGetDevice(&device));
+    static std::array<std::atomic<int>, 64> known{};  // 0 unknown, 1 no, 2 yes
+    if (device < 64 && known[device]) return known[device] == 2;
+    int major = 0;
+    NSS_CUDA_CHECK(cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, device));
+    if (device < 64) known[device] = major >= 8 ? 2 : 1;
+    return major >= 8;
+}
+
 void lssc_round(const LsscWork& w, int round, float beta, const float* lipschitz, float sigma, cudaStream_t stream) {
     if (round == 0) beta = 0.f;  // nothing to extrapolate from
     if (w.m <= kTileRows) {
@@ -1535,7 +1793,13 @@ void lssc_round(const LsscWork& w, int round, float beta, const float* lipschitz
             NSS_CUDA_CHECK_LAUNCH();
         }
         const int tiles = lssc_tile_capacity(w.np, w.clusters);
-        if (beta != 0.f) {
+        if (w.m == 64 && w.atoms % kTile == 0 && tensor_cores()) {
+            if (beta != 0.f) {
+                round_tile_mma_kernel<true><<<tiles, kThreads, 0, stream>>>(w, false, beta, lipschitz);
+            } else {
+                round_tile_mma_kernel<false><<<tiles, kThreads, 0, stream>>>(w, round == 0, 0.f, lipschitz);
+            }
+        } else if (beta != 0.f) {
             round_tile_kernel<true><<<tiles, kThreads, 0, stream>>>(w, false, beta, lipschitz);
         } else {
             round_tile_kernel<false><<<tiles, kThreads, 0, stream>>>(w, round == 0, 0.f, lipschitz);

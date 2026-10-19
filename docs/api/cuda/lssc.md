@@ -53,10 +53,12 @@ capped by the actual patch count; they are not exposed.
 
 ## Notes
 
-- **Accuracy.** 137–141 dB against the CPU plugin on the reference set (the
-  sparse coding runs in FP32 where the CPU uses FP64 in places); identical
-  from run to run. Model version 3 against version 3 CPU references:
-  137.0–140.8 dB. The frozen C1 references (`tests/data/cuda_refs_v1.json`)
+- **Accuracy.** On GPUs of compute capability 8.0 or newer the coding
+  round's products run on TF32 tensor cores: 103–112 dB against the CPU
+  plugin (model version 3 references), with the same denoising quality to
+  1e-4 dB. Compute capability 7.5 keeps FP32 products: 137.0–140.8 dB (the
+  sparse coding runs in FP32 where the CPU uses FP64 in places). Identical
+  from run to run on a given GPU. The frozen C1 references (`tests/data/cuda_refs_v1.json`)
   are version 2 outputs; regenerate LSSC references before comparing.
 - **Memory.** The codes take `2 min(256, patches)` floats per patch (the
   current and the previous round), so a dense `block_step` on a large frame

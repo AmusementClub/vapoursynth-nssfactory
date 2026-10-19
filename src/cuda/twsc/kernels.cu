@@ -3,6 +3,9 @@
 #include "cuda/common/block_jacobi.cuh"
 #include "cuda/common/block_tridiag.cuh"
 #include "cuda/runtime/error.hpp"
+#if NSS_CUDA_SOLVERDX
+#include <cusolverdx.hpp>
+#endif
 
 #include <algorithm>
 
@@ -117,11 +120,52 @@ __device__ __forceinline__ void for_runs(int outers, int inners, Body body) {
 // unequal row weights keeps QL. The kDc = false instance (caps up to 16)
 // does not carry it: in one instance the code cost the cap 16 path 2%.
 constexpr int kWarpEigenMin = 12;
-template <class Real, bool kDc>
+#if NSS_CUDA_SOLVERDX && defined(__CUDA_ARCH__)
+// With NSS_CUDA_SOLVERDX: cuSolverDx heev on a 32 x 32 copy (the 64-thread
+// instance), the k x k matrix in its top-left and 2 trace + 1 on the rest of
+// the diagonal (above the spectrum of a PSD matrix), so the first k pairs are
+// the matrix's own. Result in block_eigen's layout: vector j over row j of a.
+// False when heev does not converge (a untouched; divide and conquer then).
+// 1080p gray block 8: group 32 1.05x, group 24 1.10x (docs/cuda-r2-gaps-20261019.md).
+__device__ bool heev_padded(float* a, int k, float* values) {
+    using Heev = decltype(cusolverdx::Size<32>() + cusolverdx::Precision<float>() + cusolverdx::Type<cusolverdx::type::real>() +
+                          cusolverdx::Function<cusolverdx::heev>() + cusolverdx::FillMode<cusolverdx::fill_mode::lower>() +
+                          cusolverdx::Arrangement<cusolverdx::arrangement::col_major>() +
+                          cusolverdx::Job<cusolverdx::job::overwrite_vectors>() + cusolverdx::SM<__CUDA_ARCH__>() +
+                          cusolverdx::Block() + cusolverdx::BlockDim<64>());
+    __shared__ float p[32 * 32], lambda[32], work[Heev::workspace_size > 0 ? Heev::workspace_size : 1], trace;
+    __shared__ typename Heev::status_type info;
+    if (threadIdx.x == 0) {
+        float t = 0.f;
+        for (int i = 0; i < k; ++i) t += fabsf(a[i * k + i]);
+        trace = 2.f * t + 1.f;
+    }
+    __syncthreads();
+    for (int e = threadIdx.x; e < 32 * 32; e += blockDim.x) {
+        const int i = e % 32, j = e / 32;
+        p[e] = i < k && j < k ? a[j * k + i] : (i == j ? trace : 0.f);
+    }
+    __syncthreads();
+    Heev().execute(p, lambda, work, &info);
+    __syncthreads();
+    if (info != 0) return false;
+    for (int e = threadIdx.x; e < k * k; e += blockDim.x) a[e] = p[(e / k) * 32 + e % k];
+    for (int e = threadIdx.x; e < k; e += blockDim.x) values[e] = lambda[e];
+    __syncthreads();
+    return true;
+}
+#endif
+
+template <class Real, bool kDc, int kThreads = 0>
 __device__ void group_eigen(Real* a, Real* reflectors, int k, int cap, Real* fast, Real* values, Real* dc = nullptr) {
     if (!kDc && cap >= kWarpEigenMin && cap <= kWarpEigen) {
         warp_eigen(a, k, values);
     } else {
+#if NSS_CUDA_SOLVERDX && defined(__CUDA_ARCH__)
+        if constexpr (kDc && kThreads == 64) {
+            if (dc && k > kWarpEigen && k <= 32 && blockDim.x == 64 && heev_padded(a, k, values)) return;
+        }
+#endif
         block_eigen<Real, kDc>(a, reflectors, k, fast, values, k > kWarpEigen ? dc : nullptr);
     }
 }
@@ -252,7 +296,7 @@ __global__ void __launch_bounds__(kThreads, 768 / kThreads) twsc_block_kernel(Tw
         }
     });
     __syncthreads();
-    group_eigen<Real, kDc>(gram, reflectors, kd, cap, scratch, values, data);
+    group_eigen<Real, kDc, kThreads>(gram, reflectors, kd, cap, scratch, values, data);
 
     // Descending order by rank (ties by index), reduced spectrum, active count.
     for (int e = lane; e < kd; e += lanes) {
