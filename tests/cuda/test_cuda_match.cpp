@@ -273,6 +273,12 @@ int main() {
         for (const int block : {1, 2, 32}) {
             for (const int group : {2, 8, 16, 32}) spatial_case(97, 83, block, group, std::min(block, 3), 7, flat, stats);
         }
+        // Blocks that had no lane instance before 2026-10-19 (the warp kernel served them).
+        for (const int block : {3, 5, 6, 9, 10, 11, 13, 14}) {
+            for (const int group : {2, 8, 16, 32}) spatial_case(97, 83, block, group, 3, 7, flat, stats);
+            temporal_case(71, 66, block, 16, 5, 7, 1, 1, 3, flat, stats);
+        }
+        for (const int block : {3, 5, 6, 7}) image_case(61, 57, block, 8, 3, 15, 3, 1, 0, 0, 2, flat, stats);
         spatial_case(97, 83, 12, 33, 5, 9, flat, stats);
         temporal_case(71, 66, 12, 8, 5, 7, 1, 1, 3, flat, stats);
         temporal_case(71, 66, 12, 16, 5, 7, 2, 0, 9, flat, stats);

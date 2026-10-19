@@ -931,12 +931,14 @@ __global__ void __launch_bounds__(32 * kLaneWarps) predictive_match_lane_kernel(
 // fewest of 8, 16 and 32 that hold the matches and the layer's best. Block
 // 32 takes all 32 lanes (a lane then holds one column: with fewer lanes the
 // rows of several columns do not fit registers). Three joint channels are
-// served up to block 8, where a lane's rows of all three still do.
+// served up to block 8, where a lane's rows of all three still do. Every
+// block size up to 16 has an instance: the warp kernel that served the
+// others took 1.87x as long (block 10, docs/cuda-tools-all-20261017.md N13).
 int lane_group(const MatchGeometry& g, int ps_num) {
     if ((g.channels != 1 && g.channels != 3) || g.group < 2) return 0;
     switch (g.block) {
-    case 1: case 2: case 4: case 8: break;
-    case 7: case 12: case 15: case 16: case 32:
+    case 1: case 2: case 3: case 4: case 5: case 6: case 7: case 8: break;
+    case 9: case 10: case 11: case 12: case 13: case 14: case 15: case 16: case 32:
         if (g.channels != 1) return 0;
         break;
     default: return 0;
@@ -968,19 +970,15 @@ bool launch_lanes(const float* plane, const MatchGeometry& g, const TemporalWind
     case B * 100 + L: launch_lane<B, L, 1>(plane, g, tw, grid, ref_begin, ref_count, out, counts, stream); break;
 #define NSS_LANE_JOINT(B, L) \
     case 10000 + B * 100 + L: launch_lane<B, L, 3>(plane, g, tw, grid, ref_begin, ref_count, out, counts, stream); break;
-    NSS_LANE(1, 8) NSS_LANE(1, 16) NSS_LANE(1, 32)
-    NSS_LANE(2, 8) NSS_LANE(2, 16) NSS_LANE(2, 32)
-    NSS_LANE(4, 8) NSS_LANE(4, 16) NSS_LANE(4, 32)
-    NSS_LANE(7, 8) NSS_LANE(7, 16) NSS_LANE(7, 32)
-    NSS_LANE(8, 8) NSS_LANE(8, 16) NSS_LANE(8, 32)
-    NSS_LANE(12, 8) NSS_LANE(12, 16) NSS_LANE(12, 32)
-    NSS_LANE(15, 8) NSS_LANE(15, 16) NSS_LANE(15, 32)
-    NSS_LANE(16, 8) NSS_LANE(16, 16) NSS_LANE(16, 32)
+#define NSS_LANES(B) NSS_LANE(B, 8) NSS_LANE(B, 16) NSS_LANE(B, 32)
+#define NSS_LANES_JOINT(B) NSS_LANE_JOINT(B, 8) NSS_LANE_JOINT(B, 16) NSS_LANE_JOINT(B, 32)
+    NSS_LANES(1) NSS_LANES(2) NSS_LANES(3) NSS_LANES(4) NSS_LANES(5) NSS_LANES(6) NSS_LANES(7) NSS_LANES(8)
+    NSS_LANES(9) NSS_LANES(10) NSS_LANES(11) NSS_LANES(12) NSS_LANES(13) NSS_LANES(14) NSS_LANES(15) NSS_LANES(16)
     NSS_LANE(32, 32)
-    NSS_LANE_JOINT(1, 8) NSS_LANE_JOINT(1, 16) NSS_LANE_JOINT(1, 32)
-    NSS_LANE_JOINT(2, 8) NSS_LANE_JOINT(2, 16) NSS_LANE_JOINT(2, 32)
-    NSS_LANE_JOINT(4, 8) NSS_LANE_JOINT(4, 16) NSS_LANE_JOINT(4, 32)
-    NSS_LANE_JOINT(8, 8) NSS_LANE_JOINT(8, 16) NSS_LANE_JOINT(8, 32)
+    NSS_LANES_JOINT(1) NSS_LANES_JOINT(2) NSS_LANES_JOINT(3) NSS_LANES_JOINT(4)
+    NSS_LANES_JOINT(5) NSS_LANES_JOINT(6) NSS_LANES_JOINT(7) NSS_LANES_JOINT(8)
+#undef NSS_LANES
+#undef NSS_LANES_JOINT
 #undef NSS_LANE
 #undef NSS_LANE_JOINT
     default: return false;
