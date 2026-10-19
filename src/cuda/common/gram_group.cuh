@@ -62,6 +62,9 @@
 #include "cuda/runtime/error.hpp"
 
 #include <cuda_runtime.h>
+#if NSS_CUDA_SOLVERDX
+#include <cusolverdx.hpp>
+#endif
 
 #include <cstddef>
 #include <stdexcept>
@@ -167,7 +170,32 @@ __device__ __forceinline__ void gram_block(const GramGroupArgs& a, const Model& 
         // copied to its columns; the eigenvalues go to g's diagonal
         // (block_jacobi's contract).
         __shared__ float fast[block_eigen_fast_reals(N)], values[block_eigen_slow_reals(N)];
+#if NSS_CUDA_SOLVERDX && defined(__CUDA_ARCH__)
+        // cuSolverDx heev (QR algorithm, absolute accuracy like divide and
+        // conquer; 1.5x it on 32 x 32 matrices alone): column-major with the
+        // vectors over the input, so vector j is g[j * N .. j * N + N), the
+        // layout block_eigen leaves. A group it does not converge on takes
+        // the divide and conquer from the copy in v.
+        using Heev = decltype(cusolverdx::Size<N>() + cusolverdx::Precision<float>() +
+                              cusolverdx::Type<cusolverdx::type::real>() + cusolverdx::Function<cusolverdx::heev>() +
+                              cusolverdx::FillMode<cusolverdx::fill_mode::lower>() +
+                              cusolverdx::Arrangement<cusolverdx::arrangement::col_major>() +
+                              cusolverdx::Job<cusolverdx::job::overwrite_vectors>() + cusolverdx::SM<__CUDA_ARCH__>() +
+                              cusolverdx::Block() + cusolverdx::BlockDim<N>());
+        __shared__ float heev_work[Heev::workspace_size > 0 ? Heev::workspace_size : 1];
+        __shared__ typename Heev::status_type heev_info;
+        for (int e = lane; e < N * N; e += N) v[e] = g[e];
+        __syncthreads();
+        Heev().execute(g, values, heev_work, &heev_info);
+        __syncthreads();
+        if (heev_info != 0) {
+            for (int e = lane; e < N * N; e += N) g[e] = v[e];
+            __syncthreads();
+            block_eigen<float, true>(g, v, N, fast, values, a.scratch + static_cast<long long>(blockIdx.x) * kGramDcFloats);
+        }
+#else
         block_eigen<float, true>(g, v, N, fast, values, a.scratch + static_cast<long long>(blockIdx.x) * kGramDcFloats);
+#endif
         __syncthreads();
         for (int e = lane; e < N * N; e += N) v[e] = g[(e % N) * N + e / N];
         __syncthreads();

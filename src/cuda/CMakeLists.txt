@@ -112,8 +112,57 @@ set(NSS_CUDA_RUNTIME_SOURCES
   runtime/memory.cpp
 )
 
+# Optional cuSolverDx (MathDx package root, the directory holding include/
+# and lib/: nvidia/mathdx/<version>): NCSR's eigen step for groups of 17 to
+# 32 runs heev (docs/cuda-tools-all-20261017.md T20). The library is linked
+# as LTO IR, so ncsr/kernels.cu is compiled on its own with separable
+# compilation and device-linked with -dlto; every other kernel keeps the
+# whole-program build.
+set(NSS_CUDA_MATHDX "" CACHE PATH "MathDx package root for cuSolverDx (empty: off)")
+set(NSS_CUDA_CORE_SOURCES ${NSS_CUDA_CLASSIFIED})
+if(NSS_CUDA_MATHDX)
+  set(_nss_dx_fatbin "${NSS_CUDA_MATHDX}/lib/libcusolverdx.fatbin")
+  set(_nss_dx_library "${NSS_CUDA_MATHDX}/lib/libcusolverdx.a")
+  if(NOT EXISTS "${NSS_CUDA_MATHDX}/include/cusolverdx.hpp")
+    message(FATAL_ERROR "NSS_CUDA_MATHDX: no include/cusolverdx.hpp under ${NSS_CUDA_MATHDX}")
+  endif()
+  if(CMAKE_CUDA_COMPILER_VERSION VERSION_LESS 12.8)
+    if(NOT EXISTS "${_nss_dx_library}")
+      message(FATAL_ERROR "NSS_CUDA_MATHDX: no lib/libcusolverdx.a under ${NSS_CUDA_MATHDX}")
+    endif()
+    set(_nss_dx_link "${_nss_dx_library}")
+  else()
+    if(NOT EXISTS "${_nss_dx_fatbin}")
+      message(FATAL_ERROR "NSS_CUDA_MATHDX: no lib/libcusolverdx.fatbin under ${NSS_CUDA_MATHDX}")
+    endif()
+    set(_nss_dx_link "${_nss_dx_fatbin}")
+  endif()
+  list(REMOVE_ITEM NSS_CUDA_CORE_SOURCES ncsr/kernels.cu)
+  add_library(nss_cuda_solverdx STATIC ncsr/kernels.cu)
+  set_target_properties(nss_cuda_solverdx PROPERTIES
+    CUDA_ARCHITECTURES "${NSS_CUDA_ARCH_LIST}"
+    CUDA_RUNTIME_LIBRARY None
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_RESOLVE_DEVICE_SYMBOLS ON
+    POSITION_INDEPENDENT_CODE ON
+    CUDA_VISIBILITY_PRESET hidden
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN ON
+  )
+  target_include_directories(nss_cuda_solverdx PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/.." "${NSS_CUDA_MATHDX}/include" "${NSS_CUDA_MATHDX}/external/cutlass/include")
+  target_compile_definitions(nss_cuda_solverdx PRIVATE NSS_CUDA_SOLVERDX=1)
+  if(CMAKE_VERSION VERSION_LESS 3.25)
+    message(FATAL_ERROR "NSS_CUDA_MATHDX needs CMake 3.25 or newer (CUDA link-time optimization)")
+  endif()
+  set_target_properties(nss_cuda_solverdx PROPERTIES INTERPROCEDURAL_OPTIMIZATION ON)
+  target_link_options(nss_cuda_solverdx PRIVATE $<DEVICE_LINK:${_nss_dx_link}>)
+  target_link_libraries(nss_cuda_solverdx PUBLIC nss_frontend CUDA::cudart_static)
+  message(STATUS "NSSFactory CUDA: cuSolverDx from ${NSS_CUDA_MATHDX} (NCSR eigen step)")
+endif()
+
 # nss_cuda_core: runtime + all device code, static so tests/cuda can link it.
-add_library(nss_cuda_core STATIC ${NSS_CUDA_RUNTIME_SOURCES} ${NSS_CUDA_CLASSIFIED})
+add_library(nss_cuda_core STATIC ${NSS_CUDA_RUNTIME_SOURCES} ${NSS_CUDA_CORE_SOURCES})
 set_target_properties(nss_cuda_core PROPERTIES
   CUDA_ARCHITECTURES "${NSS_CUDA_ARCH_LIST}"
   CUDA_RUNTIME_LIBRARY None
@@ -128,6 +177,9 @@ target_include_directories(nss_cuda_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/.."
 set_source_files_properties(runtime/device.cpp PROPERTIES COMPILE_DEFINITIONS
   "NSS_CUDA_ARCH_STRING=\"${NSS_CUDA_ARCH_STRING}\";NSS_CUDA_CUBIN_ARCHS=${NSS_CUDA_CUBIN_ARCHS_CSV};NSS_CUDA_PTX_ARCHS=${NSS_CUDA_PTX_ARCHS_CSV}")
 target_link_libraries(nss_cuda_core PUBLIC nss_frontend CUDA::cudart_static)
+if(NSS_CUDA_MATHDX)
+  target_link_libraries(nss_cuda_core PUBLIC nss_cuda_solverdx)
+endif()
 
 # Fatbin compression (nvcc 12.8+). "size" made the four-architecture plugin
 # 90 MB -> 20 MB for about 5 ms more on the first frame (lazy loading;
@@ -137,6 +189,10 @@ set_property(CACHE NSS_CUDA_COMPRESS PROPERTY STRINGS size balance speed none de
 if(NOT NSS_CUDA_COMPRESS STREQUAL "default")
   if(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 12.8)
     target_compile_options(nss_cuda_core PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--compress-mode=${NSS_CUDA_COMPRESS}>)
+    if(NSS_CUDA_MATHDX)
+      target_compile_options(nss_cuda_solverdx PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--compress-mode=${NSS_CUDA_COMPRESS}>)
+      target_link_options(nss_cuda_solverdx PRIVATE $<DEVICE_LINK:--compress-mode=${NSS_CUDA_COMPRESS}>)
+    endif()
   else()
     message(STATUS "NSSFactory CUDA: nvcc ${CMAKE_CUDA_COMPILER_VERSION} has no --compress-mode; fatbins use its default")
   endif()
