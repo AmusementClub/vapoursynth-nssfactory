@@ -25,5 +25,9 @@ void upload_staged(const void* staging, std::size_t row_bytes, int rows, void* d
 void begin_download(const void* device, std::size_t device_pitch, std::size_t row_bytes, int rows, void* staging,
                     cudaStream_t stream);
 void finish_download(const void* staging, std::size_t row_bytes, int rows, void* host, std::ptrdiff_t host_stride);
+// Host rows into a frame being output (as finish_download: non-temporal
+// stores where the target has them).
+void copy_to_frame(const void* src, std::ptrdiff_t src_stride, void* dst, std::ptrdiff_t dst_stride, std::size_t row_bytes,
+                   int rows);
 
 }  // namespace nss_cuda

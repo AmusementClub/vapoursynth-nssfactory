@@ -1005,8 +1005,8 @@ const VSFrame* rolling_frame(ImageData& d, int n, VSFrameContext* ctx, VSCore* c
     owned.freeFrame(src);
     for (int c = 0; c < d.planes; ++c) {
         const std::size_t row_bytes = static_cast<std::size_t>(d.width[c]) * sizeof(float);
-        vsh::bitblt(api->getWritePtr(dst, c), api->getStride(dst, c), chunk->plane(n - chunk->start, c), row_bytes,
-                    row_bytes, d.height[c]);
+        copy_to_frame(chunk->plane(n - chunk->start, c), static_cast<std::ptrdiff_t>(row_bytes), api->getWritePtr(dst, c),
+                      api->getStride(dst, c), row_bytes, d.height[c]);
     }
     return owned.keep(dst);
 }

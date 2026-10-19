@@ -1503,8 +1503,8 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
     for (int plane = 0; plane < d->vi.format.numPlanes; ++plane) {
         const GroupPlane& p = d->planes[plane];
         const std::size_t row_bytes = static_cast<std::size_t>(p.width) * sizeof(float);
-        vsh::bitblt(vsapi->getWritePtr(dst, plane), vsapi->getStride(dst, plane),
-                    chunk->plane(n - chunk->start, plane), row_bytes, row_bytes, p.height);
+        copy_to_frame(chunk->plane(n - chunk->start, plane), static_cast<std::ptrdiff_t>(row_bytes),
+                      vsapi->getWritePtr(dst, plane), vsapi->getStride(dst, plane), row_bytes, p.height);
     }
     return frames.keep(dst);
 }
