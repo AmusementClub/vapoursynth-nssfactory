@@ -70,6 +70,7 @@ builds only the CUDA plugin, without Highway or the CPU kernels.
 | `NSS_ENABLE_CUDA` | OFF | Build the CUDA plugin. |
 | `NSS_BUILD_CPU` | ON | Build the CPU plugin and its tests. |
 | `NSS_CUDA_ARCHITECTURES` | see above | CUDA architectures to compile for. |
+| `NSS_CUDA_COMPRESS` | `size` | Fatbin compression (`nvcc --compress-mode`, CUDA 12.8 or newer): `size`, `balance`, `speed`, `none`, or `default` for nvcc's own choice. `size` makes the plugin about a quarter of the default size and the first frame a few milliseconds slower. |
 | `NSS_HWY_TARGET_MODE` | `dynamic` | `avx2`, `avx3`, `neon` pin one target; `portable-test` (Clang only) is a diagnostic build, not a release mode. |
 | `NSS_AVX2_DEFAULTS` | ON on x86 | The validated AVX2 kernel ports. OFF keeps the reference routes. |
 | `NSS_AVX2_EXPERIMENT` | 0 | Bitmask of experimental AVX2 candidates (none by default). |

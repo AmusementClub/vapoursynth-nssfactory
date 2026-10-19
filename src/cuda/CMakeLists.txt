@@ -129,6 +129,19 @@ set_source_files_properties(runtime/device.cpp PROPERTIES COMPILE_DEFINITIONS
   "NSS_CUDA_ARCH_STRING=\"${NSS_CUDA_ARCH_STRING}\";NSS_CUDA_CUBIN_ARCHS=${NSS_CUDA_CUBIN_ARCHS_CSV};NSS_CUDA_PTX_ARCHS=${NSS_CUDA_PTX_ARCHS_CSV}")
 target_link_libraries(nss_cuda_core PUBLIC nss_frontend CUDA::cudart_static)
 
+# Fatbin compression (nvcc 12.8+). "size" made the four-architecture plugin
+# 90 MB -> 20 MB for about 5 ms more on the first frame (lazy loading;
+# docs/cuda-tools-all-20261017.md N15). "default" leaves nvcc's choice.
+set(NSS_CUDA_COMPRESS "size" CACHE STRING "nvcc --compress-mode: size, balance, speed, none or default")
+set_property(CACHE NSS_CUDA_COMPRESS PROPERTY STRINGS size balance speed none default)
+if(NOT NSS_CUDA_COMPRESS STREQUAL "default")
+  if(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 12.8)
+    target_compile_options(nss_cuda_core PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--compress-mode=${NSS_CUDA_COMPRESS}>)
+  else()
+    message(STATUS "NSSFactory CUDA: nvcc ${CMAKE_CUDA_COMPILER_VERSION} has no --compress-mode; fatbins use its default")
+  endif()
+endif()
+
 # VapourSynth nodes, one per filter (docs/cuda-plan.md phase order).
 add_library(nss_cuda SHARED
   plugin.cpp
