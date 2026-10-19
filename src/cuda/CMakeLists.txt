@@ -113,9 +113,10 @@ set(NSS_CUDA_RUNTIME_SOURCES
 )
 
 # Optional cuSolverDx (MathDx package root, the directory holding include/
-# and lib/: nvidia/mathdx/<version>): NCSR's eigen step for groups of 17 to
-# 32 runs heev (docs/cuda-tools-all-20261017.md T20). The library is linked
-# as LTO IR, so ncsr/kernels.cu is compiled on its own with separable
+# and lib/: nvidia/mathdx/<version>): the eigen steps of NCSR's groups of 17
+# to 32 and of TWSC's caps of 17 to 32 run heev (docs/cuda-tools-all-20261017.md,
+# docs/cuda-r2-gaps-20261019.md T20). The library is linked as LTO IR, so
+# ncsr/kernels.cu and twsc/kernels.cu are compiled on their own with separable
 # compilation and device-linked with -dlto; every other kernel keeps the
 # whole-program build.
 set(NSS_CUDA_MATHDX "" CACHE PATH "MathDx package root for cuSolverDx (empty: off)")
@@ -137,8 +138,8 @@ if(NSS_CUDA_MATHDX)
     endif()
     set(_nss_dx_link "${_nss_dx_fatbin}")
   endif()
-  list(REMOVE_ITEM NSS_CUDA_CORE_SOURCES ncsr/kernels.cu)
-  add_library(nss_cuda_solverdx STATIC ncsr/kernels.cu)
+  list(REMOVE_ITEM NSS_CUDA_CORE_SOURCES ncsr/kernels.cu twsc/kernels.cu)
+  add_library(nss_cuda_solverdx STATIC ncsr/kernels.cu twsc/kernels.cu)
   set_target_properties(nss_cuda_solverdx PROPERTIES
     CUDA_ARCHITECTURES "${NSS_CUDA_ARCH_LIST}"
     CUDA_RUNTIME_LIBRARY None
@@ -158,7 +159,7 @@ if(NSS_CUDA_MATHDX)
   set_target_properties(nss_cuda_solverdx PROPERTIES INTERPROCEDURAL_OPTIMIZATION ON)
   target_link_options(nss_cuda_solverdx PRIVATE $<DEVICE_LINK:${_nss_dx_link}>)
   target_link_libraries(nss_cuda_solverdx PUBLIC nss_frontend CUDA::cudart_static)
-  message(STATUS "NSSFactory CUDA: cuSolverDx from ${NSS_CUDA_MATHDX} (NCSR eigen step)")
+  message(STATUS "NSSFactory CUDA: cuSolverDx from ${NSS_CUDA_MATHDX} (NCSR and TWSC eigen steps)")
 endif()
 
 # nss_cuda_core: runtime + all device code, static so tests/cuda can link it.
