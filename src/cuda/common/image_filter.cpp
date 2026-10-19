@@ -187,6 +187,32 @@ struct Frame {
         return s.fixed_den.as<unsigned>() + static_cast<std::size_t>(d.geometry[c]) * d.max_frames * d.plane_floats;
     }
     std::size_t floats(int c) const { return static_cast<std::size_t>(d.width[c]) * d.height[c]; }
+    // The parts of a window buffer that hold samples, as (offset, floats) runs
+    // with neighbours merged: a frame's slots are 3 planes of plane_floats,
+    // and plane c fills the first floats(c) of its slot (one run for RGB, a
+    // run per frame for gray). Whole-window copies and elementwise passes
+    // take these, so they never read the unused slots (gray: two of three).
+    std::vector<std::pair<std::size_t, std::size_t>> runs() const {
+        std::vector<std::pair<std::size_t, std::size_t>> out;
+        for (int t = 0; t < count; ++t) {
+            for (int c = 0; c < d.planes; ++c) {
+                const std::size_t at = (static_cast<std::size_t>(t) * 3 + c) * d.plane_floats, n = floats(c);
+                if (!out.empty() && out.back().first + out.back().second == at) {
+                    out.back().second += n;
+                } else {
+                    out.emplace_back(at, n);
+                }
+            }
+        }
+        return out;
+    }
+    // basic = input over the window's samples.
+    void copy_window(const DeviceBuffer& to, const DeviceBuffer& from) const {
+        for (const auto& [at, n] : runs()) {
+            NSS_CUDA_CHECK(cudaMemcpyAsync(to.as<float>() + at, from.as<float>() + at, n * sizeof(float),
+                                           cudaMemcpyDeviceToDevice, s.stream));
+        }
+    }
 };
 
 // Planes of equal geometry starting at `first` (the CPU grouping order).
@@ -494,15 +520,16 @@ void run_twsc(Frame& f) {
     const ImageData& d = f.d;
     Slot& s = f.s;
     const nss::TwscImageOptions& o = d.twsc;
-    const std::size_t window_floats = static_cast<std::size_t>(f.count) * 3 * d.plane_floats;
     const std::size_t channel_bytes = static_cast<std::size_t>(d.max_frames) * d.plane_floats * sizeof(float);
-    NSS_CUDA_CHECK(cudaMemcpyAsync(s.basic.get(), s.input.get(), window_floats * sizeof(float),
-                                   cudaMemcpyDeviceToDevice, s.stream));
+    const auto runs = f.runs();
+    f.copy_window(s.basic, s.input);
     NSS_CUDA_CHECK(cudaMemsetAsync(s.stalled.get(), 0, sizeof(int), s.stream));
     for (int iteration = 0; iteration < o.iterations; ++iteration) {
         const bool last = iteration + 1 == o.iterations;
         if (iteration > 0 && o.delta != 0) {
-            iter_regularize(s.basic.as<float>(), s.input.as<float>(), window_floats, static_cast<float>(o.delta), s.stream);
+            for (const auto& [at, n] : runs) {
+                iter_regularize(s.basic.as<float>() + at, s.input.as<float>() + at, n, static_cast<float>(o.delta), s.stream);
+            }
         }
         std::array<bool, 3> used{};
         for (int first = 0; first < d.planes; ++first) {
@@ -633,11 +660,10 @@ void run_twsc(Frame& f) {
 void run_nlh(Frame& f, const nss::NlhImageOptions& o) {
     const ImageData& d = f.d;
     Slot& s = f.s;
-    const std::size_t window_floats = static_cast<std::size_t>(f.count) * 3 * d.plane_floats;
-    NSS_CUDA_CHECK(cudaMemcpyAsync(s.basic.get(), s.input.get(), window_floats * sizeof(float),
-                                   cudaMemcpyDeviceToDevice, s.stream));
+    const auto runs = f.runs();
+    f.copy_window(s.basic, s.input);
     for (int iteration = 0; iteration < o.basic_iterations; ++iteration) {
-        nlh_mix(s.basic.as<float>(), s.input.as<float>(), window_floats, o.basic_mix, s.stream);
+        for (const auto& [at, n] : runs) nlh_mix(s.basic.as<float>() + at, s.input.as<float>() + at, n, o.basic_mix, s.stream);
         run_pass(f, s.basic, o, 0, false);
         for (int t = 0; t < f.count; ++t) {
             for (int c = 0; c < d.planes; ++c) {
