@@ -5,9 +5,10 @@
 //   - the dictionary starts from DCT atoms plus LCG-sampled patches and gets
 //     one K-SVD round on up to 256 sample patches (OMP with sparsity 8, then a
 //     rank-one update per atom),
-//   - per cluster, 16 proximal-gradient rounds of simultaneous sparse coding:
-//     a gradient step on the centered patches followed by the group soft
-//     threshold over the cluster's rows of coefficients,
+//   - per cluster, nss::kLsscCodingRounds rounds of preconditioned FISTA
+//     (nss/params/lssc.hpp): a gradient step through P = D^T M from the
+//     extrapolated point, followed by the group soft threshold over the
+//     cluster's rows of coefficients at the per-atom penalties,
 //   - reconstruction D A + mean with the CPU's sanity fallbacks.
 // Patch-order sums (centroids, row norms) are taken in ascending patch order
 // by one thread each, so results are run-to-run identical.
@@ -15,6 +16,7 @@
 
 #include "cuda/common/aggregate.hpp"
 #include "cuda/common/match.hpp"
+#include "nss/params/lssc.hpp"
 
 #include <cuda_runtime.h>
 
@@ -24,7 +26,7 @@ namespace nss_cuda {
 
 inline constexpr int kLsscSamples = 256;   // K-SVD sample patches
 inline constexpr int kLsscSupport = 32;    // samples per atom update (nss::kSvdMaxN)
-inline constexpr int kLsscRounds = 16;     // proximal-gradient rounds
+inline constexpr int kLsscRounds = nss::kLsscCodingRounds;  // proximal-gradient rounds
 
 struct LsscWork {
     const float* plane;      // source plane (pitch = width)
@@ -38,7 +40,8 @@ struct LsscWork {
     int samples;             // min(256, np)
     float* patches;          // np * m: packed patches, centered in place for the coding
     float* values;           // np * m: residuals, then the reconstruction
-    float* coef;             // np * atoms: coefficients, patch-major
+    float* coef;             // np * atoms: coefficients of the last round, patch-major
+    float* coef_last;        // np * atoms: those of the round before; a round writes its own here
     float* mean;             // np
     float* dict;             // atoms * m, atom-major
     float* centroids;        // clusters * m
@@ -46,7 +49,11 @@ struct LsscWork {
     int* counts;             // clusters
     int* members;            // np: patch indices ordered by (cluster, patch)
     int* offsets;            // clusters + 1
-    float* scale;            // clusters * atoms
+    float* scale;            // clusters * atoms: group soft-threshold factors of coef
+    float* scale_last;       // clusters * atoms: those of coef_last; a round's scale step writes here
+    float* gradient;         // atoms * m, atom-major: P = D^T M (rows M d_a)
+    float* lambda_scale;     // atoms: penalty factors ||M d_a||
+    float* factor;           // m * m: Cholesky factor of D D^T + delta I, then 4 floats of state
     int* flags;              // clusters * 2: exploded, stopped; then 4 ints of scratch
     float* sample_y;         // samples * m
     float* sample_a;         // atoms * samples (column per sample)
@@ -60,6 +67,8 @@ struct LsscWork {
 
 // Device floats of the per-plane work arrays for np patches of m pixels.
 std::size_t lssc_work_bytes(int m, int np);
+// Floats of w.factor: the m x m factor and 4 floats of state.
+inline std::size_t lssc_precondition_floats(int m) { return static_cast<std::size_t>(m) * m + 4; }
 
 // Coding tiles (64 members of one cluster at most) for np patches in
 // `clusters` clusters: at most np / 64 rounded up plus one per cluster.
@@ -77,14 +86,21 @@ void lssc_cluster(const LsscWork& w, int rounds, int* state, cudaStream_t stream
 // then every atom normalized.
 void lssc_patch_atoms(const LsscWork& w, const int* sources, int first, cudaStream_t stream);
 void lssc_ksvd(const LsscWork& w, cudaStream_t stream);
-// Power-iteration estimate L of ||D||^2 into *lipschitz (device float); the
-// coding rounds take their step 0.9 / L from it.
+// Power-iteration estimate L of ||D||^2 into *lipschitz (device float).
 void lssc_lipschitz(const LsscWork& w, float* work, float* lipschitz, cudaStream_t stream);
+// The coding preconditioner (nss::lssc_prepare_context's, in its order):
+// gradient, lambda_scale, and *lipschitz replaced by L' (the coding rounds
+// take their step 0.9 / L' from it). Without a usable factor: D, 1 and L.
+void lssc_precondition(const LsscWork& w, float* lipschitz, cudaStream_t stream);
 
 // Coding: center the patches, run the rounds, reconstruct into values and
 // fill the aggregation records.
 void lssc_center(const LsscWork& w, cudaStream_t stream);
-void lssc_round(const LsscWork& w, int round, const float* lipschitz, float sigma, cudaStream_t stream);
+// Round `round` from the point coef + beta (coef - coef_last) (as thresholded
+// codes; beta = 0 reads coef alone): writes the new codes into coef_last and
+// their scales into scale_last. The caller then swaps coef / coef_last and
+// scale / scale_last.
+void lssc_round(const LsscWork& w, int round, float beta, const float* lipschitz, float sigma, cudaStream_t stream);
 void lssc_reconstruct(const LsscWork& w, cudaStream_t stream);
 
 }  // namespace nss_cuda

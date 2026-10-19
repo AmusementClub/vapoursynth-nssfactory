@@ -55,11 +55,12 @@ private:
 
 // A plane runs on the streams of its slot: `load` uploads it, a `front`
 // stream packs and clusters it (k-means, queued without host round trips),
-// `side` builds the dictionary (atoms, K-SVD, Lipschitz estimate) meanwhile,
-// and `stream` codes and aggregates once both are done; `copy` downloads the
-// result. Where the limit leaves room the buffers the front end writes and the
-// coding reads (input, patches, assignments and member lists, dictionary,
-// Lipschitz estimate, k-means scratch) are held up to three times, each set
+// `side` builds the dictionary (atoms, K-SVD, Lipschitz estimate, coding
+// preconditioner) meanwhile, and `stream` codes and aggregates once both are
+// done; `copy` downloads the result. Where the limit leaves room the buffers
+// the front end writes and the coding reads (input, patches, assignments and
+// member lists, dictionary, Lipschitz bound, preconditioner, k-means scratch)
+// are held up to three times, each set
 // with a front stream of its own, and planes take them in turn (`depth`): the
 // front ends of the next planes then run while the stream still codes, and
 // two planes can cluster at once (k-means is a chain of small kernels that
@@ -73,9 +74,10 @@ struct Slot {
     Event uploaded[kMaxDepth], coded[kMaxDepth];
     DeviceBuffer input[kMaxDepth], patches[kMaxDepth], dict[kMaxDepth], assign[kMaxDepth], members[kMaxDepth],
         offsets[kMaxDepth], power[kMaxDepth];
+    DeviceBuffer gradient[kMaxDepth], lambda_scale[kMaxDepth], factor[kMaxDepth];  // the coding preconditioner
     DeviceBuffer centroids[kMaxDepth], counts[kMaxDepth], chunks[kMaxDepth];  // k-means scratch; counts + 2 state ints
     DeviceBuffer num, den, out;
-    DeviceBuffer values, coef, mean, scale, flags;
+    DeviceBuffer values, coef, coef_last, mean, scale, scale_last, flags;
     DeviceBuffer sample_y, sample_a, sample_r, ksvd_sync, tiles, partial, meta, sources;
     int turn = 0;  // the buffer set of the next plane
     std::unique_ptr<OrderedAggregator> aggregator;
@@ -158,6 +160,7 @@ LsscWork make_work(const LsscData& d, Slot& s, int plane, int b) {
     w.patches = s.patches[b].as<float>();
     w.values = s.values.as<float>();
     w.coef = s.coef.as<float>();
+    w.coef_last = s.coef_last.as<float>();
     w.mean = s.mean.as<float>();
     w.dict = s.dict[b].as<float>();
     w.centroids = s.centroids[b].as<float>();
@@ -166,6 +169,10 @@ LsscWork make_work(const LsscData& d, Slot& s, int plane, int b) {
     w.members = s.members[b].as<int>();
     w.offsets = s.offsets[b].as<int>();
     w.scale = s.scale.as<float>();
+    w.scale_last = s.scale_last.as<float>();
+    w.gradient = s.gradient[b].as<float>();
+    w.lambda_scale = s.lambda_scale[b].as<float>();
+    w.factor = s.factor[b].as<float>();
     w.flags = s.flags.as<int>();
     w.sample_y = s.sample_y.as<float>();
     w.sample_a = s.sample_a.as<float>();
@@ -181,7 +188,7 @@ LsscWork make_work(const LsscData& d, Slot& s, int plane, int b) {
 void denoise_plane(const LsscData& d, Slot& s, int plane, float sigma, int b) {
     cudaStream_t stream = s.stream, front = s.front[b], side = s.side;
     const PlaneShape& p = d.planes[plane];
-    const LsscWork w = make_work(d, s, plane, b);
+    LsscWork w = make_work(d, s, plane, b);
     NSS_CUDA_CHECK(cudaStreamWaitEvent(front, s.uploaded[b], 0));
     NSS_CUDA_CHECK(cudaStreamWaitEvent(front, s.coded[b], 0));
     lssc_pack(w, front);
@@ -206,6 +213,7 @@ void denoise_plane(const LsscData& d, Slot& s, int plane, float sigma, int b) {
         lssc_patch_atoms(w, s.sources.as<int>(), dct, side);
         if (w.np >= 2) lssc_ksvd(w, side);
         lssc_lipschitz(w, power, lipschitz, side);
+        lssc_precondition(w, lipschitz, side);
         NSS_CUDA_CHECK(cudaEventRecord(s.dictionary, side));
     }
     {
@@ -219,7 +227,11 @@ void denoise_plane(const LsscData& d, Slot& s, int plane, float sigma, int b) {
         NSS_CUDA_RANGE("lssc.code");
         lssc_center(w, stream);
         NSS_CUDA_CHECK(cudaMemsetAsync(w.flags, 0, 2 * static_cast<std::size_t>(w.clusters) * sizeof(int), stream));
-        for (int round = 0; round < kLsscRounds; ++round) lssc_round(w, round, lipschitz, sigma, stream);
+        for (int round = 0; round < kLsscRounds; ++round) {
+            lssc_round(w, round, round > 0 ? nss::kLsscMomentum[round - 1] : 0.f, lipschitz, sigma, stream);
+            std::swap(w.coef, w.coef_last);
+            std::swap(w.scale, w.scale_last);
+        }
         lssc_reconstruct(w, stream);
     }
     NSS_CUDA_RANGE("lssc.aggregate");
@@ -347,14 +359,19 @@ std::unique_ptr<Slot> make_slot(const LsscData& d) {
         slot->centroids[b] = floats(clusters * m);
         slot->counts[b] = ints(clusters + 2);
         if (m <= 64) slot->chunks[b] = ints(np + 64);
+        slot->gradient[b] = floats(atoms * m);
+        slot->lambda_scale[b] = floats(atoms);
+        slot->factor[b] = floats(lssc_precondition_floats(static_cast<int>(m)));
     }
     slot->num = DeviceBuffer(plane_bytes, d.budget);
     slot->den = DeviceBuffer(plane_bytes, d.budget);
     slot->out = DeviceBuffer(plane_bytes, d.budget);
     slot->values = floats(np * m);
     slot->coef = floats(np * atoms);
+    slot->coef_last = floats(np * atoms);
     slot->mean = floats(np);
     slot->scale = floats(clusters * atoms);
+    slot->scale_last = floats(clusters * atoms);
     slot->flags = ints(2 * clusters + 4);
     slot->sample_y = floats(samples * m);
     slot->sample_a = floats(atoms * samples);
@@ -429,7 +446,9 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     }
     const std::size_t np = static_cast<std::size_t>(d.max_np), m = static_cast<std::size_t>(d.block_size) * d.block_size;
     const std::size_t atoms = std::min<std::size_t>(kAtoms, np), clusters = std::min<std::size_t>(kClusters, np);
-    const std::size_t extra_set = plane_bytes + (np * m + atoms * m + kAtoms + 257 + clusters * m) * sizeof(float) +
+    const std::size_t extra_set = plane_bytes +
+                                  (np * m + 2 * atoms * m + atoms + lssc_precondition_floats(static_cast<int>(m)) +
+                                   kAtoms + 257 + clusters * m) * sizeof(float) +
                                   (2 * np + clusters + 1 + clusters + 2 + (m <= 64 ? np + 64 : 0)) * sizeof(int);
     while (d.max_np > 0 && d.depth < kMaxDepth && room / streams >= extra_set) {
         ++d.depth;

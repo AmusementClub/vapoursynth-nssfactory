@@ -40,19 +40,55 @@ capped by the actual patch count; they are intentionally not exposed.
 
 Mairal, Bach, Ponce, Sapiro & Zisserman, *Non-local Sparse Models for Image
 Restoration*, ICCV 2009. This implementation: k-means clustering of reference
-patches, per-cluster dictionary update (K-SVD-style step, `ksvd_iters=1`), and
-simultaneous OMP coding with mixed-precision screening (FP32 correlation
-screen, ordered FP64 refinement and residual). The dictionary update is this
-repository's own formulation, not Mairal's ODL, by design.
+patches, one dictionary per plane (DCT atoms plus sampled patches, one
+K-SVD-style update with OMP at sparsity 8, mixed-precision screening: FP32
+correlation screen, ordered FP64 refinement and residual), then each cluster
+coded jointly by an l1,2 group-sparse problem (below). The dictionary update
+is this repository's own formulation, not Mairal's ODL, by design.
+
+## Model version 3: the cluster coding
+
+Each cluster's centered patches Y are coded against the dictionary D by 12
+rounds of accelerated proximal gradient (FISTA) on
+
+```text
+0.5 (Y - D A)^T M (Y - D A) + sum_a lambda_a ||A_a||_2
+M = c (D D^T + delta I)^-1,  delta = 3 s,  c = s + delta,  s = trace(D D^T) / m
+lambda_a = (sigma / 255) sqrt(cluster size) ||M d_a||
+```
+
+M weighs a direction of eigenvalue e of `D D^T` by `(s + delta) / (e + delta)`
+(1 at the mean eigenvalue). The learned dictionaries are ill-conditioned
+(eigenvalues about 0.34 to 27 at the defaults), and model version 2 (16 plain
+ISTA rounds on the unweighted problem) stopped far from its solution at low
+sigma: strokes lost contrast and white text darkened by about 12 levels at the
+default sigma. Version 3 reaches the converged quality of the old objective in
+12 rounds: on the development control set (three DIV2K crops and a synthetic
+stroke image, two noise seeds), against version 2, PSNR +12.3 / +4.9 / +0.75 /
+-0.14 dB on gray and +9.9 / +4.4 / +0.69 / -0.33 dB on RGB at sigma 1 / 3 /
+10 / 25. The loss at sigma 25 is the objective's, not the solver's: the old
+objective solved to convergence loses the same 0.14 dB on gray. At sigma 1
+the output is still below the noisy input on every control image, as with
+version 2; the penalty is not calibrated for very low noise.
+
+The preconditioner is built once per plane (`D D^T`, a Cholesky factor of
+`D D^T + delta I`, two triangular solves per atom); the step is 0.9 / L' with
+`L' = c L / (L + delta)` from the power estimate L of `||D||^2`. Constants
+and the momentum table are in `include/nss/params/lssc.hpp`, shared by both
+plugins. The model semantic version (`include/nss/contracts.hpp`) is 3; LSSC
+stamps no frame properties, so outputs of the two versions are told apart only
+by the plugin build.
 
 ## Defaults rationale and performance
 
-`block=8, step=8, sigma=3`. ~369 ms per 1080p GRAYS frame single-core
-(~2.7 fps). The cost splits between the clustering/matching passes (scaling
-with `1/step^2`) and the per-cluster ISTA/dictionary iterations (scaling with
-patch count and atoms). An opt-in Apple Silicon SME matrix leaf exists for
-eligible builds (`-DNSS_ENABLE_LSSC_SME=ON`); the default path is Highway-only
-and deterministic.
+`block=8, step=8, sigma=3`. About 330 ms per 1080p GRAYS frame on one Ryzen 9
+5950X core (version 2: 410 ms on the same core). The cost splits between the
+clustering/matching passes (scaling with `1/step^2`) and the per-cluster
+coding/dictionary iterations (scaling with patch count and atoms). The coding
+keeps the previous iterate: the workspace holds `min(256, patches)` more
+floats per patch than version 2. An opt-in Apple Silicon SME matrix leaf exists
+for eligible builds (`-DNSS_ENABLE_LSSC_SME=ON`); the default path is
+Highway-only and deterministic.
 
 ## Pitfalls
 

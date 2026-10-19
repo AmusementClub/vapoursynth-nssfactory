@@ -80,8 +80,13 @@ void LsscGroupSoft(float* A, int atoms, int n, int lda_a, float lambda) {
     }
 }
 
+// A = A + mu G, then the group soft threshold of every atom row at
+// lambda * lambda_scale[row] (lambda_scale null: 1). With `previous`, the
+// same pass extrapolates: X = the thresholded A, A = X + beta (X - previous)
+// (beta = 0: A = X, previous not read), previous = X.
 static bool LsscUpdateGroupSoft(float* A, const float* G, int atoms, int n, float mu, float lambda,
-                                float absolute_limit, int* active, int* active_count) {
+                                const float* lambda_scale, float absolute_limit, int* active, int* active_count,
+                                float* previous = nullptr, float beta = 0.f) {
     const float lam = lambda < 0.f ? 0.f : lambda;
     const hn::ScalableTag<float> d;
     const int N = static_cast<int>(hn::Lanes(d));
@@ -121,13 +126,15 @@ static bool LsscUpdateGroupSoft(float* A, const float* G, int atoms, int n, floa
     int s = 0;
     for (; s + N <= atoms; s += N) {
         const auto nrm = hn::Sqrt(hn::LoadU(d, nrm2 + s));
-        const auto keep = hn::Gt(nrm, vlam);
+        const auto row_lam = lambda_scale ? hn::Mul(vlam, hn::LoadU(d, lambda_scale + s)) : vlam;
+        const auto keep = hn::Gt(nrm, row_lam);
         const auto denom = hn::IfThenElse(keep, nrm, one);
-        hn::StoreU(hn::IfThenElse(keep, hn::Sub(one, hn::Div(vlam, denom)), z), d, scale + s);
+        hn::StoreU(hn::IfThenElse(keep, hn::Sub(one, hn::Div(row_lam, denom)), z), d, scale + s);
     }
     for (; s < atoms; ++s) {
         const float nrm = std::sqrt(nrm2[s]);
-        scale[s] = (nrm <= lam) ? 0.f : (1.f - lam / nrm);
+        const float row_lam = lambda_scale ? lam * lambda_scale[s] : lam;
+        scale[s] = (nrm <= row_lam) ? 0.f : (1.f - row_lam / nrm);
     }
     // A zero scale makes the whole atom row exactly (signed) zero below.
     int count = 0;
@@ -138,29 +145,42 @@ static bool LsscUpdateGroupSoft(float* A, const float* G, int atoms, int n, floa
 
     bool exploded = false;
     const auto vlim = hn::Set(d, absolute_limit);
+    const auto vbeta = hn::Set(d, beta);
     for (int j = 0; j < n; ++j) {
         float* aj = A + static_cast<std::size_t>(j) * static_cast<std::size_t>(atoms);
+        float* pj = previous ? previous + static_cast<std::size_t>(j) * static_cast<std::size_t>(atoms) : nullptr;
         int i = 0;
         for (; i + N <= atoms; i += N) {
             const auto scaled = hn::Mul(hn::LoadU(d, aj + i), hn::LoadU(d, scale + i));
-            hn::StoreU(scaled, d, aj + i);
             if (!hn::AllTrue(d, hn::And(hn::IsFinite(scaled), hn::Le(hn::Abs(scaled), vlim)))) {
                 exploded = true;
             }
+            if (pj && beta != 0.f) {
+                hn::StoreU(hn::MulAdd(vbeta, hn::Sub(scaled, hn::LoadU(d, pj + i)), scaled), d, aj + i);
+            } else {
+                hn::StoreU(scaled, d, aj + i);
+            }
+            if (pj) hn::StoreU(scaled, d, pj + i);
         }
         for (; i < atoms; ++i) {
-            aj[i] *= scale[i];
-            if (!is_finite_bits(aj[i]) || std::fabs(aj[i]) > absolute_limit) {
+            const float scaled = aj[i] * scale[i];
+            if (!is_finite_bits(scaled) || std::fabs(scaled) > absolute_limit) {
                 exploded = true;
             }
+            aj[i] = pj && beta != 0.f ? std::fma(beta, scaled - pj[i], scaled) : scaled;
+            if (pj) pj[i] = scaled;
         }
     }
     return exploded;
 }
 
+// Coding of one cluster (params/lssc.hpp): `gradient` is P (atoms x m,
+// column-major), `lambda_scale` the per-atom penalty factors (null: 1) and
+// `lipschitz` the step bound L' of the problem P defines.
 static void LsscReconstructImpl(float* patches, int m, int n, int lda, const float* dictionary, int atoms, int ldd,
-                                const float* transpose, float lipschitz, float sigma, float* work, int work_floats, bool avx2_gemm = false) {
-    if (!patches || !dictionary || !transpose || m < 1 || n < 1 || atoms < 1 || lda < m || ldd < m) {
+                                const float* gradient, const float* lambda_scale, float lipschitz, float sigma,
+                                float* work, int work_floats, bool avx2_gemm = false) {
+    if (!patches || !dictionary || !gradient || m < 1 || n < 1 || atoms < 1 || lda < m || ldd < m) {
         return;
     }
     const int need = lssc_reconstruct_prepared_work_floats(m, n, atoms);
@@ -174,7 +194,8 @@ static void LsscReconstructImpl(float* patches, int m, int n, int lda, const flo
     float* A = mean + n;
     float* R = A + atoms * n;
     float* G = R + m * n;
-    float* gemm_work = G + atoms * n;
+    float* previous = G + atoms * n;  // the last proximal iterate
+    float* gemm_work = previous + atoms * n;
     const int gemm_work_floats = need - static_cast<int>(gemm_work - buf);
 
     const float invm = 1.f / static_cast<float>(m);
@@ -209,14 +230,18 @@ static void LsscReconstructImpl(float* patches, int m, int n, int lda, const flo
     const float mu = 0.9f / lipschitz;
     const float lam_obj = std::fabs(sigma) * std::sqrt(static_cast<float>(n));
     const float lam = mu * lam_obj;
-    constexpr int kIters = 16;
     constexpr float kALim = 1.0e4f;
     bool exploded = false;
     // Group soft-thresholding zeroes whole atom rows of A. D*A then only
     // needs the active atoms: the GEMM accumulates each output along k with
     // one FMA chain, and skipping exact zero coefficients leaves every partial
-    // sum unchanged (up to the sign of an exact zero result).
+    // sum unchanged (up to the sign of an exact zero result). A holds the
+    // extrapolated point Z = X + beta (X - X_prev), whose rows are zero where
+    // both iterates' rows are: its active rows are the union of the two sets.
     nss::ResourceVector<int> active(static_cast<std::size_t>(atoms));
+    nss::ResourceVector<unsigned char> live(static_cast<std::size_t>(2) * static_cast<std::size_t>(atoms), 0);
+    unsigned char* live_now = live.data();
+    unsigned char* live_previous = live_now + atoms;
     nss::ResourceVector<float> packed_dictionary;
     int active_count = atoms;
     auto product = [&]() {
@@ -228,7 +253,7 @@ static void LsscReconstructImpl(float* patches, int m, int n, int lda, const flo
             packed_dictionary.resize(static_cast<std::size_t>(m) * static_cast<std::size_t>(atoms));
         }
         float* dact = packed_dictionary.data();
-        float* aact = G;  // G is dead until the following D^T*R product.
+        float* aact = G;  // G is dead until the following P*R product.
         for (int t = 0; t < active_count; ++t) {
             const int atom = active[t];
             std::memcpy(dact + static_cast<std::size_t>(t) * m, dictionary + static_cast<std::size_t>(atom) * ldd,
@@ -242,11 +267,11 @@ static void LsscReconstructImpl(float* patches, int m, int n, int lda, const flo
         lssc_gemm_nn(m, n, active_count, dact, m, aact, active_count > 0 ? active_count : 1, R, m, gemm_work,
                      gemm_work_floats, avx2_gemm);
     };
-    for (int it = 0; it < kIters; ++it) {
-        // A starts at zero, so the first residual is the centered input.
+    for (int it = 0; it < kLsscCodingRounds; ++it) {
+        // Z starts at zero, so the first residual is the centered input.
         // Avoid the D*0 product and the following full residual write/read.
         if (it == 0) {
-            lssc_gemm_nn(atoms, n, m, transpose, atoms, patches, lda, G, atoms, gemm_work,
+            lssc_gemm_nn(atoms, n, m, gradient, atoms, patches, lda, G, atoms, gemm_work,
                          gemm_work_floats, avx2_gemm);
         } else {
             product();
@@ -261,14 +286,32 @@ static void LsscReconstructImpl(float* patches, int m, int n, int lda, const flo
                     rj[i] = yj[i] - rj[i];
                 }
             }
-            lssc_gemm_nn(atoms, n, m, transpose, atoms, R, m, G, atoms, gemm_work, gemm_work_floats, avx2_gemm);
+            lssc_gemm_nn(atoms, n, m, gradient, atoms, R, m, G, atoms, gemm_work, gemm_work_floats, avx2_gemm);
         }
-        exploded = LsscUpdateGroupSoft(A, G, atoms, n, mu, lam, kALim, active.data(), &active_count);
+        // Every round but the last extrapolates in the threshold pass
+        // (kLsscMomentum[0] = 0: previous is written before it is read).
+        const bool last = it + 1 == kLsscCodingRounds;
+        const float beta = last ? 0.f : kLsscMomentum[it];
+        exploded = LsscUpdateGroupSoft(A, G, atoms, n, mu, lam, lambda_scale, kALim, active.data(), &active_count,
+                                       last ? nullptr : previous, beta);
         if (exploded) {
             std::memset(A, 0, static_cast<std::size_t>(atoms) * static_cast<std::size_t>(n) * sizeof(float));
             active_count = 0;
             break;
         }
+        if (last) {
+            break;  // A holds the last iterate
+        }
+        std::memset(live_now, 0, static_cast<std::size_t>(atoms));
+        for (int t = 0; t < active_count; ++t) live_now[active[t]] = 1;
+        if (beta != 0.f) {
+            int count = 0;
+            for (int i = 0; i < atoms; ++i) {
+                if (live_now[i] || live_previous[i]) active[count++] = i;
+            }
+            active_count = count;
+        }
+        std::swap(live_now, live_previous);
     }
     product();
     const auto vlim = hn::Set(d, 8.f);
@@ -304,17 +347,16 @@ void LsscReconstruct(float* patches, int m, int n, int lda, const float* D, int 
         store.assign(static_cast<std::size_t>(need), 0.f);
         buf = store.data();
     }
-    float* transpose = buf + lssc_reconstruct_prepared_work_floats(m, n, atoms);
-    // The legacy contract keeps its transpose and power vectors after the
-    // group workspace; prepare the context in-place before reconstruction.
+    // The legacy contract keeps its prepared context after the group
+    // workspace; prepare it in-place before reconstruction.
+    float* prep = buf + lssc_reconstruct_prepared_work_floats(m, n, atoms);
     LsscPreparedContext context;
     const int prep_need = lssc_prepare_work_floats(m, atoms);
-    float* prep = transpose;
     if (lssc_prepare_context(D, m, atoms, ldd, prep, prep_need, &context) != 0) {
         return;
     }
-    LsscReconstructImpl(patches, m, n, lda, D, atoms, ldd, context.transpose, context.lipschitz, sigma, buf,
-                        lssc_reconstruct_prepared_work_floats(m, n, atoms));
+    LsscReconstructImpl(patches, m, n, lda, D, atoms, ldd, context.gradient, context.lambda_scale,
+                        context.coding_lipschitz, sigma, buf, lssc_reconstruct_prepared_work_floats(m, n, atoms));
 }
 
 void LsscReconstructPrepared(float* patches, int m, int n, int lda, const LsscPreparedContext* context, float sigma,
@@ -322,8 +364,9 @@ void LsscReconstructPrepared(float* patches, int m, int n, int lda, const LsscPr
     if (!context) {
         return;
     }
-    LsscReconstructImpl(patches, m, n, lda, context->dictionary, context->atoms, context->ldd, context->transpose,
-                        context->lipschitz, sigma, work, work_floats, context->avx2_gemm);
+    LsscReconstructImpl(patches, m, n, lda, context->dictionary, context->atoms, context->ldd, context->gradient,
+                        context->lambda_scale, context->coding_lipschitz, sigma, work, work_floats,
+                        context->avx2_gemm);
 }
 
 }  // namespace HWY_NAMESPACE
@@ -348,6 +391,85 @@ void lssc_reconstruct(float* patches, int m, int n, int lda, const float* D, int
 void lssc_reconstruct_prepared(float* patches, int m, int n, int lda, const LsscPreparedContext* context, float sigma,
                                float* work, int work_floats) {
     HWY_DYNAMIC_DISPATCH(LsscReconstructPrepared)(patches, m, n, lda, context, sigma, work, work_floats);
+}
+
+// The coding preconditioner (params/lssc.hpp), in the order of the device
+// kernels (src/cuda/lssc/kernels.cu): S = D D^T, each entry one fma chain
+// over ascending atoms; a right-looking Cholesky factor of S + delta I (lower
+// triangle of `factor`, row-major); per atom the forward and back solves,
+// each sum one fma chain in ascending index order. Returns false when there
+// is no usable factor (a trace that is not positive and finite, or a pivot
+// that is not): the caller then codes with D^T, factors 1 and L.
+static bool lssc_precondition(const float* D, int m, int atoms, int ldd, float lipschitz, float* factor, float* y,
+                              float* gradient, float* lambda_scale, float* coding_lipschitz) {
+    const std::size_t mm = static_cast<std::size_t>(m);
+    for (int i = 0; i < m; ++i) {
+        for (int j = 0; j <= i; ++j) {
+            float sum = 0.f;
+            for (int a = 0; a < atoms; ++a) {
+                const float* col = D + static_cast<std::size_t>(a) * static_cast<std::size_t>(ldd);
+                sum = std::fma(col[i], col[j], sum);
+            }
+            factor[i * mm + j] = sum;
+        }
+    }
+    float trace = 0.f;
+    for (int i = 0; i < m; ++i) {
+        trace += factor[i * mm + i];
+    }
+    const float mean = trace / static_cast<float>(m);
+    if (!(mean > 1e-12f) || !is_finite_bits(mean)) {
+        return false;
+    }
+    const float delta = kLsscPrecondAlpha * mean;
+    const float c = mean + delta;
+    for (int i = 0; i < m; ++i) {
+        factor[i * mm + i] += delta;
+    }
+    for (int k = 0; k < m; ++k) {
+        const float pivot = factor[k * mm + k];
+        if (!(pivot > 0.f) || !is_finite_bits(pivot)) {
+            return false;
+        }
+        const float root = std::sqrt(pivot);
+        factor[k * mm + k] = root;
+        for (int i = k + 1; i < m; ++i) {
+            factor[i * mm + k] /= root;
+        }
+        for (int j = k + 1; j < m; ++j) {
+            for (int i = j; i < m; ++i) {
+                factor[i * mm + j] = std::fma(-factor[i * mm + k], factor[j * mm + k], factor[i * mm + j]);
+            }
+        }
+    }
+    for (int a = 0; a < atoms; ++a) {
+        const float* col = D + static_cast<std::size_t>(a) * static_cast<std::size_t>(ldd);
+        for (int i = 0; i < m; ++i) {
+            float sum = col[i];
+            for (int p = 0; p < i; ++p) {
+                sum = std::fma(-factor[i * mm + p], y[p], sum);
+            }
+            y[i] = sum / factor[i * mm + i];
+        }
+        for (int i = m - 1; i >= 0; --i) {
+            float sum = y[i];
+            for (int p = i + 1; p < m; ++p) {
+                sum = std::fma(-factor[p * mm + i], y[p], sum);
+            }
+            y[i] = sum / factor[i * mm + i];
+        }
+        float norm2 = 0.f;
+        for (int i = 0; i < m; ++i) {
+            const float v = c * y[i];
+            gradient[static_cast<std::size_t>(a) + static_cast<std::size_t>(i) * static_cast<std::size_t>(atoms)] = v;
+            norm2 = std::fma(v, v, norm2);
+        }
+        lambda_scale[a] = std::sqrt(norm2);
+    }
+    // L' = max_e c e / (e + delta) over the eigenvalues e of S: e / (e + delta)
+    // increases with e, so the largest eigenvalue (the power estimate) gives it.
+    *coding_lipschitz = c * lipschitz / (lipschitz + delta);
+    return true;
 }
 
 int lssc_prepare_context(const float* D, int m, int atoms, int ldd, float* work, int work_floats,
@@ -395,12 +517,21 @@ int lssc_prepare_context(const float* D, int m, int atoms, int ldd, float* work,
     if (!(lipschitz > 1e-6f) || !is_finite_bits(lipschitz)) {
         lipschitz = 1.f;
     }
+    float* gradient = pw + m;
+    float* lambda_scale = gradient + static_cast<std::size_t>(atoms) * static_cast<std::size_t>(m);
+    float* factor = lambda_scale + atoms;
+    float coding_lipschitz = lipschitz;
+    const bool preconditioned =
+        lssc_precondition(D, m, atoms, ldd, lipschitz, factor, pw, gradient, lambda_scale, &coding_lipschitz);
     context->dictionary = D;
     context->transpose = transpose;
+    context->gradient = preconditioned ? gradient : transpose;
+    context->lambda_scale = preconditioned ? lambda_scale : nullptr;
     context->m = m;
     context->atoms = atoms;
     context->ldd = ldd;
     context->lipschitz = lipschitz;
+    context->coding_lipschitz = preconditioned ? coding_lipschitz : lipschitz;
     context->avx2_gemm = false;
     return 0;
 }

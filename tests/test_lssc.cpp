@@ -199,6 +199,163 @@ static double mse(const float* a, const float* b, int n) {
     return s / static_cast<double>(n);
 }
 
+// Independent FP64 model of the cluster coding (include/nss/params/lssc.hpp):
+// the preconditioner by a dense inverse of D D^T + delta I, the momentum from
+// the FISTA t-sequence, the group soft threshold at lambda ||M d_a||. It takes
+// only the power estimate L from lssc_prepare_context.
+static void coding_reference(const std::vector<float>& input, int m, int n, const std::vector<float>& D, int atoms,
+                             double lipschitz, double sigma, std::vector<double>& out) {
+    std::vector<double> Y(static_cast<std::size_t>(m) * n), mean(n);
+    for (int j = 0; j < n; ++j) {
+        double s = 0.;
+        for (int i = 0; i < m; ++i) s += input[static_cast<std::size_t>(j) * m + i];
+        mean[j] = s / m;
+        for (int i = 0; i < m; ++i) Y[static_cast<std::size_t>(j) * m + i] = input[static_cast<std::size_t>(j) * m + i] - mean[j];
+    }
+    const auto d = [&](int a, int i) { return static_cast<double>(D[static_cast<std::size_t>(a) * m + i]); };
+    std::vector<double> S(static_cast<std::size_t>(m) * m, 0.);
+    for (int i = 0; i < m; ++i)
+        for (int j = 0; j < m; ++j)
+            for (int a = 0; a < atoms; ++a) S[static_cast<std::size_t>(i) * m + j] += d(a, i) * d(a, j);
+    double trace = 0.;
+    for (int i = 0; i < m; ++i) trace += S[static_cast<std::size_t>(i) * m + i];
+    const double smean = trace / m, delta = nss::kLsscPrecondAlpha * smean, c = smean + delta;
+    // M = c (S + delta I)^-1 by Gauss-Jordan elimination with partial pivoting.
+    std::vector<double> A(S.begin(), S.end()), M(static_cast<std::size_t>(m) * m, 0.);
+    for (int i = 0; i < m; ++i) {
+        A[static_cast<std::size_t>(i) * m + i] += delta;
+        M[static_cast<std::size_t>(i) * m + i] = c;
+    }
+    for (int k = 0; k < m; ++k) {
+        int piv = k;
+        for (int i = k + 1; i < m; ++i)
+            if (std::fabs(A[static_cast<std::size_t>(i) * m + k]) > std::fabs(A[static_cast<std::size_t>(piv) * m + k])) piv = i;
+        for (int j = 0; j < m; ++j) {
+            std::swap(A[static_cast<std::size_t>(k) * m + j], A[static_cast<std::size_t>(piv) * m + j]);
+            std::swap(M[static_cast<std::size_t>(k) * m + j], M[static_cast<std::size_t>(piv) * m + j]);
+        }
+        const double inv = 1. / A[static_cast<std::size_t>(k) * m + k];
+        for (int j = 0; j < m; ++j) {
+            A[static_cast<std::size_t>(k) * m + j] *= inv;
+            M[static_cast<std::size_t>(k) * m + j] *= inv;
+        }
+        for (int i = 0; i < m; ++i) {
+            if (i == k) continue;
+            const double f = A[static_cast<std::size_t>(i) * m + k];
+            for (int j = 0; j < m; ++j) {
+                A[static_cast<std::size_t>(i) * m + j] -= f * A[static_cast<std::size_t>(k) * m + j];
+                M[static_cast<std::size_t>(i) * m + j] -= f * M[static_cast<std::size_t>(k) * m + j];
+            }
+        }
+    }
+    std::vector<double> P(static_cast<std::size_t>(atoms) * m, 0.), weight(atoms, 0.);  // P[a][i] = (M d_a)_i
+    for (int a = 0; a < atoms; ++a) {
+        double norm2 = 0.;
+        for (int i = 0; i < m; ++i) {
+            double v = 0.;
+            for (int j = 0; j < m; ++j) v += M[static_cast<std::size_t>(i) * m + j] * d(a, j);
+            P[static_cast<std::size_t>(a) * m + i] = v;
+            norm2 += v * v;
+        }
+        weight[a] = std::sqrt(norm2);
+    }
+    const double mu = 0.9 / (c * lipschitz / (lipschitz + delta));
+    const double lam = mu * std::fabs(sigma) * std::sqrt(static_cast<double>(n));
+    const std::size_t codes = static_cast<std::size_t>(atoms) * n;
+    std::vector<double> X(codes, 0.), Xp(codes, 0.), Z(codes, 0.), G(codes, 0.), R(static_cast<std::size_t>(m) * n);
+    double t = 1.;
+    for (int it = 0; it < nss::kLsscCodingRounds; ++it) {
+        for (int j = 0; j < n; ++j)
+            for (int i = 0; i < m; ++i) {
+                double v = Y[static_cast<std::size_t>(j) * m + i];
+                for (int a = 0; a < atoms; ++a) v -= d(a, i) * Z[static_cast<std::size_t>(j) * atoms + a];
+                R[static_cast<std::size_t>(j) * m + i] = v;
+            }
+        for (int j = 0; j < n; ++j)
+            for (int a = 0; a < atoms; ++a) {
+                double v = 0.;
+                for (int i = 0; i < m; ++i) v += P[static_cast<std::size_t>(a) * m + i] * R[static_cast<std::size_t>(j) * m + i];
+                G[static_cast<std::size_t>(j) * atoms + a] = Z[static_cast<std::size_t>(j) * atoms + a] + mu * v;
+            }
+        std::copy(X.begin(), X.end(), Xp.begin());
+        for (int a = 0; a < atoms; ++a) {
+            double norm2 = 0.;
+            for (int j = 0; j < n; ++j) norm2 += G[static_cast<std::size_t>(j) * atoms + a] * G[static_cast<std::size_t>(j) * atoms + a];
+            const double norm = std::sqrt(norm2), threshold = lam * weight[a];
+            const double scale = norm <= threshold ? 0. : 1. - threshold / norm;
+            for (int j = 0; j < n; ++j) X[static_cast<std::size_t>(j) * atoms + a] = G[static_cast<std::size_t>(j) * atoms + a] * scale;
+        }
+        const double next = (1. + std::sqrt(1. + 4. * t * t)) / 2., beta = (t - 1.) / next;
+        t = next;
+        for (std::size_t e = 0; e < X.size(); ++e) Z[e] = X[e] + beta * (X[e] - Xp[e]);
+    }
+    out.assign(static_cast<std::size_t>(m) * n, 0.);
+    for (int j = 0; j < n; ++j)
+        for (int i = 0; i < m; ++i) {
+            double v = mean[j];
+            for (int a = 0; a < atoms; ++a) v += d(a, i) * X[static_cast<std::size_t>(j) * atoms + a];
+            out[static_cast<std::size_t>(j) * m + i] = v;
+        }
+}
+
+// The cluster coding against the FP64 model (fixed_group tolerance of
+// contracts/tolerances.json), and at a vanishing sigma the reconstruction of
+// a group from an overcomplete learned dictionary: the 16 ISTA rounds of model
+// version 2 left this text-like group 0.054 (RMS) away; the preconditioned FISTA
+// comes within 0.0051, under the 0.01 bound.
+static int test_coding_reference() {
+    constexpr int block = 8, m = block * block, w = 160, h = 160;
+    std::vector<float> image(static_cast<std::size_t>(w) * h);
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            float v = 0.15f + 0.05f * std::sin(x / 7.f) * std::cos(y / 5.f) + 0.02f * std::sin((x + 2 * y) / 3.f);
+            if ((x % 23 < 2 && y % 29 < 20) || (y % 29 < 2 && x % 23 < 15)) v = 0.9f;
+            image[static_cast<std::size_t>(y) * w + x] = v;
+        }
+    const int nx = w - block + 1, total = nx * (h - block + 1);
+    constexpr int pool = 600, atoms = 256, n = 48;
+    std::vector<float> patches(static_cast<std::size_t>(pool) * m);
+    for (int j = 0; j < pool; ++j) {
+        const int at = static_cast<int>((static_cast<long long>(j) * 7919) % total), px = at % nx, py = at / nx;
+        for (int i = 0; i < m; ++i)
+            patches[static_cast<std::size_t>(j) * m + i] = image[static_cast<std::size_t>(py + i / block) * w + px + i % block];
+    }
+    std::vector<float> D(static_cast<std::size_t>(m) * atoms, 0.f);
+    nss::lssc_dict_init(D.data(), m, atoms, m, patches.data(), pool, m, block, 1, 0x4C535343u);
+    std::vector<float> prep(static_cast<std::size_t>(nss::lssc_prepare_work_floats(m, atoms)));
+    nss::LsscPreparedContext context;
+    if (nss::lssc_prepare_context(D.data(), m, atoms, m, prep.data(), static_cast<int>(prep.size()), &context) != 0 ||
+        !context.lambda_scale || context.gradient == context.transpose) {
+        return fail("lssc coding: no preconditioner for a learned dictionary");
+    }
+    std::vector<float> group(patches.begin(), patches.begin() + static_cast<std::ptrdiff_t>(n) * m);
+    std::vector<float> work(static_cast<std::size_t>(nss::lssc_reconstruct_prepared_work_floats(m, n, atoms)));
+    for (const double sigma : {1e-7, 3. / 255., 25. / 255.}) {
+        double worst = 0.;
+        std::vector<float> got = group;
+        nss::lssc_reconstruct_prepared(got.data(), m, n, m, &context, static_cast<float>(sigma), work.data(),
+                                       static_cast<int>(work.size()));
+        std::vector<double> want;
+        coding_reference(group, m, n, D, atoms, context.lipschitz, sigma, want);
+        double rms = 0.;
+        for (std::size_t e = 0; e < got.size(); ++e) {
+            const double err = std::fabs(got[e] - want[e]);
+            worst = std::max(worst, err);
+            if (!(err <= 2e-5 + 2e-4 * std::fabs(want[e]))) {
+                std::fprintf(stderr, "sigma %.3g element %zu: %.9g vs FP64 %.9g\n", sigma, e, got[e], want[e]);
+                return fail("lssc coding differs from the FP64 model");
+            }
+            rms += (got[e] - group[e]) * (got[e] - group[e]);
+        }
+        rms = std::sqrt(rms / static_cast<double>(got.size()));
+        std::printf("lssc coding sigma=%.3g: max |cpu - fp64| %.3g, rms change %.5f\n", sigma, worst, rms);
+        if (sigma < 1e-6 && !(rms < 0.01)) {
+            return fail("lssc coding at a vanishing sigma does not reconstruct the group");
+        }
+    }
+    return 0;
+}
+
 static int test_denoise_psnr() {
     constexpr int w = 32;
     constexpr int h = 32;
@@ -261,6 +418,9 @@ int main() {
     if (test_reconstruct_finite() != 0) {
         return 1;
     }
+    if (test_coding_reference() != 0) {
+        return 1;
+    }
     if (test_denoise_psnr() != 0) {
         return 1;
     }
@@ -292,7 +452,7 @@ int main() {
         for (int i = 0; i < w * h; ++i) {
             const float v = out[static_cast<std::size_t>(i)];
             if (!std::isfinite(v) || std::fabs(v) > 8.f) {
-                return fail("lssc 128 ISTA exploded");
+                return fail("lssc 128 coding exploded");
             }
             mn = std::min(mn, static_cast<double>(v));
             mx = std::max(mx, static_cast<double>(v));

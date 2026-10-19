@@ -760,6 +760,144 @@ __global__ void __launch_bounds__(kLipschitzThreads) lipschitz_kernel(LsscWork w
     }
 }
 
+// The coding preconditioner, nss::lssc_prepare_context's in its order
+// (src/cpu/lssc/reconstruct.cpp): S = D D^T (lower triangle, an entry a
+// thread, one fma chain over ascending atoms), a right-looking Cholesky of
+// S + delta I in place (one block; every entry's updates in ascending column
+// order), then per atom the forward and back solves (a thread an atom, each
+// sum one fma chain in ascending index order). w.factor + m * m holds the
+// state: usable (1 or 0), delta, c. The lower triangle of w.factor is the
+// factor after factor_kernel (whose shared copy is written back).
+__global__ void gram_dict_kernel(LsscWork w) {
+    const int id = blockIdx.x * blockDim.x + threadIdx.x;
+    const int m = w.m;
+    if (id >= m * m) return;
+    const int i = id / m, j = id % m;
+    if (j > i) return;
+    float sum = 0.f;
+    for (int a = 0; a < w.atoms; ++a) sum = fmaf(w.dict[a * m + i], w.dict[a * m + j], sum);
+    w.factor[id] = sum;
+}
+
+// The factor (and the solves) work on the matrix in shared memory when it
+// fits (m <= kFactorShared), in w.factor otherwise; same operations and order.
+constexpr int kFactorThreads = 256;
+constexpr int kFactorShared = 64;
+constexpr int kFactorPitch = kFactorShared + 1;
+template <bool Shared>
+__global__ void __launch_bounds__(kFactorThreads) factor_kernel(LsscWork w, float* lipschitz) {
+    __shared__ float tile[Shared ? kFactorShared * kFactorPitch : 1];
+    __shared__ float root;
+    __shared__ int usable;
+    const int m = w.m;
+    const int pitch = Shared ? kFactorPitch : m;
+    float* f = Shared ? tile : w.factor;
+    float* state = w.factor + m * m;
+    if (Shared) {
+        for (int e = threadIdx.x; e < m * m; e += blockDim.x) {
+            const int i = e / m, j = e % m;
+            if (j <= i) tile[i * pitch + j] = w.factor[e];
+        }
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) {
+        float trace = 0.f;
+        for (int i = 0; i < m; ++i) trace += f[i * pitch + i];
+        const float mean = trace / static_cast<float>(m);
+        usable = mean > 1e-12f && isfinite(mean);
+        state[1] = nss::kLsscPrecondAlpha * mean;
+        state[2] = mean + state[1];
+    }
+    __syncthreads();
+    const float delta = state[1];
+    if (usable) {
+        for (int i = threadIdx.x; i < m; i += blockDim.x) f[i * pitch + i] += delta;
+    }
+    __syncthreads();
+    for (int k = 0; k < m && usable; ++k) {
+        if (threadIdx.x == 0) {
+            const float pivot = f[k * pitch + k];
+            if (!(pivot > 0.f) || !isfinite(pivot)) {
+                usable = 0;
+            } else {
+                root = sqrtf(pivot);
+                f[k * pitch + k] = root;
+            }
+        }
+        __syncthreads();
+        if (!usable) break;  // uniform
+        for (int i = k + 1 + threadIdx.x; i < m; i += blockDim.x) f[i * pitch + k] /= root;
+        __syncthreads();
+        // Row i of the trailing triangle on one thread: f[i][j] for k < j <= i.
+        for (int i = k + 1 + threadIdx.x; i < m; i += blockDim.x) {
+            const float fik = f[i * pitch + k];
+            for (int j = k + 1; j <= i; ++j) f[i * pitch + j] = fmaf(-fik, f[j * pitch + k], f[i * pitch + j]);
+        }
+        __syncthreads();
+    }
+    if (Shared && usable) {
+        for (int e = threadIdx.x; e < m * m; e += blockDim.x) {
+            const int i = e / m, j = e % m;
+            if (j <= i) w.factor[e] = tile[i * pitch + j];
+        }
+    }
+    if (threadIdx.x == 0) {
+        state[0] = usable ? 1.f : 0.f;
+        // L' = c L / (L + delta) (the step bound of the preconditioned problem).
+        if (usable) *lipschitz = state[2] * *lipschitz / (*lipschitz + delta);
+    }
+}
+
+// An atom a thread. Shared: kSolveAtoms atoms a block, the factor and the
+// block's solution vectors (one column an atom) in shared memory.
+constexpr int kSolveAtoms = 64;
+template <bool Shared>
+__global__ void __launch_bounds__(kSolveAtoms) solve_kernel(LsscWork w) {
+    __shared__ float tile[Shared ? kFactorShared * kFactorPitch : 1];
+    __shared__ float ys[Shared ? kFactorShared * kSolveAtoms : 1];
+    const int a = blockIdx.x * blockDim.x + threadIdx.x;
+    const int m = w.m;
+    const float* state = w.factor + m * m;
+    const bool usable = state[0] != 0.f;
+    const int pitch = Shared ? kFactorPitch : m;
+    if (Shared && usable) {
+        for (int e = threadIdx.x; e < m * m; e += blockDim.x) {
+            const int i = e / m, j = e % m;
+            if (j <= i) tile[i * pitch + j] = w.factor[e];
+        }
+        __syncthreads();
+    }
+    if (a >= w.atoms) return;
+    const float* f = Shared ? tile : w.factor;
+    const float* d = w.dict + a * m;
+    float* out = w.gradient + a * m;
+    if (!usable) {  // no usable factor: D^T and unit factors
+        for (int i = 0; i < m; ++i) out[i] = d[i];
+        w.lambda_scale[a] = 1.f;
+        return;
+    }
+    float* y = Shared ? ys + threadIdx.x : out;
+    const int ystride = Shared ? kSolveAtoms : 1;
+    for (int i = 0; i < m; ++i) {
+        float sum = d[i];
+        for (int p = 0; p < i; ++p) sum = fmaf(-f[i * pitch + p], y[p * ystride], sum);
+        y[i * ystride] = sum / f[i * pitch + i];
+    }
+    for (int i = m - 1; i >= 0; --i) {
+        float sum = y[i * ystride];
+        for (int p = i + 1; p < m; ++p) sum = fmaf(-f[p * pitch + i], y[p * ystride], sum);
+        y[i * ystride] = sum / f[i * pitch + i];
+    }
+    const float c = state[2];
+    float norm2 = 0.f;
+    for (int i = 0; i < m; ++i) {
+        const float v = c * y[i * ystride];
+        out[i] = v;
+        norm2 = fmaf(v, v, norm2);
+    }
+    w.lambda_scale[a] = sqrtf(norm2);
+}
+
 __global__ void center_kernel(LsscWork w) {
     const int j = blockIdx.x * blockDim.x + threadIdx.x;
     if (j >= w.np) return;
@@ -773,10 +911,14 @@ __global__ void center_kernel(LsscWork w) {
 
 // The coefficients are stored before their group soft threshold: a reader
 // takes coef * scale of the patch's cluster (the value the threshold would
-// have stored), and a stopped cluster's coefficients as zero.
+// have stored), and a stopped cluster's coefficients as zero. A round codes
+// from the extrapolated point x + beta (x - x_last) of the last two rounds'
+// thresholded values (the CPU's MulAdd(beta, x - previous, x)).
+__device__ __forceinline__ float extrapolate(float x, float x_last, float beta) { return fmaf(beta, x - x_last, x); }
 
-// values = Y - D A (residual) or D A (final product), one thread per element.
-__global__ void product_kernel(LsscWork w, bool residual) {
+// values = Y - D Z (residual) or D A (final product, beta = 0), one thread
+// per element.
+__global__ void product_kernel(LsscWork w, bool residual, float beta) {
     const long long id = static_cast<long long>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (id >= static_cast<long long>(w.np) * w.m) return;
     const int j = static_cast<int>(id / w.m), i = static_cast<int>(id % w.m);
@@ -784,9 +926,18 @@ __global__ void product_kernel(LsscWork w, bool residual) {
     const bool stopped = w.flags[w.clusters + c];
     if (residual && stopped) return;
     const float* a = w.coef + static_cast<long long>(j) * w.atoms;
+    const float* a_last = w.coef_last + static_cast<long long>(j) * w.atoms;
     const float* scale = w.scale + c * w.atoms;
+    const float* scale_last = w.scale_last + c * w.atoms;
     float sum = 0.f;
-    for (int k = 0; k < w.atoms; ++k) sum = fmaf(w.dict[k * w.m + i], stopped ? 0.f : a[k] * scale[k], sum);
+    for (int k = 0; k < w.atoms; ++k) {
+        float z = 0.f;
+        if (!stopped) {
+            z = a[k] * scale[k];
+            if (beta != 0.f) z = extrapolate(z, a_last[k] * scale_last[k], beta);
+        }
+        sum = fmaf(w.dict[k * w.m + i], z, sum);
+    }
     w.values[id] = residual ? w.patches[id] - sum : sum;
 }
 
@@ -795,7 +946,7 @@ __global__ void product_kernel(LsscWork w, bool residual) {
 // of them (patches tp + 16 r, columns tc + 16 q), operands staged in shared
 // memory with padded rows. Every output is the same fmaf chain in ascending
 // order as in gradient_kernel / product_kernel. The step size is
-// mu = 0.9 / L from the device's Lipschitz estimate.
+// mu = 0.9 / L' from the device's preconditioned Lipschitz bound.
 constexpr int kTile = 64;
 constexpr int kTileRows = 64;   // largest m of the tiled kernels
 constexpr int kTileChunk = 32;  // atoms staged at a time by the product
@@ -863,19 +1014,24 @@ __global__ void scale_tiles_kernel(LsscWork w, const float* lipschitz, float sig
     for (int i = t.first[c]; i < t.first[c + 1]; ++i) norm2 += t.norm2[static_cast<long long>(i) * w.atoms + k];
     const float largest = __int_as_float(t.largest[id]);
     t.largest[id] = 0;
-    const float lambda = mu * (fabsf(sigma) * sqrtf(static_cast<float>(w.offsets[c + 1] - w.offsets[c])));
+    const float lambda = mu * (fabsf(sigma) * sqrtf(static_cast<float>(w.offsets[c + 1] - w.offsets[c]))) *
+                         w.lambda_scale[k];
     const float norm = sqrtf(norm2);
     const float scale = norm <= lambda ? 0.f : 1.f - lambda / norm;
-    w.scale[id] = scale;
+    w.scale_last[id] = scale;
     if (largest * scale > 1.0e4f) atomicOr(w.flags + c, 1);
 }
 
 
 // One proximal-gradient round over a tile of kTile patches (round > 0:
-// residual R = Y - D A in registers, then through shared memory; round 0:
-// R = Y), then A = mu D^T R + A for every atom tile. Each product output and
-// each gradient output is the same fmaf chain, in the same order, as in
-// product_kernel and gradient_kernel; the residual never leaves the block.
+// residual R = Y - D Z in registers, then through shared memory; round 0:
+// R = Y), then A = mu P R + Z for every atom tile, written to coef_last
+// (Momentum: Z extrapolated from coef and coef_last, stored over coef_last by
+// the product as it stages it, so the gradient step reads one array;
+// otherwise Z = coef).
+// Each product output and each gradient output is the same fmaf chain, in the
+// same order, as in product_kernel and gradient_kernel; the residual never
+// leaves the block.
 // Operands are staged a chunk at a time, the next chunk's loads issued into
 // registers before the current chunk is computed.
 constexpr int kRoundChunk = 16;               // atoms of a product chunk
@@ -899,7 +1055,8 @@ __device__ __forceinline__ Quads quad_lanes(int n, int nshift) {
     return {static_cast<int>(threadIdx.x) & (n - 1), static_cast<int>(threadIdx.x) >> nshift, kThreads >> nshift};
 }
 
-__global__ void __launch_bounds__(kThreads) round_tile_kernel(LsscWork w, bool first, const float* lipschitz) {
+template <bool Momentum>
+__global__ void __launch_bounds__(kThreads) round_tile_kernel(LsscWork w, bool first, float beta, const float* lipschitz) {
     const LsscTiles tiles = lssc_tiles(w);
     const int tile = blockIdx.x;
     if (tile >= *tiles.count) return;
@@ -915,6 +1072,7 @@ __global__ void __launch_bounds__(kThreads) round_tile_kernel(LsscWork w, bool f
     const int mshift = __ffs(m) - 1;                  // m is a power of two
     const int start = tiles.start[tile], size = min(kTile, w.offsets[c + 1] - start);
     const float* scales = w.scale + c * atoms;
+    const float* scales_last = w.scale_last + c * atoms;
     if (threadIdx.x < kTile) member[threadIdx.x] = threadIdx.x < size ? w.members[start + threadIdx.x] : -1;
     __syncthreads();
     // A warp takes 4 patch quads by 8 column quads: its 16-byte operand loads
@@ -939,14 +1097,18 @@ __global__ void __launch_bounds__(kThreads) round_tile_kernel(LsscWork w, bool f
         float(*rows)[kRoundPitch] = stage + kRoundChunk;
         static_assert(kCodeLoads == 4 && kThreads == kTile / 4 * kRoundChunk, "a quad of codes a thread");
         float code[kCodeLoads], scale, row[kRowLoads];
+        float code_last[Momentum ? kCodeLoads : 1], scale_last = 0.f;
         const Quads lanes = quad_lanes(kRoundChunk, kRoundShift);
         const auto fetch = [&](int kb) {
             const int chunk = min(kRoundChunk, atoms - kb), k = lanes.i;
             scale = k < chunk ? scales[kb + k] : 0.f;
+            if (Momentum) scale_last = k < chunk ? scales_last[kb + k] : 0.f;
 #pragma unroll
             for (int u = 0; u < kCodeLoads; ++u) {
                 const int j = member[4 * lanes.q0 + u];
-                code[u] = j >= 0 && k < chunk ? w.coef[static_cast<long long>(j) * atoms + kb + k] : 0.f;
+                const long long at = static_cast<long long>(j) * atoms + kb + k;
+                code[u] = j >= 0 && k < chunk ? w.coef[at] : 0.f;
+                if (Momentum) code_last[u] = j >= 0 && k < chunk ? w.coef_last[at] : 0.f;
             }
 #pragma unroll
             for (int u = 0; u < kRowLoads; ++u) {
@@ -958,8 +1120,19 @@ __global__ void __launch_bounds__(kThreads) round_tile_kernel(LsscWork w, bool f
         for (int kb = 0; kb < atoms; kb += kRoundChunk) {
             const int chunk = min(kRoundChunk, atoms - kb);
             __syncthreads();
-            *reinterpret_cast<float4*>(&codes[lanes.i][4 * lanes.q0]) =
-                make_float4(code[0] * scale, code[1] * scale, code[2] * scale, code[3] * scale);
+            float z[4];
+#pragma unroll
+            for (int u = 0; u < 4; ++u) {
+                z[u] = code[u] * scale;
+                if (Momentum) {
+                    z[u] = extrapolate(z[u], code_last[u] * scale_last, beta);
+                    // Z replaces the codes of the round before (read above): the
+                    // gradient step below adds to it.
+                    const int j = member[4 * lanes.q0 + u];
+                    if (j >= 0 && lanes.i < chunk) w.coef_last[static_cast<long long>(j) * atoms + kb + lanes.i] = z[u];
+                }
+            }
+            *reinterpret_cast<float4*>(&codes[lanes.i][4 * lanes.q0]) = make_float4(z[0], z[1], z[2], z[3]);
 #pragma unroll
             for (int u = 0; u < kRowLoads; ++u) {
                 const int e = threadIdx.x + u * kThreads;
@@ -1004,7 +1177,7 @@ __global__ void __launch_bounds__(kThreads) round_tile_kernel(LsscWork w, bool f
 #pragma unroll
         for (int u = 0; u < kGradientLoads; ++u) {
             const int a = 4 * (lanes.q0 + u / 4 * lanes.step) + u % 4;
-            next[u] = a < kTile && abase + a < atoms ? w.dict[(abase + a) * m + ib + lanes.i] : 0.f;
+            next[u] = a < kTile && abase + a < atoms ? w.gradient[(abase + a) * m + ib + lanes.i] : 0.f;
         }
     };
     fetch_rows(0);
@@ -1052,23 +1225,38 @@ __global__ void __launch_bounds__(kThreads) round_tile_kernel(LsscWork w, bool f
         for (int rr = 0; rr < 4; ++rr) {
             const int j = member[4 * tp + rr];
             if (j < 0) continue;
-            float* codes = w.coef + static_cast<long long>(j) * atoms + abase + 4 * tc;
+            const long long at = static_cast<long long>(j) * atoms + abase + 4 * tc;
+            const float* codes = w.coef + at;
+            float* out = w.coef_last + at;  // Momentum: holds Z (written by the product above)
             const float* scale = scales + abase + 4 * tc;
             float value[4];
             if (vector) {
                 if (abase + 4 * tc >= atoms) continue;
-                const float4 code = first ? make_float4(0.f, 0.f, 0.f, 0.f) : *reinterpret_cast<const float4*>(codes);
-                const float4 factor = first ? make_float4(0.f, 0.f, 0.f, 0.f) : *reinterpret_cast<const float4*>(scale);
-                value[0] = fmaf(mu, acc[rr][0], code.x * factor.x);
-                value[1] = fmaf(mu, acc[rr][1], code.y * factor.y);
-                value[2] = fmaf(mu, acc[rr][2], code.z * factor.z);
-                value[3] = fmaf(mu, acc[rr][3], code.w * factor.w);
-                *reinterpret_cast<float4*>(codes) = make_float4(value[0], value[1], value[2], value[3]);
+                float z[4] = {};
+                if (Momentum) {
+                    const float4 point = *reinterpret_cast<const float4*>(out);
+                    z[0] = point.x;
+                    z[1] = point.y;
+                    z[2] = point.z;
+                    z[3] = point.w;
+                } else if (!first) {
+                    const float4 code = *reinterpret_cast<const float4*>(codes);
+                    const float4 factor = *reinterpret_cast<const float4*>(scale);
+                    z[0] = code.x * factor.x;
+                    z[1] = code.y * factor.y;
+                    z[2] = code.z * factor.z;
+                    z[3] = code.w * factor.w;
+                }
+#pragma unroll
+                for (int q = 0; q < 4; ++q) value[q] = fmaf(mu, acc[rr][q], z[q]);
+                *reinterpret_cast<float4*>(out) = make_float4(value[0], value[1], value[2], value[3]);
             } else {
 #pragma unroll
                 for (int q = 0; q < 4; ++q) {
                     value[q] = 0.f;
-                    if (abase + 4 * tc + q < atoms) codes[q] = value[q] = fmaf(mu, acc[rr][q], first ? 0.f : codes[q] * scale[q]);
+                    if (abase + 4 * tc + q >= atoms) continue;
+                    const float z = Momentum ? out[q] : first ? 0.f : codes[q] * scale[q];
+                    out[q] = value[q] = fmaf(mu, acc[rr][q], z);
                 }
             }
 #pragma unroll
@@ -1153,7 +1341,8 @@ __global__ void __launch_bounds__(kThreads) product_tile_kernel(LsscWork w, bool
     }
 }
 
-__global__ void gradient_kernel(LsscWork w, bool first, const float* lipschitz) {
+// coef_last = mu P R + Z, an element a thread (Z as in product_kernel).
+__global__ void gradient_kernel(LsscWork w, bool first, float beta, const float* lipschitz) {
     const float mu = 0.9f / *lipschitz;
     const long long id = static_cast<long long>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (id >= static_cast<long long>(w.np) * w.atoms) return;
@@ -1162,12 +1351,18 @@ __global__ void gradient_kernel(LsscWork w, bool first, const float* lipschitz) 
     if (w.flags[w.clusters + c]) return;
     const float* r = (first ? w.patches : w.values) + static_cast<long long>(j) * w.m;
     float sum = 0.f;
-    for (int i = 0; i < w.m; ++i) sum = fmaf(w.dict[k * w.m + i], r[i], sum);
-    w.coef[id] = fmaf(mu, sum, first ? 0.f : w.coef[id] * w.scale[c * w.atoms + k]);
+    for (int i = 0; i < w.m; ++i) sum = fmaf(w.gradient[k * w.m + i], r[i], sum);
+    float z = 0.f;
+    if (!first) {
+        z = w.coef[id] * w.scale[c * w.atoms + k];
+        if (beta != 0.f) z = extrapolate(z, w.coef_last[id] * w.scale_last[c * w.atoms + k], beta);
+    }
+    w.coef_last[id] = fmaf(mu, sum, z);
 }
 
-// Group soft-threshold scale of every (cluster, atom) row: the row norm over
-// the cluster's members in ascending patch order.
+// Group soft-threshold scale of every (cluster, atom) row of the new codes
+// (coef_last): the row norm over the cluster's members in ascending patch
+// order, the threshold at the atom's penalty factor.
 __global__ void scale_kernel(LsscWork w, const float* lipschitz, float sigma) {
     const float mu = 0.9f / *lipschitz;
     const int id = blockIdx.x * blockDim.x + threadIdx.x;
@@ -1178,15 +1373,15 @@ __global__ void scale_kernel(LsscWork w, const float* lipschitz, float sigma) {
     float norm2 = 0.f, largest = 0.f;
     bool invalid = false;
     for (int t = begin; t < end; ++t) {
-        const float value = w.coef[static_cast<long long>(w.members[t]) * w.atoms + k];
+        const float value = w.coef_last[static_cast<long long>(w.members[t]) * w.atoms + k];
         norm2 = fmaf(value, value, norm2);
         largest = fmaxf(largest, fabsf(value));
         invalid = invalid || !isfinite(value);
     }
-    const float lambda = mu * (fabsf(sigma) * sqrtf(static_cast<float>(end - begin)));
+    const float lambda = mu * (fabsf(sigma) * sqrtf(static_cast<float>(end - begin))) * w.lambda_scale[k];
     const float norm = sqrtf(norm2);
     const float scale = norm <= lambda ? 0.f : 1.f - lambda / norm;
-    w.scale[id] = scale;
+    w.scale_last[id] = scale;
     // The thresholded row explodes when a value is not finite or above 1e4;
     // with finite values and a finite scale, |value * scale| is largest for
     // the largest |value| (rounding is monotonic).
@@ -1228,8 +1423,9 @@ __global__ void finish_kernel(LsscWork w) {
 std::size_t lssc_work_bytes(int m, int np) {
     const std::size_t n = static_cast<std::size_t>(np), mm = static_cast<std::size_t>(m);
     const std::size_t atoms = np < 256 ? np : 256, clusters = np < 64 ? np : 64, samples = np < kLsscSamples ? np : kLsscSamples;
-    const std::size_t floats = 2 * n * mm + n * atoms + n + atoms * mm + clusters * mm + clusters * atoms +
-                               2 * samples * mm + atoms * samples + atoms + mm;
+    const std::size_t floats = 2 * n * mm + 2 * n * atoms + n + atoms * mm + clusters * mm + 2 * clusters * atoms +
+                               2 * samples * mm + atoms * samples + atoms + mm + atoms * mm + atoms +
+                               lssc_precondition_floats(m);
     const std::size_t tiles = mm <= 64 ? static_cast<std::size_t>(lssc_tile_capacity(np, static_cast<int>(clusters))) : 0;
     const std::size_t ints = 2 * n + 3 * clusters + 1 + 4 + (atoms > mm ? atoms - mm : 0) + atoms * (kLsscSamples / 32 + 1) +
                              (mm <= 64 ? n + 64 : 0) +
@@ -1310,26 +1506,48 @@ void lssc_lipschitz(const LsscWork& w, float* work, float* lipschitz, cudaStream
     NSS_CUDA_CHECK_LAUNCH();
 }
 
+void lssc_precondition(const LsscWork& w, float* lipschitz, cudaStream_t stream) {
+    gram_dict_kernel<<<blocks_for(static_cast<long long>(w.m) * w.m), kThreads, 0, stream>>>(w);
+    NSS_CUDA_CHECK_LAUNCH();
+    const int solve_blocks = (w.atoms + kSolveAtoms - 1) / kSolveAtoms;
+    if (w.m <= kFactorShared) {
+        factor_kernel<true><<<1, kFactorThreads, 0, stream>>>(w, lipschitz);
+        NSS_CUDA_CHECK_LAUNCH();
+        solve_kernel<true><<<solve_blocks, kSolveAtoms, 0, stream>>>(w);
+    } else {
+        factor_kernel<false><<<1, kFactorThreads, 0, stream>>>(w, lipschitz);
+        NSS_CUDA_CHECK_LAUNCH();
+        solve_kernel<false><<<solve_blocks, kSolveAtoms, 0, stream>>>(w);
+    }
+    NSS_CUDA_CHECK_LAUNCH();
+}
+
 void lssc_center(const LsscWork& w, cudaStream_t stream) {
     center_kernel<<<blocks_for(w.np), kThreads, 0, stream>>>(w);
     NSS_CUDA_CHECK_LAUNCH();
 }
 
-void lssc_round(const LsscWork& w, int round, const float* lipschitz, float sigma, cudaStream_t stream) {
+void lssc_round(const LsscWork& w, int round, float beta, const float* lipschitz, float sigma, cudaStream_t stream) {
+    if (round == 0) beta = 0.f;  // nothing to extrapolate from
     if (w.m <= kTileRows) {
         if (round == 0) {
             tiles_kernel<<<1, kThreads, 0, stream>>>(w);
             NSS_CUDA_CHECK_LAUNCH();
         }
-        round_tile_kernel<<<lssc_tile_capacity(w.np, w.clusters), kThreads, 0, stream>>>(w, round == 0, lipschitz);
+        const int tiles = lssc_tile_capacity(w.np, w.clusters);
+        if (beta != 0.f) {
+            round_tile_kernel<true><<<tiles, kThreads, 0, stream>>>(w, false, beta, lipschitz);
+        } else {
+            round_tile_kernel<false><<<tiles, kThreads, 0, stream>>>(w, round == 0, 0.f, lipschitz);
+        }
         NSS_CUDA_CHECK_LAUNCH();
         scale_tiles_kernel<<<blocks_for(static_cast<long long>(w.clusters) * w.atoms), kThreads, 0, stream>>>(w, lipschitz, sigma);
     } else {
         if (round > 0) {
-            product_kernel<<<blocks_for(static_cast<long long>(w.np) * w.m), kThreads, 0, stream>>>(w, true);
+            product_kernel<<<blocks_for(static_cast<long long>(w.np) * w.m), kThreads, 0, stream>>>(w, true, beta);
             NSS_CUDA_CHECK_LAUNCH();
         }
-        gradient_kernel<<<blocks_for(static_cast<long long>(w.np) * w.atoms), kThreads, 0, stream>>>(w, round == 0, lipschitz);
+        gradient_kernel<<<blocks_for(static_cast<long long>(w.np) * w.atoms), kThreads, 0, stream>>>(w, round == 0, beta, lipschitz);
         NSS_CUDA_CHECK_LAUNCH();
         scale_kernel<<<blocks_for(static_cast<long long>(w.clusters) * w.atoms), kThreads, 0, stream>>>(w, lipschitz, sigma);
     }
@@ -1342,7 +1560,7 @@ void lssc_reconstruct(const LsscWork& w, cudaStream_t stream) {
     if (w.m <= kTileRows) {
         product_tile_kernel<<<blocks_for(w.np, kTile), kThreads, 0, stream>>>(w, false);
     } else {
-        product_kernel<<<blocks_for(static_cast<long long>(w.np) * w.m), kThreads, 0, stream>>>(w, false);
+        product_kernel<<<blocks_for(static_cast<long long>(w.np) * w.m), kThreads, 0, stream>>>(w, false, 0.f);
     }
     NSS_CUDA_CHECK_LAUNCH();
     finish_kernel<<<blocks_for(w.np), kThreads, 0, stream>>>(w);

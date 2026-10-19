@@ -31,7 +31,7 @@ void lssc_cluster_workspace(const float* patches, int m, int n, int lda, int ncl
 // ℓ1,2 row-soft: for each atom row of A (atoms × n, column-major), shrink the n-vector.
 void lssc_group_soft(float* A, int atoms, int n, int lda_a, float lambda);
 
-// Per-patch OMP. Used in K-SVD-lite only; denoise path is ISTA + group-soft, not SOMP.
+// Per-patch OMP. Used in K-SVD-lite only; denoise path is FISTA + group-soft, not SOMP.
 int lssc_omp(const float* y, int m, const float* D, int atoms, int ldd, int sparsity, float* a);
 inline int lssc_omp_work_floats(int m, int atoms, int sparsity) {
     const std::uint64_t mm = m < 1 ? 1 : m;
@@ -77,22 +77,30 @@ void lssc_dict_init_workspace(float* D, int m, int atoms, int ldd, const float* 
 // caller's workspace and must not outlive that frame.
 struct LsscPreparedContext {
     const float* dictionary = nullptr;
-    const float* transpose = nullptr;  // atoms x m, column-major
+    const float* transpose = nullptr;  // atoms x m, column-major: D^T
+    // Coding (params/lssc.hpp): gradient matrix P = D^T M (layout of
+    // transpose), per-atom penalty factors ||M d_a||, and the step bound L'.
+    const float* gradient = nullptr;
+    const float* lambda_scale = nullptr;
     int m = 0;
     int atoms = 0;
     int ldd = 0;
-    float lipschitz = 1.f;
+    float lipschitz = 1.f;         // power estimate of ||D||^2
+    float coding_lipschitz = 1.f;  // L' of the preconditioned problem
     bool avx2_gemm = false;
 };
 
 inline int lssc_prepare_work_floats(int m, int atoms) {
     const std::uint64_t mm = m < 1 ? 1 : m;
     const std::uint64_t aa = atoms < 1 ? 1 : atoms;
-    // transpose[atoms*m] + power-vector[atoms] + image-vector[m]
-    return checked_int(checked_sum(aa * mm, aa, mm, 16));
+    // transpose[atoms*m] + power-vector[atoms] + image-vector[m] +
+    // gradient[atoms*m] + lambda_scale[atoms] + Cholesky factor[m*m]
+    return checked_int(checked_sum(aa * mm, aa, mm, aa * mm, aa, mm * mm, 16));
 }
 
-// Build a frame-local transpose and Lipschitz estimate. The context borrows
+// Build the frame-local transpose, Lipschitz estimate and preconditioned
+// coding operator (gradient, lambda_scale, coding_lipschitz; without a usable
+// preconditioner they fall back to D^T, 1 and lipschitz). The context borrows
 // `D` and `work`; no input-dependent state may be retained across frames.
 int lssc_prepare_context(const float* D, int m, int atoms, int ldd, float* work, int work_floats,
                          LsscPreparedContext* context);
@@ -106,21 +114,24 @@ inline int lssc_reconstruct_prepared_work_floats(int m, int n, int atoms) {
     const std::uint64_t mm = m < 1 ? 1 : m;
     const std::uint64_t nn = n < 1 ? 1 : n;
     const std::uint64_t aa = atoms < 1 ? 1 : atoms;
-    // mean[n] + A[atoms*n] + R[m*n] + G[atoms*n] + optional bounded GEMM pack.
+    // mean[n] + A[atoms*n] + R[m*n] + G[atoms*n] + previous iterate[atoms*n] +
+    // optional bounded GEMM pack.
     const int pack = lssc_gemm_pack_work_floats(static_cast<int>(mm), static_cast<int>(nn), static_cast<int>(aa));
-    return checked_int(checked_sum(nn, aa * nn, mm * nn, aa * nn, pack, 16));
+    return checked_int(checked_sum(nn, aa * nn, mm * nn, aa * nn, aa * nn, pack, 16));
 }
 
 inline int lssc_reconstruct_work_floats(int m, int n, int atoms) {
     const std::uint64_t mm = m < 1 ? 1 : m;
     const std::uint64_t nn = n < 1 ? 1 : n;
     const std::uint64_t aa = atoms < 1 ? 1 : atoms;
-    // Legacy path: prepared group workspace plus a local transpose and power
-    // vectors. Prepared callers can use the smaller group-only contract.
-    return checked_int(checked_sum(lssc_reconstruct_prepared_work_floats(mm, nn, aa), aa * mm, aa, mm, 16));
+    // Legacy path: prepared group workspace plus a local prepared context.
+    // Prepared callers can use the smaller group-only contract.
+    return checked_int(checked_sum(lssc_reconstruct_prepared_work_floats(mm, nn, aa),
+                                   lssc_prepare_work_floats(static_cast<int>(mm), static_cast<int>(aa)), 16));
 }
 
-// ℓ_{1,2} ISTA: A ← prox_{μλ}(A + μ Dᵀ(Y − DA)), Y = DA. In-place on packed patches.
+// ℓ_{1,2} group sparse coding of one cluster (params/lssc.hpp): preconditioned
+// FISTA, A ← prox_{μλ}(Z + μ P(Y − DZ)), output DA + mean. In-place on packed patches.
 void lssc_reconstruct(float* patches, int m, int n, int lda, const float* D, int atoms, int ldd, float sigma,
                       float* work = nullptr, int work_floats = 0);
 
@@ -147,12 +158,12 @@ inline int lssc_denoise_work_floats(int width, int height, int block, int step) 
     const int dict_work = lssc_dict_work_floats(m, atoms, np, 1);
     const int cluster_work = lssc_cluster_work_floats(m, np, ncl);
     // patches + D + assign + counts + prefix/cursors + members + group +
-    // per-cluster ISTA + frame-local prepared dictionary.
+    // per-cluster coding + frame-local prepared dictionary.
     return checked_int(checked_sum(np * m, m * atoms, assign_f, counts_f, offsets_f, counts_f, assign_f, cluster_work, np * m,
            dict_work, group_work, prepare_work));
 }
 
-// Extract grid patches, k-means cluster, ISTA group-sparse code, aggregate_add.
+// Extract grid patches, k-means cluster, group-sparse code (FISTA), aggregate_add.
 // Not ICCV 2009 LSSC (no Si=Sj / SOMP / ODL). work holds lssc_denoise_work_floats floats.
 void lssc_denoise_plane(const float* src, int width, int height, int sstride, float* num, float* den, int buf_stride,
                         int block, int step, float sigma, float* work = nullptr, int work_floats = 0);

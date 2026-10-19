@@ -2,7 +2,7 @@
 #include "cpu/lssc/mixed_omp.hpp"
 // OMP screens correlations in FP32, then refines support selection in FP64.
 // Its least-squares solve and residual retain double precision.
-// Public dictionary/coefficients and the denoise/ISTA path remain FP32.
+// Public dictionary/coefficients and the denoise/coding path remain FP32.
 #include "nss/resources.hpp"
 #include "nss/avx2_policy.hpp"
 #include "nss/cpu_api.hpp"
@@ -151,7 +151,7 @@ int lssc_omp(const float* y, int m, const float* D, int atoms, int ldd, int spar
 // LSSC of one plane into num/den (cleared first): the patches on the `step`
 // grid are clustered (lssc_cluster_workspace), one dictionary is built from
 // them (lssc_dict_init_workspace), each cluster's patches are coded jointly
-// by ISTA against it (lssc_reconstruct_prepared), and every reconstructed
+// by preconditioned FISTA against it (lssc_reconstruct_prepared), and every reconstructed
 // patch is added to num with weight 1 (den counts). `work` is the caller's
 // scratch.
 void lssc_denoise_plane(const float* src, int width, int height, int sstride, float* num, float* den, int buf_stride,

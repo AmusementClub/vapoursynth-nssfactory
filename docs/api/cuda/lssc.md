@@ -19,6 +19,12 @@ hiq = core.nss_cuda.LSSC(clip, sigma=25, block_step=4)
 |---|---:|---:|
 | default | 190 | 125 |
 
+These are model version 2 figures. Model version 3 (the preconditioned
+FISTA coding, see [`nss.LSSC`](../lssc.md#model-version-3-the-cluster-coding))
+measured 0.89x of version 2 at 1080p gray and RGB and 0.97x at
+`block_step=4` (paired runs, one stream, RTX 5080): its 12 rounds read the
+codes of the two previous rounds, which at 1080p no longer stay in the L2 cache.
+
 ## Signature
 
 ```python
@@ -49,9 +55,13 @@ capped by the actual patch count; they are not exposed.
 
 - **Accuracy.** 137–141 dB against the CPU plugin on the reference set (the
   sparse coding runs in FP32 where the CPU uses FP64 in places); identical
-  from run to run.
-- **Memory.** The codes take `min(256, patches)` floats per patch, so a dense
-  `block_step` on a large frame takes that much GPU memory.
+  from run to run. Model version 3 against version 3 CPU references:
+  137.0–140.8 dB. The frozen C1 references (`tests/data/cuda_refs_v1.json`)
+  are version 2 outputs; regenerate LSSC references before comparing.
+- **Memory.** The codes take `2 min(256, patches)` floats per patch (the
+  current and the previous round), so a dense `block_step` on a large frame
+  takes that much GPU memory: about 66 MB at 1080p with the default step, 264 MB
+  with `block_step=4`.
 
 ## Pitfalls
 
