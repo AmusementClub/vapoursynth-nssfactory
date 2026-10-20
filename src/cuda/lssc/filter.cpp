@@ -227,11 +227,18 @@ void denoise_plane(const LsscData& d, Slot& s, int plane, float sigma, int b) {
         NSS_CUDA_RANGE("lssc.code");
         lssc_center(w, stream);
         NSS_CUDA_CHECK(cudaMemsetAsync(w.flags, 0, 2 * static_cast<std::size_t>(w.clusters) * sizeof(int), stream));
-        for (int round = 0; round < kLsscRounds; ++round) {
-            lssc_round(w, round, round > 0 ? nss::kLsscMomentum[round - 1] : 0.f, lipschitz, sigma, stream);
-            std::swap(w.coef, w.coef_last);
-            std::swap(w.scale, w.scale_last);
+        // An even number of rounds leaves every batch's last codes in coef.
+        static_assert(kLsscRounds % 2 == 0, "batches must end on the same buffers");
+        w.parts = lssc_coding_parts(w);
+        for (w.part = 0; w.part < w.parts; ++w.part) {
+            for (int round = 0; round < kLsscRounds; ++round) {
+                lssc_round(w, round, round > 0 ? nss::kLsscMomentum[round - 1] : 0.f, lipschitz, sigma, stream);
+                std::swap(w.coef, w.coef_last);
+                std::swap(w.scale, w.scale_last);
+            }
         }
+        w.part = 0;
+        w.parts = 1;
         lssc_reconstruct(w, stream);
     }
     NSS_CUDA_RANGE("lssc.aggregate");

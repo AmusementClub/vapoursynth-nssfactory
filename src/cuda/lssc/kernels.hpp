@@ -63,6 +63,9 @@ struct LsscWork {
     int* chunks;             // np + 64 (m <= 64): k-means member counts per 64-patch chunk
     float* partial;          // tile capacity * atoms: partial row norms
     AggregatePatch* meta;    // np
+    // Coding batch (m <= 64): the rounds run on the clusters whose members
+    // start in [part, part + 1) * np / parts; see lssc_coding_parts.
+    int part = 0, parts = 1;
 };
 
 // Device floats of the per-plane work arrays for np patches of m pixels.
@@ -96,6 +99,11 @@ void lssc_precondition(const LsscWork& w, float* lipschitz, cudaStream_t stream)
 // Coding: center the patches, run the rounds, reconstruct into values and
 // fill the aggregation records.
 void lssc_center(const LsscWork& w, cudaStream_t stream);
+// Batches of whole clusters for the coding rounds on this device: the fewest
+// whose codes (coef and coef_last of their patches) fit half the L2 cache,
+// when each still fills the device with round tiles; otherwise 1. A batch
+// runs all its rounds before the next starts, so its codes stay in L2.
+int lssc_coding_parts(const LsscWork& w);
 // Round `round` from the point coef + beta (coef - coef_last) (as thresholded
 // codes; beta = 0 reads coef alone): writes the new codes into coef_last and
 // their scales into scale_last. The caller then swaps coef / coef_last and
