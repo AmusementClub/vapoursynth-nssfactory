@@ -6,6 +6,7 @@
 #include <array>
 #include <atomic>
 #include <climits>
+#include <cmath>
 
 namespace nss_cuda {
 namespace {
@@ -161,26 +162,33 @@ __global__ void __launch_bounds__(kThreads) assign_tile_kernel(LsscWork w, bool 
 }
 
 // Member lists from the assignment tiles' counts (kAssignTile patches a
-// chunk): the offsets, and for each cluster the members before each chunk
-// (one block, a thread a cluster, chunks in order) ...
+// chunk): for each cluster the members before each chunk, a warp a cluster
+// scanning 32 chunks at a time (block `clusters`: the offsets) ...
+__device__ __forceinline__ int warp_inclusive_scan(int v) {
+    const int lane = threadIdx.x & 31;
+#pragma unroll
+    for (int d = 1; d < 32; d <<= 1) {
+        const int u = __shfl_up_sync(~0u, v, d);
+        if (lane >= d) v += u;
+    }
+    return v;
+}
+
 __global__ void chunk_offsets_kernel(LsscWork w, const int* skip) {
     if (*skip) return;
-    const int c = threadIdx.x, clusters = w.clusters, chunks = (w.np + kAssignTile - 1) / kAssignTile;
-    if (threadIdx.x == 0) {
-        int offset = 0;
-        for (int b = 0; b < clusters; ++b) {
-            w.offsets[b] = offset;
-            offset += w.counts[b];
-        }
-        w.offsets[clusters] = offset;
-    }
-    if (c >= clusters) return;
+    const int c = blockIdx.x, lane = threadIdx.x, clusters = w.clusters, chunks = (w.np + kAssignTile - 1) / kAssignTile;
+    // Block `clusters` lays out the clusters, the others scan a cluster's chunks.
+    const int n = c == clusters ? clusters : chunks;
     int before = 0;
-    for (int k = 0; k < chunks; ++k) {
-        const int count = w.chunks[k * clusters + c];
-        w.chunks[k * clusters + c] = before;
-        before += count;
+    for (int base = 0; base < n; base += 32) {
+        const int k = base + lane;
+        int* at = c == clusters ? w.offsets + k : w.chunks + static_cast<long long>(k) * clusters + c;
+        const int count = k < n ? (c == clusters ? w.counts[k] : *at) : 0;
+        const int inclusive = warp_inclusive_scan(count);
+        if (k < n) *at = before + inclusive - count;
+        before += __shfl_sync(~0u, inclusive, 31);
     }
+    if (c == clusters && lane == 0) w.offsets[clusters] = before;
 }
 
 // ... then every chunk's patches into place, in patch order within a cluster.
@@ -981,6 +989,13 @@ __device__ __forceinline__ LsscTiles lssc_tiles(const LsscWork& w) {
     return t;
 }
 
+// Whether cluster c is in the coding batch (by where its members start).
+__device__ __forceinline__ bool in_part(const LsscWork& w, int c) {
+    if (w.parts == 1) return true;
+    const long long at = static_cast<long long>(w.offsets[c]) * w.parts;
+    return at >= static_cast<long long>(w.part) * w.np && at < static_cast<long long>(w.part + 1) * w.np;
+}
+
 // The tile list from the member offsets (one block).
 __global__ void tiles_kernel(LsscWork w) {
     const LsscTiles t = lssc_tiles(w);
@@ -1010,7 +1025,7 @@ __global__ void scale_tiles_kernel(LsscWork w, const float* lipschitz, float sig
     const int id = blockIdx.x * blockDim.x + threadIdx.x;
     if (id >= w.clusters * w.atoms) return;
     const int c = id / w.atoms, k = id % w.atoms;
-    if (w.flags[w.clusters + c]) return;
+    if (w.flags[w.clusters + c] || !in_part(w, c)) return;
     const LsscTiles t = lssc_tiles(w);
     float norm2 = 0.f;
     for (int i = t.first[c]; i < t.first[c + 1]; ++i) norm2 += t.norm2[static_cast<long long>(i) * w.atoms + k];
@@ -1063,7 +1078,7 @@ __global__ void __launch_bounds__(kThreads) round_tile_kernel(LsscWork w, bool f
     const int tile = blockIdx.x;
     if (tile >= *tiles.count) return;
     const int c = tiles.cluster[tile];
-    if (w.flags[w.clusters + c]) return;  // stopped (uniform over the block)
+    if (w.flags[w.clusters + c] || !in_part(w, c)) return;  // stopped or another batch (uniform over the block)
     const float mu = 0.9f / *lipschitz;
     // A thread takes patches 4 tp to 4 tp + 3 and columns 4 tc to 4 tc + 3,
     // its operands as one 16-byte load each.
@@ -1321,7 +1336,7 @@ __global__ void __launch_bounds__(kThreads) round_tile_mma_kernel(LsscWork w, bo
     const int tile = blockIdx.x;
     if (tile >= *tiles.count) return;
     const int c = tiles.cluster[tile];
-    if (w.flags[w.clusters + c]) return;
+    if (w.flags[w.clusters + c] || !in_part(w, c)) return;
     const float mu = 0.9f / *lipschitz;
     __shared__ __align__(16) float rs[kTileRows][kRoundPitch];
     __shared__ __align__(16) float stage[kRoundRows][kRoundPitch];
@@ -1706,7 +1721,7 @@ void lssc_cluster(const LsscWork& w, int rounds, int* state, cudaStream_t stream
             NSS_CUDA_CHECK(cudaMemsetAsync(w.counts, 0, static_cast<std::size_t>(w.clusters) * sizeof(int), stream));
             assign_tile_kernel<<<blocks_for(w.np, kAssignTile), kThreads, 0, stream>>>(w, round == 0, state);
             NSS_CUDA_CHECK_LAUNCH();
-            chunk_offsets_kernel<<<1, kClusters, 0, stream>>>(w, state + 1);
+            chunk_offsets_kernel<<<w.clusters + 1, 32, 0, stream>>>(w, state + 1);
             NSS_CUDA_CHECK_LAUNCH();
             chunk_members_kernel<<<blocks_for(w.np, kAssignTile), kAssignTile, 0, stream>>>(w, state + 1);
             NSS_CUDA_CHECK_LAUNCH();
@@ -1785,10 +1800,43 @@ static bool tensor_cores() {
     return major >= 8;
 }
 
+int lssc_coding_parts(const LsscWork& w) {
+    if (w.m > kTileRows || w.np <= 0) return 1;
+    int device = 0;
+    NSS_CUDA_CHECK(cudaGetDevice(&device));
+    const bool mma = w.m == 64 && w.atoms % kTile == 0 && tensor_cores();
+    // Per device and round kernel: L2 bytes, and round blocks it holds at once.
+    static std::array<std::atomic<long long>, 128> known{};  // 0 unknown, else l2 << 20 | resident
+    const int slot = 2 * device + (mma ? 1 : 0);
+    long long room = slot < 128 ? known[slot].load() : 0;
+    if (room == 0) {
+        int bytes = 0, sms = 0, blocks = 0;
+        NSS_CUDA_CHECK(cudaDeviceGetAttribute(&bytes, cudaDevAttrL2CacheSize, device));
+        NSS_CUDA_CHECK(cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device));
+        if (mma) {
+            NSS_CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&blocks, round_tile_mma_kernel<true>, kThreads, 0));
+        } else {
+            NSS_CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&blocks, round_tile_kernel<true>, kThreads, 0));
+        }
+        room = static_cast<long long>(bytes) << 20 | std::min(sms * blocks, (1 << 20) - 1);
+        if (slot < 128) known[slot] = room;
+    }
+    const long long l2 = room >> 20;
+    const int resident = static_cast<int>(room & ((1 << 20) - 1));
+    // RTX 5080 (64 MiB L2, 252 round blocks): 1080p 2 batches gray 1.29x,
+    // RGB 1.24x, YUV420 1.11x, 4K 8 batches 1.32x; 4 batches at 1080p, half
+    // a wave of tiles each, only 1.02x (docs/cuda-rebench-20261020.md).
+    const double codes = 2.0 * w.np * w.atoms * sizeof(float);
+    const int parts = static_cast<int>(std::ceil(codes / (0.5 * static_cast<double>(l2))));
+    // A batch must keep about a wave of tiles (7/8 of the resident blocks).
+    if (l2 <= 0 || parts <= 1 || 8LL * ((w.np + kTile - 1) / kTile) < 7LL * resident * parts) return 1;
+    return parts;
+}
+
 void lssc_round(const LsscWork& w, int round, float beta, const float* lipschitz, float sigma, cudaStream_t stream) {
     if (round == 0) beta = 0.f;  // nothing to extrapolate from
     if (w.m <= kTileRows) {
-        if (round == 0) {
+        if (round == 0 && w.part == 0) {
             tiles_kernel<<<1, kThreads, 0, stream>>>(w);
             NSS_CUDA_CHECK_LAUNCH();
         }
