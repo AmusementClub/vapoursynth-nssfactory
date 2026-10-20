@@ -30,6 +30,7 @@ inline constexpr int kBmMaxBlock = 32;
 inline constexpr int kBmMaxGroup = 64;
 inline constexpr int kBmDefaultStep = 8;
 inline constexpr int kBmDefaultRange = 7;
+inline constexpr int kBm3dDefaultRange = 9;  // BM3D's public default (the matcher's SearchConfig keeps 7)
 inline constexpr int kBmMaxRange = 64;
 inline constexpr int kBmDefaultPsNum = 2;
 inline constexpr int kBmDefaultPsRange = 4;

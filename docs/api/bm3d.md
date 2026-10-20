@@ -18,7 +18,7 @@ both = core.nss.BM3D(clip, sigma=25, final=1)             # basic + Wiener stage
 
 ```python
 core.nss.BM3D(clip clip[, clip ref, float[] sigma = 3.0, int[] block_size = 8,
-              int[] group_size = 8, int[] block_step, int[] bm_range = 7,
+              int[] group_size = 8, int[] block_step, int[] bm_range = 9,
               int radius = 0, int[] ps_num, int[] ps_range = 4, int chroma = 0,
               int final = 0, float[] sigma_basic, int[] block_size_basic,
               int[] group_size_basic, string temporal_mode = "legacy",
@@ -38,7 +38,7 @@ Omitted `block_step` adapts to `min(8, block_size)` per plane; omitted
 | `block_size` | 8 | {1,2,4,8,12,16,32} | Patch edge. 8 is the general default; 12 exists for high-noise DCT profiles. Larger blocks cost quadratically per patch. |
 | `block_step` | min(8, block) | [1, block] | Stride between reference patches. Halving it roughly quadruples positions (2D) — the main quality/speed trade. |
 | `group_size` | 8 | {1,2,4,8,16,32,64} | Maximum patches per 3D stack. More matches help at high noise; marginal at low noise. |
-| `bm_range` | 7 | [1, 64] | Search window radius (`window = 2*bm_range + 1`). Cost grows quadratically; motion/texture may justify a larger window. |
+| `bm_range` | 9 | [1, 64] | Search window radius (`window = 2*bm_range + 1`). Cost grows quadratically; motion/texture may justify a larger window. |
 | `radius` | 0 | [0, 16] | Temporal radius. >0 returns the weighted intermediate for `VAggregate`, or finished frames with `temporal_mode="rolling"` ([Temporal output](README.md#temporal-output)). |
 | `ref` | none | clip | External reference clip guiding both stages' matching (paper-style two-stage usage). |
 | `chroma` | 0 | {0, 1} | CBM3D for YUV 4:4:4 clips: groups are matched on plane 0 only (of `ref` when given) and all three planes are filtered with them. See "Color (CBM3D)". |
@@ -116,11 +116,16 @@ same build is reproducible bit-for-bit on a given toolchain.
 
 ## Defaults rationale and performance
 
-`block=8, step=8, group=8, bm_range=7, sigma=3` is the balanced point chosen
-from this repository's calibration matrix. ~59 ms per 1080p GRAYS frame
-on a single Emerald Rapids core (~17 fps) — the fastest filter here. The
-dominant cost driver is `block_step` (positions scale as `1/step^2`), then
-`bm_range` and `group_size`.
+`block=8, step=8, group=8, sigma=3` is the balanced point chosen from this
+repository's calibration matrix; `bm_range` was 7 there and is 9 since
+2026-10-20 (BM3DCUDA's default as well). Over nine 1080p test images, gray and
+RGB, the wider window gains 0.04 to 0.17 dB PSNR at sigma 3 to 25 (mean +0.06
+at sigma 3, +0.12 at 10, +0.14 at 25) and never loses; 12 and 16 gain about
+twice that with 1.7x and 3.0x the candidates of 9. ~59 ms per 1080p
+GRAYS frame on a single Emerald Rapids core (~17 fps, measured with
+`bm_range=7`) — the fastest filter here. The dominant cost driver is
+`block_step` (positions scale as `1/step^2`), then `bm_range` and
+`group_size`.
 
 ## Pitfalls
 

@@ -15,7 +15,7 @@ more cores.
 
 | Filter | ms / frame | Temporal | Good for |
 |---|---:|---|---|
-| [BM3D](bm3d.md) | ~59 | yes | General use; the fastest |
+| [BM3D](bm3d.md) | ~59† | yes | General use; the fastest |
 | [NLM](nlm.md) | ~131 | yes (`d`) | Light noise |
 | [WNNM](wnnm.md) | ~131 | yes | Texture and edge retention |
 | [NCSR](ncsr.md) | ~268 | yes | Sparse-coding quality at moderate cost |
@@ -27,6 +27,9 @@ more cores.
 \* NLH measured with `block_size=8, block_step=8` in both stages and a given
 sigma; its default (smaller steps, blind estimation) is much heavier (see its
 page).
+
+† BM3D measured with `bm_range=7`, its default until 2026-10-20 (now 9, about
+1.6x the candidates of the matching step).
 
 ## Conventions
 
