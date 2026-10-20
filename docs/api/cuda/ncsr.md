@@ -50,7 +50,7 @@ core.nss_cuda.NCSR(clip clip[, float[] sigma = 3.0, int block_size = 8,
 | `block_size` | 8 | [1, 16] | Patch edge. |
 | `block_step` | 8 | [1, block] | Reference-patch stride; positions scale as `1/step^2`. |
 | `group_size` | 8 | [1, 32] | Matched patches per group (columns of the PCA matrix). |
-| `bm_range` | 7 | [1, 64] | Search window radius. |
+| `bm_range` | 7 | [1, 64] | Search window radius. With `bm_range` 20 or more, spatial matching of one channel runs on tensor cores on GPUs of compute capability 8.0+ (block 8, group at most 16): the same matches, a workspace of one plane per stream (about 24 MiB at 1080p); BM3D gray 1080p `bm_range=30` 1.6x. |
 | `iters` | 2 | [1, 64] | Outer re-estimation rounds; the second round re-matches on the current estimate. ~2x cost per extra round. |
 | `radius` | 0 | [0, 16] | Temporal radius. >0 makes the filter temporal: finished, normal-height frames by default (`temporal_mode`, below). |
 | `rclip` | none | clip | Reference clip guiding matching. |

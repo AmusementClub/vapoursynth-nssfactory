@@ -23,7 +23,7 @@ warm-up; the images differ by at most 3%.
 | [NCSR](ncsr.md) | 390 | 215 | 265 / 135 |
 | [LSSC](lssc.md) | 205 | 145 | (no temporal mode) |
 | [NLH](nlh.md) | 37 | 31 | 13 / 11 |
-| [TWSC](twsc.md) | 65 | 34 | |
+| [TWSC](twsc.md) | 77 | 44 | |
 
 - NLH runs its default blind noise estimation; giving `sigma` skips it.
 - TWSC's default is a speed setting. Its quality geometry (`block_step=1,

@@ -18,7 +18,7 @@ blind = core.nss_cuda.TWSC(clip, estimate_sigma=1)          # per-frame sigma
 
 | Call | YUV420 | RGB |
 |---|---:|---:|
-| default | 65 | 34 |
+| default | 77 | 44 |
 
 The default is a speed setting. The quality geometry `block_step=1,
 group_size=90, iters=12` (4 on the fast color path) denoises 8 to 10 dB better
@@ -26,6 +26,14 @@ at sigma 5 to 100 and takes about 80 s per YUV420 1080p frame and 45 s per RGB
 frame; `block_step=4` keeps its quality at a sixteenth of the groups. The
 [CPU page](../twsc.md#defaults-rationale-and-performance) has the
 measurements.
+
+On GPUs of compute capability 8.0 and later, the block matching of planes
+matched on their own (gray, the luma of YUV, the fast color path's planes, the
+blind estimate) runs on tensor cores when the window is 40 to 129 pixels wide,
+the block 8 and the group at most 16, the default among them. The matches are
+the same, bit for bit; the cost is a workspace of one plane per stream (about
+24 MiB at 1080p), left out when `memory_limit_mb` has no room for it. Other
+shapes, joint channels and temporal matching keep the lane kernels.
 
 ## Signature
 

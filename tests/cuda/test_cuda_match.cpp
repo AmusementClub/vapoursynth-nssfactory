@@ -11,6 +11,8 @@
 #include "nss/cpu_image.hpp"
 
 #include <cmath>
+#include <cstring>
+#include <cstdlib>
 #include <cstdio>
 #include <random>
 #include <vector>
@@ -208,6 +210,65 @@ void image_case(int width, int height, int block, int group, int step, int windo
 
 }  // namespace
 
+// The tensor-core matcher (spatial_match with a prepared workspace) against
+// the lane kernels on the same plane: the same match lists, byte for byte, for
+// whole grids and for batches that do not start on a multiple of 8. `kind`: 0
+// noisy, 1 exact ties, 2 a NaN, 3 a value FP16 cannot hold (2 and 3 take the
+// exact scan of every candidate).
+int tensor_runs = 0;
+void tensor_case(int width, int height, int group, int step, int lo, int hi, int kind) {
+    auto plane = make_plane(width, height, 11u + group + step, kind == 1);
+    if (kind == 2) plane[static_cast<std::size_t>(height / 2) * width + width / 3] = std::nanf("");
+    if (kind == 3) plane[static_cast<std::size_t>(height / 3) * width + width / 2] = 1.0e6f;
+    nss_cuda::MatchGeometry g{width, height, width, 8, lo, group};
+    if (hi >= 0) g.range_hi = hi;
+    const auto grid = nss_cuda::make_raster_grid(width, height, 8, step);
+    if (!nss_cuda::spatial_match_tensor(g, grid)) {
+        // Refused only below sm_80, or where the device runs the compute_75 PTX (JIT forced).
+        CHECK(nss_cuda::device_info(0, nss_cuda::runtime_info()).cc_major < 8 || std::getenv("CUDA_FORCE_PTX_JIT"),
+              "tensor %dx%d g%d s%d [-%d,+%d] not taken", width, height, group, step, lo, g.hi());
+        return;
+    }
+    ++tensor_runs;
+    nss_cuda::DeviceBuffer d_plane(plane.size() * sizeof(float));
+    NSS_CUDA_CHECK(cudaMemcpy(d_plane.get(), plane.data(), plane.size() * sizeof(float), cudaMemcpyHostToDevice));
+    nss_cuda::DeviceBuffer scratch(nss_cuda::spatial_match_scratch_bytes(width, height));
+    nss_cuda::spatial_match_prepare(d_plane.as<float>(), g, scratch.get(), nullptr);
+    const int n = grid.count();
+    const std::size_t matches = static_cast<std::size_t>(n) * group;
+    for (const int batch : {n, 37}) {
+        const int start = batch == n ? 0 : 5;
+        std::vector<nss_cuda::DeviceMatch> out[2];
+        std::vector<int> counts[2];
+        for (int path = 0; path < 2; ++path) {
+            nss_cuda::DeviceBuffer d_out(matches * sizeof(nss_cuda::DeviceMatch));
+            nss_cuda::DeviceBuffer d_counts(static_cast<std::size_t>(n) * sizeof(int));
+            NSS_CUDA_CHECK(cudaMemset(d_out.get(), 0, d_out.bytes()));
+            NSS_CUDA_CHECK(cudaMemset(d_counts.get(), 0, d_counts.bytes()));
+            for (int begin = start; begin < n; begin += batch) {
+                const int count = std::min(batch, n - begin);
+                nss_cuda::spatial_match(d_plane.as<float>(), g, grid, begin, count,
+                                        d_out.as<nss_cuda::DeviceMatch>() + static_cast<std::size_t>(begin) * group,
+                                        d_counts.as<int>() + begin, nullptr, path ? scratch.get() : nullptr);
+            }
+            out[path].resize(matches);
+            counts[path].resize(n);
+            NSS_CUDA_CHECK(cudaMemcpy(out[path].data(), d_out.get(), d_out.bytes(), cudaMemcpyDeviceToHost));
+            NSS_CUDA_CHECK(cudaMemcpy(counts[path].data(), d_counts.get(), d_counts.bytes(), cudaMemcpyDeviceToHost));
+        }
+        int bad = 0;
+        for (int ref = start; ref < n; ++ref) {
+            const bool same = counts[0][ref] == counts[1][ref] &&
+                              std::memcmp(out[0].data() + static_cast<std::size_t>(ref) * group,
+                                          out[1].data() + static_cast<std::size_t>(ref) * group,
+                                          sizeof(nss_cuda::DeviceMatch) * std::max(0, counts[0][ref])) == 0;
+            bad += !same;
+        }
+        CHECK(bad == 0, "tensor %dx%d g%d s%d [-%d,+%d] kind %d batch %d: %d of %d references differ", width, height,
+              group, step, lo, g.hi(), kind, batch, bad, n - start);
+    }
+}
+
 int main() {
     if (nss_cuda::runtime_info().device_count == 0) {
         std::printf("test_cuda_match SKIP: no CUDA device\n");
@@ -291,6 +352,25 @@ int main() {
         temporal_case(71, 66, 16, 16, 6, 7, 2, 2, 5, flat, stats);
         temporal_case(71, 66, 4, 8, 5, 7, 2, 0, 9, flat, stats);
     }
+    // Tensor-core matcher: windows of side 33 to 129 (symmetric and exact-size), every step, groups 2 to 16.
+    for (const int kind : {0, 1}) {
+        for (const int group : {2, 8, 16}) {
+            tensor_case(200, 150, group, 8, 30, 29, kind);  // TWSC default window
+            tensor_case(200, 150, group, 4, 20, 19, kind);  // blind estimate window, two-row warps
+            tensor_case(160, 120, group, 8, 20, -1, kind);  // a side of 41
+        }
+        for (const int step : {1, 3, 5, 6, 7}) tensor_case(180, 96, 9, step, 24, 23, kind);
+        tensor_case(220, 140, 12, 8, 64, -1, kind);   // largest side, wider than the plane
+        tensor_case(220, 140, 4, 2, 40, 40, kind);
+    }
+    // Below a side of 40 the lane kernels serve (they are faster there).
+    {
+        nss_cuda::MatchGeometry g{160, 120, 160, 8, 19, 8};
+        CHECK(!nss_cuda::spatial_match_tensor(g, nss_cuda::make_raster_grid(160, 120, 8, 8)), "side 39 taken by the tensor path");
+    }
+    tensor_case(200, 150, 8, 8, 30, 29, 2);
+    tensor_case(200, 150, 16, 4, 20, 19, 3);
+    std::printf("test_cuda_match: %d tensor-core cases against the lane kernels\n", tensor_runs);
     std::printf("test_cuda_match: %ld refs, %ld entries, %ld near-tie flips, %d failures\n", stats.refs, stats.entries,
                 stats.flips, failures);
     if (stats.flips * 100 > stats.entries) {

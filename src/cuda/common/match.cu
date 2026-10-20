@@ -7,7 +7,13 @@
 #include "cuda/common/topk.cuh"
 #include "cuda/runtime/error.hpp"
 
+#include <cuda_fp16.h>
+
 #include <algorithm>
+#include <array>
+#include <atomic>
+#include <cstddef>
+#include <type_traits>
 
 namespace nss_cuda {
 namespace {
@@ -1135,6 +1141,447 @@ void launch_spatial(const float* plane, const MatchGeometry& g, const RasterGrid
                                                                                     counts, staged);
 }
 
+// ---------------------------------------------------------------------------
+// Tensor-core matcher of large windows (spatial_match_tensor). The distance of
+// a reference r and a candidate c is first taken as d' = |c'|^2 + |r'|^2 -
+// 2 r'.c' over FP16 values v' = fp16(v - mu), mu the plane's mean (FP32 accumulation, one
+// mma.m16n8k16 per 16 candidates x 8 references x 16 pixels). Rounding bounds
+// |sqrt(d) - sqrt(d')| by e_r + e_c, e = ||v - mu - v'|| over a patch (the
+// triangle inequality), up to the FP32 error of d', at most kTensorUlps ulps of
+// |r'|^2 + |c'|^2 (10 measured over 8.7M pairs). Two passes:
+//   0. the K smallest d' over the candidates within kTensorSubset of the
+//      references (the K-th of any subset bounds the window's K-th from
+//      above): U, an upper bound of the K-th true distance;
+//   1. every candidate of the window that d' does not place above U;
+// then the survivors' exact keys in spatial_match_lane_kernel's arithmetic
+// and order: the lane kernels' matches, bit for bit. A reference whose
+// survivors overflow kTensorList takes every candidate exactly, and so does
+// every reference when the plane holds a value FP16 cannot (scratch flag).
+// TWSC's default shape (window 60, group 8) 2.0-2.1x the lane kernel at
+// 1080p (RTX 5080, four images, sigma 3 and 25;
+// docs/cuda-head-r2-20261020-tools/t48_subset.cu). The kernel alone breaks
+// even at a side of about 31, the filters with its workspace preparation
+// later: BM3D gray 1080p bm_range 16 (side 33) 0.96x, 20 (41) 1.11x, 30
+// 1.62x; a side of 40 keeps TWSC's blind estimate.
+constexpr int kTensorPad = 112;   // pair columns beyond each side of the plane
+constexpr int kTensorList = 256;  // survivors a reference keeps
+constexpr int kTensorSubset = 8;
+constexpr int kTensorMinSide = 40, kTensorMaxSide = 129;
+constexpr float kTensorEps = 5.9604645e-8f, kTensorUlps = 128.f;
+constexpr unsigned kTensorInfBits = 0x7f800000u;
+// Header: [0] emax (float bits, max), [1] the plane is unusable, [2] mu (float bits); then a double per row
+// (the mean's row sums: a fixed order, so the workspace is the same on every run).
+constexpr std::size_t kTensorHeaderFixed = 256;
+__host__ __device__ inline std::size_t tensor_header(int height) {
+    return kTensorHeaderFixed + ((static_cast<std::size_t>(height) * sizeof(double) + 255) & ~std::size_t{255});
+}
+
+struct TensorPlane {
+    const unsigned* pairs;  // height rows of pitch pairs: (v'(x), v'(x + 1)), column x at kTensorPad + x
+    const float* norms;     // |c'|^2 of the patch at (y, x), width x height
+    const float* errs;      // ||c - mu - c'|| of that patch
+    const unsigned* header;
+    int pitch;
+};
+
+__host__ __device__ inline int tensor_pitch(int width) { return width + 2 * kTensorPad; }
+
+TensorPlane tensor_plane(const void* scratch, int width, int height) {
+    auto* bytes = static_cast<const unsigned char*>(scratch);
+    TensorPlane t;
+    t.header = reinterpret_cast<const unsigned*>(bytes);
+    t.pitch = tensor_pitch(width);
+    t.pairs = reinterpret_cast<const unsigned*>(bytes + tensor_header(height));
+    t.norms = reinterpret_cast<const float*>(t.pairs + static_cast<std::size_t>(t.pitch) * height);
+    t.errs = t.norms + static_cast<std::size_t>(width) * height;
+    return t;
+}
+
+__device__ __forceinline__ unsigned short tensor_half(float v, float mu) { return __half_as_ushort(__float2half_rn(v - mu)); }
+
+// The plane's mean: each block a row (a fixed strided order and tree), then one block over the rows.
+constexpr int kTensorMeanThreads = 256;
+__device__ __forceinline__ double tensor_block_sum(double v) {
+    __shared__ double part[kTensorMeanThreads / 32];
+#pragma unroll
+    for (int o = 16; o; o >>= 1) v += __shfl_xor_sync(~0u, v, o);
+    if ((threadIdx.x & 31) == 0) part[threadIdx.x >> 5] = v;
+    __syncthreads();
+    double total = 0;
+    if (threadIdx.x == 0) {
+        for (int w = 0; w < kTensorMeanThreads / 32; ++w) total += part[w];
+    }
+    return total;
+}
+
+__global__ void __launch_bounds__(kTensorMeanThreads) tensor_rows_kernel(const float* plane, MatchGeometry g, unsigned* header) {
+    const float* row = plane + static_cast<long long>(blockIdx.x) * g.pitch;
+    double v = 0;
+    for (int x = threadIdx.x; x < g.width; x += kTensorMeanThreads) v += row[x];
+    const double total = tensor_block_sum(v);
+    if (threadIdx.x == 0) reinterpret_cast<double*>(reinterpret_cast<unsigned char*>(header) + kTensorHeaderFixed)[blockIdx.x] = total;
+}
+
+__global__ void __launch_bounds__(kTensorMeanThreads) tensor_mean_kernel(MatchGeometry g, unsigned* header) {
+    const double* rows = reinterpret_cast<const double*>(reinterpret_cast<const unsigned char*>(header) + kTensorHeaderFixed);
+    double v = 0;
+    for (int y = threadIdx.x; y < g.height; y += kTensorMeanThreads) v += rows[y];
+    const double total = tensor_block_sum(v);
+    if (threadIdx.x == 0) header[2] = __float_as_uint(static_cast<float>(total / (static_cast<double>(g.width) * g.height)));
+}
+
+// Pairs of every column of the padded plane; values beyond the plane are mu.
+__global__ void tensor_pairs_kernel(const float* plane, MatchGeometry g, unsigned* pairs, unsigned* header) {
+    const float mu = __uint_as_float(header[2]);
+    const int pitch = tensor_pitch(g.width);
+    const long long i = static_cast<long long>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= static_cast<long long>(pitch) * g.height) return;
+    const int y = static_cast<int>(i / pitch), x = static_cast<int>(i % pitch) - kTensorPad;
+    const float* row = plane + static_cast<long long>(y) * g.pitch;
+    const float a = x >= 0 && x < g.width ? row[x] : mu;
+    const float b = x + 1 >= 0 && x + 1 < g.width ? row[x + 1] : mu;
+    if (x >= 0 && x < g.width && !(fabsf(a - mu) <= 60000.f)) atomicOr(header + 1, 1u);  // NaN mu fails too
+    pairs[i] = static_cast<unsigned>(tensor_half(a, mu)) | static_cast<unsigned>(tensor_half(b, mu)) << 16;
+}
+
+// |c'|^2 and ||c - mu - c'|| of every patch position, and their largest error.
+constexpr int kTensorTileX = 32, kTensorTileY = 8;
+__global__ void __launch_bounds__(kTensorTileX * kTensorTileY) tensor_norms_kernel(const float* plane, MatchGeometry g,
+                                                                                  float* norms, float* errs,
+                                                                                  unsigned* header) {
+    __shared__ float q[kTensorTileY + 7][kTensorTileX + 8], r[kTensorTileY + 7][kTensorTileX + 8];
+    const float mu = __uint_as_float(header[2]);
+    const int x0 = blockIdx.x * kTensorTileX, y0 = blockIdx.y * kTensorTileY;
+    for (int e = threadIdx.x; e < (kTensorTileY + 7) * (kTensorTileX + 7); e += blockDim.x) {
+        const int yy = e / (kTensorTileX + 7), xx = e % (kTensorTileX + 7);
+        const int y = min(y0 + yy, g.height - 1), x = min(x0 + xx, g.width - 1);
+        const float v = plane[static_cast<long long>(y) * g.pitch + x] - mu;
+        const float h = __half2float(__float2half_rn(v));
+        q[yy][xx] = h;
+        r[yy][xx] = v - h;
+    }
+    __syncthreads();
+    const int tx = threadIdx.x % kTensorTileX, ty = threadIdx.x / kTensorTileX;
+    const int x = x0 + tx, y = y0 + ty;
+    if (x > g.width - 8 || y > g.height - 8) return;
+    float n = 0.f, e2 = 0.f;
+#pragma unroll
+    for (int i = 0; i < 8; ++i) {
+#pragma unroll
+        for (int j = 0; j < 8; ++j) {
+            n = fmaf(q[ty + i][tx + j], q[ty + i][tx + j], n);
+            e2 = fmaf(r[ty + i][tx + j], r[ty + i][tx + j], e2);
+        }
+    }
+    const float err = sqrtf(e2) * 1.001f + 1e-9f;  // above the true norm despite FP32 rounding
+    const long long at = static_cast<long long>(y) * g.width + x;
+    norms[at] = n;
+    errs[at] = err;
+    atomicMax(header, __float_as_uint(err));
+}
+
+template <int N>
+__device__ __forceinline__ void tensor_insert(float v, float (&s)[N]) {
+    if (!(v < s[N - 1])) return;
+    s[N - 1] = v;
+#pragma unroll
+    for (int i = N - 1; i > 0; --i) {
+        if (s[i] < s[i - 1]) {
+            const float t = s[i];
+            s[i] = s[i - 1];
+            s[i - 1] = t;
+        }
+    }
+}
+
+// The exact key of candidate (cx, cy) for the reference at (rx, ry): the lane
+// kernels' sum (per column over the rows, then the columns' tree) and order.
+__device__ __forceinline__ unsigned long long tensor_key(const float* plane, int pitch, int rx, int ry, int cx, int cy) {
+    float s[8];
+#pragma unroll
+    for (int j = 0; j < 8; ++j) {
+        float sum = 0.f;
+#pragma unroll
+        for (int k = 0; k < 8; ++k) {
+            const float d = plane[static_cast<long long>(ry + k) * pitch + rx + j] -
+                            plane[static_cast<long long>(cy + k) * pitch + cx + j];
+            sum = fmaf(d, d, sum);
+        }
+        s[j] = sum;
+    }
+    const float t = ((s[0] + s[1]) + (s[2] + s[3])) + ((s[4] + s[5]) + (s[6] + s[7]));
+    return static_cast<unsigned long long>(min(__float_as_uint(t), kTensorInfBits)) << 32 |
+           static_cast<unsigned>(cy) << 16 | static_cast<unsigned>(cx);
+}
+
+// U's root plus e_r from an upper bound sk of a reference's K-th d', and the
+// limit with the plane's largest candidate error (a superset for pass 1).
+__device__ __forceinline__ void tensor_bounds(float sk, float nr, float er, float emax, float& thr, float& wide) {
+    if (sk >= 1e30f) {
+        thr = INFINITY, wide = INFINITY;
+        return;
+    }
+    const float delta = kTensorUlps * kTensorEps * (3.f * nr + 2.f * sk + 1e-3f);  // |c'|^2 <= 2 |r'|^2 + 2 d'
+    const float root = sqrtf(sk + delta) + er + emax;
+    thr = root * (1.f + 4e-6f) + er;
+    const float widest = thr + emax;
+    wide = widest * widest * (1.f + 4e-6f);
+}
+
+struct TensorLists {
+    unsigned short at[8][kTensorList];  // window position (dy + lo) * side + dx + lo
+    int n[8];
+};
+
+// A warp takes 8 consecutive references of the batch (at most two grid rows,
+// grid.nx >= 8); a lane holds the 16 x 8 tile outputs of its group / thread in
+// group: candidates g and g + 8 of the tile, references 2 t and 2 t + 1.
+template <int KMAX>
+__global__ void __launch_bounds__(128, 4) tensor_match_kernel(const float* plane, MatchGeometry g, RasterGrid grid,
+                                                              int ref_begin, int ref_count, DeviceMatch* out,
+                                                              int* counts, TensorPlane tp) {
+    __shared__ TensorLists lists[4];
+    TensorLists& L = lists[threadIdx.x >> 5];
+    const int lane = threadIdx.x & 31;
+    const int first = (blockIdx.x * 4 + (threadIdx.x >> 5)) * 8;
+    if (first >= ref_count) return;
+    const int nref = min(8, ref_count - first);
+    const int k = min(g.group, kMaxGroup) - 1;
+    const int lo = g.lo(), hi = g.hi(), side = lo + hi + 1;
+    const int max_x = g.width - 8, max_y = g.height - 8;
+    const int gq = lane >> 2, tq = lane & 3;
+    const float emax = __uint_as_float(tp.header[0]) * 1.001f + 1e-9f;
+    const bool usable = tp.header[1] == 0;
+    if (lane < 8) L.n[lane] = usable ? 0 : kTensorList + 1;
+    __syncwarp();
+    const auto ref_x = [&](int j) { return grid.x(ref_begin + first + j); };
+    const auto ref_y = [&](int j) { return grid.y(ref_begin + first + j); };
+    const int row0 = ref_y(0);
+    int split = nref;
+    for (int j = 1; j < nref; ++j) {
+        if (ref_y(j) != row0) {
+            split = j;
+            break;
+        }
+    }
+    for (int part = 0; usable && part < (split < nref ? 2 : 1); ++part) {
+        const int jlo = part ? split : 0, jhi = part ? nref : split;
+        const int yr = ref_y(jlo);
+        const int xmin = ref_x(jlo), xmax = ref_x(jhi - 1);
+        const int xg = ref_x(min(max(gq, jlo), jhi - 1));
+        unsigned b[4][2];
+        const unsigned* bcol = tp.pairs + static_cast<long long>(yr) * tp.pitch + kTensorPad + xg + 2 * tq;
+#pragma unroll
+        for (int ks = 0; ks < 4; ++ks) {
+            b[ks][0] = bcol[(2 * ks) * tp.pitch];
+            b[ks][1] = bcol[(2 * ks + 1) * tp.pitch];
+        }
+        float nr[2], er[2];
+        int xr[2];
+        bool act[2];
+#pragma unroll
+        for (int e = 0; e < 2; ++e) {
+            const int j = 2 * tq + e;
+            act[e] = j >= jlo && j < jhi;
+            xr[e] = ref_x(min(max(j, jlo), jhi - 1));
+            nr[e] = tp.norms[static_cast<long long>(yr) * g.width + xr[e]];
+            er[e] = tp.errs[static_cast<long long>(yr) * g.width + xr[e]];
+        }
+        const int x_lo = xmin - lo;
+        const int tiles = (xmax + hi - x_lo) / 16 + 1;  // <= 16 (spatial_match_tensor)
+        // Window and plane membership of the lane's outputs per tile (bit 4 tile + 2 h + e), and the
+        // candidate at the reference's own position (cleared on its row).
+        unsigned long long cols = 0, self = 0;
+        for (int tile = 0; tile < tiles; ++tile) {
+#pragma unroll
+            for (int h = 0; h < 2; ++h) {
+                const int xc = x_lo + 16 * tile + gq + 8 * h;
+#pragma unroll
+                for (int e = 0; e < 2; ++e) {
+                    const int dx = xc - xr[e];
+                    const unsigned long long bit = 1ull << (4 * tile + 2 * h + e);
+                    if (act[e] && xc >= 0 && xc <= max_x && dx >= -lo && dx <= hi) cols |= bit;
+                    if (dx == 0) self |= bit;
+                }
+            }
+        }
+        const int y0 = max(yr - lo, 0), y1 = min(yr + hi, max_y);
+        const int t0 = max(0, (xmin - min(kTensorSubset, lo) - x_lo) / 16);
+        const int t1 = min(tiles, (xmax + min(kTensorSubset, hi) - x_lo) / 16 + 1);
+        // The KMAX smallest d' per reference, the first KMAX - k slots held by -1 (d' >= 0): the last slot is
+        // the k-th smallest without an index known only at run time (that would put the lists in local memory).
+        float best[2][KMAX];
+#pragma unroll
+        for (int e = 0; e < 2; ++e) {
+#pragma unroll
+            for (int i = 0; i < KMAX; ++i) best[e][i] = i < KMAX - k ? -1.f : 1e30f;
+        }
+        float thr[2] = {0.f, 0.f}, wide[2] = {0.f, 0.f};
+        for (int pass = 0; pass < 2; ++pass) {
+            const int ya = pass ? y0 : max(y0, yr - kTensorSubset), yb = pass ? y1 : min(y1, yr + kTensorSubset);
+            const int ta = pass ? 0 : t0, tb = pass ? tiles : t1;
+            for (int y = ya; y <= yb; ++y) {
+                const unsigned long long mask = y == yr ? cols & ~self : cols;
+                const unsigned* q = tp.pairs + static_cast<long long>(y) * tp.pitch + kTensorPad + x_lo + gq + 2 * tq + 16 * ta;
+                const float* nq = tp.norms + static_cast<long long>(y) * g.width + x_lo + gq;
+                const float* eq = tp.errs + static_cast<long long>(y) * g.width + x_lo + gq;
+                for (int tile = ta; tile < tb; ++tile, q += 16) {
+                    float c[4] = {0.f, 0.f, 0.f, 0.f};
+#pragma unroll
+                    for (int ks = 0; ks < 4; ++ks) {
+                        const unsigned* r0 = q + (2 * ks) * tp.pitch;
+                        const unsigned* r1 = r0 + tp.pitch;
+                        const unsigned a0 = __ldg(r0), a1 = __ldg(r0 + 8), a2 = __ldg(r1), a3 = __ldg(r1 + 8);
+#if __CUDA_ARCH__ >= 800
+                        asm volatile(
+                            "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, "
+                            "{%0,%1,%2,%3};"
+                            : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
+                            : "r"(a0), "r"(a1), "r"(a2), "r"(a3), "r"(b[ks][0]), "r"(b[ks][1]));
+#else
+                        (void)a0, (void)a1, (void)a2, (void)a3;
+                        __trap();
+#endif
+                    }
+                    const unsigned bits = static_cast<unsigned>(mask >> (4 * tile)) & 15u;
+                    if (!bits) continue;
+#pragma unroll
+                    for (int h = 0; h < 2; ++h) {
+                        if (!(bits >> (2 * h) & 3u)) continue;
+                        const float nc = __ldg(nq + 16 * tile + 8 * h);
+#pragma unroll
+                        for (int e = 0; e < 2; ++e) {
+                            if (!(bits >> (2 * h + e) & 1u)) continue;
+                            const float d = fmaxf(fmaf(-2.f, c[2 * h + e], nc + nr[e]), 0.f);
+                            if (pass == 0) {
+                                tensor_insert(d, best[e]);
+                            } else {
+                                const float slack = kTensorUlps * kTensorEps * (nr[e] + nc);
+                                if (!(d <= wide[e] + slack)) continue;
+                                const float lim = thr[e] + __ldg(eq + 16 * tile + 8 * h);
+                                if (d <= lim * lim * (1.f + 4e-6f) + slack) {
+                                    const int slot = atomicAdd(&L.n[2 * tq + e], 1);
+                                    const int xc = x_lo + 16 * tile + gq + 8 * h;
+                                    if (slot < kTensorList) {
+                                        L.at[2 * tq + e][slot] =
+                                            static_cast<unsigned short>((y - yr + lo) * side + xc - xr[e] + lo);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if (pass == 0) {
+                // The lists of the 8 lanes of each reference (lane bits 2 to 4), then the bounds.
+#pragma unroll
+                for (int o = 4; o < 32; o <<= 1) {
+#pragma unroll
+                    for (int e = 0; e < 2; ++e) {
+                        float v[KMAX];
+#pragma unroll
+                        for (int i = 0; i < KMAX; ++i) v[i] = __shfl_xor_sync(~0u, best[e][i], o);
+#pragma unroll
+                        for (int i = 0; i < KMAX; ++i) {
+                            if (v[i] >= 0.f) tensor_insert(v[i], best[e]);  // the partner's own -1 stay out
+                        }
+                    }
+                }
+#pragma unroll
+                for (int e = 0; e < 2; ++e) tensor_bounds(best[e][KMAX - 1], nr[e], er[e], emax, thr[e], wide[e]);
+            }
+        }
+    }
+    __syncwarp();
+    // Exact re-rank: the k smallest keys among each reference's survivors.
+    for (int j = 0; j < nref; ++j) {
+        const int r = first + j, rx = ref_x(j), ry = ref_y(j);
+        const int count = L.n[j];
+        unsigned long long held[KMAX];
+#pragma unroll
+        for (int i = 0; i < KMAX; ++i) held[i] = ~0ull;
+        const auto take = [&](int wi) {
+            const int cy = ry - lo + wi / side, cx = rx - lo + wi % side;
+            if (cy < 0 || cy > max_y || cx < 0 || cx > max_x || (cx == rx && cy == ry)) return;
+            const unsigned long long key = tensor_key(plane, g.pitch, rx, ry, cx, cy);
+            if (key < held[KMAX - 1]) {
+                held[KMAX - 1] = key;
+#pragma unroll
+                for (int i = KMAX - 1; i > 0; --i) {
+                    if (held[i] < held[i - 1]) {
+                        const unsigned long long s = held[i];
+                        held[i] = held[i - 1];
+                        held[i - 1] = s;
+                    }
+                }
+            }
+        };
+        if (count <= kTensorList) {
+            for (int i = lane; i < count; i += 32) take(L.at[j][i]);
+        } else {
+            for (int wi = lane; wi < side * side; wi += 32) take(wi);
+        }
+        DeviceMatch* dst = out + static_cast<long long>(r) * g.group;
+        int filled = 0;
+        for (int m = 0; m < k; ++m) {
+            unsigned long long v = held[0];
+#pragma unroll
+            for (int o = 16; o; o >>= 1) {
+                const unsigned long long w = __shfl_xor_sync(~0u, v, o);
+                v = w < v ? w : v;
+            }
+            if (v == ~0ull) break;
+            if (held[0] == v) {  // keys are unique: one lane pops
+#pragma unroll
+                for (int i = 0; i < KMAX - 1; ++i) held[i] = held[i + 1];
+                held[KMAX - 1] = ~0ull;
+            }
+            if (lane == 0) {
+                const unsigned at = static_cast<unsigned>(v);
+                dst[1 + m] = DeviceMatch{static_cast<int>(at & 0xffffu), static_cast<int>(at >> 16), 0,
+                                         __uint_as_float(static_cast<unsigned>(v >> 32))};
+            }
+            ++filled;
+        }
+        if (lane == 0) {
+            dst[0] = DeviceMatch{rx, ry, 0, 0.f};
+            counts[r] = 1 + filled;
+        }
+    }
+}
+
+// mma.m16n8k16 on FP16 needs sm_80+ code, so the kernel this device runs
+// must come from compute_80 or later: a GPU without a cubin of its own (or
+// with PTX JIT forced) runs the compute_75 PTX, where the kernel traps.
+// Cached per device.
+bool tensor_device() {
+    int device = 0;
+    NSS_CUDA_CHECK(cudaGetDevice(&device));
+    static std::array<std::atomic<int>, 64> known{};  // 0 unknown, 1 no, 2 yes
+    if (device < 64 && known[device]) return known[device] == 2;
+    // A device that cannot load the kernel at all keeps the lane kernels (they report their own errors).
+    cudaFuncAttributes attributes{};
+    const bool loaded = cudaFuncGetAttributes(&attributes, tensor_match_kernel<7>) == cudaSuccess;
+    if (!loaded) (void)cudaGetLastError();
+    const bool yes = loaded && attributes.ptxVersion >= 80;
+    if (device < 64) known[device] = yes ? 2 : 1;
+    return yes;
+}
+
+bool launch_tensor(const float* plane, const MatchGeometry& g, const RasterGrid& grid, int ref_begin, int ref_count,
+                   DeviceMatch* out, int* counts, const void* scratch, cudaStream_t stream) {
+    if (!scratch || !spatial_match_tensor(g, grid)) return false;
+    const TensorPlane tp = tensor_plane(scratch, g.width, g.height);
+    const unsigned blocks = static_cast<unsigned>((ref_count + 31) / 32);
+    if (g.group <= 8) {
+        tensor_match_kernel<7><<<blocks, 128, 0, stream>>>(plane, g, grid, ref_begin, ref_count, out, counts, tp);
+    } else {
+        tensor_match_kernel<15><<<blocks, 128, 0, stream>>>(plane, g, grid, ref_begin, ref_count, out, counts, tp);
+    }
+    NSS_CUDA_CHECK_LAUNCH();
+    return true;
+}
+
 }  // namespace
 
 RasterGrid make_raster_grid(int width, int height, int block, int step) {
@@ -1145,9 +1592,41 @@ RasterGrid make_raster_grid(int width, int height, int block, int step) {
     return grid;
 }
 
+bool spatial_match_tensor(const MatchGeometry& g, const RasterGrid& grid) {
+    const int side = g.lo() + g.hi() + 1;
+    return g.channels == 1 && g.block == 8 && g.group >= 2 && g.group <= 16 && side >= kTensorMinSide &&
+           side <= kTensorMaxSide && grid.nx >= 8 && (7 * grid.step + g.lo() + g.hi()) / 16 + 1 <= 16 &&
+           g.width <= kLaneMaxCoordinate && g.height <= kLaneMaxCoordinate && g.width >= 8 && g.height >= 8 &&
+           tensor_device();
+}
+
+std::size_t spatial_match_scratch_bytes(int width, int height) {
+    return tensor_header(height) + static_cast<std::size_t>(tensor_pitch(width)) * height * sizeof(unsigned) +
+           2 * static_cast<std::size_t>(width) * height * sizeof(float);
+}
+
+void spatial_match_prepare(const float* plane, const MatchGeometry& g, void* scratch, cudaStream_t stream) {
+    const TensorPlane tp = tensor_plane(scratch, g.width, g.height);
+    auto* header = const_cast<unsigned*>(tp.header);
+    NSS_CUDA_CHECK(cudaMemsetAsync(header, 0, 2 * sizeof(unsigned), stream));
+    tensor_rows_kernel<<<static_cast<unsigned>(g.height), kTensorMeanThreads, 0, stream>>>(plane, g, header);
+    NSS_CUDA_CHECK_LAUNCH();
+    tensor_mean_kernel<<<1, kTensorMeanThreads, 0, stream>>>(g, header);
+    NSS_CUDA_CHECK_LAUNCH();
+    const long long cells = static_cast<long long>(tp.pitch) * g.height;
+    tensor_pairs_kernel<<<static_cast<unsigned>((cells + 255) / 256), 256, 0, stream>>>(plane, g,
+                                                                                         const_cast<unsigned*>(tp.pairs), header);
+    NSS_CUDA_CHECK_LAUNCH();
+    const dim3 tiles((g.width + kTensorTileX - 1) / kTensorTileX, (g.height + kTensorTileY - 1) / kTensorTileY);
+    tensor_norms_kernel<<<tiles, kTensorTileX * kTensorTileY, 0, stream>>>(plane, g, const_cast<float*>(tp.norms),
+                                                                          const_cast<float*>(tp.errs), header);
+    NSS_CUDA_CHECK_LAUNCH();
+}
+
 void spatial_match(const float* plane, const MatchGeometry& geometry, const RasterGrid& grid, int ref_begin,
-                   int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream) {
+                   int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream, const void* scratch) {
     if (ref_count <= 0) return;
+    if (launch_tensor(plane, geometry, grid, ref_begin, ref_count, out, counts, scratch, stream)) return;
     if (launch_lanes(plane, geometry, nullptr, grid, ref_begin, ref_count, out, counts, stream)) return;
     const int span = geometry.lo() + geometry.hi();
     const int candidates = (span + 1) * (span + 1);
