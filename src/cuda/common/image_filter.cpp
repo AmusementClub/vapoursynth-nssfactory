@@ -99,6 +99,7 @@ struct Slot {
     DeviceBuffer fixed_num, fixed_den;  // NLH accumulators: 64-bit sums per plane, 32-bit counts per geometry
     DeviceBuffer guide_ptrs, data_ptrs, basic_ptrs;           // device pointer arrays
     DeviceBuffer arena, totals, stalled;
+    DeviceBuffer match_scratch;  // the tensor-core matcher's workspace (TWSC, when its matching qualifies)
     std::unique_ptr<OrderedAggregator> aggregator;
     // Rolling: the source (and reference) frames of a ring of 2R+1 (frame f
     // in cell f % (2R+1), its planes at a plane_floats stride, as the source
@@ -141,6 +142,7 @@ struct ImageData : nss::FullImageParams {
     int width[3]{}, height[3]{};
     int geometries = 1, geometry[3]{};  // planes of equal size share their selection counts
     std::size_t plane_floats = 0, arena_bytes = 0, max_patches = 0;
+    std::size_t match_scratch = 0;  // bytes per slot (0: the lane kernels match)
     std::unique_ptr<SlotPool<Slot>> pool;
     std::unique_ptr<SlotPool<Staging>> staging;
     // Rolling (temporal_mode="rolling" with a radius): chunks run on the
@@ -346,6 +348,8 @@ void estimate_sigma(Frame& f, int t) {
         const std::size_t per_group = shape.group * sizeof(DeviceMatch) + sizeof(int) + nch * sizeof(double);
         const std::size_t fit = (d.arena_bytes - 16 * 4 - 2 * nch * sizeof(double)) / (per_group + 1);
         const int batch = static_cast<int>(std::clamp<std::size_t>(fit, 1, static_cast<std::size_t>(grid.count())));
+        const void* scratch = s.match_scratch.get() && spatial_match_tensor(geometry, grid) ? s.match_scratch.get() : nullptr;
+        if (scratch) spatial_match_prepare(guide, geometry, const_cast<void*>(scratch), s.stream);
         for (int begin = 0; begin < grid.count(); begin += batch) {
             const int n = std::min(batch, grid.count() - begin);
             std::uint8_t* at = s.arena.as<std::uint8_t>();
@@ -370,7 +374,7 @@ void estimate_sigma(Frame& f, int t) {
             a.width = width;
             for (int c = 0; c < nch; ++c) a.guided[c] = data_ptr[c] == guide;
             spatial_match(guide, geometry, grid, begin, n, const_cast<DeviceMatch*>(a.matches),
-                          const_cast<int*>(a.counts), s.stream);
+                          const_cast<int*>(a.counts), s.stream, scratch);
             nlh_estimate_groups(a, partial, sums, s.totals.as<double>(), s.stream);
         }
         double totals[3]{};
@@ -590,8 +594,11 @@ void run_twsc(Frame& f) {
             const int resident = twsc_resident_groups(o.block, o.group, nch);
             if (batch > resident && batch < 8 * resident) batch -= batch % resident;
             bool written = false;
+            const bool predictive = o.radius > 0 && f.count > 1;
+            const bool tensor = !predictive && s.match_scratch.get() && spatial_match_tensor(geometry, grid);
             for (int t0 = last ? f.center : 0; t0 < (last ? f.center + 1 : f.count); ++t0) {
                 window.t0 = t0;
+                if (tensor) spatial_match_prepare(guide_ptr[t0], geometry, s.match_scratch.get(), s.stream);
                 for (int begin = 0; begin < grid.count(); begin += batch) {
                     const int n = std::min(batch, grid.count() - begin);
                     TwscGroupArgs a = twsc_layout(f, o.block, o.group, nch, n);
@@ -613,10 +620,11 @@ void run_twsc(Frame& f) {
                         NSS_CUDA_RANGE("twsc.match");
                         auto* matches = const_cast<DeviceMatch*>(a.matches);
                         auto* counts = const_cast<int*>(a.counts);
-                        if (o.radius > 0 && f.count > 1) {
+                        if (predictive) {
                             predictive_match(geometry, window, grid, begin, n, matches, counts, s.stream);
                         } else {
-                            spatial_match(guide_ptr[t0], geometry, grid, begin, n, matches, counts, s.stream);
+                            spatial_match(guide_ptr[t0], geometry, grid, begin, n, matches, counts, s.stream,
+                                          tensor ? s.match_scratch.get() : nullptr);
                         }
                     }
                     {
@@ -1259,6 +1267,7 @@ std::unique_ptr<Slot> make_slot(const ImageData& d) {
     slot->data_ptrs = DeviceBuffer(pointers, d.budget);
     slot->basic_ptrs = DeviceBuffer(pointers, d.budget);
     slot->arena = DeviceBuffer(d.arena_bytes, d.budget);
+    if (d.match_scratch) slot->match_scratch = DeviceBuffer(d.match_scratch, d.budget);
     slot->totals = DeviceBuffer(3 * sizeof(double), d.budget);
     slot->stalled = DeviceBuffer(sizeof(int), d.budget);
     if (d.rolling) {
@@ -1308,6 +1317,25 @@ void describe_planes(ImageData& d) {
     }
 }
 
+// Whether TWSC's spatial rounds or its blind estimate match on tensor cores
+// (spatial_match_tensor on the full-size plane; subsampled planes and joint
+// channels keep the lane kernels).
+bool twsc_tensor_matching(const ImageData& d) {
+    if (d.model != nss::Model::TWSC) return false;
+    DeviceGuard guard(d.device.index);
+    const int width = d.width[0], height = d.height[0];
+    if (d.estimate) {
+        const MatchGeometry g = match_geometry(width, height, 8, 40, 16);
+        if (spatial_match_tensor(g, make_raster_grid(width, height, 8, nss::kNoiseEstimateStep))) return true;
+    }
+    // Rounds match jointly over the planes of the full-size geometry (one each on cfast's planes).
+    int joint = 1;
+    for (int c = 1; c < d.planes && !d.split; ++c) joint += d.width[c] == width && d.height[c] == height;
+    if (d.twsc.radius > 0 || joint > 1) return false;
+    const MatchGeometry g = match_geometry(width, height, d.twsc.block, d.twsc.window, d.twsc.group);
+    return spatial_match_tensor(g, make_raster_grid(width, height, d.twsc.block, d.twsc.step));
+}
+
 // What the memory plan settles beside the device buffers: the pinned
 // staging regions per set, the sets, and how far the rolling cache may grow.
 struct MemoryPlan {
@@ -1340,7 +1368,11 @@ MemoryPlan plan_memory(ImageData& d) {
     const std::size_t output_bytes = d.rolling ? 2 * d.frame_bytes + chunk_bytes : plane_bytes * d.planes * rows;
     // NLH accumulators: 64-bit sums per plane and 32-bit counts per geometry.
     const std::size_t accumulators = twsc ? 0 : static_cast<std::size_t>(d.max_frames) * (2 * d.planes + d.geometries);
-    const std::size_t fixed = plane_bytes * (device_planes + plan.staging_regions + accumulators) + output_bytes;
+    std::size_t fixed = plane_bytes * (device_planes + plan.staging_regions + accumulators) + output_bytes;
+    // TWSC's spatial matching (and its blind estimate) on tensor cores where the shape qualifies: the
+    // workspace of one plane per slot, dropped again when the limit cannot hold it.
+    d.match_scratch = twsc_tensor_matching(d) ? spatial_match_scratch_bytes(d.width[0], d.height[0]) : 0;
+    fixed += d.match_scratch;
     // The largest group over the possible resolved shapes (NLH: block <= 16).
     const int max_group = twsc ? d.twsc.group : std::max({d.nlh.group[0], d.nlh.group[1], 16});
     const int max_q = std::max({d.nlh.q[0], d.nlh.q[1], 4});
@@ -1375,6 +1407,10 @@ MemoryPlan plan_memory(ImageData& d) {
         d.backend.num_streams = static_cast<int>(std::clamp<std::size_t>(limit / slot_bytes(arena_cap), 1, kDefaultStreams));
     }
     const std::size_t share = limit == SIZE_MAX ? SIZE_MAX : limit / static_cast<std::size_t>(d.backend.num_streams);
+    if (share < slot_bytes(one_group) && d.match_scratch) {
+        fixed -= d.match_scratch;  // the lane kernels give the same matches without it
+        d.match_scratch = 0;
+    }
     if (share < slot_bytes(one_group)) {
         throw std::invalid_argument(std::string("nss_cuda.") + d.name() +
                                     ": memory_limit_mb is too small for this clip: each of the " +

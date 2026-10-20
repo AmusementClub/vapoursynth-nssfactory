@@ -59,9 +59,22 @@ struct MatchGeometry {
 
 // References [ref_begin, ref_begin + ref_count) of the grid; out holds
 // ref_count * geometry.group matches (group-strided) and counts ref_count
-// entries (batch-relative).
+// entries (batch-relative). With `scratch` prepared for `plane`
+// (spatial_match_prepare) and a geometry spatial_match_tensor accepts, the
+// tensor-core matcher runs instead of the lane kernels: the same matches, bit
+// for bit.
 void spatial_match(const float* plane, const MatchGeometry& geometry, const RasterGrid& grid, int ref_begin,
-                   int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream);
+                   int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream, const void* scratch = nullptr);
+
+// The tensor-core matcher of large windows (sm_80+): one channel, block 8,
+// group 2 to 16, a window side of 33 to 129, at least 8 references a grid
+// row. Below a side of 33 the lane kernels are faster (RTX 5080).
+bool spatial_match_tensor(const MatchGeometry& geometry, const RasterGrid& grid);
+// Bytes of its workspace for planes up to width x height.
+std::size_t spatial_match_scratch_bytes(int width, int height);
+// Fills the workspace from `plane` (geometry's width, height and pitch) on
+// `stream`; again whenever the plane changes.
+void spatial_match_prepare(const float* plane, const MatchGeometry& geometry, void* scratch, cudaStream_t stream);
 
 struct TemporalWindow {
     const float* const* frames;  // device array of ntemp device plane pointers (same pitch)
