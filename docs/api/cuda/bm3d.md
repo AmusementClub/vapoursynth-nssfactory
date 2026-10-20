@@ -24,8 +24,8 @@ temporal = core.nss.VAggregate(fat, clip, radius=1)       # the CPU plugin's VAg
 
 | Call | YUV420 | RGB |
 |---|---:|---:|
-| default | 500 | 275 |
-| `radius=1` | 435 | 215 |
+| default | 510 | 285 |
+| `radius=1` | 495 | 250 |
 
 Against [BM3DCUDA](https://github.com/WolframRhodium/VapourSynth-BM3DCUDA) with
 the same search, at 1080p gray: about 1.25x spatial, and 2.7x / 3.3x at

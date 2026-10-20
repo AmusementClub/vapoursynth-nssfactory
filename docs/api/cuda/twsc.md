@@ -18,7 +18,7 @@ blind = core.nss_cuda.TWSC(clip, estimate_sigma=1)          # per-frame sigma
 
 | Call | YUV420 | RGB |
 |---|---:|---:|
-| default | 66 | 34 |
+| default | 65 | 34 |
 
 The default is a speed setting. The quality geometry `block_step=1,
 group_size=90, iters=12` (4 on the fast color path) denoises 8 to 10 dB better

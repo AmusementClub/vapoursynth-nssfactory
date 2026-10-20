@@ -17,13 +17,14 @@ hiq = core.nss_cuda.LSSC(clip, sigma=25, block_step=4)
 
 | Call | YUV420 | RGB |
 |---|---:|---:|
-| default | 190 | 125 |
+| default | 205 | 145 |
 
-These are model version 2 figures. Model version 3 (the preconditioned
-FISTA coding, see [`nss.LSSC`](../lssc.md#model-version-3-the-cluster-coding))
-measured 0.89x of version 2 at 1080p gray and RGB and 0.97x at
-`block_step=4` (paired runs, one stream, RTX 5080): its 12 rounds read the
-codes of the two previous rounds, which at 1080p no longer stay in the L2 cache.
+These are model version 3 figures (the preconditioned FISTA coding, see
+[`nss.LSSC`](../lssc.md#model-version-3-the-cluster-coding)). Its 12 rounds read
+the codes of the two previous rounds; where those do not fit half of the GPU's
+L2 cache (1080p and above on an RTX 5080), the rounds run over batches of whole
+clusters so that a batch's codes stay in L2. The output does not depend on the
+batches.
 
 ## Signature
 
