@@ -123,7 +123,7 @@ Bm3dParams parse_bm3d(const VSAPI* vsapi, const VSMap* in, const VSVideoInfo& vi
     map_inherit_int(vsapi, in, "block_size", p.block_size, np, kBmBlock);
     map_inherit_int(vsapi, in, "group_size", p.group_size, np, kBmGroup);
     map_adaptive(vsapi, in, "block_step", p.block_step, np, kBmDefaultStep, p.block_size);
-    map_int_array(vsapi, in, "bm_range", p.bm_range, np, kBmDefaultRange);
+    map_int_array(vsapi, in, "bm_range", p.bm_range, np, kBm3dDefaultRange);
     map_adaptive(vsapi, in, "ps_num", p.ps_num, np, kBmDefaultPsNum, p.group_size);
     map_int_array(vsapi, in, "ps_range", p.ps_range, np, kBmDefaultPsRange);
     p.radius = map_int(vsapi, in, "radius", 0);

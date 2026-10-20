@@ -17,7 +17,7 @@ struct Bm3dParams {
     int block_size[3]{kBmBlock, kBmBlock, kBmBlock};
     int group_size[3]{kBmGroup, kBmGroup, kBmGroup};
     int block_step[3]{kBmDefaultStep, kBmDefaultStep, kBmDefaultStep};
-    int bm_range[3]{kBmDefaultRange, kBmDefaultRange, kBmDefaultRange};
+    int bm_range[3]{kBm3dDefaultRange, kBm3dDefaultRange, kBm3dDefaultRange};
     int ps_num[3]{kBmDefaultPsNum, kBmDefaultPsNum, kBmDefaultPsNum};
     int ps_range[3]{kBmDefaultPsRange, kBmDefaultPsRange, kBmDefaultPsRange};
     int radius = 0;

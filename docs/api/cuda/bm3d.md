@@ -24,8 +24,8 @@ temporal = core.nss.VAggregate(fat, clip, radius=1)       # the CPU plugin's VAg
 
 | Call | YUV420 | RGB |
 |---|---:|---:|
-| default | 510 | 285 |
-| `radius=1` | 495 | 250 |
+| default | 495 | 280 |
+| `radius=1` | 455 | 230 |
 
 Against [BM3DCUDA](https://github.com/WolframRhodium/VapourSynth-BM3DCUDA) with
 the same search, at 1080p gray: about 1.25x spatial, and 2.7x / 3.3x at
@@ -36,7 +36,7 @@ the same search, at 1080p gray: about 1.25x spatial, and 2.7x / 3.3x at
 
 ```python
 core.nss_cuda.BM3D(clip clip[, clip ref, float[] sigma = 3.0, int[] block_size = 8,
-                   int[] group_size = 8, int[] block_step, int[] bm_range = 7,
+                   int[] group_size = 8, int[] block_step, int[] bm_range = 9,
                    int radius = 0, int[] ps_num, int[] ps_range = 4, int chroma = 0,
                    int final = 0, float[] sigma_basic, int[] block_size_basic,
                    int[] group_size_basic,
@@ -57,7 +57,7 @@ Omitted `block_step` adapts to `min(8, block_size)` per plane; omitted
 | `block_size` | 8 | {1,2,4,8,12,16,32} | Patch edge. 8 is the general default; 12 exists for high-noise DCT profiles. Larger blocks cost quadratically per patch. |
 | `block_step` | min(8, block) | [1, block] | Stride between reference patches. Halving it roughly quadruples positions (2D) — the main quality/speed trade. |
 | `group_size` | 8 | {1,2,4,8,16,32,64} | Maximum patches per 3D stack. More matches help at high noise; marginal at low noise. |
-| `bm_range` | 7 | [1, 64] | Search window radius (`window = 2*bm_range + 1`). Cost grows quadratically; motion/texture may justify a larger window. |
+| `bm_range` | 9 | [1, 64] | Search window radius (`window = 2*bm_range + 1`). Cost grows quadratically; motion/texture may justify a larger window. |
 | `radius` | 0 | [0, 16] | Temporal radius in frames. >0 makes the filter temporal: finished, normal-height frames by default (`temporal_mode`, below). |
 | `ref` | none | clip | External reference clip guiding both stages' matching (paper-style two-stage usage). |
 | `chroma` | 0 | {0, 1} | CBM3D for YUV 4:4:4 clips: groups are matched on plane 0 only (of `ref` when given) and all three planes are filtered with them. See "Color (CBM3D)". |
