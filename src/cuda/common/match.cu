@@ -1158,12 +1158,15 @@ void launch_spatial(const float* plane, const MatchGeometry& g, const RasterGrid
 // survivors overflow kTensorList takes every candidate exactly, and so does
 // every reference when the plane holds a value FP16 cannot (scratch flag).
 // TWSC's default shape (window 60, group 8) 2.0-2.1x the lane kernel at
-// 1080p; the side of 33 is where it stops paying (RTX 5080, four images, sigma
-// 3 and 25; docs/cuda-head-r2-20261020-tools/t48_subset.cu).
+// 1080p (RTX 5080, four images, sigma 3 and 25;
+// docs/cuda-head-r2-20261020-tools/t48_subset.cu). The kernel alone breaks
+// even at a side of about 31, the filters with its workspace preparation
+// later: BM3D gray 1080p bm_range 16 (side 33) 0.96x, 20 (41) 1.11x, 30
+// 1.62x; a side of 40 keeps TWSC's blind estimate.
 constexpr int kTensorPad = 112;   // pair columns beyond each side of the plane
 constexpr int kTensorList = 256;  // survivors a reference keeps
 constexpr int kTensorSubset = 8;
-constexpr int kTensorMinSide = 33, kTensorMaxSide = 129;
+constexpr int kTensorMinSide = 40, kTensorMaxSide = 129;
 constexpr float kTensorEps = 5.9604645e-8f, kTensorUlps = 128.f;
 constexpr unsigned kTensorInfBits = 0x7f800000u;
 // Header: [0] emax (float bits, max), [1] the plane is unusable, [2] mu (float bits); then a double per row

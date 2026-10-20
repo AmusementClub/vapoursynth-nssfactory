@@ -67,8 +67,8 @@ void spatial_match(const float* plane, const MatchGeometry& geometry, const Rast
                    int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream, const void* scratch = nullptr);
 
 // The tensor-core matcher of large windows (sm_80+): one channel, block 8,
-// group 2 to 16, a window side of 33 to 129, at least 8 references a grid
-// row. Below a side of 33 the lane kernels are faster (RTX 5080).
+// group 2 to 16, a window side of 40 to 129, at least 8 references a grid
+// row. Below a side of 40 the lane kernels are faster end to end (RTX 5080).
 bool spatial_match_tensor(const MatchGeometry& geometry, const RasterGrid& grid);
 // Bytes of its workspace for planes up to width x height.
 std::size_t spatial_match_scratch_bytes(int width, int height);

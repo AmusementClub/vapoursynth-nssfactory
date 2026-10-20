@@ -357,11 +357,16 @@ int main() {
         for (const int group : {2, 8, 16}) {
             tensor_case(200, 150, group, 8, 30, 29, kind);  // TWSC default window
             tensor_case(200, 150, group, 4, 20, 19, kind);  // blind estimate window, two-row warps
-            tensor_case(160, 120, group, 8, 16, -1, kind);  // smallest side
+            tensor_case(160, 120, group, 8, 20, -1, kind);  // a side of 41
         }
         for (const int step : {1, 3, 5, 6, 7}) tensor_case(180, 96, 9, step, 24, 23, kind);
         tensor_case(220, 140, 12, 8, 64, -1, kind);   // largest side, wider than the plane
         tensor_case(220, 140, 4, 2, 40, 40, kind);
+    }
+    // Below a side of 40 the lane kernels serve (they are faster there).
+    {
+        nss_cuda::MatchGeometry g{160, 120, 160, 8, 19, 8};
+        CHECK(!nss_cuda::spatial_match_tensor(g, nss_cuda::make_raster_grid(160, 120, 8, 8)), "side 39 taken by the tensor path");
     }
     tensor_case(200, 150, 8, 8, 30, 29, 2);
     tensor_case(200, 150, 16, 4, 20, 19, 3);
