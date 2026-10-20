@@ -16,7 +16,7 @@ warm-up; the images differ by at most 3%.
 
 | Filter | YUV420 | RGB | Temporal, `radius=1` (YUV420 / RGB) |
 |---|---:|---:|---:|
-| [BM3D](bm3d.md) | 510 | 285 | 495 / 250 |
+| [BM3D](bm3d.md) | 495 | 280 | 455 / 230 |
 | [NLM](nlm.md) | 565 | 235 | (temporal by default, `d=1`) |
 | [WNNM](wnnm.md) | 500 | 285 | 455 / 230 |
 | [MCWNNM](mcwnnm.md) | — | 200 | — / 135 |
