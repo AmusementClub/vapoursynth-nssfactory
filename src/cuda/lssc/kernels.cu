@@ -161,26 +161,33 @@ __global__ void __launch_bounds__(kThreads) assign_tile_kernel(LsscWork w, bool 
 }
 
 // Member lists from the assignment tiles' counts (kAssignTile patches a
-// chunk): the offsets, and for each cluster the members before each chunk
-// (one block, a thread a cluster, chunks in order) ...
+// chunk): for each cluster the members before each chunk, a warp a cluster
+// scanning 32 chunks at a time (block `clusters`: the offsets) ...
+__device__ __forceinline__ int warp_inclusive_scan(int v) {
+    const int lane = threadIdx.x & 31;
+#pragma unroll
+    for (int d = 1; d < 32; d <<= 1) {
+        const int u = __shfl_up_sync(~0u, v, d);
+        if (lane >= d) v += u;
+    }
+    return v;
+}
+
 __global__ void chunk_offsets_kernel(LsscWork w, const int* skip) {
     if (*skip) return;
-    const int c = threadIdx.x, clusters = w.clusters, chunks = (w.np + kAssignTile - 1) / kAssignTile;
-    if (threadIdx.x == 0) {
-        int offset = 0;
-        for (int b = 0; b < clusters; ++b) {
-            w.offsets[b] = offset;
-            offset += w.counts[b];
-        }
-        w.offsets[clusters] = offset;
-    }
-    if (c >= clusters) return;
+    const int c = blockIdx.x, lane = threadIdx.x, clusters = w.clusters, chunks = (w.np + kAssignTile - 1) / kAssignTile;
+    // Block `clusters` lays out the clusters, the others scan a cluster's chunks.
+    const int n = c == clusters ? clusters : chunks;
     int before = 0;
-    for (int k = 0; k < chunks; ++k) {
-        const int count = w.chunks[k * clusters + c];
-        w.chunks[k * clusters + c] = before;
-        before += count;
+    for (int base = 0; base < n; base += 32) {
+        const int k = base + lane;
+        int* at = c == clusters ? w.offsets + k : w.chunks + static_cast<long long>(k) * clusters + c;
+        const int count = k < n ? (c == clusters ? w.counts[k] : *at) : 0;
+        const int inclusive = warp_inclusive_scan(count);
+        if (k < n) *at = before + inclusive - count;
+        before += __shfl_sync(~0u, inclusive, 31);
     }
+    if (c == clusters && lane == 0) w.offsets[clusters] = before;
 }
 
 // ... then every chunk's patches into place, in patch order within a cluster.
@@ -1706,7 +1713,7 @@ void lssc_cluster(const LsscWork& w, int rounds, int* state, cudaStream_t stream
             NSS_CUDA_CHECK(cudaMemsetAsync(w.counts, 0, static_cast<std::size_t>(w.clusters) * sizeof(int), stream));
             assign_tile_kernel<<<blocks_for(w.np, kAssignTile), kThreads, 0, stream>>>(w, round == 0, state);
             NSS_CUDA_CHECK_LAUNCH();
-            chunk_offsets_kernel<<<1, kClusters, 0, stream>>>(w, state + 1);
+            chunk_offsets_kernel<<<w.clusters + 1, 32, 0, stream>>>(w, state + 1);
             NSS_CUDA_CHECK_LAUNCH();
             chunk_members_kernel<<<blocks_for(w.np, kAssignTile), kAssignTile, 0, stream>>>(w, state + 1);
             NSS_CUDA_CHECK_LAUNCH();
