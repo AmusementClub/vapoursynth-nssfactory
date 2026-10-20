@@ -78,6 +78,7 @@ struct Slot {
     DeviceBuffer fixed_rows;          // fixed_finish scratch, one slice
     DeviceBuffer out;                 // finished plane
     DeviceBuffer matches, counts, values, scratch, patches;
+    DeviceBuffer match_scratch;  // the tensor-core matcher's workspace (spatial planes that qualify)
     std::unique_ptr<OrderedAggregator> aggregator;
     // Rolling with several rounds: a center's estimates of its window frames
     // (2R+1 planes and their device pointer array) and the fixed-point sums
@@ -113,6 +114,7 @@ struct Staging {
 
 struct Driver : GroupFilterConfig {
     std::size_t plane_floats = 0;  // largest plane (tight pitch)
+    std::size_t match_scratch = 0;  // bytes per slot of the tensor-core matcher's workspace (0: lane kernels)
     int ntemp = 1;                 // 2R+1
     int regions = 0;               // staging regions per staging set
     int staging_sets = 0;          // frames or chunks in flight, at least num_streams
@@ -475,6 +477,19 @@ void size_staging(Driver& d, const SlotPlan& sp, std::size_t fixed, std::size_t 
     }
 }
 
+// Workspace bytes of the tensor-core matcher for the spatial planes it takes
+// (spatial_match_tensor), 0 when none does.
+std::size_t tensor_scratch_bytes(const Driver& d) {
+    if (d.radius > 0) return 0;
+    int width = 0, height = 0;
+    for (const GroupPlane* p : stage_planes(d)) {
+        MatchGeometry g{p->width, p->height, p->width, p->block, p->range, p->group};
+        g.channels = d.shared_match ? 1 : d.channels;
+        if (spatial_match_tensor(g, p->grid)) width = std::max(width, p->width), height = std::max(height, p->height);
+    }
+    return width ? spatial_match_scratch_bytes(width, height) : 0;
+}
+
 // The memory plan: per slot the window frames, slices, result/accumulators,
 // staging (sized for the largest plane), the leased frame's output VSFrame
 // and at least a minimum batch of groups; then the streams, the batches, the
@@ -489,8 +504,16 @@ void plan_planes(Driver& d) {
     const std::size_t limit = total == SIZE_MAX ? SIZE_MAX : total - sp.shared_cache;
     choose_roll_layout(d, sp, limit);
     const bool rolling = d.mode == GroupMode::Rolling;
-    const std::size_t fixed = sp.fixed_base + (rolling ? roll_bytes(d, d.roll_together) + d.staging_bytes : 0) +
-                              (d.roll_batch_out ? sp.batch_out : 0);
+    std::size_t fixed = sp.fixed_base + (rolling ? roll_bytes(d, d.roll_together) + d.staging_bytes : 0) +
+                        (d.roll_batch_out ? sp.batch_out : 0);
+    // Spatial matching on tensor cores where a plane qualifies: one workspace per slot, for the largest such
+    // plane, left out (the lane kernels give the same matches) when the limit has no room for it.
+    d.match_scratch = tensor_scratch_bytes(d);
+    if (d.match_scratch && limit != SIZE_MAX) {
+        const std::size_t streams = d.backend.streams_explicit ? static_cast<std::size_t>(d.backend.num_streams) : 1;
+        if (limit / streams < fixed + d.match_scratch + sp.min_batch * 4 / 3) d.match_scratch = 0;
+    }
+    fixed += d.match_scratch;
     choose_streams(d, sp, fixed, limit);
     fit_batches(d, fixed, limit);
     size_staging(d, sp, fixed, total, limit);
@@ -607,6 +630,7 @@ std::unique_ptr<Slot> make_slot(const Driver& d) {
         slot->fixed_rows = DeviceBuffer(d.plane_floats * sizeof(unsigned long long), d.budget);
     }
     slot->matches = DeviceBuffer(matches, d.budget);
+    if (d.match_scratch) slot->match_scratch = DeviceBuffer(d.match_scratch, d.budget);
     slot->counts = DeviceBuffer(counts, d.budget);
     if (values) slot->values = DeviceBuffer(values, d.budget);
     if (scratch) slot->scratch = DeviceBuffer(scratch, d.budget);
@@ -670,6 +694,9 @@ void filter_center(const Driver& d, Slot& s, const GroupPlane& p, int center, bo
     fixed.channel_step = p.floats;
     if (rolling) fixed = *rolling;
     if (p.fused && !rolling) fixed_clear(fixed, p.floats * d.channels, stream);
+    const float* match_plane = radius > 0 ? nullptr : match_guide ? s.host_ref_ptrs[0] : s.host_src_ptrs[0];
+    const bool tensor = radius == 0 && s.match_scratch.get() && spatial_match_tensor(geometry, p.grid);
+    if (tensor) spatial_match_prepare(match_plane, geometry, s.match_scratch.get(), stream);
     for (int begin = 0; begin < p.grid.count(); begin += p.batch) {
         const int count = std::min(p.batch, p.grid.count() - begin);
         {
@@ -678,9 +705,8 @@ void filter_center(const Driver& d, Slot& s, const GroupPlane& p, int center, bo
                 predictive_match(geometry, window, p.grid, begin, count, s.matches.as<DeviceMatch>(), s.counts.as<int>(),
                                  stream);
             } else {
-                const float* plane = match_guide ? s.host_ref_ptrs[0] : s.host_src_ptrs[0];
-                spatial_match(plane, geometry, p.grid, begin, count, s.matches.as<DeviceMatch>(), s.counts.as<int>(),
-                              stream);
+                spatial_match(match_plane, geometry, p.grid, begin, count, s.matches.as<DeviceMatch>(),
+                              s.counts.as<int>(), stream, tensor ? s.match_scratch.get() : nullptr);
             }
         }
         GroupLaunch launch{};
