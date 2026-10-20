@@ -17,8 +17,8 @@ temporal = core.nss_cuda.WNNM(clip, sigma=25, radius=1)      # finished frames
 
 | Call | YUV420 | RGB |
 |---|---:|---:|
-| default | 490 | 270 |
-| `radius=1` | 420 | 200 |
+| default | 500 | 285 |
+| `radius=1` | 455 | 230 |
 
 Groups above 8 patches cost much more (an eigendecomposition per group): at
 1080p gray, `group_size=16` runs at about 330 fps and `group_size=32,
