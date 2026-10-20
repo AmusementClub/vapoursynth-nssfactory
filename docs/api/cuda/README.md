@@ -10,19 +10,20 @@ behind the defaults are on the CPU pages.
 ## Speed
 
 Frames per second at 1080p, default arguments, on an RTX 5080 (Ryzen 9 5950X
-host), one instance. Median over a set of nine test images with Gaussian
-noise of sigma 3; the images differ by a few percent.
+host), one instance, frames requested in order. Median over a set of nine test
+images with Gaussian noise of sigma 3, each timed for at least 7 s after a
+warm-up; the images differ by at most 3%.
 
 | Filter | YUV420 | RGB | Temporal, `radius=1` (YUV420 / RGB) |
 |---|---:|---:|---:|
-| [BM3D](bm3d.md) | 500 | 275 | 435 / 215 |
-| [NLM](nlm.md) | 550 | 225 | (temporal by default, `d=1`) |
-| [WNNM](wnnm.md) | 490 | 270 | 420 / 200 |
-| [MCWNNM](mcwnnm.md) | — | 200 | — / 130 |
-| [NCSR](ncsr.md) | 390 | 215 | 255 / 125 |
-| [LSSC](lssc.md) | 190 | 125 | (no temporal mode) |
-| [NLH](nlh.md) | 37 | 31 | 13 / 13 |
-| [TWSC](twsc.md) | 66 | 34 | |
+| [BM3D](bm3d.md) | 510 | 285 | 495 / 250 |
+| [NLM](nlm.md) | 565 | 235 | (temporal by default, `d=1`) |
+| [WNNM](wnnm.md) | 500 | 285 | 455 / 230 |
+| [MCWNNM](mcwnnm.md) | — | 200 | — / 135 |
+| [NCSR](ncsr.md) | 390 | 215 | 265 / 135 |
+| [LSSC](lssc.md) | 205 | 145 | (no temporal mode) |
+| [NLH](nlh.md) | 37 | 31 | 13 / 11 |
+| [TWSC](twsc.md) | 65 | 34 | |
 
 - NLH runs its default blind noise estimation; giving `sigma` skips it.
 - TWSC's default is a speed setting. Its quality geometry (`block_step=1,

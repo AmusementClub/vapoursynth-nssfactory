@@ -19,7 +19,7 @@ custom = core.nss_cuda.NLH(clip, sigma=25, block_size=[6, 9], block_step=[3, 6])
 | Call | YUV420 | RGB |
 |---|---:|---:|
 | default (blind sigma) | 37 | 31 |
-| `radius=1` | 13 | 13 |
+| `radius=1` | 13 | 11 |
 
 The blind estimate is a matching pass per frame; give `sigma` when it is known.
 

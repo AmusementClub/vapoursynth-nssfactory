@@ -17,7 +17,7 @@ quick = core.nss_cuda.MCWNNM(rgb_clip, sigma=25, iters=1)
 | Call | YUV420 | RGB |
 |---|---:|---:|
 | default | — | 200 |
-| `radius=1` | — | 130 |
+| `radius=1` | — | 135 |
 
 `iters=1` (one round instead of two) is about 1.5x faster at `radius=1`.
 

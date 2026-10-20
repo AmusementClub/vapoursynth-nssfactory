@@ -17,7 +17,7 @@ denoised = core.nss_cuda.NLM(clip, d=1, a=4, s=3, h=1.5, channels="Y")
 
 | Call | YUV420 | RGB |
 |---|---:|---:|
-| default (`d=1`) | 550 | 225 |
+| default (`d=1`) | 565 | 235 |
 
 ## Signature
 

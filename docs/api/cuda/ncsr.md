@@ -24,7 +24,7 @@ temporal = core.nss_cuda.NCSR(clip, sigma=25, radius=1)  # finished frames, ever
 | Call | YUV420 | RGB |
 |---|---:|---:|
 | default | 390 | 215 |
-| `radius=1` | 255 | 125 |
+| `radius=1` | 265 | 135 |
 
 Larger groups cost more: at 1080p gray, `group_size=16` runs at about 180 fps,
 `group_size=32` at 50 (13 with `block_step=4`).
