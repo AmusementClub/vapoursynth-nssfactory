@@ -29,8 +29,12 @@ void copy_rows(const void* src, std::ptrdiff_t src_stride, void* dst, std::ptrdi
 
 // Rows into a VapourSynth frame with non-temporal stores: the destination is
 // usually not in cache, and plain stores read every line before writing it.
-// The download copy took 805 to 651 us a 1080p plane under NCSR and 1528 to
-// 859 us under BM3D (docs/cuda-r2-integration-20261019.md). Other targets copy.
+// Only the rolling outputs' copies from the chunk store use them (BM3D
+// radius 1 RGB 1080p 1.07x). finish_download copies: there they made the
+// copy itself faster (805 to 651 us a 1080p plane under NCSR) but the next
+// upload slower (331 to 515 us); at the RGB 1080p defaults in continuous
+// playback NCSR ran 1.27-1.30x and BM3D up to 1.16x faster without them
+// (docs/cuda-rebench-20261020.md). Other targets copy.
 void stream_rows(const void* src, std::ptrdiff_t src_stride, void* dst, std::ptrdiff_t dst_stride, std::size_t row_bytes,
                  int rows) {
 #if NSS_CUDA_STREAM_STORES
@@ -92,7 +96,7 @@ void begin_download(const void* device, std::size_t device_pitch, std::size_t ro
 }
 
 void finish_download(const void* staging, std::size_t row_bytes, int rows, void* host, std::ptrdiff_t host_stride) {
-    stream_rows(staging, static_cast<std::ptrdiff_t>(row_bytes), host, host_stride, row_bytes, rows);
+    copy_rows(staging, static_cast<std::ptrdiff_t>(row_bytes), host, host_stride, row_bytes, rows);
 }
 
 void copy_to_frame(const void* src, std::ptrdiff_t src_stride, void* dst, std::ptrdiff_t dst_stride, std::size_t row_bytes,
