@@ -1,8 +1,8 @@
 # vapoursynth-nssfactory
 
 VapourSynth plugins for the classical non-local self-similarity (NSS)
-denoisers — BM3D, NLM, WNNM, MCWNNM, NCSR, LSSC, TWSC and NLH — plus DA3D,
-a last step on top of any of them, implemented from their papers, with
+denoisers — BM3D, BM4D, NLM, WNNM, MCWNNM, NCSR, LSSC, TWSC and NLH — plus
+DA3D, a last step on top of any of them, implemented from their papers, with
 reproducible numerics.
 
 | Plugin | Namespace | Runs on |
@@ -11,8 +11,8 @@ reproducible numerics.
 | `libnss_cuda` | `nss_cuda` | NVIDIA GPUs of compute capability 7.5 or newer (Linux, Windows) |
 
 Both plugins take the same arguments and give the same results (the GPU's
-output is 60 dB PSNR or more from the CPU's); DA3D is on the CPU plugin only
-for now. Input is constant-format 32-bit
+output is 60 dB PSNR or more from the CPU's); BM4D and DA3D are on the CPU
+plugin only for now. Input is constant-format 32-bit
 float Gray, YUV or RGB. The project is a work in progress.
 
 ## Filters
@@ -20,6 +20,7 @@ float Gray, YUV or RGB. The project is a work in progress.
 | Filter | Method | Good for |
 |---|---|---|
 | [BM3D](docs/api/bm3d.md) | Block matching and 3D transform shrinkage; color (CBM3D) and two-stage modes | General use; the fastest |
+| [BM4D](docs/api/bm4d.md) | Block matching and 4D filtering: the clip as a volume of cubes | Held frames, still and slow scenes (CPU only; heavy) |
 | [NLM](docs/api/nlm.md) | Non-local means | Light noise |
 | [WNNM](docs/api/wnnm.md) | Weighted nuclear norm minimization | Texture and edge retention |
 | [MCWNNM](docs/api/mcwnnm.md) | Multi-channel WNNM | RGB color noise |
