@@ -104,7 +104,7 @@ inline constexpr float kNcsrDefaultDelta = 0.1f;
 inline constexpr float kNcsrDefaultSigma = 3.0f;
 
 inline constexpr int kLsscDefaultBlock = 8;
-inline constexpr int kLsscDefaultStep = 8;
+inline constexpr int kLsscDefaultStep = 4;
 inline constexpr int kLsscDefaultAtoms = 256;
 inline constexpr int kLsscDefaultClusters = 64;
 inline constexpr float kLsscDefaultSigma = 3.0f;

@@ -32,6 +32,18 @@ the same search, at 1080p gray: about 1.25x spatial, and 2.7x / 3.3x at
 `radius=1` / `2` when frames are rendered in order. With `chroma=1` at YUV444:
 243 fps against its 200.
 
+## Closer to the papers
+
+The defaults are fast settings. Settings closer to the paper, with their quality and cost. Measured on one 1080p RGB frame (an anime credits frame with its own film grain) with Gaussian noise added, against the frame without it; the noisy input is 24.97 dB at sigma 15 and 20.98 dB at sigma 25. One image: take these as starting points, not tuned presets. σ is the standard deviation of the noise in 8-bit units; speed at 1080p on an RTX 5080 (the second row's on the test frame).
+
+| Arguments | PSNR, sigma 15 | PSNR, sigma 25 | fps YUV420 / RGB |
+|---|---:|---:|---:|
+| defaults, `sigma=σ` | 31.50 dB | 27.88 dB | 495 / 280 |
+| `final=1, block_step=3, group_size=32, group_size_basic=16, bm_range=19, sigma=4/3 σ` | 34.35 dB | 31.28 dB | 21.7 / 10.9 |
+
+- The paper's normal profile: both stages, step 3, groups of 16 (basic) and 32 (Wiener), a 39 x 39 window.
+- Pass 4/3 of the noise's sigma: the plugin's sigma follows bm3dcpu's convention (the noise profile multiplies it by 0.75), so the true sigma under-filters by 1.4 dB here.
+
 ## Signature
 
 ```python

@@ -127,6 +127,8 @@ GRAYS frame on a single Emerald Rapids core (~17 fps, measured with
 `block_step` (positions scale as `1/step^2`), then `bm_range` and
 `group_size`.
 
+Settings closer to the paper, with their measured quality and GPU speed, are on the [CUDA page](cuda/bm3d.md#closer-to-the-papers); the CPU takes the same arguments.
+
 ## Pitfalls
 
 - With `radius > 0` the output is a **taller intermediate**, not a viewable

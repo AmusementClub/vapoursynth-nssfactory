@@ -19,7 +19,7 @@ more cores.
 | [NLM](nlm.md) | ~131 | yes (`d`) | Light noise |
 | [WNNM](wnnm.md) | ~131 | yes | Texture and edge retention |
 | [NCSR](ncsr.md) | ~268 | yes | Sparse-coding quality at moderate cost |
-| [LSSC](lssc.md) | ~369 | no | Structured noise, film grain |
+| [LSSC](lssc.md) | ~369‡ | no | Structured noise, film grain, text |
 | [TWSC](twsc.md) | ~1337 | yes | Real-world noise |
 | [NLH](nlh.md) | ~6621* | yes | Real-world noise of unknown level |
 | [MCWNNM](mcwnnm.md) | ~2326 | yes | RGB color noise |
@@ -30,6 +30,10 @@ page).
 
 † BM3D measured with `bm_range=7`, its default until 2026-10-20 (now 9, about
 1.6x the candidates of the matching step).
+
+‡ LSSC measured with model version 3 at `block_step=8`, its default until
+2026-10-21. Version 4 at its default `block_step=4` took 0.93x that time on a
+Ryzen 9 5950X core at sigma 3 and about half at sigma 25.
 
 ## Conventions
 

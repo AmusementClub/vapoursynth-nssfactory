@@ -116,6 +116,8 @@ stage dominates; blind estimation adds a matching pass over every fourth
 position per axis (8x8 blocks, window 40) per frame. Model version 5 estimated
 on every position; the two estimates agree to 0.2% (0.04% on average).
 
+Settings closer to the paper, with their measured quality and GPU speed, are on the [CUDA page](cuda/nlh.md#closer-to-the-papers); the CPU takes the same arguments.
+
 ## Pitfalls
 
 - Temporal contribution buffers from older plugin builds are not interchangeable; regenerate intermediates with the current build.

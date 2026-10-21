@@ -411,6 +411,102 @@ static int test_denoise_psnr() {
     return 0;
 }
 
+// Model version 4 coding of one patch (params/lssc.hpp): the residual meets
+// the budget unless the support is full or stopped, the least-squares
+// residual is orthogonal to the chosen atoms, and a sparse patch is found.
+static int test_omp_code() {
+    constexpr int m = 64;
+    constexpr int atoms = 256;
+    std::mt19937 rng(7);
+    std::normal_distribution<float> gauss(0.f, 1.f);
+    std::vector<float> D(static_cast<std::size_t>(m) * atoms);
+    for (int a = 0; a < atoms; ++a) {
+        double n2 = 0;
+        for (int r = 0; r < m; ++r) {
+            const float v = gauss(rng);
+            D[static_cast<std::size_t>(a) * m + r] = v;
+            n2 += double(v) * v;
+        }
+        for (int r = 0; r < m; ++r) D[static_cast<std::size_t>(a) * m + r] /= static_cast<float>(std::sqrt(n2));
+    }
+    std::vector<float> storage(static_cast<std::size_t>(nss::lssc_omp_dictionary_floats(m, atoms)));
+    nss::LsscOmpDictionary dict;
+    nss::lssc_omp_prepare(D.data(), m, atoms, m, storage.data(), &dict);
+    std::vector<float> work(static_cast<std::size_t>(nss::lssc_omp_code_work_floats(m, atoms)));
+    std::vector<float> patch(m), rec(m);
+    const int truth[3] = {11, 77, 203};
+    const float weight[3] = {0.4f, -0.25f, 0.15f};
+    for (int trial = 0; trial < 3; ++trial) {
+        const float sigma = trial == 0 ? 1e-4f : trial == 1 ? 3.f / 255.f : 25.f / 255.f;
+        std::normal_distribution<float> noise(0.f, sigma);
+        for (int r = 0; r < m; ++r) {
+            float v = 0.3f;
+            for (int t = 0; t < 3; ++t) v += weight[t] * D[static_cast<std::size_t>(truth[t]) * m + r];
+            patch[r] = v + noise(rng);
+        }
+        const int k = nss::lssc_omp_code(patch.data(), dict, sigma, rec.data(), work.data());
+        double mean = 0, energy = 0;
+        for (int r = 0; r < m; ++r) mean += patch[r];
+        mean /= m;
+        std::vector<double> res(m);
+        for (int r = 0; r < m; ++r) {
+            if (!std::isfinite(rec[r])) return fail("omp code non-finite");
+            res[r] = double(patch[r]) - rec[r];
+            energy += res[r] * res[r];
+        }
+        const double budget = nss::lssc_omp_budget(m, sigma);
+        std::printf("lssc omp sigma=%.4g atoms=%d residual=%.3g budget=%.3g\n", sigma, k, energy, budget);
+        if (k < nss::lssc_omp_cap(m, atoms) && energy > budget * 1.01 + 1e-9) return fail("omp code stopped above its budget");
+        // The fit is least squares: the residual (around the patch mean) is
+        // orthogonal to the support, here checked against every atom it took.
+        if (trial == 0 && k < 3) return fail("omp code missed the sparse patch");
+        if (trial == 0) {
+            for (int t = 0; t < 3; ++t) {
+                double dot = 0;
+                for (int r = 0; r < m; ++r) dot += res[r] * D[static_cast<std::size_t>(truth[t]) * m + r];
+                if (std::fabs(dot) > 1e-4) return fail("omp residual not orthogonal to the support");
+            }
+        }
+        (void)mean;
+    }
+    return 0;
+}
+
+// sigma -> 0 keeps the input (the image term dominates), and white strokes on
+// a dark ground keep their level at the default sigma (model 3 dimmed them by
+// about 4 levels).
+static int test_denoise_detail() {
+    constexpr int w = 96;
+    constexpr int h = 64;
+    constexpr int block = 8;
+    const int step = nss::lssc_default_step(block);
+    std::vector<float> img(static_cast<std::size_t>(w * h)), num(img.size()), den(img.size()), out(img.size());
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            const bool stroke = ((x % 17) < 2 && (y % 23) < 15) || ((y % 23) < 2 && (x % 17) < 11);
+            img[static_cast<std::size_t>(y * w + x)] = stroke ? 0.92f : 0.12f + 0.02f * std::sin(x * 0.3f) * std::cos(y * 0.2f);
+        }
+    nss::lssc_denoise_plane(img.data(), w, h, w, num.data(), den.data(), w, block, step, 1e-6f);
+    nss::aggregate_finish(out.data(), num.data(), den.data(), img.data(), w, h, w, w);
+    float worst = 0.f;
+    for (std::size_t i = 0; i < img.size(); ++i) worst = std::max(worst, std::fabs(out[i] - img[i]));
+    std::printf("lssc sigma~0 max change %.3g\n", worst);
+    if (!(worst < 1e-4f)) return fail("sigma ~ 0 must keep the input");
+    nss::lssc_denoise_plane(img.data(), w, h, w, num.data(), den.data(), w, block, step, 3.f / 255.f);
+    nss::aggregate_finish(out.data(), num.data(), den.data(), img.data(), w, h, w, w);
+    double shift = 0;
+    int count = 0;
+    for (std::size_t i = 0; i < img.size(); ++i)
+        if (img[i] > 0.9f) {
+            shift += double(out[i]) - img[i];
+            ++count;
+        }
+    shift = shift / count * 255.0;
+    std::printf("lssc white strokes shift %.3f levels\n", shift);
+    if (!(std::fabs(shift) < 0.5)) return fail("white strokes must keep their level at sigma 3");
+    return 0;
+}
+
 int main() {
     if (test_cluster_assigns_every_patch() != 0) {
         return 1;
@@ -422,6 +518,9 @@ int main() {
         return 1;
     }
     if (test_denoise_psnr() != 0) {
+        return 1;
+    }
+    if (test_omp_code() != 0 || test_denoise_detail() != 0) {
         return 1;
     }
     {

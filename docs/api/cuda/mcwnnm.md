@@ -21,6 +21,17 @@ quick = core.nss_cuda.MCWNNM(rgb_clip, sigma=25, iters=1)
 
 `iters=1` (one round instead of two) is about 1.5x faster at `radius=1`.
 
+## Closer to the papers
+
+The defaults are fast settings. Settings closer to the paper, with their quality and cost. Measured on one 1080p RGB frame (an anime credits frame with its own film grain) with Gaussian noise added, against the frame without it; the noisy input is 24.97 dB at sigma 15 and 20.98 dB at sigma 25. One image: take these as starting points, not tuned presets. σ is the standard deviation of the noise in 8-bit units; speed at 1080p on an RTX 5080 (the second row's on the test frame).
+
+| Arguments | PSNR, sigma 15 | PSNR, sigma 25 | fps YUV420 / RGB |
+|---|---:|---:|---:|
+| defaults, `sigma=σ` | 25.62 dB | 21.63 dB | — / 200 |
+| `block_step=4, group_size=32, iters=4, sigma=σ` | 33.68 dB | 30.93 dB | — / 0.38 |
+
+- The outer rounds matter: with `iters=1` the same geometry gives 25.99 dB at sigma 15.
+
 ## Signature
 
 ```python

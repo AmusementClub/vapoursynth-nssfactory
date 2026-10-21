@@ -1,30 +1,31 @@
 # nss.LSSC
 
-Learned Simultaneous Sparse Coding: patches are clustered (k-means), each
-cluster learns a dictionary, and patches in a cluster are coded
-*simultaneously* — the joint sparsity pattern is shared, which preserves grain
-and stochastic texture better than independent sparse coding. Moderate cost,
-distinctly "textured" output character.
+Learned sparse coding: one dictionary is learned per plane (DCT atoms plus
+sampled patches, one K-SVD round), and every overlapping patch is coded on its
+own by orthogonal matching pursuit until its residual is at the noise level.
+The coefficients are a least-squares fit, not shrunk, so high-contrast detail
+(text, line art) keeps its level. Moderate cost.
 
 ```python
 out = core.nss.LSSC(clip, sigma=25)                    # defaults
-hiq  = core.nss.LSSC(clip, sigma=25, block_step=4)
+fine = core.nss.LSSC(clip, sigma=25, block_step=3)     # denser overlap
 ```
 
 ## Signature
 
 ```python
 core.nss.LSSC(clip clip[, float[] sigma = 3.0, int block_size = 8,
-              int block_step = 8, int radius = 0, int memory_limit_mb])
+              int block_step = block_size / 2, int radius = 0,
+              int memory_limit_mb])
 ```
 
 ## Primary parameters
 
 | Parameter | Default | Range | Meaning and impact |
 |---|---|---|---|
-| `sigma` | 3.0 | >= 0 | 8-bit noise stddev per plane. Drives the sparse-coding regularization. `sigma=0` bypasses the plane. |
+| `sigma` | 3.0 | >= 0 | 8-bit noise stddev per plane. Sets the residual at which a patch's coding stops and the weight of the noisy plane in the average. `sigma=0` bypasses the plane. |
 | `block_size` | 8 | {1,2,4,8,16} | Patch edge (power-of-two family only). Dictionary dimension is `block^2`. |
-| `block_step` | 8 | [1, block] | Reference-patch stride; positions scale as `1/step^2`. The main quality/speed trade. |
+| `block_step` | block / 2 (4) | [1, block] | Reference-patch stride; positions scale as `1/step^2`. The model needs overlap: at `block_step=block` (no overlap) it loses 1.2 to 1.8 dB. |
 | `radius` | 0 | 0 only | Kept for the common signature: LSSC has no temporal mode, and `radius > 0` is rejected. |
 
 ## Secondary parameters
@@ -33,68 +34,76 @@ core.nss.LSSC(clip clip[, float[] sigma = 3.0, int block_size = 8,
 |---|---|---|---|
 | `memory_limit_mb` | none | — | Workspace cap; fails instead of degrading. |
 
-The dictionary size (256 atoms) and cluster count (64) are internal constants,
-capped by the actual patch count; they are intentionally not exposed.
+The dictionary size (256 atoms), the residual factor (1.15), the support cap (48
+atoms a patch) and the weight of the noisy plane are internal constants
+(`include/nss/params/lssc.hpp`); they are not exposed.
 
 ## Algorithm and paper
 
 Mairal, Bach, Ponce, Sapiro & Zisserman, *Non-local Sparse Models for Image
-Restoration*, ICCV 2009. This implementation: k-means clustering of reference
-patches, one dictionary per plane (DCT atoms plus sampled patches, one
-K-SVD-style update with OMP at sparsity 8, mixed-precision screening: FP32
-correlation screen, ordered FP64 refinement and residual), then each cluster
-coded jointly by an l1,2 group-sparse problem (below). The dictionary update
-is this repository's own formulation, not Mairal's ODL, by design.
+Restoration*, ICCV 2009, without the simultaneous (grouped) coding, and the
+sparse-coding denoiser of Elad & Aharon (K-SVD, 2006). This implementation:
 
-## Model version 3: the cluster coding
+- One dictionary per plane: DCT atoms plus sampled patches, then one K-SVD
+  round with OMP at sparsity 8 (FP32 correlation screen, ordered FP64
+  refinement and residual). This is the repository's own learning step, not
+  Mairal's online dictionary learning.
+- Every patch on the `block_step` grid, centred on its mean, coded by
+  error-constrained Batch-OMP: atoms are added (the largest normalized
+  correlation with the residual) until the residual energy is at most
+  `m (1.15 sigma)^2`, or 48 atoms. The coefficients are the least-squares fit
+  on the chosen atoms.
+- The patches are averaged, with the noisy plane added at the weight
+  `2.5 (block / step)^2 / sigma` (sigma in 8-bit units), the image term of
+  K-SVD denoising. It keeps a low-noise plane close to its input.
 
-Each cluster's centered patches Y are coded against the dictionary D by 12
-rounds of accelerated proximal gradient (FISTA) on
+The paper's simultaneous coding of similar patches added little in this
+repository's paper-track study (`tests/lssc_paper/`, +0.09 dB on average) and
+needs the authors' prelearned dictionary.
 
-```text
-0.5 (Y - D A)^T M (Y - D A) + sum_a lambda_a ||A_a||_2
-M = c (D D^T + delta I)^-1,  delta = 3 s,  c = s + delta,  s = trace(D D^T) / m
-lambda_a = (sigma / 255) sqrt(cluster size) ||M d_a||
-```
+## Model version 4
 
-M weighs a direction of eigenvalue e of `D D^T` by `(s + delta) / (e + delta)`
-(1 at the mean eigenvalue). The learned dictionaries are ill-conditioned
-(eigenvalues about 0.34 to 27 at the defaults), and model version 2 (16 plain
-ISTA rounds on the unweighted problem) stopped far from its solution at low
-sigma: strokes lost contrast and white text darkened by about 12 levels at the
-default sigma. Version 3 reaches the converged quality of the old objective in
-12 rounds: on the development control set (three DIV2K crops and a synthetic
-stroke image, two noise seeds), against version 2, PSNR +12.3 / +4.9 / +0.75 /
--0.14 dB on gray and +9.9 / +4.4 / +0.69 / -0.33 dB on RGB at sigma 1 / 3 /
-10 / 25. The loss at sigma 25 is the objective's, not the solver's: the old
-objective solved to convergence loses the same 0.14 dB on gray. At sigma 1
-the output is still below the noisy input on every control image, as with
-version 2; the penalty is not calibrated for very low noise.
+Model version 3 (2026-10-19) coded k-means clusters of patches jointly with an
+l1,2 group soft threshold. The threshold shrank every coefficient row by an
+amount proportional to sigma: high-contrast patches lost contrast, and white
+text on a dark ground darkened by about 4 levels at the default sigma (about
+21 at sigma 15). Neither more rounds, more clusters, small nonlocal groups, a
+least-squares refit of the kept rows nor a firm or hard row threshold fixed it
+without losing the denoising at higher sigma.
 
-The preconditioner is built once per plane (`D D^T`, a Cholesky factor of
-`D D^T + delta I`, two triangular solves per atom); the step is 0.9 / L' with
-`L' = c L / (L + delta)` from the power estimate L of `||D||^2`. Constants
-and the momentum table are in `include/nss/params/lssc.hpp`, shared by both
-plugins. The model semantic version (`include/nss/contracts.hpp`) is 3; LSSC
-stamps no frame properties, so outputs of the two versions are told apart only
-by the plugin build.
+Against model 3 at its default step 8, on 11 RGB images (six DIV2K, three
+control crops, a synthetic credits frame and a real one), mean (worst) PSNR:
+
+| sigma | 3 | 10 | 25 |
+|---|---:|---:|---:|
+| version 4 against version 3 | +1.89 (+1.35) dB | +1.27 (+0.83) dB | +0.83 (+0.38) dB |
+| images below the noisy input, version 3 | 8 of 11 | 0 | 0 |
+| images below the noisy input, version 4 | 0 of 11 | 0 | 0 |
+
+On the synthetic credits frame the white text moves by -0.2 / -2.3 / -12.5
+levels at sigma 3 / 10 / 25 (version 3: -4.1 / -13.9 / -29.9).
+
+The arithmetic is FP32 with a fixed order of every sum (it is the CUDA
+kernels' order), so the two plugins agree closely. The model semantic version
+(`include/nss/contracts.hpp`) is 4; LSSC stamps no frame properties, so
+outputs of the two versions are told apart only by the plugin build.
 
 ## Defaults rationale and performance
 
-`block=8, step=8, sigma=3`. About 330 ms per 1080p GRAYS frame on one Ryzen 9
-5950X core (version 2: 410 ms on the same core). The cost splits between the
-clustering/matching passes (scaling with `1/step^2`) and the per-cluster
-coding/dictionary iterations (scaling with patch count and atoms). The coding
-keeps the previous iterate: the workspace holds `min(256, patches)` more
-floats per patch than version 2. An opt-in Apple Silicon SME matrix leaf exists
-for eligible builds (`-DNSS_ENABLE_LSSC_SME=ON`); the default path is
-Highway-only and deterministic.
+`block=8, step=4, sigma=3`. About 0.31 s per 1080p gray plane at sigma 3 on one
+Ryzen 9 5950X core, 0.20 s at sigma 10 and 0.16 s at sigma 25 (patches need
+fewer atoms as the noise grows); version 3 took 0.33 s at its default step 8
+on that core and 1.6 s at step 4. A denser step costs about `1/step^2`: on
+frames small enough for it, `block_step=2` added about 1 dB at sigma 3 in the
+evaluation above.
+
+Settings closer to the paper, with their measured quality and GPU speed, are on the [CUDA page](cuda/lssc.md#closer-to-the-papers); the CPU takes the same arguments.
 
 ## Pitfalls
 
 - Only block sizes 1/2/4/8/16 are accepted; other values fail at creation.
-- The clustering uses the patches themselves as seeds; pathological inputs
-  (constant frames) exercise the empty-cluster steal logic and still complete.
+- The patch grid is capped at 16M floats (patches x block^2): at 1080p and
+  block 8, `block_step=2` fails at creation ("grid too large"); 3 is accepted.
 - No `_NSS*` frame properties on this filter.
 
 ## CUDA

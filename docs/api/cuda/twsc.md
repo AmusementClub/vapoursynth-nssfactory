@@ -35,6 +35,17 @@ the same, bit for bit; the cost is a workspace of one plane per stream (about
 24 MiB at 1080p), left out when `memory_limit_mb` has no room for it. Other
 shapes, joint channels and temporal matching keep the lane kernels.
 
+## Closer to the papers
+
+The defaults are fast settings. Settings closer to the paper, with their quality and cost. Measured on one 1080p RGB frame (an anime credits frame with its own film grain) with Gaussian noise added, against the frame without it; the noisy input is 24.97 dB at sigma 15 and 20.98 dB at sigma 25. One image: take these as starting points, not tuned presets. σ is the standard deviation of the noise in 8-bit units; speed at 1080p on an RTX 5080 (the second row's on the test frame).
+
+| Arguments | PSNR, sigma 15 | PSNR, sigma 25 | fps YUV420 / RGB |
+|---|---:|---:|---:|
+| defaults, `sigma=σ` | 25.26 dB | 21.27 dB | 77 / 44 |
+| `block_step=4, group_size=90, iters=4, sigma=σ` (RGB on the fast color path) | 36.77 dB | 34.23 dB | 0.56 / 0.38 |
+
+- The quality geometry of [Speed](#speed) at step 4, which keeps the quality of step 1. On this image it is the best of the eight filters by 2 dB or more; the joint (non-`cfast`) path takes `iters=12`.
+
 ## Signature
 
 ```python

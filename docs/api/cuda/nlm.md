@@ -19,6 +19,18 @@ denoised = core.nss_cuda.NLM(clip, d=1, a=4, s=3, h=1.5, channels="Y")
 |---|---:|---:|
 | default (`d=1`) | 565 | 235 |
 
+## Closer to the papers
+
+The defaults are fast settings. Settings closer to the paper, with their quality and cost. Measured on one 1080p RGB frame (an anime credits frame with its own film grain) with Gaussian noise added, against the frame without it; the noisy input is 24.97 dB at sigma 15 and 20.98 dB at sigma 25. One image: take these as starting points, not tuned presets. σ is the standard deviation of the noise in 8-bit units; speed at 1080p on an RTX 5080 (the second row's on the test frame).
+
+| Arguments | PSNR, sigma 15 | PSNR, sigma 25 | fps YUV420 / RGB |
+|---|---:|---:|---:|
+| defaults (`h=1.2`) | 24.97 dB | 20.98 dB | 565 / 235 |
+| `a=10, s=3, h=1.3 σ` (h=20 at sigma 15, 30 at sigma 25) | 32.84 dB | 30.49 dB | 34.3 / 21.7 |
+
+- `h` is the KNLMeansCL scale (the weight is exp(-mean squared patch difference / h^2), without the paper's -2 sigma^2 offset), so it has to grow with the noise: the default `h=1.2` leaves noise of sigma 3 or more untouched. The 21 x 21 window and 7 x 7 patches are the paper's.
+- Measured on a single frame (`d=1` had no neighbours); on video the temporal pooling adds to it.
+
 ## Signature
 
 ```python

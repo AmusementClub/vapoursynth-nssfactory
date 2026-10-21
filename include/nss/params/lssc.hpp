@@ -15,7 +15,59 @@ struct LsscParams {
     int radius = 0;
 };
 
-// Group sparse coding of a cluster (model version 3, every backend):
+// Model version 4, every backend: each grid patch is coded on its own by
+// error-constrained orthogonal matching pursuit (Batch-OMP over the Gram matrix
+// G = D^T D) against the plane's dictionary, and the reconstructions are
+// averaged with the noisy plane added at a small weight. All in FP32, every
+// fused operation explicit. Sums written "lane sum" are the device's warp
+// sum: 32 lanes, lane l adding terms l, l + 32, ... from 0 in order, then a
+// butterfly over lane distances 16, 8, 4, 2, 1.
+//   mean = lane sum of the pixels / m, y = patch - mean, ||y||^2 = lane sum
+//   of y^2, alpha0 = D^T y (one fma chain over the pixels per atom), alpha =
+//   alpha0;
+//   until ||r||^2 <= lssc_omp_budget or kLsscOmpMaxAtoms atoms:
+//     pick the unused atom of the largest |alpha_a| / ||d_a|| (lowest index on
+//     ties); the new factor row L_k = L^-1 g (g_t = G[best][S_t], reciprocal
+//     diagonals), the pivot G_bb - lane sum of L_k^2 (stop when it is not
+//     above kLsscOmpPivot G_bb), z_k = (alpha0_best - lane sum of L_k z) /
+//     L_kk, ||r||^2 -= z_k^2; then (unless this was the last atom) u_k =
+//     (G[best] - sum_q L_kq u_q) / L_kk (one fma chain over q per atom; u_t =
+//     G_S L^-T e_t) and alpha -= z_k u_k;
+//   x = L^-T z (row t subtracts the later rows in descending order),
+//   patch = mean + D_S x (fma chains in support order),
+//   output = (sum of patches + w noisy) / (count + w),
+//   w = kLsscImageWeight (block / step)^2 / sigma8 (the K-SVD image term).
+// The coefficients are least squares, not shrunk: model version 3's group
+// soft threshold dimmed high-contrast detail in proportion to sigma (white
+// text by about 4 levels at the default sigma). The defaults need overlap
+// (block_step 4); docs/lssc-fix-eval-20261021.md has the evaluation.
+inline constexpr float kLsscOmpResidual = 1.15f;
+inline constexpr int kLsscOmpMaxAtoms = 48;
+inline constexpr float kLsscOmpPivot = 1e-4f;
+inline constexpr float kLsscImageWeight = 2.5f;
+// The default reference stride: half the block, so that every pixel is
+// covered by about four patches (the image weight assumes coverage).
+inline int lssc_default_step(int block) { return block > 1 ? block / 2 : 1; }
+// The weight of the noisy plane in the average (sigma normalized to [0, 1]).
+inline float lssc_image_weight(int block, int step, float sigma) {
+    const float coverage = static_cast<float>(block * block) / static_cast<float>(step * step);
+    return kLsscImageWeight * coverage / (sigma * 255.f);
+}
+// The residual energy at which a patch's coding stops: m (C sigma)^2.
+inline float lssc_omp_budget(int m, float sigma) {
+    const float c = kLsscOmpResidual * sigma;
+    return static_cast<float>(m) * (c * c);
+}
+// Atoms a patch of m pixels may take from a dictionary of `atoms`.
+inline int lssc_omp_cap(int m, int atoms) {
+    const int cap = m < atoms ? m : atoms;
+    return cap < 0 ? 0 : cap < kLsscOmpMaxAtoms ? cap : kLsscOmpMaxAtoms;
+}
+
+// Model version 3's cluster coding, kept for the library users of
+// lssc_reconstruct (tests and the paper-track explorer); nss.LSSC no longer
+// runs it.
+// Group sparse coding of a cluster (model version 3):
 // accelerated proximal gradient (FISTA) over kLsscCodingRounds rounds on the
 // preconditioned problem
 //   0.5 (Y - D A)^T M (Y - D A) + sum_a lambda_a ||A_a,:||_2,

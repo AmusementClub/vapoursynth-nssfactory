@@ -11,7 +11,7 @@ inline constexpr int model_semantic_version(Model model) {
     return model == Model::NLH    ? 6
            : model == Model::TWSC ? 6
            : model == Model::NCSR ? 3
-           : model == Model::LSSC ? 3
+           : model == Model::LSSC ? 4
                                   : kSemanticVersion;
 }
 enum class KernelStatus : int { Ok, Bypass, InvalidInput, NumericalFailure, Unsupported, ResourceFailure };

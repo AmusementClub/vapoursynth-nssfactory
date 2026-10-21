@@ -144,6 +144,8 @@ better at sigma 5 to 100 on DIV2K crops, at thousands of times the cost
 
 RGB needs its 12 rounds at `group_size=90` (5 rounds lose 2.6 dB there).
 
+Settings closer to the paper, with their measured quality and GPU speed, are on the [CUDA page](cuda/twsc.md#closer-to-the-papers); the CPU takes the same arguments.
+
 ## Pitfalls
 
 - The default is the fast geometry; for quality pass the larger group and

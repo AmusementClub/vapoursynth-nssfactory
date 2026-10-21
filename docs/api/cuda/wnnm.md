@@ -24,6 +24,18 @@ Groups above 8 patches cost much more (an eigendecomposition per group): at
 1080p gray, `group_size=16` runs at about 330 fps and `group_size=32,
 block_step=4` at 14 fps.
 
+## Closer to the papers
+
+The defaults are fast settings. Settings closer to the paper, with their quality and cost. Measured on one 1080p RGB frame (an anime credits frame with its own film grain) with Gaussian noise added, against the frame without it; the noisy input is 24.97 dB at sigma 15 and 20.98 dB at sigma 25. One image: take these as starting points, not tuned presets. σ is the standard deviation of the noise in 8-bit units; speed at 1080p on an RTX 5080 (the second row's on the test frame).
+
+| Arguments | PSNR, sigma 15 | PSNR, sigma 25 | fps YUV420 / RGB |
+|---|---:|---:|---:|
+| defaults, `sigma=σ` | 26.29 dB | 22.33 dB | 500 / 285 |
+| `block_step=4, group_size=32, bm_range=15, sigma=1.41 σ` | 33.69 dB | 30.42 dB | 8.6 / 4.3 |
+
+- This WNNM runs one pass; the paper iterates 8 or more times with the noise re-injected. One pass needs a larger sigma for the paper's strength: 1.41 σ here (2 σ gained 0.3 dB more at sigma 15 but cost text detail). The factor is measured on this image, not a paper value.
+- The group is capped at 32 patches (the paper takes about 70).
+
 ## Signature
 
 ```python

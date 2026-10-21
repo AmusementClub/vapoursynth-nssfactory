@@ -21,7 +21,7 @@ warm-up; the images differ by at most 3%.
 | [WNNM](wnnm.md) | 500 | 285 | 455 / 230 |
 | [MCWNNM](mcwnnm.md) | — | 200 | — / 135 |
 | [NCSR](ncsr.md) | 390 | 215 | 265 / 135 |
-| [LSSC](lssc.md) | 205 | 145 | (no temporal mode) |
+| [LSSC](lssc.md) | 230 | 145 | (no temporal mode) |
 | [NLH](nlh.md) | 37 | 31 | 13 / 11 |
 | [TWSC](twsc.md) | 77 | 44 | |
 
@@ -31,6 +31,30 @@ warm-up; the images differ by at most 3%.
   per YUV420 1080p frame and 45 s per RGB frame; its page has the trade-offs.
 - MCWNNM takes RGB only.
 - The CPU plugin's speed is on the [CPU API guide](../README.md).
+
+## Closer to the papers
+
+The defaults are fast settings shared by most filters (`block_step=8`, small
+groups). Each filter page has a "Closer to the papers" section with arguments
+nearer its paper, their quality and their cost. In short, with σ the noise's
+standard deviation in 8-bit units (one 1080p RGB test frame with Gaussian
+noise added; PSNR against the frame without it, noisy input 24.97 dB):
+
+| Filter | Arguments | PSNR at sigma 15: default → these | fps RGB: default → these |
+|---|---|---:|---:|
+| [BM3D](bm3d.md#closer-to-the-papers) | `final=1, block_step=3, group_size=32, group_size_basic=16, bm_range=19, sigma=4/3 σ` | 31.5 → 34.4 | 280 → 10.9 |
+| [WNNM](wnnm.md#closer-to-the-papers) | `block_step=4, group_size=32, bm_range=15, sigma=1.41 σ` | 26.3 → 33.7 | 285 → 4.3 |
+| [MCWNNM](mcwnnm.md#closer-to-the-papers) | `block_step=4, group_size=32, iters=4` | 25.6 → 33.7 | 200 → 0.38 |
+| [NCSR](ncsr.md#closer-to-the-papers) | `block_step=4, group_size=16` | 29.4 → 33.4 | 215 → 18.5 |
+| [LSSC](lssc.md#closer-to-the-papers) | `block_step=3` | 31.9 → 32.2 | 145 → 93 |
+| [TWSC](twsc.md#closer-to-the-papers) | `block_step=4, group_size=90, iters=4` | 25.3 → 36.8 | 44 → 0.38 |
+| [NLH](nlh.md#closer-to-the-papers) | defaults (or `sigma=σ`) | 35.2 (35.6) | 31 |
+| [NLM](nlm.md#closer-to-the-papers) | `a=10, s=3, h=1.3 σ` | 25.0 → 32.8 | 235 → 21.7 |
+
+- Three filters do not take σ as is: BM3D wants 4/3 σ (its sigma follows
+  bm3dcpu's convention), WNNM about 1.41 σ (it runs one pass where the paper
+  iterates), NLM `h` of about 1.3 σ (`h` is not in sigma units).
+- One image: take these as starting points, not tuned presets.
 
 ## Functions
 

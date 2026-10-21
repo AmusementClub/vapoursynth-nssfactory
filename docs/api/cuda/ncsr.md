@@ -29,6 +29,15 @@ temporal = core.nss_cuda.NCSR(clip, sigma=25, radius=1)  # finished frames, ever
 Larger groups cost more: at 1080p gray, `group_size=16` runs at about 180 fps,
 `group_size=32` at 50 (13 with `block_step=4`).
 
+## Closer to the papers
+
+The defaults are fast settings. Settings closer to the paper, with their quality and cost. Measured on one 1080p RGB frame (an anime credits frame with its own film grain) with Gaussian noise added, against the frame without it; the noisy input is 24.97 dB at sigma 15 and 20.98 dB at sigma 25. One image: take these as starting points, not tuned presets. σ is the standard deviation of the noise in 8-bit units; speed at 1080p on an RTX 5080 (the second row's on the test frame).
+
+| Arguments | PSNR, sigma 15 | PSNR, sigma 25 | fps YUV420 / RGB |
+|---|---:|---:|---:|
+| defaults, `sigma=σ` | 29.42 dB | 25.59 dB | 390 / 215 |
+| `block_step=4, group_size=16, sigma=σ` | 33.41 dB | 30.37 dB | 36.8 / 18.5 |
+
 ## Signature
 
 ```python
