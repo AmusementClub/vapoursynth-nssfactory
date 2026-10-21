@@ -39,11 +39,14 @@ int main(int argc, char** argv) {
             for (int c = 0; c < planes; ++c) {
                 const auto& channel = frame.planes[c];
                 const auto& luma = guide.planes[0];
-                if (channel.width == luma.width && channel.height == luma.height)
+                // Model version 7: a plane that is not its own guide (chroma,
+                // any plane under an external guide) is scaled down.
+                if (channel.width == luma.width && channel.height == luma.height) {
                     expected[c] = nss::nlh_estimate_sigma(channel, luma);
-                else {
+                    if (&channel != &luma) expected[c] = nss::nlh_unguided_estimate(expected[c]);
+                } else {
                     const auto resized = nss::image_area_guide(luma, channel.width, channel.height);
-                    expected[c] = nss::nlh_estimate_sigma(channel, resized);
+                    expected[c] = nss::nlh_unguided_estimate(nss::nlh_estimate_sigma(channel, resized));
                 }
             }
             const auto original = frame;

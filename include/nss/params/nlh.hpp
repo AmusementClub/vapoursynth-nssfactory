@@ -18,6 +18,20 @@ namespace nss {
 // sixteenth of the work.
 inline constexpr int kNoiseEstimateStep = 4;
 
+// NLH model version 7: the estimate of a plane that is not its own guide
+// (chroma matched on the luma, every plane under rclip) is divided by
+// sqrt(2) E[sqrt(chi2_16 / 16)] = 1.3923023. The statistic averages
+// sqrt(mean squared difference) between rows the guide selected as nearest:
+// on the guide plane itself the selection pulls the differences under
+// sqrt(2) sigma (it measures the noise to within a few percent at moderate
+// sigma), on another plane it does not, and AWGN chroma came out 1.41x high
+// (docs/real-gain-sigma-20261021.md). Applied to the float v6 estimate, the
+// same way on every backend.
+inline constexpr double kNoiseEstimateUnguidedScale = 1.3923023108614498;
+inline float nlh_unguided_estimate(float estimate) {
+    return static_cast<float>(static_cast<double>(estimate) / kNoiseEstimateUnguidedScale);
+}
+
 struct NlhImageOptions {
     // Zero integer fields and exactly -1 coefficient fields request a preset.
     // Public parsing permits these sentinels only through omitted arguments.

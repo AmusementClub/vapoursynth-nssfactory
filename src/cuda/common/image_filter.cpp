@@ -306,8 +306,10 @@ MatchGeometry match_geometry(int width, int height, int block, int window, int g
 // Blind noise estimate on the device: fixed 8x8 / 16 / q4 / W40 over every
 // kNoiseEstimateStep-th reference.
 // NLH (nss::nlh_estimate_frame_sigma): planes of equal geometry share the
-// luma-guided matching and pixel selection. TWSC (nss::nlh_estimate_sigma per
-// plane): every plane is matched on itself (or on its rclip plane).
+// luma-guided matching and pixel selection; a plane that is not its own guide
+// takes nss::nlh_unguided_estimate (model version 7). TWSC
+// (nss::nlh_estimate_sigma per plane): every plane is matched on itself (or on
+// its rclip plane), without the correction.
 void estimate_sigma(Frame& f, int t) {
     const ImageData& d = f.d;
     Slot& s = f.s;
@@ -384,6 +386,7 @@ void estimate_sigma(Frame& f, int t) {
             const double sigma = totals[c] / static_cast<double>(grid.count());
             if (!std::isfinite(sigma)) throw std::runtime_error("nss: nonfinite blind noise estimate");
             f.sigma[t][channels[c]] = static_cast<float>(sigma);
+            if (!own_guide && data_ptr[c] != guide) f.sigma[t][channels[c]] = nss::nlh_unguided_estimate(f.sigma[t][channels[c]]);
             f.units[t][channels[c]] = static_cast<double>(f.sigma[t][channels[c]]) * 255;
         }
     }

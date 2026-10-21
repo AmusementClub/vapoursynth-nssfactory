@@ -80,7 +80,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for key in ('plugin', 'profiles', 'out'):
         parser.add_argument('--' + key, required=True)
-    parser.add_argument('--model-version', type=int, default=6)
+    parser.add_argument('--model-version', type=int, default=7)
     args = parser.parse_args()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)  # verification.json is replaced whole

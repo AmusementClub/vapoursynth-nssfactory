@@ -123,6 +123,11 @@ Settings closer to the paper, with their measured quality and GPU speed, are on 
 - Temporal contribution buffers from older plugin builds are not interchangeable; regenerate intermediates with the current build.
 - `sigma` omitted means blind estimation with an 8x8 minimum plane bootstrap;
   planes smaller than 8x8 are creation-time errors.
+- Blind estimation reads textured luma high at low noise (sigma 5 or less);
+  give `sigma` there when it is known. With `rclip`, give a prefiltered clip:
+  since model version 7 every plane not matched on itself has its estimate
+  scaled down by 1.39, so the noisy clip itself as `rclip` reads its luma too
+  low.
 - Explicit invalid stage combinations (e.g., `q > block^2`) are errors, not
   silent clamps.
 - The Wiener stage's `wiener_iters` re-applies the fixed gain; it is not a
