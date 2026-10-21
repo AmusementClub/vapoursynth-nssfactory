@@ -490,6 +490,7 @@ set(NSS_PINNED_SOURCES
   src/cpu/twsc/linalg.cpp
   src/cpu/twsc/svd_batch.cpp
   src/cpu/nlh/fused.cpp
+  src/cpu/lssc/code.cpp
 )
 set_source_files_properties(${NSS_PINNED_SOURCES}
   PROPERTIES COMPILE_OPTIONS "${NSS_SAFE_PIN_COMPILE_OPTIONS}")

@@ -15,7 +15,35 @@ struct LsscParams {
     int radius = 0;
 };
 
-// Group sparse coding of a cluster (model version 3, every backend):
+// Model version 4, every backend: each grid patch is coded on its own by
+// error-constrained orthogonal matching pursuit (Batch-OMP over the Gram matrix
+// G = D^T D) against the plane's dictionary, and the reconstructions are
+// averaged with the noisy plane added at a small weight:
+//   y = patch - mean (FP32; mean the FP64 sum / m), ||y||^2 in FP64,
+//   alpha0 = D^T y, alpha = alpha0 (FP32, one fma chain over the pixels each),
+//   until ||r||^2 <= m (kLsscOmpResidual sigma)^2 or kLsscOmpMaxAtoms atoms:
+//     pick the unused atom of the largest |alpha_a| / ||d_a|| (lowest index on
+//     ties), extend the FP64 Cholesky factor of G over the support (stop when
+//     the new pivot is not above kLsscOmpPivot G_aa), its forward solution
+//     z (L z = alpha0_S, one new entry per atom), ||r||^2 = ||y||^2 - ||z||^2,
+//     x = L^-T z (row t subtracts the later rows in descending order), all
+//     FP64; alpha = alpha0 - G_S float(x),
+//   patch = mean + D_S float(x) (FP32 fma chains in support order),
+//   output = (sum of patches + w noisy) / (count + w),
+//   w = kLsscImageWeight (block / step)^2 / sigma8 (the K-SVD image term).
+// The coefficients are least squares, not shrunk: model version 3's group
+// soft threshold dimmed high-contrast detail in proportion to sigma (white
+// text by about 4 levels at the default sigma). The defaults need overlap
+// (block_step 4); docs/lssc-fix-eval-20261021.md has the evaluation.
+inline constexpr float kLsscOmpResidual = 1.15f;
+inline constexpr int kLsscOmpMaxAtoms = 48;
+inline constexpr float kLsscOmpPivot = 1e-6f;
+inline constexpr float kLsscImageWeight = 2.5f;
+
+// Model version 3's cluster coding, kept for the library users of
+// lssc_reconstruct (tests and the paper-track explorer); nss.LSSC no longer
+// runs it.
+// Group sparse coding of a cluster (model version 3):
 // accelerated proximal gradient (FISTA) over kLsscCodingRounds rounds on the
 // preconditioned problem
 //   0.5 (Y - D A)^T M (Y - D A) + sum_a lambda_a ||A_a,:||_2,

@@ -105,6 +105,36 @@ inline int lssc_prepare_work_floats(int m, int atoms) {
 int lssc_prepare_context(const float* D, int m, int atoms, int ldd, float* work, int work_floats,
                          LsscPreparedContext* context);
 
+// Model version 4 coding (params/lssc.hpp). The dictionary borrows D and
+// `storage` (lssc_omp_dictionary_floats): its transpose (pixel-major), Gram
+// matrix and inverse atom norms.
+struct LsscOmpDictionary {
+    const float* dictionary = nullptr;  // m x atoms, column-major, leading dimension ldd
+    const float* transpose = nullptr;   // m rows of atoms
+    const float* gram = nullptr;        // atoms x atoms
+    const float* inv_norm = nullptr;    // atoms
+    int m = 0;
+    int atoms = 0;
+    int ldd = 0;
+};
+inline int lssc_omp_cap(int m, int atoms) { return std::max(0, std::min({kLsscOmpMaxAtoms, m, atoms})); }
+inline int lssc_omp_dictionary_floats(int m, int atoms) {
+    const std::uint64_t mm = m < 1 ? 1 : m;
+    const std::uint64_t aa = atoms < 1 ? 1 : atoms;
+    return checked_int(checked_sum(aa * mm, aa * aa, aa, 16));
+}
+inline int lssc_omp_code_work_floats(int m, int atoms) {
+    const std::uint64_t mm = m < 1 ? 1 : m;
+    const std::uint64_t aa = atoms < 1 ? 1 : atoms;
+    return checked_int(checked_sum(3 * aa, mm, 16));
+}
+void lssc_omp_prepare(const float* D, int m, int atoms, int ldd, float* storage, LsscOmpDictionary* out);
+// Codes one patch (m pixels) into rec (m pixels); returns the support size.
+// work holds lssc_omp_code_work_floats floats.
+int lssc_omp_code(const float* patch, const LsscOmpDictionary& dict, float sigma, float* rec, float* work);
+// The weight of the noisy plane in the average (sigma normalized to [0, 1]).
+float lssc_image_weight(int block, int step, float sigma);
+
 // Optional matrix-kernel capability, independent of the Highway vector target.
 bool lssc_sme_compiled() noexcept;
 bool lssc_sme_available() noexcept;
@@ -144,27 +174,18 @@ inline int lssc_denoise_work_floats(int width, int height, int block, int step) 
     const std::uint64_t np = np0 < 1 ? 1 : np0;
     const std::uint64_t b = block < 1 ? 1 : block;
     const int m = checked_int(b * b);
-    const std::uint64_t atoms = np < kLsscDefaultAtoms ? np : kLsscDefaultAtoms;
-    const std::uint64_t ncl = np < kLsscDefaultClusters ? np : kLsscDefaultClusters;
-    const int assign_f =
-        (np * static_cast<int>(sizeof(int)) + static_cast<int>(sizeof(float)) - 1) / static_cast<int>(sizeof(float));
-    const int counts_f =
-        (ncl * static_cast<int>(sizeof(int)) + static_cast<int>(sizeof(float)) - 1) / static_cast<int>(sizeof(float));
-    const int offsets_f =
-        ((ncl + 1) * static_cast<int>(sizeof(int)) + static_cast<int>(sizeof(float)) - 1) /
-        static_cast<int>(sizeof(float));
-    const int group_work = lssc_reconstruct_prepared_work_floats(m, np, atoms);
-    const int prepare_work = lssc_prepare_work_floats(m, atoms);
-    const int dict_work = lssc_dict_work_floats(m, atoms, np, 1);
-    const int cluster_work = lssc_cluster_work_floats(m, np, ncl);
-    // patches + D + assign + counts + prefix/cursors + members + group +
-    // per-cluster coding + frame-local prepared dictionary.
-    return checked_int(checked_sum(np * m, m * atoms, assign_f, counts_f, offsets_f, counts_f, assign_f, cluster_work, np * m,
-           dict_work, group_work, prepare_work));
+    const int atoms = static_cast<int>(np < kLsscDefaultAtoms ? np : kLsscDefaultAtoms);
+    // patches + D + coding dictionary + K-SVD scratch + coding scratch + one
+    // reconstructed patch.
+    return checked_int(checked_sum(np * m, static_cast<std::uint64_t>(m) * atoms, lssc_omp_dictionary_floats(m, atoms),
+                                   lssc_dict_work_floats(m, atoms, static_cast<int>(np), 1),
+                                   lssc_omp_code_work_floats(m, atoms), m, 32));
 }
 
-// Extract grid patches, k-means cluster, group-sparse code (FISTA), aggregate_add.
-// Not ICCV 2009 LSSC (no Si=Sj / SOMP / ODL). work holds lssc_denoise_work_floats floats.
+// Model version 4 (params/lssc.hpp): grid patches, the plane's dictionary,
+// each patch coded by error-constrained OMP and aggregated, plus the noisy
+// plane at lssc_image_weight. Not ICCV 2009 LSSC (no simultaneous coding, no
+// ODL). work holds lssc_denoise_work_floats floats.
 void lssc_denoise_plane(const float* src, int width, int height, int sstride, float* num, float* den, int buf_stride,
                         int block, int step, float sigma, float* work = nullptr, int work_floats = 0);
 
