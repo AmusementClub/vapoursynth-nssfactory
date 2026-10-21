@@ -137,7 +137,7 @@ void test_targets() {
         std::printf("target %s: digest %016llx\n", hwy::TargetName(target), static_cast<unsigned long long>(h));
         if (have) expect(h == first, "every SIMD target gives the same bits");
         // NEON (Apple clang) and AVX2 (GCC 15) agree on this value.
-        expect(h == 0xf084343138218696ull, "the output matches the golden digest");
+        expect(h == 0x0a269158eb34fadfull, "the output matches the golden digest");
         first = h;
         have = true;
     }

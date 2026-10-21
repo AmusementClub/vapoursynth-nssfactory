@@ -11,8 +11,8 @@ reproducible numerics.
 | `libnss_cuda` | `nss_cuda` | NVIDIA GPUs of compute capability 7.5 or newer (Linux, Windows) |
 
 Both plugins take the same arguments and give the same results (the GPU's
-output is 60 dB PSNR or more from the CPU's); BM4D and DA3D are on the CPU
-plugin only for now. Input is constant-format 32-bit
+output is 60 dB PSNR or more from the CPU's; BM4D's and DA3D's are the same
+bits). Input is constant-format 32-bit
 float Gray, YUV or RGB. The project is a work in progress.
 
 ## Filters
@@ -20,7 +20,7 @@ float Gray, YUV or RGB. The project is a work in progress.
 | Filter | Method | Good for |
 |---|---|---|
 | [BM3D](docs/api/bm3d.md) | Block matching and 3D transform shrinkage; color (CBM3D) and two-stage modes | General use; the fastest |
-| [BM4D](docs/api/bm4d.md) | Block matching and 4D filtering: the clip as a volume of cubes | Held frames, still and slow scenes (CPU only; heavy) |
+| [BM4D](docs/api/bm4d.md) | Block matching and 4D filtering: the clip as a volume of cubes | Held frames, still and slow scenes (heavy on the CPU) |
 | [NLM](docs/api/nlm.md) | Non-local means | Light noise |
 | [WNNM](docs/api/wnnm.md) | Weighted nuclear norm minimization | Texture and edge retention |
 | [MCWNNM](docs/api/mcwnnm.md) | Multi-channel WNNM | RGB color noise |
@@ -28,7 +28,7 @@ float Gray, YUV or RGB. The project is a work in progress.
 | [LSSC](docs/api/lssc.md) | Learned simultaneous sparse coding | Structured noise, film grain |
 | [TWSC](docs/api/twsc.md) | Trilateral weighted sparse coding | Real-world noise |
 | [NLH](docs/api/nlh.md) | Non-local Haar transform with blind noise estimation | Real-world noise of unknown level |
-| [DA3D](docs/api/da3d.md) | Data-adaptive dual-domain denoising, on another denoiser's output | A last step at moderate to strong noise (CPU only) |
+| [DA3D](docs/api/da3d.md) | Data-adaptive dual-domain denoising, on another denoiser's output | A last step at moderate to strong noise |
 
 ## Usage
 

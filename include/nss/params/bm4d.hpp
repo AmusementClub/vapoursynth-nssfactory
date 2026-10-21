@@ -24,17 +24,24 @@
 // power of two; every cube through the orthonormal 3D DCT, the group through
 // the orthonormal Haar transform;
 //   hard stage (on the noisy volume): coefficients below lambda sigma in
-//   magnitude set to zero, weight 1 / (sigma^2 N) with N the coefficients
-//   kept (at least 1);
+//   magnitude set to zero, weight 1 / N with N the coefficients kept (at
+//   least 1);
 //   Wiener stage (matched on the basic estimate): the noisy group times
 //   W = B^2 / (B^2 + sigma^2), B the basic group's coefficients, weight
-//   1 / (sigma^2 sum W^2);
-// then back, and added to numerator and denominator with the weight times
-// a Kaiser window (beta kBm4dKaiserBeta) in group order, references in
-// (z, y, x) raster order. The estimate is numerator / denominator.
+//   1 / max(sum W^2, kBm4dEnergyFloor), the sum a 32-lane sum over the
+//   coefficients in (element, cube) order (lane l takes the terms l, l + 32,
+//   ... in order, then a halving tree);
+// then back. Every voxel of every cube adds bm4d_fixed(wv v) to its
+// numerator and bm4d_fixed(wv) to its denominator, wv = weight x Kaiser
+// window (beta kBm4dKaiserBeta), v the estimate: 64-bit fixed-point sums,
+// exact in any order (so a GPU's atomics give the same bits). The estimate is
+// bm4d_ratio(numerator, denominator). (The paper's 1 / sigma^2 factor of the
+// weights cancels in the ratio and is left out.)
 // Distances are sums in a fixed order (along z, then y, then x, each in
 // increasing order), so the output does not depend on the vector width.
 #include "nss/params.hpp"
+
+#include <cmath>
 
 namespace nss {
 
@@ -55,6 +62,17 @@ inline constexpr int kBm4dChunkPad = 8;
 inline constexpr int kBm4dTile = 256;
 inline constexpr int kBm4dTilePad = 16;
 inline constexpr float kBm4dDefaultSigma = 3.f;
+// Wiener weights at most 1e4: a voxel's sums stay within 64 bits (2^32 scale)
+// even when every reference within reach picks the same cubes.
+inline constexpr float kBm4dEnergyFloor = 1e-4f;
+inline constexpr float kBm4dFixedScale = 4294967296.f;  // 2^32
+
+// One term of the fixed-point sums: x 2^32 (exact), rounded to nearest even.
+inline long long bm4d_fixed(float x) { return std::llrint(x * kBm4dFixedScale); }
+// The estimate from the sums.
+inline float bm4d_ratio(long long num, long long den) {
+    return static_cast<float>(static_cast<double>(num) / static_cast<double>(den));
+}
 
 struct Bm4dParams {
     float sigma[3]{kBm4dDefaultSigma, kBm4dDefaultSigma, kBm4dDefaultSigma};  // 8-bit units, true noise

@@ -84,7 +84,15 @@ set(NSS_CUDA_IEEE_SOURCES
   twsc/kernels.cu
   wnnm/kernels.cu
 )
-set(NSS_CUDA_CLASSIFIED ${NSS_CUDA_IEEE_SOURCES})
+# Exact ports of a CPU model (DA3D, BM4D): no contraction, so that every
+# fused multiply-add is the explicit fmaf the CPU kernel also fuses and the
+# output is the CPU's bit for bit.
+set(NSS_CUDA_EXACT_OPTIONS -O3 --fmad=false -prec-div=true -prec-sqrt=true -ftz=false)
+set(NSS_CUDA_EXACT_SOURCES
+  bm4d/kernels.cu
+  da3d/kernels.cu
+)
+set(NSS_CUDA_CLASSIFIED ${NSS_CUDA_IEEE_SOURCES} ${NSS_CUDA_EXACT_SOURCES})
 set(_nss_cuda_dedup ${NSS_CUDA_CLASSIFIED})
 list(REMOVE_DUPLICATES _nss_cuda_dedup)
 if(NOT NSS_CUDA_CLASSIFIED STREQUAL _nss_cuda_dedup)
@@ -103,6 +111,8 @@ if(_nss_cuda_stale)
 endif()
 set_source_files_properties(${NSS_CUDA_IEEE_SOURCES} PROPERTIES
   COMPILE_OPTIONS "${NSS_CUDA_IEEE_OPTIONS}")
+set_source_files_properties(${NSS_CUDA_EXACT_SOURCES} PROPERTIES
+  COMPILE_OPTIONS "${NSS_CUDA_EXACT_OPTIONS}")
 
 # Host-side runtime (plain C++) shared by every filter.
 set(NSS_CUDA_RUNTIME_SOURCES
@@ -204,6 +214,8 @@ add_library(nss_cuda SHARED
   plugin.cpp
   common/group_driver.cpp
   bm3d/filter.cpp
+  bm4d/filter.cpp
+  da3d/filter.cpp
   lssc/filter.cpp
   mcwnnm/filter.cpp
   ncsr/filter.cpp

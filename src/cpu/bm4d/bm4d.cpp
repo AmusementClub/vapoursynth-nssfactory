@@ -334,7 +334,7 @@ static void ToCubes(const float* s, int m, int n, int stride, float* g) {
 }
 
 static HWY_NOINLINE void Stage(const float* noisy, const float* basic, const Volume& vol, float sigma,
-                               const Bm4dStage& st, float* num, float* den, StageBuffers& buf) {
+                               const Bm4dStage& st, std::int64_t* num, std::int64_t* den, StageBuffers& buf) {
     const hn::ScalableTag<float> d;
     const int N = static_cast<int>(hn::Lanes(d));
     const int L = st.cube, L2 = L * L, L3 = L2 * L;
@@ -381,7 +381,7 @@ static HWY_NOINLINE void Stage(const float* noisy, const float* basic, const Vol
                 kept += hn::CountTrue(d, keep);
                 hn::Store(hn::IfThenElseZero(keep, v), d, buf.soa + i);
             }
-            weight = 1.f / (sigma2 * static_cast<float>(std::max<std::size_t>(kept, 1)));
+            weight = 1.f / static_cast<float>(std::max<std::size_t>(kept, 1));
         } else {
             for (int q = 0; q < m; ++q) gather(basic, pos[q], buf.bgroup + static_cast<std::size_t>(q) * L3);
             Haar(buf.bgroup, m, L3, false, buf.tmp);
@@ -394,13 +394,17 @@ static HWY_NOINLINE void Stage(const float* noisy, const float* basic, const Vol
                 hn::Store(hn::Mul(hn::Load(d, buf.soa + i), wv), d, buf.soa + i);
                 hn::Store(wv, d, buf.bsoa + i);
             }
-            // sum of W^2 over elements, then cubes, in order
-            float energy = 0.f;
-            for (int e = 0; e < L3; ++e) {
-                const float* row = buf.bsoa + static_cast<std::size_t>(e) * stride;
-                for (int q = 0; q < m; ++q) energy = std::fma(row[q], row[q], energy);
+            // sum of W^2: the 32-lane sum over t = e m + q (elements, then cubes)
+            float lane[32] = {};
+            const int terms = L3 * m;
+            for (int t = 0; t < terms; ++t) {
+                const float wv = buf.bsoa[static_cast<std::size_t>(t / m) * stride + t % m];
+                lane[t & 31] = std::fma(wv, wv, lane[t & 31]);
             }
-            weight = 1.f / (sigma2 * std::max(energy, 1e-12f));
+            for (int half = 16; half > 0; half >>= 1)
+                for (int l = 0; l < half; ++l) lane[l] = lane[l] + lane[l + half];
+            const float energy = lane[0];
+            weight = 1.f / std::max(energy, kBm4dEnergyFloor);
         }
         Dct3(buf.soa, buf.tsoa, L, stride, true);
         ToCubes(buf.soa, m, L3, stride, buf.group);
@@ -412,8 +416,8 @@ static HWY_NOINLINE void Stage(const float* noisy, const float* basic, const Vol
                     const std::size_t o = pos[q] + z * plane + static_cast<std::size_t>(y) * vol.w;
                     for (int x = 0; x < L; ++x) {
                         const float wv = weight * window[(z * L + y) * L + x];
-                        num[o + x] = std::fma(wv, cube[(z * L + y) * L + x], num[o + x]);
-                        den[o + x] = den[o + x] + wv;
+                        num[o + x] += bm4d_fixed(wv * cube[(z * L + y) * L + x]);
+                        den[o + x] += bm4d_fixed(wv);
                     }
                 }
         }
@@ -435,8 +439,8 @@ void Bm4dDenoiseVolume(const float* noisy, int t, int h, int w, float sigma, flo
         return r;
     };
     float* basic = basic_out ? basic_out : take(n);
-    float* num = take(n);
-    float* den = take(n);
+    auto* num = reinterpret_cast<std::int64_t*>(take(2 * n));
+    auto* den = reinterpret_cast<std::int64_t*>(take(2 * n));
     StageBuffers buf{};
     buf.A = take(static_cast<std::size_t>(h) * w);
     buf.B = take(static_cast<std::size_t>(w));
@@ -458,18 +462,18 @@ void Bm4dDenoiseVolume(const float* noisy, int t, int h, int w, float sigma, flo
     // (the hard stage's estimate is the noisy volume, the final the basic).
     auto fits = [&](const Bm4dStage& st) { return t >= st.cube && h >= st.cube && w >= st.cube; };
     if (fits(kBm4dHard)) {
-        std::fill(num, num + n, 0.f);
-        std::fill(den, den + n, 0.f);
+        std::fill(num, num + n, std::int64_t{0});
+        std::fill(den, den + n, std::int64_t{0});
         Stage(noisy, nullptr, vol, sigma, kBm4dHard, num, den, buf);
-        for (std::size_t i = 0; i < n; ++i) basic[i] = num[i] / den[i];
+        for (std::size_t i = 0; i < n; ++i) basic[i] = bm4d_ratio(num[i], den[i]);
     } else {
         std::memcpy(basic, noisy, n * sizeof(float));
     }
     if (fits(kBm4dWiener)) {
-        std::fill(num, num + n, 0.f);
-        std::fill(den, den + n, 0.f);
+        std::fill(num, num + n, std::int64_t{0});
+        std::fill(den, den + n, std::int64_t{0});
         Stage(noisy, basic, vol, sigma, kBm4dWiener, num, den, buf);
-        for (std::size_t i = 0; i < n; ++i) out[i] = num[i] / den[i];
+        for (std::size_t i = 0; i < n; ++i) out[i] = bm4d_ratio(num[i], den[i]);
     } else {
         std::memcpy(out, basic, n * sizeof(float));
     }
@@ -489,7 +493,7 @@ std::size_t bm4d_work_floats(int t, int h, int w) {
     const std::size_t R = static_cast<std::size_t>(std::max(1, position_count(t, kBm4dHard.cube, kBm4dHard.step))) *
                           std::max(1, position_count(h, kBm4dHard.cube, kBm4dHard.step)) *
                           std::max(1, position_count(w, kBm4dHard.cube, kBm4dHard.step));
-    return 3 * align16(n) + align16(static_cast<std::size_t>(h) * w) + 2 * align16(static_cast<std::size_t>(w)) +
+    return align16(n) + 2 * align16(2 * n) + align16(static_cast<std::size_t>(h) * w) + 2 * align16(static_cast<std::size_t>(w)) +
            2 * align16(R * kMaxGroup) + align16(R) + 3 * align16(static_cast<std::size_t>(kMaxGroup) * kMaxCube3) +
            3 * align16(static_cast<std::size_t>(kMaxGroup + 16) * kMaxCube3) + 16;
 }
