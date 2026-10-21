@@ -29,10 +29,10 @@ The defaults are fast settings. Settings closer to the paper, with their quality
 
 | Arguments | PSNR, sigma 15 | PSNR, sigma 25 | fps YUV420 / RGB |
 |---|---:|---:|---:|
-| defaults (blind estimate) | 35.21 dB | 32.28 dB | 37 / 31 |
+| defaults (blind estimate) | 35.64 dB | 33.01 dB | 37 / 31 |
 | defaults with `sigma=σ` | 35.58 dB | 32.95 dB | 37 / 31 |
 
-- The default preset is the paper's low-noise configuration; nothing to change for Gaussian noise. The blind estimate reads the chroma noise about 35% high under Gaussian noise, hence the gap to a given sigma. The blind estimate also counts a frame's own grain as noise: give sigma to keep grain.
+- The default preset is the paper's low-noise configuration; nothing to change for Gaussian noise. Since model version 7 the blind estimate reads Gaussian chroma noise to within a few percent (version 6 read it about 40% high: 35.21 / 32.28 dB here). At low noise it still reads textured luma high: on 8 images a given sigma was worth 1.3 to 2.4 dB at sigma 5 and 4.6 to 5.9 dB at sigma 2. The blind estimate also counts a frame's own grain as noise: give sigma to keep grain.
 
 ## Signature
 
