@@ -86,6 +86,55 @@ static void LsscCombine(float* out, const float* from, int count, int k, const R
     }
 }
 
+// u = (g - sum_q l[q] u_q) * inv and alpha -= z u, per atom: one fma chain
+// over q in order, then the product and the update (the device's order).
+static void LsscGramSchmidt(float* u, const float* g, const float* const* prior, const float* l, int k, float inv,
+                            float z, float* alpha, int atoms) {
+    const hn::ScalableTag<float> d;
+    const int N = static_cast<int>(hn::Lanes(d));
+    const auto vinv = hn::Set(d, inv);
+    const auto vz = hn::Set(d, -z);
+    int a = 0;
+    for (; a + 4 * N <= atoms; a += 4 * N) {
+        auto v0 = hn::LoadU(d, g + a), v1 = hn::LoadU(d, g + a + N), v2 = hn::LoadU(d, g + a + 2 * N),
+             v3 = hn::LoadU(d, g + a + 3 * N);
+        for (int q = 0; q < k; ++q) {
+            const auto c = hn::Set(d, -l[q]);
+            const float* uq = prior[q] + a;
+            v0 = hn::MulAdd(c, hn::LoadU(d, uq), v0);
+            v1 = hn::MulAdd(c, hn::LoadU(d, uq + N), v1);
+            v2 = hn::MulAdd(c, hn::LoadU(d, uq + 2 * N), v2);
+            v3 = hn::MulAdd(c, hn::LoadU(d, uq + 3 * N), v3);
+        }
+        v0 = hn::Mul(v0, vinv);
+        v1 = hn::Mul(v1, vinv);
+        v2 = hn::Mul(v2, vinv);
+        v3 = hn::Mul(v3, vinv);
+        hn::StoreU(v0, d, u + a);
+        hn::StoreU(v1, d, u + a + N);
+        hn::StoreU(v2, d, u + a + 2 * N);
+        hn::StoreU(v3, d, u + a + 3 * N);
+        hn::StoreU(hn::MulAdd(vz, v0, hn::LoadU(d, alpha + a)), d, alpha + a);
+        hn::StoreU(hn::MulAdd(vz, v1, hn::LoadU(d, alpha + a + N)), d, alpha + a + N);
+        hn::StoreU(hn::MulAdd(vz, v2, hn::LoadU(d, alpha + a + 2 * N)), d, alpha + a + 2 * N);
+        hn::StoreU(hn::MulAdd(vz, v3, hn::LoadU(d, alpha + a + 3 * N)), d, alpha + a + 3 * N);
+    }
+    for (; a + N <= atoms; a += N) {
+        auto v = hn::LoadU(d, g + a);
+        for (int q = 0; q < k; ++q) v = hn::MulAdd(hn::Set(d, -l[q]), hn::LoadU(d, prior[q] + a), v);
+        v = hn::Mul(v, vinv);
+        hn::StoreU(v, d, u + a);
+        hn::StoreU(hn::MulAdd(vz, v, hn::LoadU(d, alpha + a)), d, alpha + a);
+    }
+    for (; a < atoms; ++a) {
+        float v = g[a];
+        for (int q = 0; q < k; ++q) v = std::fma(-l[q], prior[q][a], v);
+        v = v * inv;
+        u[a] = v;
+        alpha[a] = std::fma(-z, v, alpha[a]);
+    }
+}
+
 // Unused atom of the largest |alpha| * inv_norm (available = 1, used = 0);
 // the lowest index on ties, -1 when every score is 0.
 static int LsscSelect(const float* alpha, const float* inv_norm, const float* available, int atoms) {
@@ -110,14 +159,30 @@ static int LsscSelect(const float* alpha, const float* inv_norm, const float* av
     return -1;
 }
 
-// x = L^-T z (L lower triangular, row-major with stride cap): row t takes the
-// later rows in descending order, so the device can run it column by column.
-static void LsscBackSolve(const double* chol, int cap, const double* z, int k, double* x, float* xf) {
+// The device's warp sum: 32 lanes, lane l taking terms l, l + 32, ... in
+// order from 0, then a butterfly over lane distances 16, 8, 4, 2, 1. Lane 0
+// of the butterfly is the halving tree below (lane l pairs with l + half).
+template <class T, class Term>
+static T LsscLaneSum(int count, const Term& term) {
+    T lane[32];
+    for (int l = 0; l < 32; ++l) {
+        T acc = 0;
+        for (int t = l; t < count; t += 32) acc = term(acc, t);
+        lane[l] = acc;
+    }
+    for (int half = 16; half > 0; half >>= 1)
+        for (int l = 0; l < half; ++l) lane[l] = lane[l] + lane[l + half];
+    return lane[0];
+}
+
+// x = L^-T z (L lower triangular, row-major with stride cap; inv its
+// reciprocal diagonal): row t takes the later rows in descending order, so the
+// device can run it column by column.
+static void LsscBackSolve(const float* chol, const float* inv, int cap, const float* z, int k, float* x) {
     for (int t = k - 1; t >= 0; --t) {
-        double v = z[t];
+        float v = z[t];
         for (int q = k - 1; q > t; --q) v = std::fma(-chol[static_cast<std::size_t>(q) * cap + t], x[q], v);
-        x[t] = v / chol[static_cast<std::size_t>(t) * cap + t];
-        xf[t] = static_cast<float>(x[t]);
+        x[t] = v * inv[t];
     }
 }
 
@@ -129,67 +194,60 @@ int LsscOmpCode(const float* patch, const LsscOmpDictionary* dict, float sigma, 
     float* alpha = alpha0 + atoms;
     float* available = alpha + atoms;
     float* y = available + atoms;
+    float* ubuf = y + m;  // cap rows of atoms: u_t = G_S L^-T e_t
     int support[kLsscOmpMaxAtoms];
-    float xf[kLsscOmpMaxAtoms];
-    double chol[kLsscOmpMaxAtoms * kLsscOmpMaxAtoms];  // lower triangle, row-major, stride cap
-    double z[kLsscOmpMaxAtoms];
-    double x[kLsscOmpMaxAtoms];
-    const float* rows[kLsscOmpMaxAtoms];
+    float chol[kLsscOmpMaxAtoms * kLsscOmpMaxAtoms];
+    float inv[kLsscOmpMaxAtoms];
+    float z[kLsscOmpMaxAtoms];
+    float x[kLsscOmpMaxAtoms];
+    const float* urows[kLsscOmpMaxAtoms];
     const float* cols[kLsscOmpMaxAtoms];
 
-    double sum = 0.0;
-    for (int r = 0; r < m; ++r) sum += static_cast<double>(patch[r]);
-    const float mean = static_cast<float>(sum / m);
-    double yy = 0.0;
-    for (int r = 0; r < m; ++r) {
-        y[r] = patch[r] - mean;
-        yy = std::fma(static_cast<double>(y[r]), static_cast<double>(y[r]), yy);
-    }
+    const float mean = LsscLaneSum<float>(m, [&](float acc, int r) { return acc + patch[r]; }) / static_cast<float>(m);
+    for (int r = 0; r < m; ++r) y[r] = patch[r] - mean;
+    const float yy = LsscLaneSum<float>(m, [&](float acc, int r) { return std::fma(y[r], y[r], acc); });
     // alpha0 = D^T y: one fma chain over the pixels per atom (Dt is pixel-major).
     const float* transpose = dict->transpose;
     LsscCombine(alpha0, nullptr, atoms, m, [&](int r) { return transpose + static_cast<std::size_t>(r) * atoms; }, y);
     std::memcpy(alpha, alpha0, static_cast<std::size_t>(atoms) * sizeof(float));
     std::fill_n(available, atoms, 1.f);
-    const double c = static_cast<double>(kLsscOmpResidual) * static_cast<double>(sigma);
-    const double budget = static_cast<double>(m) * c * c;
-    double energy = yy;
+    const float budget = lssc_omp_budget(m, sigma);
+    float energy = yy;
     int k = 0;
     while (energy > budget && k < cap) {
         const int best = LsscSelect(alpha, dict->inv_norm, available, atoms);
         if (best < 0) break;
         const float* gb = dict->gram + static_cast<std::size_t>(best) * atoms;
-        double* lk = chol + static_cast<std::size_t>(k) * cap;
+        // Row k of the factor: L^-1 g, g_t = G[best][S_t].
+        float* lk = chol + static_cast<std::size_t>(k) * cap;
         for (int t = 0; t < k; ++t) {
-            const double* lt = chol + static_cast<std::size_t>(t) * cap;
-            double v = static_cast<double>(gb[support[t]]);
+            const float* lt = chol + static_cast<std::size_t>(t) * cap;
+            float v = gb[support[t]];
             for (int q = 0; q < t; ++q) v = std::fma(-lt[q], lk[q], v);
-            lk[t] = v / lt[t];
+            lk[t] = v * inv[t];
         }
-        const double gbb = static_cast<double>(gb[best]);
-        double pivot = gbb;
-        for (int q = 0; q < k; ++q) pivot = std::fma(-lk[q], lk[q], pivot);
-        if (!(pivot > static_cast<double>(kLsscOmpPivot) * gbb)) break;  // numerically dependent on the support
+        const float gbb = gb[best];
+        const float pivot = gbb - LsscLaneSum<float>(k, [&](float acc, int q) { return std::fma(lk[q], lk[q], acc); });
+        if (!(pivot > kLsscOmpPivot * gbb)) break;  // numerically dependent on the support
         lk[k] = std::sqrt(pivot);
+        inv[k] = 1.f / lk[k];
         support[k] = best;
         available[best] = 0.f;
-        rows[k] = gb;
         cols[k] = dict->dictionary + static_cast<std::size_t>(best) * dict->ldd;
         // The forward solution of the earlier rows does not change: only z[k]
         // is new, and ||r||^2 = ||y||^2 - ||z||^2.
-        {
-            double v = static_cast<double>(alpha0[best]);
-            for (int q = 0; q < k; ++q) v = std::fma(-lk[q], z[q], v);
-            z[k] = v / lk[k];
-            energy = std::fma(-z[k], z[k], energy);
+        z[k] = (alpha0[best] - LsscLaneSum<float>(k, [&](float acc, int q) { return std::fma(lk[q], z[q], acc); })) * inv[k];
+        energy = std::fma(-z[k], z[k], energy);
+        // alpha -= z_k u_k (the residual's correlations), unless this was the last atom.
+        if (energy > budget && k + 1 < cap) {
+            float* uk = ubuf + static_cast<std::size_t>(k) * atoms;
+            LsscGramSchmidt(uk, gb, urows, lk, k, inv[k], z[k], alpha, atoms);
+            urows[k] = uk;
         }
         ++k;
-        if (energy > budget && k < cap) {
-            LsscBackSolve(chol, cap, z, k, x, xf);
-            LsscCombine(alpha, alpha0, atoms, k, [&](int t) { return rows[t]; }, xf);
-        }
     }
-    if (k > 0) LsscBackSolve(chol, cap, z, k, x, xf);
-    LsscCombine(rec, nullptr, m, k, [&](int t) { return cols[t]; }, xf);
+    if (k > 0) LsscBackSolve(chol, inv, cap, z, k, x);
+    LsscCombine(rec, nullptr, m, k, [&](int t) { return cols[t]; }, x);
     bool ok = true;
     for (int r = 0; r < m; ++r) {
         if (!std::isfinite(rec[r]) || std::fabs(rec[r]) > 8.f) ok = false;
@@ -253,11 +311,6 @@ static void image_term(float* num, float* den, int stride, const float* src, int
             d[xx] += weight;
         }
     }
-}
-
-float lssc_image_weight(int block, int step, float sigma) {
-    const float coverage = static_cast<float>(block * block) / static_cast<float>(step * step);
-    return kLsscImageWeight * coverage / (sigma * 255.f);
 }
 
 // The plane (model version 4): grid patches, the dictionary of

@@ -10,7 +10,7 @@ LsscParams parse_lssc(const VSAPI* vsapi, const VSMap* in, const VSVideoInfo& vi
     LsscParams p;
     map_float_array(vsapi, in, "sigma", p.sigma, vi.format.numPlanes, kLsscDefaultSigma);
     p.block_size = map_int(vsapi, in, "block_size", kLsscDefaultBlock);
-    p.block_step = map_int(vsapi, in, "block_step", kLsscDefaultStep);
+    p.block_step = map_int(vsapi, in, "block_step", lssc_default_step(p.block_size));
     p.radius = map_int(vsapi, in, "radius", 0);
     if (!lssc_allowed_block(p.block_size) || p.block_step < 1 || p.block_step > p.block_size)
         fail(ns, "LSSC", "block_size must be 1, 2, 4, 8, or 16");

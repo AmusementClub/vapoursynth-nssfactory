@@ -4977,7 +4977,12 @@
    "error": "nss.LSSC: block_size must be 1, 2, 4, 8, or 16"
   },
   "LSSC|GRAYS|block_size=1": {
-   "error": "nss.LSSC: block_size must be 1, 2, 4, 8, or 16"
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
   },
   "LSSC|GRAYS|block_size=1000": {
    "error": "nss.LSSC: block_size must be 1, 2, 4, 8, or 16"
@@ -4994,7 +4999,12 @@
    "error": "nss.LSSC: block_size must be 1, 2, 4, 8, or 16"
   },
   "LSSC|GRAYS|block_size=2": {
-   "error": "nss.LSSC: block_size must be 1, 2, 4, 8, or 16"
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
   },
   "LSSC|GRAYS|block_size=3": {
    "error": "nss.LSSC: block_size must be 1, 2, 4, 8, or 16"
@@ -5003,7 +5013,12 @@
    "error": "nss.LSSC: block_size must be 1, 2, 4, 8, or 16"
   },
   "LSSC|GRAYS|block_size=4": {
-   "error": "nss.LSSC: block_size must be 1, 2, 4, 8, or 16"
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
   },
   "LSSC|GRAYS|block_size=65": {
    "error": "nss.LSSC: block_size must be 1, 2, 4, 8, or 16"
@@ -5309,7 +5324,12 @@
    "error": "nss.LSSC: block_size must be 1, 2, 4, 8, or 16"
   },
   "LSSC|RGBS|block_size=1": {
-   "error": "nss.LSSC: block_size must be 1, 2, 4, 8, or 16"
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
   },
   "LSSC|RGBS|block_size=1000": {
    "error": "nss.LSSC: block_size must be 1, 2, 4, 8, or 16"
@@ -5326,7 +5346,12 @@
    "error": "nss.LSSC: block_size must be 1, 2, 4, 8, or 16"
   },
   "LSSC|RGBS|block_size=2": {
-   "error": "nss.LSSC: block_size must be 1, 2, 4, 8, or 16"
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
   },
   "LSSC|RGBS|block_size=3": {
    "error": "nss.LSSC: block_size must be 1, 2, 4, 8, or 16"
@@ -5335,7 +5360,12 @@
    "error": "nss.LSSC: block_size must be 1, 2, 4, 8, or 16"
   },
   "LSSC|RGBS|block_size=4": {
-   "error": "nss.LSSC: block_size must be 1, 2, 4, 8, or 16"
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
   },
   "LSSC|RGBS|block_size=65": {
    "error": "nss.LSSC: block_size must be 1, 2, 4, 8, or 16"
@@ -5641,7 +5671,12 @@
    "error": "nss.LSSC: block_size must be 1, 2, 4, 8, or 16"
   },
   "LSSC|YUV420PS|block_size=1": {
-   "error": "nss.LSSC: block_size must be 1, 2, 4, 8, or 16"
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
   },
   "LSSC|YUV420PS|block_size=1000": {
    "error": "nss.LSSC: block_size must be 1, 2, 4, 8, or 16"
@@ -5658,7 +5693,12 @@
    "error": "nss.LSSC: block_size must be 1, 2, 4, 8, or 16"
   },
   "LSSC|YUV420PS|block_size=2": {
-   "error": "nss.LSSC: block_size must be 1, 2, 4, 8, or 16"
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
   },
   "LSSC|YUV420PS|block_size=3": {
    "error": "nss.LSSC: block_size must be 1, 2, 4, 8, or 16"
@@ -5667,7 +5707,12 @@
    "error": "nss.LSSC: block_size must be 1, 2, 4, 8, or 16"
   },
   "LSSC|YUV420PS|block_size=4": {
-   "error": "nss.LSSC: block_size must be 1, 2, 4, 8, or 16"
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
   },
   "LSSC|YUV420PS|block_size=65": {
    "error": "nss.LSSC: block_size must be 1, 2, 4, 8, or 16"

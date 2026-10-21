@@ -10,6 +10,9 @@
 
 namespace nss {
 
+// Model version 3 primitives (k-means, group soft threshold, preconditioned
+// FISTA), kept for tests and the paper-track explorer; nss.LSSC runs model 4.
+//
 // K-means / greedy assignment on packed patches (column-major). Every patch is assigned.
 // assign[i] ∈ [0, nclusters). counts[c] = |{i : assign[i] = c}| (size nclusters).
 void lssc_cluster(const float* patches, int m, int n, int lda, int nclusters, int* assign, int* counts);
@@ -31,7 +34,8 @@ void lssc_cluster_workspace(const float* patches, int m, int n, int lda, int ncl
 // ℓ1,2 row-soft: for each atom row of A (atoms × n, column-major), shrink the n-vector.
 void lssc_group_soft(float* A, int atoms, int n, int lda_a, float lambda);
 
-// Per-patch OMP. Used in K-SVD-lite only; denoise path is FISTA + group-soft, not SOMP.
+// Per-patch OMP at a fixed sparsity (at most 8): the K-SVD-lite dictionary
+// round. The denoise path codes with lssc_omp_code (model version 4).
 int lssc_omp(const float* y, int m, const float* D, int atoms, int ldd, int sparsity, float* a);
 inline int lssc_omp_work_floats(int m, int atoms, int sparsity) {
     const std::uint64_t mm = m < 1 ? 1 : m;
@@ -117,7 +121,6 @@ struct LsscOmpDictionary {
     int atoms = 0;
     int ldd = 0;
 };
-inline int lssc_omp_cap(int m, int atoms) { return std::max(0, std::min({kLsscOmpMaxAtoms, m, atoms})); }
 inline int lssc_omp_dictionary_floats(int m, int atoms) {
     const std::uint64_t mm = m < 1 ? 1 : m;
     const std::uint64_t aa = atoms < 1 ? 1 : atoms;
@@ -126,14 +129,13 @@ inline int lssc_omp_dictionary_floats(int m, int atoms) {
 inline int lssc_omp_code_work_floats(int m, int atoms) {
     const std::uint64_t mm = m < 1 ? 1 : m;
     const std::uint64_t aa = atoms < 1 ? 1 : atoms;
-    return checked_int(checked_sum(3 * aa, mm, 16));
+    const std::uint64_t cap = static_cast<std::uint64_t>(lssc_omp_cap(m, atoms));
+    return checked_int(checked_sum(3 * aa, mm, cap * aa, 16));
 }
 void lssc_omp_prepare(const float* D, int m, int atoms, int ldd, float* storage, LsscOmpDictionary* out);
 // Codes one patch (m pixels) into rec (m pixels); returns the support size.
 // work holds lssc_omp_code_work_floats floats.
 int lssc_omp_code(const float* patch, const LsscOmpDictionary& dict, float sigma, float* rec, float* work);
-// The weight of the noisy plane in the average (sigma normalized to [0, 1]).
-float lssc_image_weight(int block, int step, float sigma);
 
 // Optional matrix-kernel capability, independent of the Highway vector target.
 bool lssc_sme_compiled() noexcept;

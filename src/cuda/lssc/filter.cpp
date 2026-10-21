@@ -30,8 +30,6 @@ namespace nss_cuda {
 namespace {
 
 constexpr int kAtoms = 256;     // nss::kLsscDefaultAtoms
-constexpr int kClusters = 64;   // nss::kLsscDefaultClusters
-constexpr int kKmeansRounds = 8;
 constexpr unsigned kSeed = 0x4C535343u;
 constexpr int kMaxDepth = 3;  // buffer sets per slot
 // Frames in flight per instance (staging sets) where the limit leaves room:
@@ -54,31 +52,23 @@ private:
 };
 
 // A plane runs on the streams of its slot: `load` uploads it, a `front`
-// stream packs and clusters it (k-means, queued without host round trips),
-// `side` builds the dictionary (atoms, K-SVD, Lipschitz estimate, coding
-// preconditioner) meanwhile, and `stream` codes and aggregates once both are
-// done; `copy` downloads the result. Where the limit leaves room the buffers
-// the front end writes and the coding reads (input, patches, assignments and
-// member lists, dictionary, Lipschitz bound, preconditioner, k-means scratch)
-// are held up to three times, each set
-// with a front stream of its own, and planes take them in turn (`depth`): the
-// front ends of the next planes then run while the stream still codes, and
-// two planes can cluster at once (k-means is a chain of small kernels that
-// wait for room beside the coding). A plane waits for the coding of the plane
-// that last used its buffers (`coded`), and for the download before it
-// rewrites `out`.
+// stream packs its patches, `side` builds the dictionary and its Gram matrix,
+// and `stream` codes and aggregates once both are done; `copy` downloads the
+// result. Where the limit leaves room the buffers the front end and side
+// write and the coding reads (input, patches, dictionary) are held up to three
+// times, each set with a front stream of its own, and planes take them in
+// turn (`depth`): the front end of the next plane then runs while the stream
+// still codes. A plane waits for the coding of the plane that last used its
+// buffers (`coded`), and for the download before it rewrites `out`.
 struct Slot {
     Stream stream, side, copy, load;
-    Stream front[kMaxDepth];  // a front end per buffer set: planes cluster concurrently
-    Event packed, clustered, dictionary, downloaded;
+    Stream front[kMaxDepth];
+    Event packed, dictionary, downloaded;
     Event uploaded[kMaxDepth], coded[kMaxDepth];
-    DeviceBuffer input[kMaxDepth], patches[kMaxDepth], dict[kMaxDepth], assign[kMaxDepth], members[kMaxDepth],
-        offsets[kMaxDepth], power[kMaxDepth];
-    DeviceBuffer gradient[kMaxDepth], lambda_scale[kMaxDepth], factor[kMaxDepth];  // the coding preconditioner
-    DeviceBuffer centroids[kMaxDepth], counts[kMaxDepth], chunks[kMaxDepth];  // k-means scratch; counts + 2 state ints
+    DeviceBuffer input[kMaxDepth], patches[kMaxDepth], dict[kMaxDepth], transpose[kMaxDepth], gram[kMaxDepth],
+        inv_norm[kMaxDepth];
     DeviceBuffer num, den, out;
-    DeviceBuffer values, coef, coef_last, mean, scale, scale_last, flags;
-    DeviceBuffer sample_y, sample_a, sample_r, ksvd_sync, tiles, partial, meta, sources;
+    DeviceBuffer values, mean, yy, flags, alpha0, ubuf, counters, sample_y, sample_a, sample_r, ksvd_sync, meta, sources;
     int turn = 0;  // the buffer set of the next plane
     std::unique_ptr<OrderedAggregator> aggregator;
 };
@@ -116,6 +106,7 @@ struct LsscData : nss::LsscParams {
     int denoised = 0;  // planes with sigma > 0
     int regions = 1;   // staging regions per set: 1 or denoised
     int depth = 1;     // buffer sets per slot: 1 to kMaxDepth
+    int code_slots = 1;  // coding warps (their u rows in each slot)
     std::vector<float> dct;  // min(kAtoms, m) orthonormal 2D DCT atoms, low frequencies first
     std::unique_ptr<SlotPool<Slot>> pool;
     std::unique_ptr<SlotPool<Staging>> staging;
@@ -155,32 +146,26 @@ LsscWork make_work(const LsscData& d, Slot& s, int plane, int b) {
     w.m = d.block_size * d.block_size;
     w.np = p.np;
     w.atoms = std::min(kAtoms, p.np);
-    w.clusters = std::min(kClusters, p.np);
     w.samples = std::min(kLsscSamples, p.np);
+    w.cap = nss::lssc_omp_cap(w.m, w.atoms);
     w.patches = s.patches[b].as<float>();
     w.values = s.values.as<float>();
-    w.coef = s.coef.as<float>();
-    w.coef_last = s.coef_last.as<float>();
     w.mean = s.mean.as<float>();
-    w.dict = s.dict[b].as<float>();
-    w.centroids = s.centroids[b].as<float>();
-    w.assign = s.assign[b].as<int>();
-    w.counts = s.counts[b].as<int>();
-    w.members = s.members[b].as<int>();
-    w.offsets = s.offsets[b].as<int>();
-    w.scale = s.scale.as<float>();
-    w.scale_last = s.scale_last.as<float>();
-    w.gradient = s.gradient[b].as<float>();
-    w.lambda_scale = s.lambda_scale[b].as<float>();
-    w.factor = s.factor[b].as<float>();
+    w.yy = s.yy.as<float>();
     w.flags = s.flags.as<int>();
+    w.alpha0 = s.alpha0.as<float>();
+    w.batch = std::min(kLsscBatch, p.np);
+    w.ubuf = s.ubuf.as<float>();
+    w.code_slots = d.code_slots;
+    w.counters = s.counters.as<int>();
+    w.dict = s.dict[b].as<float>();
+    w.transpose = s.transpose[b].as<float>();
+    w.gram = s.gram[b].as<float>();
+    w.inv_norm = s.inv_norm[b].as<float>();
     w.sample_y = s.sample_y.as<float>();
     w.sample_a = s.sample_a.as<float>();
     w.sample_r = s.sample_r.as<float>();
     w.ksvd_sync = s.ksvd_sync.as<int>();
-    w.tiles = s.tiles.as<int>();
-    w.chunks = s.chunks[b].as<int>();
-    w.partial = s.partial.as<float>();
     w.meta = s.meta.as<AggregatePatch>();
     return w;
 }
@@ -194,8 +179,6 @@ void denoise_plane(const LsscData& d, Slot& s, int plane, float sigma, int b) {
     lssc_pack(w, front);
     NSS_CUDA_CHECK(cudaEventRecord(s.packed, front));
     NSS_CUDA_CHECK(cudaStreamWaitEvent(side, s.packed, 0));
-    float* power = s.power[b].as<float>();
-    float* lipschitz = power + kAtoms + 256;
     {
         NSS_CUDA_RANGE("lssc.dictionary");
         // DCT atoms first, the rest from LCG-sampled patches.
@@ -212,41 +195,20 @@ void denoise_plane(const LsscData& d, Slot& s, int plane, float sigma, int b) {
                                        cudaMemcpyHostToDevice, side));
         lssc_patch_atoms(w, s.sources.as<int>(), dct, side);
         if (w.np >= 2) lssc_ksvd(w, side);
-        lssc_lipschitz(w, power, lipschitz, side);
-        lssc_precondition(w, lipschitz, side);
+        lssc_prepare(w, side);
         NSS_CUDA_CHECK(cudaEventRecord(s.dictionary, side));
     }
-    {
-        NSS_CUDA_RANGE("lssc.cluster");
-        lssc_cluster(w, kKmeansRounds, w.counts + w.clusters, front);
-        NSS_CUDA_CHECK(cudaEventRecord(s.clustered, front));
-    }
-    NSS_CUDA_CHECK(cudaStreamWaitEvent(stream, s.clustered, 0));
     NSS_CUDA_CHECK(cudaStreamWaitEvent(stream, s.dictionary, 0));
     {
         NSS_CUDA_RANGE("lssc.code");
-        lssc_center(w, stream);
-        NSS_CUDA_CHECK(cudaMemsetAsync(w.flags, 0, 2 * static_cast<std::size_t>(w.clusters) * sizeof(int), stream));
-        // An even number of rounds leaves every batch's last codes in coef.
-        static_assert(kLsscRounds % 2 == 0, "batches must end on the same buffers");
-        w.parts = lssc_coding_parts(w);
-        for (w.part = 0; w.part < w.parts; ++w.part) {
-            for (int round = 0; round < kLsscRounds; ++round) {
-                lssc_round(w, round, round > 0 ? nss::kLsscMomentum[round - 1] : 0.f, lipschitz, sigma, stream);
-                std::swap(w.coef, w.coef_last);
-                std::swap(w.scale, w.scale_last);
-            }
-        }
-        w.part = 0;
-        w.parts = 1;
-        lssc_reconstruct(w, stream);
+        lssc_code(w, sigma, stream);
     }
     NSS_CUDA_RANGE("lssc.aggregate");
     const AggregateTarget target{s.num.as<float>(), s.den.as<float>(), p.width, p.height, p.width, 1, d.plane_floats};
     s.aggregator->run(w.values, w.meta, w.np, w.block, target, stream);
     NSS_CUDA_CHECK(cudaStreamWaitEvent(stream, s.downloaded, 0));
-    aggregate_finish(s.num.as<float>(), s.den.as<float>(), w.plane, p.width, p.height, p.width, s.out.as<float>(),
-                     stream);
+    lssc_finish(s.num.as<float>(), s.den.as<float>(), w.plane, p.width, p.height, p.width,
+                nss::lssc_image_weight(d.block_size, d.block_step, sigma), s.out.as<float>(), stream);
     NSS_CUDA_CHECK(cudaEventRecord(s.coded[b], stream));
 }
 
@@ -351,7 +313,7 @@ std::unique_ptr<Slot> make_slot(const LsscData& d) {
     auto slot = std::make_unique<Slot>();
     const std::size_t plane_bytes = d.plane_floats * sizeof(float);
     const std::size_t np = static_cast<std::size_t>(d.max_np), m = static_cast<std::size_t>(d.block_size) * d.block_size;
-    const std::size_t atoms = std::min<std::size_t>(kAtoms, np), clusters = std::min<std::size_t>(kClusters, np);
+    const std::size_t atoms = std::min<std::size_t>(kAtoms, np);
     const std::size_t samples = std::min<std::size_t>(kLsscSamples, np);
     const auto floats = [&](std::size_t count) { return DeviceBuffer(count * sizeof(float), d.budget); };
     const auto ints = [&](std::size_t count) { return DeviceBuffer(count * sizeof(int), d.budget); };
@@ -359,36 +321,24 @@ std::unique_ptr<Slot> make_slot(const LsscData& d) {
         slot->input[b] = DeviceBuffer(plane_bytes, d.budget);
         slot->patches[b] = floats(np * m);
         slot->dict[b] = floats(atoms * m);
-        slot->assign[b] = ints(np);
-        slot->members[b] = ints(np);
-        slot->offsets[b] = ints(clusters + 1);
-        slot->power[b] = floats(kAtoms + 256 + 1);
-        slot->centroids[b] = floats(clusters * m);
-        slot->counts[b] = ints(clusters + 2);
-        if (m <= 64) slot->chunks[b] = ints(np + 64);
-        slot->gradient[b] = floats(atoms * m);
-        slot->lambda_scale[b] = floats(atoms);
-        slot->factor[b] = floats(lssc_precondition_floats(static_cast<int>(m)));
+        slot->transpose[b] = floats(atoms * m);
+        slot->gram[b] = floats(atoms * atoms);
+        slot->inv_norm[b] = floats(atoms);
     }
     slot->num = DeviceBuffer(plane_bytes, d.budget);
     slot->den = DeviceBuffer(plane_bytes, d.budget);
     slot->out = DeviceBuffer(plane_bytes, d.budget);
     slot->values = floats(np * m);
-    slot->coef = floats(np * atoms);
-    slot->coef_last = floats(np * atoms);
     slot->mean = floats(np);
-    slot->scale = floats(clusters * atoms);
-    slot->scale_last = floats(clusters * atoms);
-    slot->flags = ints(2 * clusters + 4);
+    slot->yy = floats(np);
+    slot->flags = ints(np);
+    slot->alpha0 = floats(std::min<std::size_t>(np, kLsscBatch) * atoms);
+    slot->ubuf = DeviceBuffer(lssc_code_scratch_bytes(d.code_slots, static_cast<int>(m), static_cast<int>(atoms)), d.budget);
+    slot->counters = ints((np + kLsscBatch - 1) / kLsscBatch + 1);
     slot->sample_y = floats(samples * m);
     slot->sample_a = floats(atoms * samples);
     slot->sample_r = floats(samples * m);
     slot->ksvd_sync = ints(atoms * (kLsscSamples / 32 + 1));
-    if (m <= 64) {
-        const std::size_t tiles = static_cast<std::size_t>(lssc_tile_capacity(static_cast<int>(np), static_cast<int>(clusters)));
-        slot->tiles = ints(1 + 2 * tiles + clusters + 1 + clusters * atoms);
-        slot->partial = floats(tiles * atoms);
-    }
     slot->meta = DeviceBuffer(np * sizeof(AggregatePatch), d.budget);
     slot->sources = ints(kAtoms);
     int max_w = 1, max_h = 1;
@@ -431,11 +381,22 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     // limit's room beyond it goes first to a region per plane, then to a
     // second buffer set, then to more staging sets.
     const std::size_t plane_bytes = d.plane_floats * sizeof(float);
-    const std::size_t slot_bytes = 4 * plane_bytes + lssc_work_bytes(d.block_size * d.block_size, d.max_np) +
+    const int pm = d.block_size * d.block_size, plane_atoms = std::min(kAtoms, std::max(d.max_np, 1));
+    const std::size_t base_bytes = 4 * plane_bytes + lssc_work_bytes(pm, d.max_np) +
                                    static_cast<std::size_t>(d.max_np) * OrderedAggregator::kBytesPerPatch + (1u << 16);
+    const std::size_t limit = d.budget ? d.budget->snapshot().limit : SIZE_MAX;
+    // Coding warps: one per 32 patches up to the resident ones, halved while
+    // a stream would not fit the limit (the output does not change).
+    if (d.max_np > 0) {
+        d.code_slots = lssc_code_slots(d.device.index, d.max_np);
+        const std::size_t one_stream = base_bytes + frame_bytes + plane_bytes;
+        while (d.code_slots > 1 && limit != SIZE_MAX &&
+               one_stream + lssc_code_scratch_bytes(d.code_slots, pm, plane_atoms) > limit)
+            d.code_slots /= 2;
+    }
+    const std::size_t slot_bytes = base_bytes + (d.max_np > 0 ? lssc_code_scratch_bytes(d.code_slots, pm, plane_atoms) : 0);
     const std::size_t set_bytes = frame_bytes + plane_bytes;
     const std::size_t stream_bytes = slot_bytes + set_bytes;
-    const std::size_t limit = d.budget ? d.budget->snapshot().limit : SIZE_MAX;
     if (!d.backend.streams_explicit) {
         d.backend.num_streams = static_cast<int>(std::clamp<std::size_t>(limit / stream_bytes, 1, kDefaultStreams));
     }
@@ -452,11 +413,8 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         if (room != SIZE_MAX) room -= streams * more_regions;
     }
     const std::size_t np = static_cast<std::size_t>(d.max_np), m = static_cast<std::size_t>(d.block_size) * d.block_size;
-    const std::size_t atoms = std::min<std::size_t>(kAtoms, np), clusters = std::min<std::size_t>(kClusters, np);
-    const std::size_t extra_set = plane_bytes +
-                                  (np * m + 2 * atoms * m + atoms + lssc_precondition_floats(static_cast<int>(m)) +
-                                   kAtoms + 257 + clusters * m) * sizeof(float) +
-                                  (2 * np + clusters + 1 + clusters + 2 + (m <= 64 ? np + 64 : 0)) * sizeof(int);
+    const std::size_t atoms = std::min<std::size_t>(kAtoms, np);
+    const std::size_t extra_set = plane_bytes + (np * m + 2 * atoms * m + atoms * atoms + atoms) * sizeof(float);
     while (d.max_np > 0 && d.depth < kMaxDepth && room / streams >= extra_set) {
         ++d.depth;
         if (room != SIZE_MAX) room -= streams * extra_set;
