@@ -521,13 +521,17 @@ __global__ void mcwnnm_block_kernel(McwnnmGroupArgs a) {
         if (it > 0) {
             // g = V^T g V with the eigenvectors of the step before, which the
             // sweeps then go on from.
+            // g is symmetric: row lane read as column lane, so that the lanes
+            // read consecutive words (row reads were an N-way bank conflict:
+            // 1.12x on group 32). u may be g, so all reads come first.
 #pragma unroll
             for (int k = 0; k < N; ++k) {
                 float sum = 0.f;
 #pragma unroll 1
-                for (int j = 0; j < N; ++j) sum = fmaf(g[lane * N + j], v[j * N + k], sum);
+                for (int j = 0; j < N; ++j) sum = fmaf(g[j * N + lane], v[j * N + k], sum);
                 acc[k] = sum;
             }
+            __syncthreads();
 #pragma unroll
             for (int k = 0; k < N; ++k) u[lane * N + k] = acc[k];
             __syncthreads();
