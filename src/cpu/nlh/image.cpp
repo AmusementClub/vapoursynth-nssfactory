@@ -86,7 +86,8 @@ Accumulator nlh_pass(const ImageSequence& data, const ImageSequence& basic, cons
 
 // Blind noise estimate of one frame: planes of one size (at least 8 x 8) are
 // estimated together from blocks matched on `guide`; sets each plane's sigma
-// and sigma_units.
+// and sigma_units. A plane that is not its own guide (chroma matched on the
+// luma, any plane under rclip) takes nlh_unguided_estimate (model version 7).
 void nlh_estimate_frame_sigma(ImageFrame& frame, const ImageFrame& guide, int planes) {
     if (planes < 1 || planes > 3) throw std::invalid_argument("nss.NLH: invalid noise-estimation plane count");
     std::array<bool, 3> used{};
@@ -110,8 +111,10 @@ void nlh_estimate_frame_sigma(ImageFrame& frame, const ImageFrame& guide, int pl
             resized = image_area_guide(luma, width, height);
             matching = &resized;
         }
+        const auto unguided = [&](int c) { return frame.planes[c].pixels.data() != matching->pixels.data(); };
         if (count == 1) {
             frame.sigma[first] = nlh_estimate_sigma(frame.planes[first], *matching);
+            if (unguided(first)) frame.sigma[first] = nlh_unguided_estimate(frame.sigma[first]);
             frame.sigma_units[first] = double(frame.sigma[first]) * 255;
             continue;
         }
@@ -153,6 +156,7 @@ void nlh_estimate_frame_sigma(ImageFrame& frame, const ImageFrame& guide, int pl
             const double sigma = totals[c] / double(groups);
             if (!std::isfinite(sigma)) throw std::runtime_error("nss: nonfinite blind noise estimate");
             frame.sigma[channels[c]] = float(sigma);
+            if (unguided(channels[c])) frame.sigma[channels[c]] = nlh_unguided_estimate(frame.sigma[channels[c]]);
             frame.sigma_units[channels[c]] = double(frame.sigma[channels[c]]) * 255;
         }
     }

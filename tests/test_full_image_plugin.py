@@ -30,6 +30,10 @@ except ImportError as error:
     raise
 
 
+# nss::kNoiseEstimateUnguidedScale (NLH model version 7).
+NLH_UNGUIDED_SCALE = 1.3923023108614498
+
+
 def make_clip(core, fmt, frames=5, width=20, height=18, seed=7, constant=None):
     blank=core.std.BlankClip(width=width,height=height,format=fmt,length=frames)
     format=blank.format
@@ -97,7 +101,7 @@ class Suite:
                 rows=list(pool.map(lambda n: (n,values(node,n)),order))
             captured={n:row[0] for n,row in rows}
             for n,(planes,props) in rows:
-                assert props['_NSSModelVersion']==6
+                assert props['_NSSModelVersion']==(7 if name=='NLH' else 6)
                 for p,a in enumerate(planes):
                     assert a.shape==original[n][p].shape and np.isfinite(a).all()
             if expected is None: expected=captured
@@ -194,9 +198,11 @@ class Suite:
         guide,guides=make_clip(core,vs.GRAYS,frames=1,width=16,height=16,seed=99)
         original,_=values(source,0)
         expected=float(noise_estimate(original[0],guides[0][0]))*255
-        for name,extra in [('TWSC',dict(estimate_sigma=1,iters=1)),('NLH',dict(basic_iters=1))]:
+        # NLH model version 7 divides the estimate of a plane that is not its
+        # own guide (here: every plane, matched on rclip) by 1.3923; TWSC does not.
+        for name,extra,scale in [('TWSC',dict(estimate_sigma=1,iters=1),1.0),('NLH',dict(basic_iters=1),NLH_UNGUIDED_SCALE)]:
             _,props=values(getattr(core.nss,name)(source,rclip=guide,block_size=4,block_step=4,search_window=5,**extra),0)
-            np.testing.assert_allclose(props['_NSSSigma'],expected,rtol=1e-6,atol=1e-6)
+            np.testing.assert_allclose(props['_NSSSigma'],expected/scale,rtol=1e-6,atol=1e-6)
 
     def twsc_fixed_geometry(self):
         core=self.core
@@ -255,7 +261,7 @@ class Suite:
             else: raise AssertionError((name,args,'must fail'))
         for name in ('TWSC','NLH'):
             raw=getattr(core.nss,name)(source,sigma=0,**kwargs(name,1))
-            incompatible=core.std.SetFrameProps(raw,_NSSModelVersion=5 if name=='NLH' else 2)
+            incompatible=core.std.SetFrameProps(raw,_NSSModelVersion=6 if name=='NLH' else 2)
             try: values(core.nss.VAggregate(incompatible,source,radius=1),0)
             except vs.Error: pass
             else: raise AssertionError('old model contribution accepted')
