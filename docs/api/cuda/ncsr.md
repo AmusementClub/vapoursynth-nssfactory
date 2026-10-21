@@ -36,7 +36,10 @@ The defaults are fast settings. Settings closer to the paper, with their quality
 | Arguments | PSNR, sigma 15 | PSNR, sigma 25 | fps YUV420 / RGB |
 |---|---:|---:|---:|
 | defaults, `sigma=σ` | 29.42 dB | 25.59 dB | 390 / 215 |
+| defaults, `sigma=1.8 σ` | 33.04 dB | 29.67 dB | 390 / 215 |
 | `block_step=4, group_size=16, sigma=σ` | 33.41 dB | 30.37 dB | 36.8 / 18.5 |
+
+- At the default geometry (group 8, 2 rounds) about 1.8 σ is best (9 anime frames, σ 1 to 20, within 0.1 dB of the best at every σ). The factor falls as the group and the rounds grow: about 1.3 σ at group 16 and σ as is at group 32.
 
 ## Signature
 

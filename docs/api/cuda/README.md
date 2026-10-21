@@ -49,12 +49,38 @@ noise added; PSNR against the frame without it, noisy input 24.97 dB):
 | [LSSC](lssc.md#closer-to-the-papers) | `block_step=3` | 31.9 → 32.2 | 145 → 93 |
 | [TWSC](twsc.md#closer-to-the-papers) | `block_step=4, group_size=90, iters=4` | 25.3 → 36.8 | 44 → 0.38 |
 | [NLH](nlh.md#closer-to-the-papers) | defaults (or `sigma=σ`) | 35.2 (35.6) | 31 |
-| [NLM](nlm.md#closer-to-the-papers) | `a=10, s=3, h=1.3 σ` | 25.0 → 32.8 | 235 → 21.7 |
+| [NLM](nlm.md#closer-to-the-papers) | `a=10, s=3, d=0, h=0.6 σ` | 25.0 → 33.3 | 235 → 78 |
 
-- Three filters do not take σ as is: BM3D wants 4/3 σ (its sigma follows
-  bm3dcpu's convention), WNNM about 1.41 σ (it runs one pass where the paper
-  iterates), NLM `h` of about 1.3 σ (`h` is not in sigma units).
 - One image: take these as starting points, not tuned presets.
+
+## Sigma at the default settings
+
+`sigma` sets each filter's strength; it equals the noise's σ only for some
+filters and settings. At the default geometry the best `sigma` for Gaussian
+noise of σ is (9 anime frames at half size and 3 at 1080p, σ 1 to 20: one
+factor per filter stays within 0.1 dB of the best at every σ; PSNR on the
+test frame above at σ 15):
+
+| Filter | Best `sigma` | PSNR at sigma 15: `sigma=σ` → best |
+|---|---|---:|
+| BM3D | 4/3 σ (its sigma follows bm3dcpu's convention) | 31.5 → 32.6 |
+| LSSC, NLH | σ | — |
+| NCSR | about 1.8 σ | 29.4 → 33.0 |
+| WNNM | about 2.2 σ | 26.3 → 32.1 |
+| MCWNNM | about 2.5 σ | 25.6 → 33.7 |
+| TWSC | about 3.4 σ | 25.3 → 34.9 |
+| NLM | `h` about 0.6 σ (`d=0`), 0.8 σ (`d` ≥ 1 on video) | 25.0 → 32.4 |
+
+- The speed does not change with `sigma`.
+- The factor of NCSR, WNNM, MCWNNM and TWSC falls as `group_size` and
+  `iters` grow: their models take σ as is near the papers' geometry (TWSC at
+  `group_size=90, iters=4`, NCSR at `group_size=32, iters=2`). WNNM runs one
+  pass where the paper iterates, so it keeps a factor of about 1.8 even at
+  group 32. The pages give the factor of each "closer" geometry.
+- BM3D, NLH and NLM want a larger `sigma` (`h`) on correlated grain than on
+  white noise; the four group filters above barely move.
+- A larger factor also lowers the contrast of fine text a little (BM3D at
+  4/3 σ: white text 1.6 levels darker at σ 15 than at σ).
 
 ## Functions
 

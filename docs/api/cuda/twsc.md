@@ -42,8 +42,10 @@ The defaults are fast settings. Settings closer to the paper, with their quality
 | Arguments | PSNR, sigma 15 | PSNR, sigma 25 | fps YUV420 / RGB |
 |---|---:|---:|---:|
 | defaults, `sigma=σ` | 25.26 dB | 21.27 dB | 77 / 44 |
+| defaults, `sigma=3.4 σ` | 34.88 dB | 31.89 dB | 77 / 44 |
 | `block_step=4, group_size=90, iters=4, sigma=σ` (RGB on the fast color path) | 36.77 dB | 34.23 dB | 0.56 / 0.38 |
 
+- With σ as is, the default geometry (group 8, 2 rounds) barely denoises; about 3.4 σ is best (9 anime frames, σ 1 to 20, within 0.1 dB of the best at every σ). The factor falls as the group and the rounds grow, to σ as is at the geometry below.
 - The quality geometry of [Speed](#speed) at step 4, which keeps the quality of step 1. On this image it is the best of the eight filters by 2 dB or more; the joint (non-`cfast`) path takes `iters=12`.
 
 ## Signature

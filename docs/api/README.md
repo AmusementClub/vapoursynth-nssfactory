@@ -42,7 +42,12 @@ Ryzen 9 5950X core at sigma 3 and about half at sigma 25.
 - **`sigma`**: the noise standard deviation in 8-bit units (0–255), one value
   per plane; a single value applies to all. `sigma=0` passes the plane through
   unchanged. NLH estimates sigma per frame when it is omitted, TWSC with
-  `estimate_sigma=1`; the other filters take it as given.
+  `estimate_sigma=1`; the other filters take it as given. It sets the
+  filter's strength, which matches the noise's σ only for some filters and
+  settings: at the defaults BM3D wants about 4/3 σ, NCSR 1.8 σ, WNNM 2.2 σ,
+  MCWNNM 2.5 σ and TWSC 3.4 σ, and NLM `h` about 0.6 to 0.8 σ (the models
+  are the same on both backends; see
+  [Sigma at the default settings](cuda/README.md#sigma-at-the-default-settings)).
 - **`rclip` / `ref`**: an optional clip of the same format and size that guides
   the matching; denoising still applies to `clip`.
 - **`bm_range` and `search_window`**: `search_window = 2 * bm_range + 1`.
