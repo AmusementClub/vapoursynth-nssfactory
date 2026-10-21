@@ -136,6 +136,14 @@ void lssc_omp_prepare(const float* D, int m, int atoms, int ldd, float* storage,
 // Codes one patch (m pixels) into rec (m pixels); returns the support size.
 // work holds lssc_omp_code_work_floats floats.
 int lssc_omp_code(const float* patch, const LsscOmpDictionary& dict, float sigma, float* rec, float* work);
+// Codes count <= kLsscCodeBatch consecutive patches (rows of m pixels) into
+// recs (rows of m), each bit for bit as lssc_omp_code; a patch with a value
+// that is not finite is copied. A full batch computes the alpha0 = D^T y of
+// its patches together (every D^T row loaded once). m <= kLsscMaxPatchPixels.
+inline constexpr int kLsscCodeBatch = 6;
+inline constexpr int kLsscMaxPatchPixels = 256;  // block 16
+void lssc_omp_code_batch(const float* patches, int count, const LsscOmpDictionary& dict, float sigma, float* recs,
+                         float* work);
 
 // Optional matrix-kernel capability, independent of the Highway vector target.
 bool lssc_sme_compiled() noexcept;
