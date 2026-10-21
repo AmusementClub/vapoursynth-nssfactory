@@ -91,6 +91,8 @@ def main():
             radius = radius if isinstance(radius, int) and 0 <= radius <= 16 else 1
             base = plugin.BM3D(clip, radius=radius, temporal_mode="legacy") if radius else plugin.BM3D(clip)
             return plugin.VAggregate(base, clip, **kwargs)
+        if name == "DA3D":
+            return plugin.DA3D(clip, clip, **kwargs)
         # The golden records the CPU, whose default is legacy. A backend whose
         # default is rolling is probed in legacy mode wherever the probe leaves
         # the mode unset, and its own default is checked separately below.
