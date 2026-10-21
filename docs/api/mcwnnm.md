@@ -69,6 +69,8 @@ authors' ADMM schedule. ~2326 ms per 1080p frame single-core (~0.43 fps) —
 filter at the same settings. `admm_iter` and `iters` multiply the solve cost
 directly; `block_step` scales positions as usual.
 
+Settings closer to the paper, with their measured quality and GPU speed, are on the [CUDA page](cuda/mcwnnm.md#closer-to-the-papers); the CPU takes the same arguments.
+
 ## Pitfalls
 
 - Input must be RGBS (three planes); for Gray use WNNM instead.

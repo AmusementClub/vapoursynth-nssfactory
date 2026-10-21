@@ -95,6 +95,8 @@ Shared geometry (8/8/8/7) + two rounds, matching the calibration matrix.
 with `1/step^2 * bm_range^2`; per-group cost scales with the PCA/SVD solve at
 `block^2 x group`.
 
+Settings closer to the paper, with their measured quality and GPU speed, are on the [CUDA page](cuda/ncsr.md#closer-to-the-papers); the CPU takes the same arguments.
+
 ## Pitfalls
 
 - `iters=1` skips the second matching round — sizeable speedup, visible

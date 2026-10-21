@@ -1,13 +1,13 @@
 # nss_cuda.LSSC
 
-Learned simultaneous sparse coding on the device. Spatial only: `radius > 0` is
-rejected, as on the CPU.
+Learned sparse coding on the device. Spatial only: `radius > 0` is rejected,
+as on the CPU.
 
 Algorithm, paper and the reasoning behind the defaults: [`nss.LSSC`](../lssc.md).
 
 ```python
 out = core.nss_cuda.LSSC(clip, sigma=25)                    # defaults
-hiq = core.nss_cuda.LSSC(clip, sigma=25, block_step=4)
+fine = core.nss_cuda.LSSC(clip, sigma=25, block_step=3)
 ```
 
 ## Speed
@@ -17,20 +17,33 @@ hiq = core.nss_cuda.LSSC(clip, sigma=25, block_step=4)
 
 | Call | YUV420 | RGB |
 |---|---:|---:|
-| default | 205 | 145 |
+| default | 230 | 145 |
 
-These are model version 3 figures (the preconditioned FISTA coding, see
-[`nss.LSSC`](../lssc.md#model-version-3-the-cluster-coding)). Its 12 rounds read
-the codes of the two previous rounds; where those do not fit half of the GPU's
-L2 cache (1080p and above on an RTX 5080), the rounds run over batches of whole
-clusters so that a batch's codes stay in L2. The output does not depend on the
-batches.
+The cost of a patch grows with the atoms it needs, so the speed depends on the
+content and the noise: on a grainy, text-heavy 1080p RGB frame the default
+runs at 85 fps at sigma 3 and 175 at sigma 25 (gray: 260 and 575).
+
+Model version 3 (k-means clusters and a group soft threshold, default
+`block_step=8`) ran the same images at 205 (YUV420) and 145 (RGB): paired on
+each image, version 4 is 1.14x in YUV420 (0.95x to 1.17x) and 0.99x in RGB
+(0.72x to 1.13x); the most textured images are the slowest.
+
+## Closer to the papers
+
+The defaults are fast settings. Settings closer to the paper, with their quality and cost. Measured on one 1080p RGB frame (an anime credits frame with its own film grain) with Gaussian noise added, against the frame without it; the noisy input is 24.97 dB at sigma 15 and 20.98 dB at sigma 25. One image: take these as starting points, not tuned presets. σ is the standard deviation of the noise in 8-bit units; speed at 1080p on an RTX 5080 (the second row's on the test frame).
+
+| Arguments | PSNR, sigma 15 | PSNR, sigma 25 | fps YUV420 / RGB |
+|---|---:|---:|---:|
+| defaults, `sigma=σ` | 31.86 dB | 28.75 dB | 230 / 145 |
+| `block_step=3, sigma=σ` | 32.19 dB | 29.17 dB | 183 / 93 |
+
+- The defaults are close to the paper's sparse coding already (overlapping patches, error-constrained OMP); a denser step adds a little. Model version 3 gave 29.15 / 26.28 dB here.
 
 ## Signature
 
 ```python
 core.nss_cuda.LSSC(clip clip[, float[] sigma = 3.0, int block_size = 8,
-                   int block_step = 8, int radius = 0,
+                   int block_step = block_size / 2, int radius = 0,
                    int memory_limit_mb, int device_id = 0, int num_streams = 1])
 ```
 
@@ -38,13 +51,10 @@ core.nss_cuda.LSSC(clip clip[, float[] sigma = 3.0, int block_size = 8,
 
 | Parameter | Default | Range | Meaning and impact |
 |---|---|---|---|
-| `sigma` | 3.0 | >= 0 | 8-bit noise stddev per plane. Drives the sparse-coding regularization. `sigma=0` bypasses the plane. |
+| `sigma` | 3.0 | >= 0 | 8-bit noise stddev per plane. Sets the residual at which a patch's coding stops and the weight of the noisy plane in the average. `sigma=0` bypasses the plane. |
 | `block_size` | 8 | {1,2,4,8,16} | Patch edge (power-of-two family only). Dictionary dimension is `block^2`. |
-| `block_step` | 8 | [1, block] | Reference-patch stride; positions scale as `1/step^2`. The main quality/speed trade. |
+| `block_step` | block / 2 (4) | [1, block] | Reference-patch stride; positions scale as `1/step^2`. The model needs overlap. |
 | `radius` | 0 | 0 only | Kept for the common signature. LSSC has no temporal mode: `radius > 0` is rejected. |
-
-The dictionary size (256 atoms) and cluster count (64) are internal constants,
-capped by the actual patch count; they are not exposed.
 
 ## Device and temporal parameters
 
@@ -54,17 +64,18 @@ capped by the actual patch count; they are not exposed.
 
 ## Notes
 
-- **Accuracy.** On GPUs of compute capability 8.0 or newer the coding
-  round's products run on TF32 tensor cores: 103–112 dB against the CPU
-  plugin (model version 3 references), with the same denoising quality to
-  1e-4 dB. Compute capability 7.5 keeps FP32 products: 137.0–140.8 dB (the
-  sparse coding runs in FP32 where the CPU uses FP64 in places). Identical
-  from run to run on a given GPU. The frozen C1 references (`tests/data/cuda_refs_v1.json`)
-  are version 2 outputs; regenerate LSSC references before comparing.
-- **Memory.** The codes take `2 min(256, patches)` floats per patch (the
-  current and the previous round), so a dense `block_step` on a large frame
-  takes that much GPU memory: about 66 MB at 1080p with the default step, 264 MB
-  with `block_step=4`.
+- **How it runs.** Each patch is coded by one warp (patches taken from a
+  counter, so busy patches do not hold up the rest); the correlations of a
+  batch of patches with the dictionary come from one tiled product and stay
+  in L2. The arithmetic and the order of every sum are the CPU's.
+- **Accuracy.** 97–150 dB against the CPU plugin on the reference set; the
+  dictionary's K-SVD round runs in FP32 on the device, so near-ties between
+  atoms can resolve differently. Identical from run to run on a given GPU.
+- **Memory.** About 220 MB per stream at 1080p gray with the defaults: the
+  patches and their reconstructions, the correlations of a batch of 32768
+  patches, and a coding scratch of `48 x min(256, patches)` floats per
+  coding warp. Under a tight `memory_limit_mb` fewer warps code (slower, the
+  same output).
 
 ## Pitfalls
 

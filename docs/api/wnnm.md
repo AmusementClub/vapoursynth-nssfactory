@@ -61,6 +61,8 @@ matched settings. ~131 ms per 1080p GRAYS frame single-core (~7.6 fps).
 Cost scales with `1/step^2` for matching plus per-group SVD work growing with
 `group_size` and `block_size^2`.
 
+Settings closer to the paper, with their measured quality and GPU speed, are on the [CUDA page](cuda/wnnm.md#closer-to-the-papers); the CPU takes the same arguments.
+
 ## Pitfalls
 
 - `radius > 0` output is the taller weighted intermediate: pass it through

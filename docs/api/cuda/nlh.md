@@ -23,6 +23,17 @@ custom = core.nss_cuda.NLH(clip, sigma=25, block_size=[6, 9], block_step=[3, 6])
 
 The blind estimate is a matching pass per frame; give `sigma` when it is known.
 
+## Closer to the papers
+
+The defaults are fast settings. Settings closer to the paper, with their quality and cost. Measured on one 1080p RGB frame (an anime credits frame with its own film grain) with Gaussian noise added, against the frame without it; the noisy input is 24.97 dB at sigma 15 and 20.98 dB at sigma 25. One image: take these as starting points, not tuned presets. σ is the standard deviation of the noise in 8-bit units; speed at 1080p on an RTX 5080 (the second row's on the test frame).
+
+| Arguments | PSNR, sigma 15 | PSNR, sigma 25 | fps YUV420 / RGB |
+|---|---:|---:|---:|
+| defaults (blind estimate) | 35.21 dB | 32.28 dB | 37 / 31 |
+| defaults with `sigma=σ` | 35.58 dB | 32.95 dB | 37 / 31 |
+
+- The default preset is the paper's low-noise configuration; nothing to change for Gaussian noise. The blind estimate reads the chroma noise about 35% high under Gaussian noise, hence the gap to a given sigma. The blind estimate also counts a frame's own grain as noise: give sigma to keep grain.
+
 ## Signature
 
 ```python
