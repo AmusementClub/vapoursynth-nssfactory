@@ -186,7 +186,9 @@ static void LsscBackSolve(const float* chol, const float* inv, int cap, const fl
     }
 }
 
-int LsscOmpCode(const float* patch, const LsscOmpDictionary* dict, float sigma, float* rec, float* work) {
+// alpha_in: alpha0 = D^T y of this patch already computed (LsscAlphaBatch), or null.
+static int LsscOmpCodeFrom(const float* patch, const LsscOmpDictionary* dict, float sigma, float* rec, float* work,
+                           const float* alpha_in) {
     const int m = dict->m;
     const int atoms = dict->atoms;
     const int cap = lssc_omp_cap(m, atoms);
@@ -208,7 +210,11 @@ int LsscOmpCode(const float* patch, const LsscOmpDictionary* dict, float sigma, 
     const float yy = LsscLaneSum<float>(m, [&](float acc, int r) { return std::fma(y[r], y[r], acc); });
     // alpha0 = D^T y: one fma chain over the pixels per atom (Dt is pixel-major).
     const float* transpose = dict->transpose;
-    LsscCombine(alpha0, nullptr, atoms, m, [&](int r) { return transpose + static_cast<std::size_t>(r) * atoms; }, y);
+    if (alpha_in) {
+        std::memcpy(alpha0, alpha_in, static_cast<std::size_t>(atoms) * sizeof(float));
+    } else {
+        LsscCombine(alpha0, nullptr, atoms, m, [&](int r) { return transpose + static_cast<std::size_t>(r) * atoms; }, y);
+    }
     std::memcpy(alpha, alpha0, static_cast<std::size_t>(atoms) * sizeof(float));
     std::fill_n(available, atoms, 1.f);
     const float budget = lssc_omp_budget(m, sigma);
@@ -257,6 +263,103 @@ int LsscOmpCode(const float* patch, const LsscOmpDictionary* dict, float sigma, 
     return k;
 }
 
+int LsscOmpCode(const float* patch, const LsscOmpDictionary* dict, float sigma, float* rec, float* work) {
+    return LsscOmpCodeFrom(patch, dict, sigma, rec, work, nullptr);
+}
+
+// alpha0 = D^T y of kLsscCodeBatch patches (y: kLsscCodeBatch rows of m) with every row of D^T loaded once for all
+// of them: each (patch, atom) entry is the same fma chain over the pixels in order as LsscCombine, so the result
+// is bit-identical to coding the patches one by one. Per patch, D^T (64 KB at m = 64) streamed from L2 bounded
+// the single-patch product; six patches share each load (2.1x on alpha0, 1.2 to 1.4x on a plane).
+static void LsscAlphaBatch(const float* transpose, int atoms, int m, const float* y, float* out) {
+    const hn::ScalableTag<float> d;
+    const int N = static_cast<int>(hn::Lanes(d));
+    static_assert(kLsscCodeBatch == 6, "six accumulator pairs below");
+    if (atoms % (2 * N) != 0) {
+        for (int i = 0; i < kLsscCodeBatch; ++i) {
+            const float* yi = y + static_cast<std::size_t>(i) * m;
+            LsscCombine(out + static_cast<std::size_t>(i) * atoms, nullptr, atoms, m,
+                        [&](int r) { return transpose + static_cast<std::size_t>(r) * atoms; }, yi);
+        }
+        return;
+    }
+    for (int a = 0; a < atoms; a += 2 * N) {
+        auto c00 = hn::Zero(d), c01 = hn::Zero(d), c10 = hn::Zero(d), c11 = hn::Zero(d);
+        auto c20 = hn::Zero(d), c21 = hn::Zero(d), c30 = hn::Zero(d), c31 = hn::Zero(d);
+        auto c40 = hn::Zero(d), c41 = hn::Zero(d), c50 = hn::Zero(d), c51 = hn::Zero(d);
+        for (int r = 0; r < m; ++r) {
+            const float* row = transpose + static_cast<std::size_t>(r) * atoms + a;
+            const auto d0 = hn::LoadU(d, row), d1 = hn::LoadU(d, row + N);
+            auto c = hn::Set(d, y[r]);
+            c00 = hn::MulAdd(c, d0, c00);
+            c01 = hn::MulAdd(c, d1, c01);
+            c = hn::Set(d, y[m + r]);
+            c10 = hn::MulAdd(c, d0, c10);
+            c11 = hn::MulAdd(c, d1, c11);
+            c = hn::Set(d, y[2 * m + r]);
+            c20 = hn::MulAdd(c, d0, c20);
+            c21 = hn::MulAdd(c, d1, c21);
+            c = hn::Set(d, y[3 * m + r]);
+            c30 = hn::MulAdd(c, d0, c30);
+            c31 = hn::MulAdd(c, d1, c31);
+            c = hn::Set(d, y[4 * m + r]);
+            c40 = hn::MulAdd(c, d0, c40);
+            c41 = hn::MulAdd(c, d1, c41);
+            c = hn::Set(d, y[5 * m + r]);
+            c50 = hn::MulAdd(c, d0, c50);
+            c51 = hn::MulAdd(c, d1, c51);
+        }
+        float* o = out + a;
+        hn::StoreU(c00, d, o);
+        hn::StoreU(c01, d, o + N);
+        hn::StoreU(c10, d, o + atoms);
+        hn::StoreU(c11, d, o + atoms + N);
+        hn::StoreU(c20, d, o + 2 * atoms);
+        hn::StoreU(c21, d, o + 2 * atoms + N);
+        hn::StoreU(c30, d, o + 3 * atoms);
+        hn::StoreU(c31, d, o + 3 * atoms + N);
+        hn::StoreU(c40, d, o + 4 * atoms);
+        hn::StoreU(c41, d, o + 4 * atoms + N);
+        hn::StoreU(c50, d, o + 5 * atoms);
+        hn::StoreU(c51, d, o + 5 * atoms + N);
+    }
+}
+
+// Codes count <= kLsscCodeBatch consecutive patches (rows of m) into recs, each exactly as lssc_omp_code: a patch
+// with a value that is not finite is copied. A full batch shares the alpha0 product (LsscAlphaBatch).
+void LsscOmpCodeBatch(const float* patches, int count, const LsscOmpDictionary* dict, float sigma, float* recs,
+                      float* work) {
+    const int m = dict->m, atoms = dict->atoms;
+    float y[kLsscCodeBatch * kLsscMaxPatchPixels];
+    float alpha0[kLsscCodeBatch * kLsscDefaultAtoms];
+    bool finite[kLsscCodeBatch];
+    for (int i = 0; i < count; ++i) {
+        const float* patch = patches + static_cast<std::size_t>(i) * m;
+        finite[i] = true;
+        for (int r = 0; r < m; ++r) finite[i] = finite[i] && std::isfinite(patch[r]);
+    }
+    const bool shared = count == kLsscCodeBatch && m <= kLsscMaxPatchPixels && atoms <= kLsscDefaultAtoms;
+    if (shared) {
+        // y as LsscOmpCodeFrom centers it (its own copy stays the reference for everything after alpha0).
+        for (int i = 0; i < count; ++i) {
+            const float* patch = patches + static_cast<std::size_t>(i) * m;
+            float* yi = y + static_cast<std::size_t>(i) * m;
+            const float mean = LsscLaneSum<float>(m, [&](float acc, int r) { return acc + patch[r]; }) / static_cast<float>(m);
+            for (int r = 0; r < m; ++r) yi[r] = patch[r] - mean;
+        }
+        LsscAlphaBatch(dict->transpose, atoms, m, y, alpha0);
+    }
+    for (int i = 0; i < count; ++i) {
+        const float* patch = patches + static_cast<std::size_t>(i) * m;
+        float* rec = recs + static_cast<std::size_t>(i) * m;
+        if (finite[i]) {
+            LsscOmpCodeFrom(patch, dict, sigma, rec, work, shared ? alpha0 + static_cast<std::size_t>(i) * atoms : nullptr);
+        } else {
+            std::memcpy(rec, patch, static_cast<std::size_t>(m) * sizeof(float));
+        }
+    }
+}
+
 void LsscOmpPrepare(const float* D, int m, int atoms, int ldd, float* storage, LsscOmpDictionary* out) {
     float* transpose = storage;
     float* gram = transpose + static_cast<std::size_t>(atoms) * m;
@@ -291,6 +394,7 @@ HWY_AFTER_NAMESPACE();
 namespace nss {
 HWY_EXPORT(LsscOmpCode);
 HWY_EXPORT(LsscOmpPrepare);
+HWY_EXPORT(LsscOmpCodeBatch);
 
 int lssc_omp_code(const float* patch, const LsscOmpDictionary& dict, float sigma, float* rec, float* work) {
     return HWY_DYNAMIC_DISPATCH(LsscOmpCode)(patch, &dict, sigma, rec, work);
@@ -298,6 +402,11 @@ int lssc_omp_code(const float* patch, const LsscOmpDictionary& dict, float sigma
 
 void lssc_omp_prepare(const float* D, int m, int atoms, int ldd, float* storage, LsscOmpDictionary* out) {
     HWY_DYNAMIC_DISPATCH(LsscOmpPrepare)(D, m, atoms, ldd, storage, out);
+}
+
+void lssc_omp_code_batch(const float* patches, int count, const LsscOmpDictionary& dict, float sigma, float* recs,
+                         float* work) {
+    HWY_DYNAMIC_DISPATCH(LsscOmpCodeBatch)(patches, count, &dict, sigma, recs, work);
 }
 
 static void image_term(float* num, float* den, int stride, const float* src, int sstride, int width, int height,
@@ -348,7 +457,6 @@ void lssc_denoise_plane(const float* src, int width, int height, int sstride, fl
     float* dict_work = dict_storage + lssc_omp_dictionary_floats(m, atoms);
     const int dict_n = lssc_dict_work_floats(m, atoms, np, 1);
     float* code_work = dict_work + dict_n;
-    float* rec = code_work + lssc_omp_code_work_floats(m, atoms);
     std::memset(D, 0, static_cast<std::size_t>(m) * atoms * sizeof(float));
     for (int j = 0; j < np; ++j) {
         const int bx = std::min((j % nx) * step, width - block);
@@ -359,18 +467,17 @@ void lssc_denoise_plane(const float* src, int width, int height, int sstride, fl
     lssc_dict_init_workspace(D, m, atoms, m, patches, np, m, block, 1, 0x4C535343u, dict_work, dict_n, avx2_gemm);
     LsscOmpDictionary dict;
     lssc_omp_prepare(D, m, atoms, m, dict_storage, &dict);
-    for (int j = 0; j < np; ++j) {
-        const float* patch = patches + static_cast<std::size_t>(j) * m;
-        bool finite = true;
-        for (int r = 0; r < m; ++r) finite = finite && std::isfinite(patch[r]);
-        if (finite) {
-            lssc_omp_code(patch, dict, sigma, rec, code_work);
-        } else {
-            std::memcpy(rec, patch, static_cast<std::size_t>(m) * sizeof(float));
+    // Coded kLsscCodeBatch patches at a time, added in patch order.
+    float recs[kLsscCodeBatch * kLsscMaxPatchPixels];
+    for (int first = 0; first < np; first += kLsscCodeBatch) {
+        const int count = std::min(kLsscCodeBatch, np - first);
+        lssc_omp_code_batch(patches + static_cast<std::size_t>(first) * m, count, dict, sigma, recs, code_work);
+        for (int i = 0; i < count; ++i) {
+            const int j = first + i;
+            const int bx = std::min((j % nx) * step, width - block);
+            const int by = std::min((j / nx) * step, height - block);
+            aggregate_add(num, den, buf_stride, bx, by, recs + static_cast<std::size_t>(i) * m, block, width, height, 1.f);
         }
-        const int bx = std::min((j % nx) * step, width - block);
-        const int by = std::min((j / nx) * step, height - block);
-        aggregate_add(num, den, buf_stride, bx, by, rec, block, width, height, 1.f);
     }
     image_term(num, den, buf_stride, src, sstride, width, height, lssc_image_weight(block, step, sigma));
 }

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <limits>
 #include <random>
 #include <vector>
@@ -472,6 +473,50 @@ static int test_omp_code() {
     return 0;
 }
 
+// lssc_omp_code_batch codes every patch bit for bit as lssc_omp_code: full
+// batches (shared alpha0), a partial batch, and a patch with a NaN (copied),
+// for block 8 (atoms a multiple of the vector pair) and block 4 / 30 atoms
+// (the per-patch fallback inside the batch).
+static int test_omp_code_batch() {
+    std::mt19937 rng(11);
+    std::normal_distribution<float> gauss(0.f, 1.f);
+    for (const int m : {64, 16}) {
+        const int atoms = m == 64 ? nss::kLsscDefaultAtoms : 30;
+        std::vector<float> D(static_cast<std::size_t>(m) * atoms);
+        for (auto& v : D) v = gauss(rng) * 0.125f;
+        std::vector<float> storage(static_cast<std::size_t>(nss::lssc_omp_dictionary_floats(m, atoms)));
+        nss::LsscOmpDictionary dict;
+        nss::lssc_omp_prepare(D.data(), m, atoms, m, storage.data(), &dict);
+        std::vector<float> work(static_cast<std::size_t>(nss::lssc_omp_code_work_floats(m, atoms)));
+        const int count = 2 * nss::kLsscCodeBatch + 3;
+        std::vector<float> patches(static_cast<std::size_t>(count) * m), single(patches.size()), batch(patches.size());
+        for (int j = 0; j < count; ++j)
+            for (int r = 0; r < m; ++r)
+                patches[static_cast<std::size_t>(j) * m + r] =
+                    0.4f + 0.3f * std::sin(0.37f * r + j) + (j % 3) * 0.02f * gauss(rng);
+        patches[static_cast<std::size_t>(4) * m + 5] = std::numeric_limits<float>::quiet_NaN();
+        for (const float sigma : {3.f / 255.f, 25.f / 255.f}) {
+            for (int j = 0; j < count; ++j) {
+                const float* patch = patches.data() + static_cast<std::size_t>(j) * m;
+                float* rec = single.data() + static_cast<std::size_t>(j) * m;
+                bool finite = true;
+                for (int r = 0; r < m; ++r) finite = finite && std::isfinite(patch[r]);
+                if (finite) nss::lssc_omp_code(patch, dict, sigma, rec, work.data());
+                else std::copy(patch, patch + m, rec);
+            }
+            for (int first = 0; first < count; first += nss::kLsscCodeBatch) {
+                const int n = std::min(nss::kLsscCodeBatch, count - first);
+                nss::lssc_omp_code_batch(patches.data() + static_cast<std::size_t>(first) * m, n, dict, sigma,
+                                         batch.data() + static_cast<std::size_t>(first) * m, work.data());
+            }
+            if (std::memcmp(single.data(), batch.data(), single.size() * sizeof(float)) != 0)
+                return fail("batched omp code differs from one patch at a time");
+        }
+    }
+    std::printf("lssc omp batch: bit-identical to single-patch coding\n");
+    return 0;
+}
+
 // sigma -> 0 keeps the input (the image term dominates), and white strokes on
 // a dark ground keep their level at the default sigma (model 3 dimmed them by
 // about 4 levels).
@@ -520,7 +565,7 @@ int main() {
     if (test_denoise_psnr() != 0) {
         return 1;
     }
-    if (test_omp_code() != 0 || test_denoise_detail() != 0) {
+    if (test_omp_code() != 0 || test_omp_code_batch() != 0 || test_denoise_detail() != 0) {
         return 1;
     }
     {
