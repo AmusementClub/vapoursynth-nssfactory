@@ -31,9 +31,11 @@ The defaults are fast settings. Settings closer to the paper, with their quality
 | Arguments | PSNR, sigma 15 | PSNR, sigma 25 | fps YUV420 / RGB |
 |---|---:|---:|---:|
 | defaults, `sigma=σ` | 26.29 dB | 22.33 dB | 500 / 285 |
+| defaults, `sigma=2.2 σ` | 32.09 dB | 28.27 dB | 500 / 285 |
 | `block_step=4, group_size=32, bm_range=15, sigma=1.41 σ` | 33.69 dB | 30.42 dB | 8.6 / 4.3 |
 
-- This WNNM runs one pass; the paper iterates 8 or more times with the noise re-injected. One pass needs a larger sigma for the paper's strength: 1.41 σ here (2 σ gained 0.3 dB more at sigma 15 but cost text detail). The factor is measured on this image, not a paper value.
+- This WNNM runs one pass; the paper iterates 8 or more times with the noise re-injected. One pass needs a larger sigma for the paper's strength, and the factor falls with the group: about 2.2 σ at the defaults (group 8), 2.0 at group 16, 1.8 at group 32 (9 anime frames, σ 1 to 20, within 0.1 dB of the best at every σ). On this frame 1.41 σ kept more text detail at group 32 (2 σ gained 0.3 dB at sigma 15).
+- Iterating instead does not pay here: eight rounds of the paper's scheme (11 images) matched one pass at 1.41 σ to within 0.3 dB, at 8 times the cost.
 - The group is capped at 32 patches (the paper takes about 70).
 
 ## Signature

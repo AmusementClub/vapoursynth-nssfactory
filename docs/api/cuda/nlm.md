@@ -26,10 +26,12 @@ The defaults are fast settings. Settings closer to the paper, with their quality
 | Arguments | PSNR, sigma 15 | PSNR, sigma 25 | fps YUV420 / RGB |
 |---|---:|---:|---:|
 | defaults (`h=1.2`) | 24.97 dB | 20.98 dB | 565 / 235 |
-| `a=10, s=3, h=1.3 σ` (h=20 at sigma 15, 30 at sigma 25) | 32.84 dB | 30.49 dB | 34.3 / 21.7 |
+| `d=0, h=0.6 σ` | 32.44 dB | 28.94 dB | 760 / 235 |
+| `a=10, s=3, d=0, h=0.6 σ` | 33.31 dB | 30.53 dB | 121 / 78 |
 
-- `h` is the KNLMeansCL scale (the weight is exp(-mean squared patch difference / h^2), without the paper's -2 sigma^2 offset), so it has to grow with the noise: the default `h=1.2` leaves noise of sigma 3 or more untouched. The 21 x 21 window and 7 x 7 patches are the paper's.
-- Measured on a single frame (`d=1` had no neighbours); on video the temporal pooling adds to it.
+- `h` is the KNLMeansCL scale (the weight is exp(-mean squared patch difference / h^2), without the paper's -2 sigma^2 offset), so it has to grow with the noise: the default `h=1.2` leaves noise of sigma 3 or more untouched. About 0.6 σ is best on a single frame (`d=0`), about 0.8 σ with `d` ≥ 1 on video, where the neighbouring frames carry their own noise.
+- The 21 x 21 window and 7 x 7 patches are the paper's. They gain 0.9 to 1.6 dB on this grainy frame, but within 0.1 dB on 11 cleaner images (DIV2K and crops), at 3 (RGB) to 6 (YUV420) times the cost.
+- An earlier version of this table gave `h=1.3 σ` with `d=1` on a clip of one frame: its "neighbours" were the same frame with the same noise, which favours a larger `h`. With `d=0`, `h=1.3 σ` gives 30.21 / 28.07 dB.
 
 ## Signature
 
