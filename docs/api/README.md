@@ -24,6 +24,12 @@ more cores.
 | [NLH](nlh.md) | ~6621* | yes | Real-world noise of unknown level |
 | [MCWNNM](mcwnnm.md) | ~2326 | yes | RGB color noise |
 
+[BM4D](bm4d.md) (about 6.6 s a frame, temporal by construction) treats the
+clip as a volume of 3D cubes; it beats temporal BM3D on still and slowly
+moving content, and is the slowest. [DA3D](da3d.md) is not a denoiser on its own: it takes the noisy clip and
+another filter's output and returns a refined result (see its page for its
+gain and cost).
+
 \* NLH measured with `block_size=8, block_step=8` in both stages and a given
 sigma; its default (smaller steps, blind estimation) is much heavier (see its
 page).
@@ -41,7 +47,7 @@ Ryzen 9 5950X core at sigma 3 and about half at sigma 25.
   variable-format input is rejected when the filter is created.
 - **`sigma`**: the noise standard deviation in 8-bit units (0–255), one value
   per plane; a single value applies to all. `sigma=0` passes the plane through
-  unchanged. NLH estimates sigma per frame when it is omitted, TWSC with
+  unchanged (DA3D: passes its guide's plane through). NLH estimates sigma per frame when it is omitted, TWSC with
   `estimate_sigma=1`; the other filters take it as given. It sets the
   filter's strength, which matches the noise's σ only for some filters and
   settings: at the defaults BM3D wants about 4/3 σ, NCSR 1.8 σ, WNNM 2.2 σ,
@@ -55,8 +61,8 @@ Ryzen 9 5950X core at sigma 3 and about half at sigma 25.
 - **`memory_limit_mb`**: caps the filter's working memory; without it there is
   no cap. Exceeding it is an error, never a silent change of output.
 - **Frame properties**: NLH and TWSC stamp per-frame `_NSS*` properties (the
-  resolved shapes, sigma, model version, solver statistics); the other filters
-  stamp none.
+  resolved shapes, sigma, model version, solver statistics), DA3D its patch
+  counts; the other filters stamp none.
 - **Threads**: VapourSynth runs frames in parallel; each frame is computed on
   one thread.
 
@@ -84,6 +90,7 @@ the call: same result, same cost and memory as the two calls above, and
 `rolling_chunk` and the cache arguments are checked but change nothing.
 
 NLM is temporal through its own `d` argument and always returns finished
+frames; BM4D is temporal by construction (no `radius`) and returns finished
 frames; LSSC has no temporal mode. The GPU plugin returns finished frames by
 default and rolls every temporal filter on the device.
 

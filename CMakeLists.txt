@@ -282,6 +282,8 @@ file(GLOB NSS_CPU_SECOND_WAVE CONFIGURE_DEPENDS RELATIVE ${CMAKE_CURRENT_SOURCE_
   src/cpu/nlh/*.cpp
   src/cpu/ncsr/*.cpp
   src/cpu/lssc/*.cpp
+  src/cpu/da3d/*.cpp
+  src/cpu/bm4d/*.cpp
 )
 list(FILTER NSS_CPU_SECOND_WAVE EXCLUDE REGEX "/lssc/gemm_sme\\.cpp$")
 list(FILTER NSS_CPU_SECOND_WAVE EXCLUDE REGEX "/twsc/svd_library\\.cpp$")
@@ -491,6 +493,8 @@ set(NSS_PINNED_SOURCES
   src/cpu/twsc/svd_batch.cpp
   src/cpu/nlh/fused.cpp
   src/cpu/lssc/code.cpp
+  src/cpu/da3d/da3d.cpp
+  src/cpu/bm4d/bm4d.cpp
 )
 set_source_files_properties(${NSS_PINNED_SOURCES}
   PROPERTIES COMPILE_OPTIONS "${NSS_SAFE_PIN_COMPILE_OPTIONS}")
@@ -646,6 +650,8 @@ if(VapourSynth_FOUND)
     src/frontend/mcwnnm_args.cpp
     src/frontend/wnnm_args.cpp
     src/frontend/ncsr_args.cpp
+    src/frontend/da3d_args.cpp
+    src/frontend/bm4d_args.cpp
   )
   target_include_directories(nss_frontend PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include"

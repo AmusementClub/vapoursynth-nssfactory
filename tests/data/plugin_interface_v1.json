@@ -4970,6 +4970,972 @@
     "width": 48
    }
   },
+  "BM4D|GRAYS|defaults": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|GRAYS|memory_limit_mb=-1": {
+   "error": "nss: memory_limit_mb must be in [1, 1048576]"
+  },
+  "BM4D|GRAYS|memory_limit_mb=0": {
+   "error": "nss: memory_limit_mb must be in [1, 1048576]"
+  },
+  "BM4D|GRAYS|memory_limit_mb=1": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|GRAYS|memory_limit_mb=1000": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|GRAYS|memory_limit_mb=16": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|GRAYS|memory_limit_mb=17": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|GRAYS|memory_limit_mb=2": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|GRAYS|memory_limit_mb=3": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|GRAYS|memory_limit_mb=33": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|GRAYS|memory_limit_mb=4": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|GRAYS|memory_limit_mb=65": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|GRAYS|memory_limit_mb=7": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|GRAYS|memory_limit_mb=8": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|GRAYS|memory_limit_mb=9": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|GRAYS|sigma=-1.0": {
+   "error": "nss.BM4D: sigma must be finite and non-negative"
+  },
+  "BM4D|GRAYS|sigma=0.0": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|GRAYS|sigma=0.5": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|GRAYS|sigma=1.0": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|GRAYS|sigma=1000.0": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|GRAYS|sigma=3.0": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|GRAYS|sigma=pair": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|RGBS|defaults": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|RGBS|memory_limit_mb=-1": {
+   "error": "nss: memory_limit_mb must be in [1, 1048576]"
+  },
+  "BM4D|RGBS|memory_limit_mb=0": {
+   "error": "nss: memory_limit_mb must be in [1, 1048576]"
+  },
+  "BM4D|RGBS|memory_limit_mb=1": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|RGBS|memory_limit_mb=1000": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|RGBS|memory_limit_mb=16": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|RGBS|memory_limit_mb=17": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|RGBS|memory_limit_mb=2": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|RGBS|memory_limit_mb=3": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|RGBS|memory_limit_mb=33": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|RGBS|memory_limit_mb=4": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|RGBS|memory_limit_mb=65": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|RGBS|memory_limit_mb=7": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|RGBS|memory_limit_mb=8": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|RGBS|memory_limit_mb=9": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|RGBS|sigma=-1.0": {
+   "error": "nss.BM4D: sigma must be finite and non-negative"
+  },
+  "BM4D|RGBS|sigma=0.0": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|RGBS|sigma=0.5": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|RGBS|sigma=1.0": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|RGBS|sigma=1000.0": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|RGBS|sigma=3.0": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|RGBS|sigma=pair": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|YUV420PS|defaults": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|YUV420PS|memory_limit_mb=-1": {
+   "error": "nss: memory_limit_mb must be in [1, 1048576]"
+  },
+  "BM4D|YUV420PS|memory_limit_mb=0": {
+   "error": "nss: memory_limit_mb must be in [1, 1048576]"
+  },
+  "BM4D|YUV420PS|memory_limit_mb=1": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|YUV420PS|memory_limit_mb=1000": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|YUV420PS|memory_limit_mb=16": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|YUV420PS|memory_limit_mb=17": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|YUV420PS|memory_limit_mb=2": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|YUV420PS|memory_limit_mb=3": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|YUV420PS|memory_limit_mb=33": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|YUV420PS|memory_limit_mb=4": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|YUV420PS|memory_limit_mb=65": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|YUV420PS|memory_limit_mb=7": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|YUV420PS|memory_limit_mb=8": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|YUV420PS|memory_limit_mb=9": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|YUV420PS|sigma=-1.0": {
+   "error": "nss.BM4D: sigma must be finite and non-negative"
+  },
+  "BM4D|YUV420PS|sigma=0.0": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|YUV420PS|sigma=0.5": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|YUV420PS|sigma=1.0": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|YUV420PS|sigma=1000.0": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|YUV420PS|sigma=3.0": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "BM4D|YUV420PS|sigma=pair": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|GRAYS|defaults": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|GRAYS|memory_limit_mb=-1": {
+   "error": "nss: memory_limit_mb must be in [1, 1048576]"
+  },
+  "DA3D|GRAYS|memory_limit_mb=0": {
+   "error": "nss: memory_limit_mb must be in [1, 1048576]"
+  },
+  "DA3D|GRAYS|memory_limit_mb=1": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|GRAYS|memory_limit_mb=1000": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|GRAYS|memory_limit_mb=16": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|GRAYS|memory_limit_mb=17": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|GRAYS|memory_limit_mb=2": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|GRAYS|memory_limit_mb=3": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|GRAYS|memory_limit_mb=33": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|GRAYS|memory_limit_mb=4": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|GRAYS|memory_limit_mb=65": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|GRAYS|memory_limit_mb=7": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|GRAYS|memory_limit_mb=8": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|GRAYS|memory_limit_mb=9": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|GRAYS|sigma=-1.0": {
+   "error": "nss.DA3D: sigma must be finite and non-negative"
+  },
+  "DA3D|GRAYS|sigma=0.0": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|GRAYS|sigma=0.5": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|GRAYS|sigma=1.0": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|GRAYS|sigma=1000.0": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|GRAYS|sigma=3.0": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|GRAYS|sigma=pair": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|RGBS|defaults": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|RGBS|memory_limit_mb=-1": {
+   "error": "nss: memory_limit_mb must be in [1, 1048576]"
+  },
+  "DA3D|RGBS|memory_limit_mb=0": {
+   "error": "nss: memory_limit_mb must be in [1, 1048576]"
+  },
+  "DA3D|RGBS|memory_limit_mb=1": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|RGBS|memory_limit_mb=1000": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|RGBS|memory_limit_mb=16": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|RGBS|memory_limit_mb=17": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|RGBS|memory_limit_mb=2": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|RGBS|memory_limit_mb=3": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|RGBS|memory_limit_mb=33": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|RGBS|memory_limit_mb=4": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|RGBS|memory_limit_mb=65": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|RGBS|memory_limit_mb=7": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|RGBS|memory_limit_mb=8": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|RGBS|memory_limit_mb=9": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|RGBS|sigma=-1.0": {
+   "error": "nss.DA3D: sigma must be finite and non-negative"
+  },
+  "DA3D|RGBS|sigma=0.0": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|RGBS|sigma=0.5": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|RGBS|sigma=1.0": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|RGBS|sigma=1000.0": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|RGBS|sigma=3.0": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|RGBS|sigma=pair": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|YUV420PS|defaults": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|YUV420PS|memory_limit_mb=-1": {
+   "error": "nss: memory_limit_mb must be in [1, 1048576]"
+  },
+  "DA3D|YUV420PS|memory_limit_mb=0": {
+   "error": "nss: memory_limit_mb must be in [1, 1048576]"
+  },
+  "DA3D|YUV420PS|memory_limit_mb=1": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|YUV420PS|memory_limit_mb=1000": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|YUV420PS|memory_limit_mb=16": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|YUV420PS|memory_limit_mb=17": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|YUV420PS|memory_limit_mb=2": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|YUV420PS|memory_limit_mb=3": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|YUV420PS|memory_limit_mb=33": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|YUV420PS|memory_limit_mb=4": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|YUV420PS|memory_limit_mb=65": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|YUV420PS|memory_limit_mb=7": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|YUV420PS|memory_limit_mb=8": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|YUV420PS|memory_limit_mb=9": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|YUV420PS|sigma=-1.0": {
+   "error": "nss.DA3D: sigma must be finite and non-negative"
+  },
+  "DA3D|YUV420PS|sigma=0.0": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|YUV420PS|sigma=0.5": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|YUV420PS|sigma=1.0": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|YUV420PS|sigma=1000.0": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|YUV420PS|sigma=3.0": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "DA3D|YUV420PS|sigma=pair": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
   "LSSC|GRAYS|block_size=-1": {
    "error": "nss.LSSC: block_size must be 1, 2, 4, 8, or 16"
   },
@@ -30043,7 +31009,9 @@
  },
  "functions": {
   "BM3D": "clip:vnode;ref:vnode:opt;sigma:float[]:opt;block_size:int[]:opt;group_size:int[]:opt;block_step:int[]:opt;bm_range:int[]:opt;radius:int:opt;ps_num:int[]:opt;ps_range:int[]:opt;chroma:int:opt;final:int:opt;sigma_basic:float[]:opt;block_size_basic:int[]:opt;group_size_basic:int[]:opt;temporal_mode:data:opt;rolling_chunk:int:opt;rolling_cache_chunks:int:opt;rolling_cache_limit:int:opt;memory_limit_mb:int:opt;",
+  "BM4D": "clip:vnode;sigma:float[]:opt;memory_limit_mb:int:opt;",
   "Backend": "",
+  "DA3D": "clip:vnode;ref:vnode;sigma:float[]:opt;memory_limit_mb:int:opt;",
   "LSSC": "clip:vnode;sigma:float[]:opt;block_size:int:opt;block_step:int:opt;radius:int:opt;memory_limit_mb:int:opt;",
   "MCWNNM": "clip:vnode;sigma:float[]:opt;block_size:int:opt;block_step:int:opt;group_size:int:opt;bm_range:int:opt;radius:int:opt;ps_num:int:opt;ps_range:int:opt;residual:int:opt;adaptive_aggregation:int:opt;rclip:vnode:opt;admm_iter:int:opt;rho:float:opt;mu:float:opt;iters:int:opt;delta:float:opt;memory_limit_mb:int:opt;temporal_mode:data:opt;rolling_chunk:int:opt;rolling_cache_chunks:int:opt;rolling_cache_limit:int:opt;",
   "NCSR": "clip:vnode;sigma:float[]:opt;block_size:int:opt;block_step:int:opt;group_size:int:opt;bm_range:int:opt;radius:int:opt;ps_num:int:opt;ps_range:int:opt;rclip:vnode:opt;iters:int:opt;delta:float:opt;memory_limit_mb:int:opt;temporal_mode:data:opt;rolling_chunk:int:opt;rolling_cache_chunks:int:opt;rolling_cache_limit:int:opt;",

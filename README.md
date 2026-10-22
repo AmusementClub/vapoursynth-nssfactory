@@ -1,8 +1,9 @@
 # vapoursynth-nssfactory
 
 VapourSynth plugins for the classical non-local self-similarity (NSS)
-denoisers — BM3D, NLM, WNNM, MCWNNM, NCSR, LSSC, TWSC and NLH — implemented
-from their papers, with reproducible numerics.
+denoisers — BM3D, BM4D, NLM, WNNM, MCWNNM, NCSR, LSSC, TWSC and NLH — plus
+DA3D, a last step on top of any of them, implemented from their papers, with
+reproducible numerics.
 
 | Plugin | Namespace | Runs on |
 |---|---|---|
@@ -10,7 +11,8 @@ from their papers, with reproducible numerics.
 | `libnss_cuda` | `nss_cuda` | NVIDIA GPUs of compute capability 7.5 or newer (Linux, Windows) |
 
 Both plugins take the same arguments and give the same results (the GPU's
-output is 60 dB PSNR or more from the CPU's). Input is constant-format 32-bit
+output is 60 dB PSNR or more from the CPU's; BM4D's and DA3D's are the same
+bits). Input is constant-format 32-bit
 float Gray, YUV or RGB. The project is a work in progress.
 
 ## Filters
@@ -18,6 +20,7 @@ float Gray, YUV or RGB. The project is a work in progress.
 | Filter | Method | Good for |
 |---|---|---|
 | [BM3D](docs/api/bm3d.md) | Block matching and 3D transform shrinkage; color (CBM3D) and two-stage modes | General use; the fastest |
+| [BM4D](docs/api/bm4d.md) | Block matching and 4D filtering: the clip as a volume of cubes | Held frames, still and slow scenes (heavy on the CPU) |
 | [NLM](docs/api/nlm.md) | Non-local means | Light noise |
 | [WNNM](docs/api/wnnm.md) | Weighted nuclear norm minimization | Texture and edge retention |
 | [MCWNNM](docs/api/mcwnnm.md) | Multi-channel WNNM | RGB color noise |
@@ -25,6 +28,7 @@ float Gray, YUV or RGB. The project is a work in progress.
 | [LSSC](docs/api/lssc.md) | Learned simultaneous sparse coding | Structured noise, film grain |
 | [TWSC](docs/api/twsc.md) | Trilateral weighted sparse coding | Real-world noise |
 | [NLH](docs/api/nlh.md) | Non-local Haar transform with blind noise estimation | Real-world noise of unknown level |
+| [DA3D](docs/api/da3d.md) | Data-adaptive dual-domain denoising, on another denoiser's output | A last step at moderate to strong noise |
 
 ## Usage
 
@@ -36,6 +40,7 @@ clip = core.resize.Bicubic(src, format=vs.YUV420PS)   # 32-bit float input
 out = core.nss.BM3D(clip, sigma=5)                    # CPU
 out = core.nss_cuda.BM3D(clip, sigma=5)               # GPU, same arguments
 out = core.nss_cuda.WNNM(clip, sigma=5, radius=1)     # temporal
+out = core.nss.DA3D(clip, core.nss.BM3D(clip, sigma=20, final=1), sigma=15)  # DA3D on BM3D
 ```
 
 - `sigma` is the noise standard deviation in 8-bit units (5 means 5/255).
@@ -78,3 +83,8 @@ genfft (`gen_r2r`) and distributed under GPLv2 or later. Copyright (c)
 1997-1999, 2003, 2007-14 Massachusetts Institute of Technology and Matteo
 Frigo. They are not linked against `libfftw3`; regenerate them with
 `tools/gen_dct_codelets.sh`.
+
+DA3D (`src/cpu/da3d/`) is adapted from the
+[IPOL reference implementation](https://github.com/gfacciol/da3d) by Nicola
+Pierazzo and Gabriele Facciolo, BSD-2-Clause; its notice is in
+[NOTICE](NOTICE).
