@@ -139,6 +139,9 @@ __global__ void finish_kernel(const float* src, const float* weight, const float
     out[i] = (mul * src[i] + wdst[i]) / (mul + weight[i]);
 }
 
+// Rows of the distance map and of its row sums in shared memory: a multiple of four floats.
+__host__ __device__ constexpr int map_pitch(int floats) { return (floats + 3) & ~3; }
+
 // Row of element e in a region `width` wide, with inverse = 1 / width. Exact
 // for the element counts of a tile (below 2^16).
 __device__ __forceinline__ int element_row(int e, float inverse) {
@@ -186,6 +189,9 @@ __device__ __forceinline__ void tile_weights(float* dm, float* hs, float* wt, co
                                              float* save = nullptr) {
     const int rw = rx1 - rx0 + 1, rh = ry1 - ry0 + 1;
     const int dw = rw + 2 * s, dh = rh + 2 * s;
+    // Row pitches of the distance map and the row sums (map_pitch): multiples of four floats, so that the
+    // row sums below read a row in 16-byte loads.
+    const int hp = map_pitch(rw), dp = S >= 0 ? hp + map_pitch(2 * s) : dw;
     const float inv_dw = 1.0f / static_cast<float>(dw);
     const float inv_rw = 1.0f / static_cast<float>(rw);
     // stride and origin index a frame or its window: (x, y) is at y * stride + x - origin.
@@ -200,39 +206,86 @@ __device__ __forceinline__ void tile_weights(float* dm, float* hs, float* wt, co
         // Nothing of the region and its neighbours is outside the image.
         const int first = (ry0 - s) * stride + rx0 - s - origin, shift = oy * stride + ox, skip = stride - dw;
         for (int e = tid; e < dw * dh; e += NT) {
-            const int at = first + e + element_row(e, inv_dw) * skip;
-            dm[e] = distance(at, at + shift);
+            const int ey = element_row(e, inv_dw);
+            const int at = first + e + ey * skip;
+            dm[ey * dp + e - ey * dw] = distance(at, at + shift);
         }
     } else {
         for (int e = tid; e < dw * dh; e += NT) {
             const int ey = element_row(e, inv_dw);
             const int px = clampi(rx0 - s + e - ey * dw, 0, width - 1), py = clampi(ry0 - s + ey, 0, height - 1);
-            dm[e] = distance(py * stride + px - origin,
-                             clampi(py + oy, 0, height - 1) * stride + clampi(px + ox, 0, width - 1) - origin);
+            dm[ey * dp + e - ey * dw] = distance(py * stride + px - origin,
+                                                 clampi(py + oy, 0, height - 1) * stride + clampi(px + ox, 0, width - 1) - origin);
         }
     }
     __syncthreads();
-    for (int e = tid; e < rw * dh; e += NT) {
-        const int ey = element_row(e, inv_rw);
-        hs[e] = box_sum<S>(dm + ey * dw + (e - ey * rw), 1, s);
-    }
-    __syncthreads();
-    for (int e = tid; e < rw * rh; e += NT) {
-        const float value = fast_exp(-box_sum<S>(hs + e, rw, s) * h2_inv_norm);
-        wt[e] = value;
-        if (save) {
+    if constexpr (S >= 0) {
+        // Row sums four a thread: the 4 + 2S values they read in 16-byte loads, then each sum in ascending
+        // order as box_sum (columns past rw are padding, never read below).
+        constexpr int kTaps = 2 * S + 1, kVals = 4 + 2 * S, kQuads = (kVals + 3) / 4;
+        const int quads = hp / 4;
+        const float inv_quads = 1.0f / static_cast<float>(quads);
+        for (int e = tid; e < quads * dh; e += NT) {
+            const int ey = element_row(e, inv_quads), c4 = e - ey * quads;
+            const float4* row = reinterpret_cast<const float4*>(dm + ey * dp) + c4;
+            float v[4 * kQuads];
+#pragma unroll
+            for (int q = 0; q < kQuads; ++q) {
+                const float4 f = row[q];
+                v[4 * q] = f.x, v[4 * q + 1] = f.y, v[4 * q + 2] = f.z, v[4 * q + 3] = f.w;
+            }
+            float out[4];
+#pragma unroll
+            for (int k = 0; k < 4; ++k) {
+                float sum = 0.f;
+#pragma unroll
+                for (int t = 0; t < kTaps; ++t) sum += v[k + t];
+                out[k] = sum;
+            }
+            reinterpret_cast<float4*>(hs + ey * hp)[c4] = make_float4(out[0], out[1], out[2], out[3]);
+        }
+        __syncthreads();
+        // Column sums four rows a thread (neighbouring threads take neighbouring columns), each in ascending
+        // order as box_sum.
+        const int groups = (rh + 3) / 4;
+        for (int e = tid; e < rw * groups; e += NT) {
+            const int g = element_row(e, inv_rw), x = e - g * rw, ey0 = 4 * g;
+            float v[kVals];
+#pragma unroll
+            for (int t = 0; t < kVals; ++t) v[t] = ey0 + t < dh ? hs[(ey0 + t) * hp + x] : 0.f;
+#pragma unroll
+            for (int k = 0; k < 4; ++k) {
+                if (ey0 + k >= rh) break;
+                float sum = 0.f;
+#pragma unroll
+                for (int t = 0; t < kTaps; ++t) sum += v[k + t];
+                const float value = fast_exp(-sum * h2_inv_norm);
+                wt[(ey0 + k) * rw + x] = value;
+                if (save) save[(ry0 + ey0 + k) * width + rx0 + x] = value;
+            }
+        }
+    } else {
+        for (int e = tid; e < rw * dh; e += NT) {
             const int ey = element_row(e, inv_rw);
-            save[(ry0 + ey) * width + rx0 + e - ey * rw] = value;
+            hs[ey * hp + e - ey * rw] = box_sum<S>(dm + ey * dp + (e - ey * rw), 1, s);
+        }
+        __syncthreads();
+        for (int e = tid; e < rw * rh; e += NT) {
+            const int ey = element_row(e, inv_rw);
+            const float value = fast_exp(-box_sum<S>(hs + ey * hp + e - ey * rw, hp, s) * h2_inv_norm);
+            wt[e] = value;
+            if (save) save[(ry0 + ey) * width + rx0 + e - ey * rw] = value;
         }
     }
     __syncthreads();
 }
 
 // Shared floats of a TW x TH tile: the distance map, its row sums and the
-// weights of the largest region (the tile and its mirror, |offset| = a).
+// weights of the largest region (the tile and its mirror, |offset| = a); the
+// map and the row sums with rows of map_pitch floats (tile_weights).
 constexpr long long tile_floats(int tw, int th, int a, int s) {
-    const long long rw = tw + a, rh = th + a;
-    return (rw + 2LL * s) * (rh + 2LL * s) + rw * (rh + 2LL * s) + rw * rh;
+    const long long rw = tw + a, rh = th + a, hp = map_pitch(tw + a), dp = hp + map_pitch(2 * s);
+    return dp * (rh + 2LL * s) + hp * (rh + 2LL * s) + rw * rh;
 }
 // And of the windows of three frames (the centre and one pair) a tile reads:
 // its halo of a + s and the neighbours a further.
@@ -246,17 +299,25 @@ constexpr long long window_floats(int tw, int th, int a, int s, int channels) {
 // of their windows in shared memory. With KEEP it saves and loads weight maps
 // (NlmTileArgs::weight_save, weight_load); without, the kernel is the one
 // that knows nothing of them.
+// Two blocks per SM. CUDA 12 (the release toolkit, 12.9) gives the instances 70 to 96 registers without
+// a bound, one 512-thread block per SM (415 against 565 fps at the 1080p defaults); 13.x picks 64 itself,
+// and the bound there changes its code (0.90 at the defaults), so it is given to CUDA 12 only.
+#if defined(__CUDACC_VER_MAJOR__) && __CUDACC_VER_MAJOR__ < 13
+#define NSS_NLM_TILE_BOUNDS(threads) __launch_bounds__(threads, 2)
+#else
+#define NSS_NLM_TILE_BOUNDS(threads)
+#endif
 template <int TW, int TH, int PIX, int S, bool IMG, bool KEEP>
-__global__ void tile_kernel(NlmTileArgs a) {
+__global__ void NSS_NLM_TILE_BOUNDS(TW * TH / PIX) tile_kernel(NlmTileArgs a) {
     constexpr int NT = TW * TH / PIX;
-    extern __shared__ float shared[];
+    extern __shared__ __align__(16) float shared[];
     const int tid = threadIdx.x;
     const int width = a.width, height = a.height, s = a.s;
     const int x0 = blockIdx.x * TW, y0 = blockIdx.y * TH;
     const int x1 = min(x0 + TW, width) - 1, y1 = min(y0 + TH, height) - 1;
     float* const dm = shared;
-    float* const hs = dm + (TW + a.a + 2 * s) * (TH + a.a + 2 * s);
-    float* const wt = hs + (TW + a.a) * (TH + a.a + 2 * s);
+    float* const hs = dm + (map_pitch(TW + a.a) + map_pitch(2 * s)) * (TH + a.a + 2 * s);
+    float* const wt = hs + map_pitch(TW + a.a) * (TH + a.a + 2 * s);
 
     int x[PIX], y[PIX];
     bool inside[PIX];
