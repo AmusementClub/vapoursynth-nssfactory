@@ -84,9 +84,11 @@ set(NSS_CUDA_IEEE_SOURCES
   twsc/kernels.cu
   wnnm/kernels.cu
 )
-# Exact ports of a CPU model (DA3D, BM4D): no contraction, so that every
-# fused multiply-add is the explicit fmaf the CPU kernel also fuses and the
-# output is the CPU's bit for bit.
+# Ports of a CPU model (DA3D, BM4D): no contraction, so that every fused
+# multiply-add is the explicit fmaf the CPU kernel also fuses. Their
+# transforms keep the CPU's arithmetic; since 2026-10-22 their sums (DA3D) and
+# matching (BM4D on sm_80+) do not, so the output is close to the CPU's, not
+# the same bits (tests/cuda/test_cuda_{da3d,bm4d}_live.py).
 set(NSS_CUDA_EXACT_OPTIONS -O3 --fmad=false -prec-div=true -prec-sqrt=true -ftz=false)
 set(NSS_CUDA_EXACT_SOURCES
   bm4d/kernels.cu

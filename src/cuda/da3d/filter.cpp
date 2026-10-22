@@ -27,7 +27,7 @@ namespace {
 struct Slot {
     Stream stream;
     DeviceBuffer noisy, guide, out, transformed, work, stats;
-    PinnedBuffer staging;  // 3 noisy + 3 guide + 3 out planes
+    PinnedBuffer staging;  // noisy, guide and out: frame_floats each
     PinnedBuffer stats_host;
 };
 
@@ -39,6 +39,7 @@ struct Da3dData : nss::Da3dParams {
     DeviceInfo device;
     bool joint = false;
     std::size_t plane_floats = 0;  // largest plane
+    std::size_t frame_floats = 0;  // the planes filtered (joint: three), side by side
     int unit_channels = 1;
     DeviceBuffer tables;
     std::unique_ptr<SlotPool<Slot>> pool;
@@ -69,44 +70,44 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
             ~Drain() { cudaStreamSynchronize(s.stream.get()); }
         } drain{s};
         auto* staging = s.staging.as<std::uint8_t>();
-        const std::size_t plane_bytes = d->plane_floats * sizeof(float);
+        const std::size_t frame = d->frame_floats;
         const Da3dTables tables{d->tables.as<float>(), d->tables.as<float>() + 128};
-        auto run = [&](const int* planes, int count, float sigma) {
-            const int w = nss::plane_width(d->vi, planes[0]), h = nss::plane_height(d->vi, planes[0]);
+        // One launch: the joint unit, or every plane with a sigma (each a unit,
+        // its tiles beside the others'); the planes lie side by side in the
+        // buffers (offset[c] floats), and one synchronization ends the frame.
+        int planes[3], count = 0;
+        std::size_t offset[4] = {};
+        Da3dUnit units[3];
+        auto add = [&](int plane, int c, Da3dUnit& u) {
+            const int w = nss::plane_width(d->vi, plane), h = nss::plane_height(d->vi, plane);
             const std::size_t row = static_cast<std::size_t>(w) * sizeof(float);
-            const std::size_t floats = static_cast<std::size_t>(w) * h;
+            offset[c + 1] = offset[c] + static_cast<std::size_t>(w) * h;
+            u.noisy[u.channels] = s.noisy.as<float>() + offset[c];
+            u.guide[u.channels] = s.guide.as<float>() + offset[c];
+            u.out[u.channels] = s.out.as<float>() + offset[c];
+            ++u.channels;
+            upload_plane(vsapi->getReadPtr(noisy, plane), vsapi->getStride(noisy, plane), row, h,
+                         staging + offset[c] * sizeof(float), s.noisy.as<float>() + offset[c], row, s.stream);
+            upload_plane(vsapi->getReadPtr(guide, plane), vsapi->getStride(guide, plane), row, h,
+                         staging + (frame + offset[c]) * sizeof(float), s.guide.as<float>() + offset[c], row, s.stream);
+        };
+        auto unit_of = [&](int plane, float sigma) {
             Da3dUnit u;
-            u.channels = count;
-            u.width = w;
-            u.height = h;
-            u.rgb = count == 3;
+            u.channels = 0;
+            u.width = nss::plane_width(d->vi, plane);
+            u.height = nss::plane_height(d->vi, plane);
             u.sigma = sigma / 255.f;
             u.transformed = s.transformed.as<float>();
-            for (int c = 0; c < count; ++c) {
-                const int plane = planes[c];
-                u.noisy[c] = s.noisy.as<float>() + c * floats;
-                u.guide[c] = s.guide.as<float>() + c * floats;
-                u.out[c] = s.out.as<float>() + c * floats;
-                upload_plane(vsapi->getReadPtr(noisy, plane), vsapi->getStride(noisy, plane), row, h,
-                             staging + c * plane_bytes, s.noisy.as<float>() + c * floats, row, s.stream);
-                upload_plane(vsapi->getReadPtr(guide, plane), vsapi->getStride(guide, plane), row, h,
-                             staging + (3 + c) * plane_bytes, s.guide.as<float>() + c * floats, row, s.stream);
-            }
-            da3d_run(u, tables, s.work.get(), s.work.bytes(), s.stats.as<unsigned long long>(), s.stream);
-            for (int c = 0; c < count; ++c)
-                begin_download(s.out.as<float>() + c * floats, row, row, h, staging + (6 + c) * plane_bytes, s.stream);
-            NSS_CUDA_CHECK(cudaMemcpyAsync(s.stats_host.get(), s.stats.get(), 2 * sizeof(unsigned long long),
-                                           cudaMemcpyDeviceToHost, s.stream));
-            s.stream.synchronize();
-            for (int c = 0; c < count; ++c)
-                finish_download(staging + (6 + c) * plane_bytes, row, h, vsapi->getWritePtr(dst, planes[c]),
-                                vsapi->getStride(dst, planes[c]));
-            patches += s.stats_host.as<unsigned long long>()[0];
-            guide_only += s.stats_host.as<unsigned long long>()[1];
+            return u;
         };
         if (d->joint) {
-            const int planes[3] = {0, 1, 2};
-            run(planes, 3, d->sigma[0]);
+            units[0] = unit_of(0, d->sigma[0]);
+            units[0].rgb = true;
+            for (int c = 0; c < 3; ++c) {
+                add(c, c, units[0]);
+                planes[c] = c;
+            }
+            count = 1;
         } else {
             for (int plane = 0; plane < d->vi.format.numPlanes; ++plane) {
                 if (d->sigma[plane] == 0.f) {
@@ -116,8 +117,31 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
                                 nss::plane_height(d->vi, plane));
                     continue;
                 }
-                run(&plane, 1, d->sigma[plane]);
+                units[count] = unit_of(plane, d->sigma[plane]);
+                add(plane, count, units[count]);
+                planes[count++] = plane;
             }
+        }
+        if (count) {
+            da3d_run(units, count, tables, s.work.get(), s.work.bytes(), s.stats.as<unsigned long long>(), s.stream);
+            const int outputs = d->joint ? 3 : count;
+            for (int c = 0; c < outputs; ++c) {
+                const int plane = planes[c];
+                const std::size_t row = static_cast<std::size_t>(nss::plane_width(d->vi, plane)) * sizeof(float);
+                begin_download(s.out.as<float>() + offset[c], row, row, nss::plane_height(d->vi, plane),
+                               staging + (2 * frame + offset[c]) * sizeof(float), s.stream);
+            }
+            NSS_CUDA_CHECK(cudaMemcpyAsync(s.stats_host.get(), s.stats.get(), 2 * sizeof(unsigned long long),
+                                           cudaMemcpyDeviceToHost, s.stream));
+            s.stream.synchronize();
+            for (int c = 0; c < outputs; ++c) {
+                const int plane = planes[c];
+                const std::size_t row = static_cast<std::size_t>(nss::plane_width(d->vi, plane)) * sizeof(float);
+                finish_download(staging + (2 * frame + offset[c]) * sizeof(float), row, nss::plane_height(d->vi, plane),
+                                vsapi->getWritePtr(dst, plane), vsapi->getStride(dst, plane));
+            }
+            patches = s.stats_host.as<unsigned long long>()[0];
+            guide_only = s.stats_host.as<unsigned long long>()[1];
         }
     }
     VSMap* props = vsapi->getFramePropertiesRW(dst);
@@ -152,17 +176,29 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     d.device = acquire_device(d.backend.device_id, "DA3D", core, vsapi);
     d.budget = nss::current_budget();
     d.unit_channels = d.joint ? 3 : 1;
-    std::size_t work = 0;
+    std::size_t work = 0;  // a joint unit's, or the sum of the planes' (one launch)
     for (int plane = 0; plane < d.vi.format.numPlanes; ++plane) {
         const int w = nss::plane_width(d.vi, plane), h = nss::plane_height(d.vi, plane);
         d.plane_floats = std::max(d.plane_floats, static_cast<std::size_t>(w) * h);
-        if (d.sigma[plane] > 0.f) work = std::max(work, da3d_work_bytes(w, h, d.unit_channels));
+        if (d.sigma[plane] > 0.f) {
+            const std::size_t bytes = da3d_work_bytes(w, h, d.unit_channels);
+            work = d.joint ? std::max(work, bytes) : work + bytes;
+            if (!d.joint) d.frame_floats += static_cast<std::size_t>(w) * h;
+        }
     }
+    if (d.joint) d.frame_floats = 3 * d.plane_floats;
     const std::size_t plane_bytes = d.plane_floats * sizeof(float);
-    const std::size_t stream_bytes = 3 * 3 * plane_bytes + (d.joint ? 6 * plane_bytes : 0) + work + 9 * plane_bytes;
+    const std::size_t frame_bytes = std::max<std::size_t>(d.frame_floats, 1) * sizeof(float);
+    // device: noisy, guide, out (+ the transformed planes) and work; pinned staging
+    const std::size_t stream_bytes = 3 * frame_bytes + (d.joint ? 6 * plane_bytes : 0) + work + 3 * frame_bytes;
     const std::size_t limit = d.budget ? d.budget->snapshot().limit : SIZE_MAX;
+    // Single-channel tiles run two to an SM, and a third frame in flight
+    // fills the GPU (gray 1080p sigma 10: 70.7 to 86.2 fps); joint RGB is
+    // saturated with two.
+    const std::size_t max_streams = d.joint ? 2 : 3;
     if (!d.backend.streams_explicit)
-        d.backend.num_streams = static_cast<int>(std::clamp<std::size_t>(limit / std::max<std::size_t>(stream_bytes, 1), 1, 2));
+        d.backend.num_streams =
+            static_cast<int>(std::clamp<std::size_t>(limit / std::max<std::size_t>(stream_bytes, 1), 1, max_streams));
     if (limit / static_cast<std::size_t>(d.backend.num_streams) < stream_bytes) {
         throw std::invalid_argument("nss_cuda.DA3D: memory_limit_mb is too small for this clip: each of the " +
                                     std::to_string(d.backend.num_streams) + " stream(s) needs at least " +
@@ -177,13 +213,13 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         std::vector<std::unique_ptr<Slot>> slots;
         for (int i = 0; i < d.backend.num_streams; ++i) {
             auto s = std::make_unique<Slot>();
-            s->noisy = DeviceBuffer(3 * plane_bytes, d.budget);
-            s->guide = DeviceBuffer(3 * plane_bytes, d.budget);
-            s->out = DeviceBuffer(3 * plane_bytes, d.budget);
+            s->noisy = DeviceBuffer(frame_bytes, d.budget);
+            s->guide = DeviceBuffer(frame_bytes, d.budget);
+            s->out = DeviceBuffer(frame_bytes, d.budget);
             if (d.joint) s->transformed = DeviceBuffer(6 * plane_bytes, d.budget);
             if (work) s->work = DeviceBuffer(work, d.budget);
             s->stats = DeviceBuffer(2 * sizeof(unsigned long long), d.budget);
-            s->staging = PinnedBuffer(9 * plane_bytes, d.budget);
+            s->staging = PinnedBuffer(3 * frame_bytes, d.budget);
             s->stats_host = PinnedBuffer(2 * sizeof(unsigned long long), d.budget);
             slots.push_back(std::move(s));
         }
