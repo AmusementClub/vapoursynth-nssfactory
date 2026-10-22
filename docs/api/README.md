@@ -24,7 +24,9 @@ more cores.
 | [NLH](nlh.md) | ~6621* | yes | Real-world noise of unknown level |
 | [MCWNNM](mcwnnm.md) | ~2326 | yes | RGB color noise |
 
-[DA3D](da3d.md) is not a denoiser on its own: it takes the noisy clip and
+[BM4D](bm4d.md) (about 6.6 s a frame, temporal by construction) treats the
+clip as a volume of 3D cubes; it beats temporal BM3D on still and slowly
+moving content, and is the slowest. [DA3D](da3d.md) is not a denoiser on its own: it takes the noisy clip and
 another filter's output and returns a refined result (see its page for its
 gain and cost).
 
@@ -88,6 +90,7 @@ the call: same result, same cost and memory as the two calls above, and
 `rolling_chunk` and the cache arguments are checked but change nothing.
 
 NLM is temporal through its own `d` argument and always returns finished
+frames; BM4D is temporal by construction (no `radius`) and returns finished
 frames; LSSC has no temporal mode. The GPU plugin returns finished frames by
 default and rolls every temporal filter on the device.
 

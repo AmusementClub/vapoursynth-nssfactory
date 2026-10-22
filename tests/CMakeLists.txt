@@ -189,6 +189,17 @@ if(NSS_TEST_ISA_VARIANTS)
   endforeach()
 endif()
 
+add_executable(test_bm4d test_bm4d.cpp)
+target_link_libraries(test_bm4d PRIVATE nss_cpu nss_workspace)
+target_compile_options(test_bm4d PRIVATE ${NSS_DA3D_TEST_FLAGS})
+add_test(NAME test_bm4d COMMAND test_bm4d)
+if(NSS_TEST_ISA_VARIANTS)
+  foreach(isa avx2 avx3)
+    add_test(NAME test_bm4d_${isa} COMMAND test_bm4d ${isa})
+    set_tests_properties(test_bm4d_${isa} PROPERTIES SKIP_RETURN_CODE 77)
+  endforeach()
+endif()
+
 add_executable(test_lssc_omp test_lssc_omp.cpp)
 target_link_libraries(test_lssc_omp PRIVATE nss_cpu nss_workspace)
 add_test(NAME test_lssc_omp COMMAND test_lssc_omp)
@@ -313,6 +324,11 @@ if(VapourSynth_FOUND)
              COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_da3d_plugin.py"
                      --plugin "$<TARGET_FILE:nss>")
     set_tests_properties(test_da3d_plugin PROPERTIES LABELS "plugin" SKIP_RETURN_CODE 77)
+    # BM4D: denoising, random access and concurrency, chunk geometry, planes, limits.
+    add_test(NAME test_bm4d_plugin
+             COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_bm4d_plugin.py"
+                     --plugin "$<TARGET_FILE:nss>")
+    set_tests_properties(test_bm4d_plugin PROPERTIES LABELS "plugin" SKIP_RETURN_CODE 77)
     # temporal_mode="rolling" equals legacy + VAggregate for every temporal filter.
     add_test(NAME test_temporal_rolling
              COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_temporal_rolling.py"

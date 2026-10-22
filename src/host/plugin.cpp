@@ -16,6 +16,7 @@ void register_nlh(VSPlugin* plugin, const VSPLUGINAPI* vspapi);
 void register_ncsr(VSPlugin* plugin, const VSPLUGINAPI* vspapi);
 void register_lssc(VSPlugin* plugin, const VSPLUGINAPI* vspapi);
 void register_da3d(VSPlugin* plugin, const VSPLUGINAPI* vspapi);
+void register_bm4d(VSPlugin* plugin, const VSPLUGINAPI* vspapi);
 
 static void VS_CC versionCreate(const VSMap* in, VSMap* out, void* userData, VSCore* core, const VSAPI* vsapi) {
     (void)in;
@@ -56,4 +57,5 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin* plugin, const VSPLUGINAPI
     register_ncsr(plugin, vspapi);
     register_lssc(plugin, vspapi);
     register_da3d(plugin, vspapi);
+    register_bm4d(plugin, vspapi);
 }
