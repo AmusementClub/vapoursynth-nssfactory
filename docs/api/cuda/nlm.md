@@ -17,9 +17,9 @@ denoised = core.nss_cuda.NLM(clip, d=1, a=4, s=3, h=1.5, channels="Y")
 
 | Call | YUV420 | RGB |
 |---|---:|---:|
-| default (`d=1`) | 490 | 235 |
+| default (`d=1`) | 490 | 255 |
 
-These are the release build's (CUDA 12.9). A CUDA 13 build gives the same output at 620 / 235 fps: its code
+These are the release build's (CUDA 12.9). A CUDA 13 build gives the same output at 620 / 260 fps: its code
 generation suits this kernel better
 ([toolkit note](compare.md#notes)).
 
@@ -29,8 +29,8 @@ The defaults are fast settings. Settings closer to the paper, with their quality
 
 | Arguments | PSNR, sigma 15 | PSNR, sigma 25 | fps YUV420 / RGB |
 |---|---:|---:|---:|
-| defaults (`h=1.2`) | 24.97 dB | 20.98 dB | 490 / 235 |
-| `d=0, h=0.6 σ` | 32.44 dB | 28.94 dB | 785 / 240 |
+| defaults (`h=1.2`) | 24.97 dB | 20.98 dB | 490 / 255 |
+| `d=0, h=0.6 σ` | 32.44 dB | 28.94 dB | 785 / 280 |
 | `a=10, s=3, d=0, h=0.6 σ` | 33.31 dB | 30.53 dB | 123 / 79 |
 
 - `h` is the KNLMeansCL scale (the weight is exp(-mean squared patch difference / h^2), without the paper's -2 sigma^2 offset), so it has to grow with the noise: the default `h=1.2` leaves noise of sigma 3 or more untouched. About 0.6 σ is best on a single frame (`d=0`), about 0.8 σ with `d` ≥ 1 on video, where the neighbouring frames carry their own noise.

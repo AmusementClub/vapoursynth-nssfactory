@@ -17,7 +17,7 @@ warm-up; the images differ by at most 3%.
 | Filter | YUV420 | RGB | Temporal, `radius=1` (YUV420 / RGB) |
 |---|---:|---:|---:|
 | [BM3D](bm3d.md) | 495 | 280 | 455 / 230 |
-| [NLM](nlm.md) | 490 | 235 | (temporal by default, `d=1`) |
+| [NLM](nlm.md) | 490 | 255 | (temporal by default, `d=1`) |
 | [WNNM](wnnm.md) | 500 | 285 | 455 / 230 |
 | [MCWNNM](mcwnnm.md) | — | 200 | — / 135 |
 | [NCSR](ncsr.md) | 390 | 215 | 265 / 135 |
@@ -39,7 +39,7 @@ warm-up; the images differ by at most 3%.
 - MCWNNM takes RGB only.
 - The release packages are built with CUDA 12.9. A CUDA 13 build gives the same output and
   the same speed within 5% for every filter except NLM, which runs about 1.25x faster at its
-  defaults (620 / 235 fps).
+  defaults (620 / 260 fps).
 - Against BM3DCUDA, VapourSynth-WNNM, vs-nlm-ispc and vs-nlm-cuda at the same arguments, and
   r2 against r1: [Against other plugins](compare.md).
 - The CPU plugin's speed is on the [CPU API guide](../README.md).
@@ -61,7 +61,7 @@ noise added; PSNR against the frame without it, noisy input 24.97 dB):
 | [LSSC](lssc.md#closer-to-the-papers) | `block_step=3` | 31.9 → 32.2 | 170 → 122 |
 | [TWSC](twsc.md#closer-to-the-papers) | `block_step=4, group_size=90, iters=4` | 25.3 → 36.8 | 44 → 0.38 |
 | [NLH](nlh.md#closer-to-the-papers) | defaults (or `sigma=σ`) | 35.2 (35.6) | 31 |
-| [NLM](nlm.md#closer-to-the-papers) | `a=10, s=3, d=0, h=0.6 σ` | 25.0 → 33.3 | 235 → 79 |
+| [NLM](nlm.md#closer-to-the-papers) | `a=10, s=3, d=0, h=0.6 σ` | 25.0 → 33.3 | 255 → 79 |
 
 - One image: take these as starting points, not tuned presets.
 
