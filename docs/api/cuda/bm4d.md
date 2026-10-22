@@ -16,12 +16,14 @@ sigma 5 added:
 
 | Clip | fps |
 |---|---:|
-| gray | 19.7 |
-| YUV420 | 14.2 |
+| gray | 23 |
+| YUV420 | 16 |
 
-About 19 times the CPU plugin on a 16-thread Ryzen 9 5950X (gray: 1.0 fps).
+About 23 times the CPU plugin on a 16-thread Ryzen 9 5950X (gray: 1.0 fps).
 Asking for one frame computes its 32-frame chunk; the chunk's other frames
-come from the cache.
+come from the cache. Once the requests reach the last three quarters of a
+chunk, the next chunk's frames are fetched and uploaded while this one
+computes.
 
 ## Signature
 
@@ -30,7 +32,8 @@ core.nss_cuda.BM4D(clip clip[, float[] sigma = 3.0, int memory_limit_mb,
                    int device_id = 0, int num_streams])
 ```
 
-`num_streams` is accepted for the common signature; chunks run one at a time.
+`num_streams` is accepted for the common signature; chunks compute one at a
+time (the next chunk's upload overlaps).
 
 ## Notes
 
@@ -40,4 +43,6 @@ core.nss_cuda.BM4D(clip clip[, float[] sigma = 3.0, int memory_limit_mb,
   keep the CPU's arithmetic, and the sums are 64-bit fixed point, exact in
   any order, so the device's atomics add up to the CPU's sums.
 - **Memory**: the chunk's 48 input and 32 output frames of the largest plane
-  on the device, plus about 1 GB of work for a 1080p tile volume.
+  on the device, and 48 more input frames when the clip is longer than one
+  chunk (the next chunk's upload), plus about 1 GB of work for a
+  1080p tile volume.

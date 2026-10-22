@@ -135,16 +135,54 @@ __device__ __forceinline__ void twiddle_mul(float& xr, float& xi, float wr, floa
     xr = r;
 }
 
-// Radix-4 DIF (natural order in, digit-reversed out) or DIT (the reverse)
-// of the 64 x 64 complex array in shared memory, along its rows (Rows: each
-// column transformed) or along its columns (each row transformed), with the
-// CPU's butterflies: the same arithmetic as the CPU's row passes on its
-// transposed copy, in place.
-template <bool Dit, bool Rows, int Q>
-__device__ __forceinline__ void radix4_stage(float* re, float* im, bool inverse, const float* tw) {
-    constexpr int S = 16 / Q;
+// One radix-4 butterfly of the CPU's Dif4 / Dit4 (twiddle index t): x0..x3
+// in, outputs in place in the CPU's order.
+template <bool Dit>
+__device__ __forceinline__ void butterfly(float* xr, float* xi, int t, bool inverse, const float* tw) {
     const float sign = inverse ? -1.f : 1.f;
-    for (int item = threadIdx.x; item < 1024; item += kThreads) {
+    const float w1r = tw[t], w1i = sign * tw[64 + t];
+    const float w2r = tw[2 * t], w2i = sign * tw[64 + 2 * t];
+    const float w3r = tw[3 * t], w3i = sign * tw[64 + 3 * t];
+    if (Dit && t != 0) {
+        twiddle_mul(xr[1], xi[1], w1r, w1i);
+        twiddle_mul(xr[2], xi[2], w2r, w2i);
+        twiddle_mul(xr[3], xi[3], w3r, w3i);
+    }
+    const float ar = xr[0] + xr[2], ai = xi[0] + xi[2];
+    const float br = xr[0] - xr[2], bi = xi[0] - xi[2];
+    const float cr = xr[1] + xr[3], ci = xi[1] + xi[3];
+    const float dr = xr[1] - xr[3], di = xi[1] - xi[3];
+    float mr = br + di, mi = bi - dr;  // b - i d
+    float pr = br - di, pi = bi + dr;  // b + i d
+    if (inverse) {
+        const float tr = mr, ti = mi;
+        mr = pr;
+        mi = pi;
+        pr = tr;
+        pi = ti;
+    }
+    float er = ar - cr, ei = ai - ci;
+    if (!Dit && t != 0) {
+        twiddle_mul(mr, mi, w1r, w1i);
+        twiddle_mul(er, ei, w2r, w2i);
+        twiddle_mul(pr, pi, w3r, w3i);
+    }
+    xr[0] = ar + cr;
+    xi[0] = ai + ci;
+    xr[1] = mr;
+    xi[1] = mi;
+    xr[2] = er;
+    xi[2] = ei;
+    xr[3] = pr;
+    xi[3] = pi;
+}
+
+// The stage of quarter Q (rows g + j + {0, Q, 2Q, 3Q}) along the rows (Rows:
+// each column) or along the columns (each row), on threads lt of nt.
+template <bool Dit, bool Rows, int Q>
+__device__ __forceinline__ void radix4_stage(float* re, float* im, bool inverse, const float* tw, int lt, int nt) {
+    constexpr int S = 16 / Q;
+    for (int item = lt; item < 1024; item += nt) {
         // Rows: lanes along the columns; columns: lanes along the rows (one
         // butterfly position of 64 rows; the 65-float pitch keeps their banks apart)
         const int line = item & 63;
@@ -152,73 +190,92 @@ __device__ __forceinline__ void radix4_stage(float* re, float* im, bool inverse,
         const int j = pair % Q, g = (pair / Q) * 4 * Q;
         constexpr int unit = Rows ? kPitch : 1;
         const int base = Rows ? (g + j) * kPitch + line : line * kPitch + g + j;
-        float* p0r = re + base;
-        float* p0i = im + base;
-        float x0r = p0r[0], x0i = p0i[0];
-        float x1r = p0r[Q * unit], x1i = p0i[Q * unit];
-        float x2r = p0r[2 * Q * unit], x2i = p0i[2 * Q * unit];
-        float x3r = p0r[3 * Q * unit], x3i = p0i[3 * Q * unit];
-        const int t = j * S;
-        const float w1r = tw[t], w1i = sign * tw[64 + t];
-        const float w2r = tw[2 * t], w2i = sign * tw[64 + 2 * t];
-        const float w3r = tw[3 * t], w3i = sign * tw[64 + 3 * t];
-        if (Dit && t != 0) {
-            twiddle_mul(x1r, x1i, w1r, w1i);
-            twiddle_mul(x2r, x2i, w2r, w2i);
-            twiddle_mul(x3r, x3i, w3r, w3i);
+        float xr[4], xi[4];
+#pragma unroll
+        for (int u = 0; u < 4; ++u) {
+            xr[u] = re[base + u * Q * unit];
+            xi[u] = im[base + u * Q * unit];
         }
-        const float ar = x0r + x2r, ai = x0i + x2i;
-        const float br = x0r - x2r, bi = x0i - x2i;
-        const float cr = x1r + x3r, ci = x1i + x3i;
-        const float dr = x1r - x3r, di = x1i - x3i;
-        float mr = br + di, mi = bi - dr;  // b - i d
-        float pr = br - di, pi = bi + dr;  // b + i d
-        if (inverse) {
-            const float tr = mr, ti = mi;
-            mr = pr;
-            mi = pi;
-            pr = tr;
-            pi = ti;
+        butterfly<Dit>(xr, xi, j * S, inverse, tw);
+#pragma unroll
+        for (int u = 0; u < 4; ++u) {
+            re[base + u * Q * unit] = xr[u];
+            im[base + u * Q * unit] = xi[u];
         }
-        float er = ar - cr, ei = ai - ci;
-        if (!Dit && t != 0) {
-            twiddle_mul(mr, mi, w1r, w1i);
-            twiddle_mul(er, ei, w2r, w2i);
-            twiddle_mul(pr, pi, w3r, w3i);
-        }
-        p0r[0] = ar + cr;
-        p0i[0] = ai + ci;
-        p0r[Q * unit] = mr;
-        p0i[Q * unit] = mi;
-        p0r[2 * Q * unit] = er;
-        p0i[2 * Q * unit] = ei;
-        p0r[3 * Q * unit] = pr;
-        p0i[3 * Q * unit] = pi;
     }
-    __syncthreads();
 }
 
-// Radix-4 DIF (natural order in, digit-reversed out) or DIT (the reverse)
-// of the 64 x 64 complex array in shared memory, along its rows (Rows: each
-// column transformed) or along its columns (each row transformed), with the
-// CPU's butterflies: the same arithmetic as the CPU's row passes on its
-// transposed copy, in place.
+// The stages of quarters 16 and 4 together (DIF: 16 then 4; DIT: 4 then
+// 16): a task holds the 16 elements j0 + 4a + 16b (a, b < 4) of a line in
+// registers; both stages' butterflies stay within them.
 template <bool Dit, bool Rows>
-__device__ void radix4(float* re, float* im, bool inverse, const float* tw) {
-    if (Dit) {
-        radix4_stage<true, Rows, 1>(re, im, inverse, tw);
-        radix4_stage<true, Rows, 4>(re, im, inverse, tw);
-        radix4_stage<true, Rows, 16>(re, im, inverse, tw);
-    } else {
-        radix4_stage<false, Rows, 16>(re, im, inverse, tw);
-        radix4_stage<false, Rows, 4>(re, im, inverse, tw);
-        radix4_stage<false, Rows, 1>(re, im, inverse, tw);
+__device__ __forceinline__ void radix4_stages_16_4(float* re, float* im, bool inverse, const float* tw, int lt, int nt) {
+    for (int task = lt; task < 256; task += nt) {
+        const int line = task & 63, j0 = task >> 6;
+        constexpr int unit = Rows ? kPitch : 1;
+        const int base = Rows ? j0 * kPitch + line : line * kPitch + j0;
+        float vr[16], vi[16];  // [a * 4 + b]: position j0 + 4a + 16b
+#pragma unroll
+        for (int a = 0; a < 4; ++a)
+#pragma unroll
+            for (int b = 0; b < 4; ++b) {
+                vr[a * 4 + b] = re[base + (4 * a + 16 * b) * unit];
+                vi[a * 4 + b] = im[base + (4 * a + 16 * b) * unit];
+            }
+        auto stage16 = [&]() {  // quarter 16: over b, twiddle j0 + 4a
+#pragma unroll
+            for (int a = 0; a < 4; ++a) {
+                float xr[4], xi[4];
+#pragma unroll
+                for (int b = 0; b < 4; ++b) {
+                    xr[b] = vr[a * 4 + b];
+                    xi[b] = vi[a * 4 + b];
+                }
+                butterfly<Dit>(xr, xi, j0 + 4 * a, inverse, tw);
+#pragma unroll
+                for (int b = 0; b < 4; ++b) {
+                    vr[a * 4 + b] = xr[b];
+                    vi[a * 4 + b] = xi[b];
+                }
+            }
+        };
+        auto stage4 = [&]() {  // quarter 4: over a, twiddle 4 j0
+#pragma unroll
+            for (int b = 0; b < 4; ++b) {
+                float xr[4], xi[4];
+#pragma unroll
+                for (int a = 0; a < 4; ++a) {
+                    xr[a] = vr[a * 4 + b];
+                    xi[a] = vi[a * 4 + b];
+                }
+                butterfly<Dit>(xr, xi, 4 * j0, inverse, tw);
+#pragma unroll
+                for (int a = 0; a < 4; ++a) {
+                    vr[a * 4 + b] = xr[a];
+                    vi[a * 4 + b] = xi[a];
+                }
+            }
+        };
+        if (Dit) {
+            stage4();
+            stage16();
+        } else {
+            stage16();
+            stage4();
+        }
+#pragma unroll
+        for (int a = 0; a < 4; ++a)
+#pragma unroll
+            for (int b = 0; b < 4; ++b) {
+                re[base + (4 * a + 16 * b) * unit] = vr[a * 4 + b];
+                im[base + (4 * a + 16 * b) * unit] = vi[a * 4 + b];
+            }
     }
 }
 
 // Rows p and rev4(p) exchanged (rev4 is its own inverse).
-__device__ void swap_rows(float* re, float* im) {
-    for (int e = threadIdx.x; e < kArea; e += kThreads) {
+__device__ void swap_rows(float* re, float* im, int lt, int nt) {
+    for (int e = lt; e < kArea; e += nt) {
         const int row = e >> 6, other = rev4(row);
         if (row < other) {
             const int i = row * kPitch + (e & 63);
@@ -230,19 +287,47 @@ __device__ void swap_rows(float* re, float* im) {
             im[j] = b;
         }
     }
-    __syncthreads();
 }
 
-// Forward: x[row][col] -> F at [rev4 fr][rev4 fc]. Inverse of that layout:
-// y at [rev4 row][col] (the CPU's Forward2 / Inverse2 arithmetic).
+// The 64 x 64 transforms as steps between barriers, on threads lt of nt
+// (a whole block or half of one):
+//   forward, x[row][col] -> F at [rev4 fr][rev4 fc]: radix-4 DIF along the
+//   rows (stages 16 and 4 together, then 1), then along the columns;
+//   inverse of that layout -> y at [rev4 row][col]: DIT along the columns,
+//   the rows swapped by rev4, DIF along the rows.
+// The CPU's Forward2 / Inverse2 arithmetic (its row passes on its transposed
+// copy), in place.
+constexpr int kForwardSteps = 4, kInverseSteps = 5;
+__device__ __forceinline__ void transform_step(bool inverse, int step, float* re, float* im, const float* tw, int lt,
+                                               int nt) {
+    if (!inverse) {
+        switch (step) {
+            case 0: radix4_stages_16_4<false, true>(re, im, false, tw, lt, nt); break;
+            case 1: radix4_stage<false, true, 1>(re, im, false, tw, lt, nt); break;
+            case 2: radix4_stages_16_4<false, false>(re, im, false, tw, lt, nt); break;
+            default: radix4_stage<false, false, 1>(re, im, false, tw, lt, nt); break;
+        }
+    } else {
+        switch (step) {
+            case 0: radix4_stage<true, false, 1>(re, im, true, tw, lt, nt); break;
+            case 1: radix4_stages_16_4<true, false>(re, im, true, tw, lt, nt); break;
+            case 2: swap_rows(re, im, lt, nt); break;
+            case 3: radix4_stages_16_4<false, true>(re, im, true, tw, lt, nt); break;
+            default: radix4_stage<false, true, 1>(re, im, true, tw, lt, nt); break;
+        }
+    }
+}
 __device__ void forward2(float* re, float* im, const float* tw) {
-    radix4<false, true>(re, im, false, tw);
-    radix4<false, false>(re, im, false, tw);
+    for (int step = 0; step < kForwardSteps; ++step) {
+        transform_step(false, step, re, im, tw, threadIdx.x, kThreads);
+        __syncthreads();
+    }
 }
 __device__ void inverse2(float* re, float* im, const float* tw) {
-    radix4<true, false>(re, im, true, tw);
-    swap_rows(re, im);
-    radix4<false, true>(re, im, true, tw);
+    for (int step = 0; step < kInverseSteps; ++step) {
+        transform_step(true, step, re, im, tw, threadIdx.x, kThreads);
+        __syncthreads();
+    }
 }
 
 // Each thread keeps the 8 elements t + 512 k (k < 8) of the patch arrays in
@@ -259,11 +344,12 @@ __global__ void __launch_bounds__(kThreads) da3d_tile_kernel(TileParams p) {
     extern __shared__ float shared[];
     float* are = shared;
     float* aim = are + kShared;
-    float* bre = aim + kShared;  // RGB: channels 0 and 1 combined
+    float* bre = aim + kShared;  // RGB: channels 0 and 1 combined; staging for the sums
     float* bim = bre + kShared;
     // Staging for the sums: two arrays of kArea in the transform's buffer.
     float* st0 = shared;
-    float* st1 = shared + kArea;
+    // with the second buffer, up to four arrays staged at once
+    float* const stage[4] = {shared, shared + kArea, shared + 2 * kShared, shared + 2 * kShared + kArea};
     // Pyramid levels from kSharedLevel up live in shared memory.
     __shared__ float swm[kSharedLevelFloats];
     __shared__ float sums[16];
@@ -407,53 +493,45 @@ __global__ void __launch_bounds__(kThreads) da3d_tile_kernel(TileParams p) {
             x = fmaf(x, inv_reg, p.dist_reg[i]);
             kv[k] = fastexp(-x);
             st0[i] = kv[k];
-            st1[i] = y[0][k];
+#pragma unroll
+            for (int c = 0; c < C; ++c) stage[1 + c][i] = y[c][k];
         }
         __syncthreads();
-        // a, b, c, then d and e of each channel (its y restaged in st1)
-        for (int c = 0; c < C; ++c) {
-            if (c > 0) {
-                __syncthreads();
-#pragma unroll
-                for (int k = 0; k < kPer; ++k) st1[threadIdx.x + kThreads * k] = y[c][k];
-                __syncthreads();
-            }
-            // warps 0-2: a, b, c (first round); 3, 4: d and e of the channel
-            const float central = center[c];
-            float v = 0.f;
-            bool have = false;
-            if (c == 0 && warp == 0) {
+        // warps 0-2: a, b, c; warps 3 + 2c, 4 + 2c: d and e of channel c (its y in stage 1 + c)
+        if (warp < 3 + 2 * C) {
+            float v;
+            if (warp == 0) {
                 v = warp_lane_sum([&](float acc, int i) {
                     const int dr = (i >> 6) - kR;
                     return fmaf(static_cast<float>(dr * dr), st0[i], acc);
                 });
-                have = true;
-            } else if (c == 0 && warp == 1) {
+            } else if (warp == 1) {
                 v = warp_lane_sum([&](float acc, int i) {
                     const int dr = (i >> 6) - kR, dc = (i & 63) - kR;
                     return fmaf(static_cast<float>(dr * dc), st0[i], acc);
                 });
-                have = true;
-            } else if (c == 0 && warp == 2) {
+            } else if (warp == 2) {
                 v = warp_lane_sum([&](float acc, int i) {
                     const int dc = (i & 63) - kR;
                     return fmaf(static_cast<float>(dc * dc), st0[i], acc);
                 });
-                have = true;
-            } else if (warp == 3) {
-                v = warp_lane_sum([&](float acc, int i) {
-                    const float t = static_cast<float>((i >> 6) - kR) * (st1[i] - central);
-                    return fmaf(t, st0[i], acc);
-                });
-                have = true;
-            } else if (warp == 4) {
-                v = warp_lane_sum([&](float acc, int i) {
-                    const float t = static_cast<float>((i & 63) - kR) * (st1[i] - central);
-                    return fmaf(t, st0[i], acc);
-                });
-                have = true;
+            } else {
+                const int c = (warp - 3) / 2;
+                const float central = center[c];
+                const float* yc = stage[1 + c];
+                if ((warp - 3) % 2 == 0) {
+                    v = warp_lane_sum([&](float acc, int i) {
+                        const float t = static_cast<float>((i >> 6) - kR) * (yc[i] - central);
+                        return fmaf(t, st0[i], acc);
+                    });
+                } else {
+                    v = warp_lane_sum([&](float acc, int i) {
+                        const float t = static_cast<float>((i & 63) - kR) * (yc[i] - central);
+                        return fmaf(t, st0[i], acc);
+                    });
+                }
             }
-            if (have && lane == 0) sums[warp < 3 ? warp : 3 + 2 * c + (warp - 3)] = v;
+            if (lane == 0) sums[warp] = v;  // a, b, c, then d0, e0, d1, e1, ...
         }
         __syncthreads();
         PH(1);
@@ -544,19 +622,33 @@ __global__ void __launch_bounds__(kThreads) da3d_tile_kernel(TileParams p) {
                 return fmaf(g[c][k] + pl, kk, old);
             });
         } else {
-            // averages: k in st0, y or g of a channel in st1
+            // averages: k in stage 0, y (then g) of each channel in the others;
+            // one round when they all fit
             float avg[C], gavg[C];
-            for (int c = 0; c < C; ++c) {
-                for (int which = 0; which < 2; ++which) {
+            constexpr int kRounds = 2 * C + 1 <= 4 ? 1 : 2;
+            for (int round = 0; round < kRounds; ++round) {
 #pragma unroll
-                    for (int k = 0; k < kPer; ++k) st1[threadIdx.x + kThreads * k] = which ? g[c][k] : y[c][k];
-                    __syncthreads();
-                    if (warp == 0) {
-                        const float v = warp_lane_sum([&](float acc, int i) { return fmaf(st0[i], st1[i], acc); });
-                        if (lane == 0) sums[10 + 2 * c + which] = v;
+                for (int k = 0; k < kPer; ++k)
+#pragma unroll
+                    for (int c = 0; c < C; ++c) {
+                        if (kRounds == 1) {
+                            stage[1 + c][threadIdx.x + kThreads * k] = y[c][k];
+                            stage[1 + C + c][threadIdx.x + kThreads * k] = g[c][k];
+                        } else {
+                            stage[1 + c][threadIdx.x + kThreads * k] = round ? g[c][k] : y[c][k];
+                        }
                     }
-                    __syncthreads();
+                __syncthreads();
+                const int chains = kRounds == 1 ? 2 * C : C;
+                if (warp < chains) {
+                    const float* src = stage[1 + warp];
+                    const float v = warp_lane_sum([&](float acc, int i) { return fmaf(st0[i], src[i], acc); });
+                    // stage 1 + c: y of channel c (or g in round 1); with one round, g at 1 + C + c
+                    const int c = warp % C;
+                    const int which = kRounds == 1 ? warp / C : round;
+                    if (lane == 0) sums[10 + 2 * c + which] = v;
                 }
+                __syncthreads();
             }
             PH(3);
 #pragma unroll
@@ -569,21 +661,25 @@ __global__ void __launch_bounds__(kThreads) da3d_tile_kernel(TileParams p) {
             // Forward transform of channel c into a, then Y' = K Y in place:
             // the thread of the lower index of a pair (f, -f) writes both (the
             // CPU's value at -f is the conjugate of its value at f, bit for bit).
-            auto forward_shrink = [&](int c) {
+            // y_m + i g_m of channel c into (re, im)
+            auto prep = [&](int c, float* re_, float* im_) {
 #pragma unroll
                 for (int k = 0; k < kPer; ++k) {
                     const float rest = 1.f - kv[k];
                     const int si = (my_row + kRowStep * k) * kPitch + my_col;
-                    are[si] = fmaf(kv[k], y[c][k], rest * avg[c]);
-                    aim[si] = fmaf(kv[k], g[c][k], rest * gavg[c]);
+                    re_[si] = fmaf(kv[k], y[c][k], rest * avg[c]);
+                    im_[si] = fmaf(kv[k], g[c][k], rest * gavg[c]);
                 }
-                __syncthreads();
-                forward2(are, aim, tw);
-                for (int i = threadIdx.x; i < kArea; i += kThreads) {
+            };
+            // Y' = K Y in place: the thread of the lower index of a pair (f, -f)
+            // writes both (the CPU's value at -f is the conjugate of its value
+            // at f, bit for bit)
+            auto shrink = [&](float* re_, float* im_, int lt, int nt) {
+                for (int i = lt; i < kArea; i += nt) {
                     const int q = negrow(i >> 6) * 64 + negrow(i & 63);
                     if (q < i) continue;
                     const int si = (i >> 6) * kPitch + (i & 63), sq = (q >> 6) * kPitch + (q & 63);
-                    const float zr = are[si], zi = aim[si], qr = are[sq], qi = aim[sq];
+                    const float zr = re_[si], zi = im_[si], qr = re_[sq], qi = im_[sq];
                     const float yr = 0.5f * (zr + qr);
                     const float yi = 0.5f * (zi - qi);
                     const float gr = 0.5f * (zi + qi);
@@ -591,14 +687,13 @@ __global__ void __launch_bounds__(kThreads) da3d_tile_kernel(TileParams p) {
                     float K = fastexp(coef / fmaf(gr, gr, gi * gi));
                     if (i == 0) K = 1.f;
                     const float ry = K * yr, iy = K * yi;
-                    are[si] = ry;
-                    aim[si] = iy;
+                    re_[si] = ry;
+                    im_[si] = iy;
                     if (q != i) {
-                        are[sq] = ry;
-                        aim[sq] = -iy;
+                        re_[sq] = ry;
+                        im_[sq] = -iy;
                     }
                 }
-                __syncthreads();
             };
             float result[C][kPer];
             auto take = [&](int c, const float* yout) {
@@ -613,30 +708,49 @@ __global__ void __launch_bounds__(kThreads) da3d_tile_kernel(TileParams p) {
                 }
             };
             if (C == 1) {
-                forward_shrink(0);
+                prep(0, are, aim);
+                __syncthreads();
+                forward2(are, aim, tw);
+                shrink(are, aim, threadIdx.x, kThreads);
+                __syncthreads();
                 inverse2(are, aim, tw);
                 take(0, are);
             } else {
-                forward_shrink(0);
-                for (int i = threadIdx.x; i < kShared; i += kThreads) {
-                    bre[i] = are[i];
-                    bim[i] = aim[i];
-                }
+                // two transforms at a time, one on each half of the block
+                const bool lower = threadIdx.x < kThreads / 2;
+                const int lt = threadIdx.x % (kThreads / 2), nt = kThreads / 2;
+                float* hre = lower ? are : bre;
+                float* him = lower ? aim : bim;
+                prep(0, are, aim);
+                prep(1, bre, bim);
                 __syncthreads();
-                forward_shrink(1);
-                // W0 = Y'0 + i Y'1
+                for (int step = 0; step < kForwardSteps; ++step) {
+                    transform_step(false, step, hre, him, tw, lt, nt);
+                    __syncthreads();
+                }
+                shrink(hre, him, lt, nt);
+                __syncthreads();
+                // W0 = Y'0 + i Y'1 in a
                 for (int i = threadIdx.x; i < kArea; i += kThreads) {
                     const int si = (i >> 6) * kPitch + (i & 63);
-                    bre[si] = bre[si] - aim[si];
-                    bim[si] = bim[si] + are[si];
+                    are[si] = are[si] - bim[si];
+                    aim[si] = aim[si] + bre[si];
                 }
                 __syncthreads();
+                prep(2, bre, bim);
+                __syncthreads();
+                // the inverse of W0 (lower half) beside channel 2's forward (upper)
+                for (int step = 0; step < kInverseSteps; ++step) {
+                    if (lower) transform_step(true, step, are, aim, tw, lt, nt);
+                    else if (step < kForwardSteps) transform_step(false, step, bre, bim, tw, lt, nt);
+                    __syncthreads();
+                }
+                take(0, are);
+                take(1, aim);
+                shrink(bre, bim, threadIdx.x, kThreads);
+                __syncthreads();
                 inverse2(bre, bim, tw);
-                take(0, bre);
-                take(1, bim);
-                forward_shrink(2);
-                inverse2(are, aim, tw);
-                take(2, are);
+                take(2, bre);
             }
             add_tile([&](int c, int k, float old) { return fmaf(result[c][k], kv[k], old); });
         }
@@ -831,7 +945,7 @@ void da3d_run(const Da3dUnit& u, const Da3dTables& tables, void* work, std::size
     p.scratch = reinterpret_cast<float*>(base + l.num + l.den + l.wm);
     p.stats = stats_device;
     NSS_CUDA_CHECK(cudaMemsetAsync(stats_device, 0, 2 * sizeof(unsigned long long), stream));
-    const std::size_t smem = (C == 3 ? 4 : 2) * kShared * sizeof(float);
+    const std::size_t smem = 4 * kShared * sizeof(float);  // the second buffer also stages sums
     if (C == 3) {
         NSS_CUDA_CHECK(cudaFuncSetAttribute(da3d_tile_kernel<3>, cudaFuncAttributeMaxDynamicSharedMemorySize, static_cast<int>(smem)));
         da3d_tile_kernel<3><<<l.tiles, kThreads, smem, stream>>>(p);

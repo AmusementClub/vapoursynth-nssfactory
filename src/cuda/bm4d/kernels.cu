@@ -21,7 +21,7 @@ namespace {
 
 constexpr int kSearch = nss::kBm4dSearch;
 constexpr int kSide = 2 * kSearch + 1;
-constexpr int kMatchThreads = 128;
+constexpr int kMatchThreads = 128;  // 256 measured the same
 constexpr int kGroupThreads = 256;
 constexpr int kMaxGroup = 32;
 constexpr unsigned long long kNoKey = ~0ull;

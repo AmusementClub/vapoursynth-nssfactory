@@ -24,8 +24,8 @@ warm-up; the images differ by at most 3%.
 | [LSSC](lssc.md) | 230 | 145 | (no temporal mode) |
 | [NLH](nlh.md) | 37 | 31 | 13 / 11 |
 | [TWSC](twsc.md) | 77 | 44 | |
-| [BM4D](bm4d.md) | 14 | — | (temporal by construction; gray 20) |
-| [DA3D](da3d.md) | 16 / 36 | 4.9 / 12 | (sigma 3 / 10; a last step on a guide) |
+| [BM4D](bm4d.md) | 16 | — | (temporal by construction; gray 23) |
+| [DA3D](da3d.md) | 16 / 37 | 5.6 / 14 | (sigma 3 / 10; a last step on a guide) |
 
 - BM4D and DA3D are measured differently: BM4D on 64 frames of an anime episode
   with grain of sigma 5, DA3D on one test image at the sigma given, with
