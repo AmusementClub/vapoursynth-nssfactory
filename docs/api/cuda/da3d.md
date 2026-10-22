@@ -19,8 +19,8 @@ the guide (only DA3D timed):
 
 | sigma | YUV420 | RGB |
 |---:|---:|---:|
-| 3 | 16 | 4.9 |
-| 10 | 36 | 12 |
+| 3 | 16 | 5.6 |
+| 10 | 37 | 14 |
 
 The cost follows the number of patches, which grows as the noise falls and
 with color (see the CPU page). The tiles of a frame run in parallel, one
