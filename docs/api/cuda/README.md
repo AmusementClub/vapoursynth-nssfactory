@@ -24,7 +24,13 @@ warm-up; the images differ by at most 3%.
 | [LSSC](lssc.md) | 230 | 145 | (no temporal mode) |
 | [NLH](nlh.md) | 37 | 31 | 13 / 11 |
 | [TWSC](twsc.md) | 77 | 44 | |
+| [BM4D](bm4d.md) | 14 | — | (temporal by construction; gray 20) |
+| [DA3D](da3d.md) | 16 / 36 | 4.9 / 12 | (sigma 3 / 10; a last step on a guide) |
 
+- BM4D and DA3D are measured differently: BM4D on 64 frames of an anime episode
+  with grain of sigma 5, DA3D on one test image at the sigma given, with
+  `BM3D(final=1)` at 4/3 sigma as its guide (computed beforehand). Both give
+  the CPU plugin's output bit for bit.
 - NLH runs its default blind noise estimation; giving `sigma` skips it.
 - TWSC's default is a speed setting. Its quality geometry (`block_step=1,
   group_size=90, iters=12`) denoises 8 to 10 dB better and takes about 80 s
@@ -94,6 +100,8 @@ test frame above at σ 15):
 | `core.nss_cuda.LSSC` | [lssc.md](lssc.md) | [lssc.md](../lssc.md) |
 | `core.nss_cuda.NLH` | [nlh.md](nlh.md) | [nlh.md](../nlh.md) |
 | `core.nss_cuda.TWSC` | [twsc.md](twsc.md) | [twsc.md](../twsc.md) |
+| `core.nss_cuda.BM4D` | [bm4d.md](bm4d.md) | [bm4d.md](../bm4d.md) |
+| `core.nss_cuda.DA3D` | [da3d.md](da3d.md) | [da3d.md](../da3d.md) |
 
 ```python
 core.nss_cuda.Version()                 # version:data

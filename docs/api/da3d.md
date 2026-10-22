@@ -5,7 +5,7 @@ It takes the noisy clip and that denoiser's output (the guide) and, patch by
 patch, shrinks the noisy clip's Fourier coefficients where the guide says
 there is no signal, on patches shaped by the guide (a bilateral weight around
 a fitted plane). It recovers detail and flattens residual noise the first
-denoiser left. CPU only for now.
+denoiser left. [`nss_cuda.DA3D`](cuda/da3d.md) gives the same bits on the GPU.
 
 ```python
 basic = core.nss.BM3D(clip, sigma=20, final=1)      # sigma x 4/3 suits BM3D
@@ -94,4 +94,4 @@ Ryzen 9 5950X core (median):
 - At sigma 2 or less the gain is small and the cost is high.
 - Frame properties: `_NSSDA3DPatches` and `_NSSDA3DGuideOnly` count the
   patches of the frame (all planes) and those that took the guide.
-- No GPU version yet (`nss_cuda` has no DA3D).
+- On the GPU, [`nss_cuda.DA3D`](cuda/da3d.md) gives the same bits, at 4.9 to 36 fps at 1080p.
