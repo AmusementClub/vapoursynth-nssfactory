@@ -66,7 +66,7 @@ struct Bm4dData : nss::Bm4dParams {
     Slot slots[2];
     std::mutex device_mu;
     std::unique_ptr<Stream> stream;  // tiles
-    DeviceBuffer volume, filtered, work, tables;
+    DeviceBuffer volume, filtered, work;
     DeviceBuffer outputs;  // kBm4dChunk planes
     DeviceBuffer out_ptrs;
     // chunk cache
@@ -187,8 +187,9 @@ std::shared_ptr<ChunkStore> compute_chunk(Bm4dData* d, int first, int count, int
                         const int h = ry1 - ry0, w = rx1 - rx0;
                         bm4d_gather(sl.in_ptrs.as<const float*>(), static_cast<std::size_t>(pw), depth, ry0, rx0, h, w,
                                     d->volume.as<float>(), stream);
-                        bm4d_run_volume(d->volume.as<float>(), depth, h, w, d->sigma[plane] / 255.f, d->filtered.as<float>(),
-                                        d->tables.as<float>(), d->work.get(), d->work.bytes(), stream);
+                        const Bm4dKeep keep{first - v0, first - v0 + count, y0 - ry0, y1 - ry0, x0 - rx0, x1 - rx0};
+                        bm4d_run_volume(d->volume.as<float>(), depth, h, w, d->sigma[plane] / 255.f, keep,
+                                        d->filtered.as<float>(), d->work.get(), d->work.bytes(), stream);
                         bm4d_scatter(d->filtered.as<float>(), h, w, ry0, rx0, first - v0, count, y0, y1, x0, x1,
                                      d->out_ptrs.as<float*>(), static_cast<std::size_t>(pw), stream);
                     }
@@ -310,7 +311,6 @@ void VS_CC freeFilter(void* instance, VSCore*, const VSAPI*) {
         d->volume.reset();
         d->filtered.reset();
         d->work.reset();
-        d->tables.reset();
         d->outputs.reset();
         d->out_ptrs.reset();
     }
@@ -371,8 +371,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
             }
             std::vector<float> tables(bm4d_table_floats());
             bm4d_fill_tables(tables.data());
-            d.tables = DeviceBuffer(tables.size() * sizeof(float), d.budget);
-            NSS_CUDA_CHECK(cudaMemcpy(d.tables.get(), tables.data(), tables.size() * sizeof(float), cudaMemcpyHostToDevice));
+            bm4d_upload_constants(tables.data());
         }
     }
     VSFilterDependency deps[1]{{d.node, rpGeneral}};

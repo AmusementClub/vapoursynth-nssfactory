@@ -5,7 +5,7 @@ volume (frames as the third dimension); similar 4 x 4 x 4 (then 5 x 5 x 5)
 cubes, searched up to 7 pixels and 7 frames away, are stacked into groups and
 filtered together in two stages, hard thresholding then Wiener. Held frames
 and still or slowly moving content are where it gains most. Heavy on the CPU;
-[`nss_cuda.BM4D`](cuda/bm4d.md) gives the same bits about 19 times faster.
+[`nss_cuda.BM4D`](cuda/bm4d.md) gives the same quality (PSNR) about 40 times faster.
 
 ```python
 out = core.nss.BM4D(clip, sigma=5)        # the noise's true sigma
@@ -94,4 +94,4 @@ computed: about 2 GB at 1080p with 16 threads.
 - The first frame of each chunk takes the whole chunk's time; later frames of
   the chunk are immediate.
 - Fast action loses to temporal BM3D (see Quality).
-- On the GPU, [`nss_cuda.BM4D`](cuda/bm4d.md) gives the same bits (1080p gray 19.7 fps on an RTX 5080).
+- On the GPU, [`nss_cuda.BM4D`](cuda/bm4d.md) gives the same quality (1080p gray 40 fps on an RTX 5080).

@@ -11,8 +11,7 @@ reproducible numerics.
 | `libnss_cuda` | `nss_cuda` | NVIDIA GPUs of compute capability 7.5 or newer (Linux, Windows) |
 
 Both plugins take the same arguments and give the same results (the GPU's
-output is 60 dB PSNR or more from the CPU's; BM4D's and DA3D's are the same
-bits). Input is constant-format 32-bit
+output is 60 dB PSNR or more from the CPU's). Input is constant-format 32-bit
 float Gray, YUV or RGB. The project is a work in progress.
 
 ## Filters

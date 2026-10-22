@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-only
-"""nss_cuda.DA3D vs nss.DA3D: the device runs the CPU model operation for
-operation, so every case must give the same bits and the same patch counts
-(_NSSDA3DPatches, _NSSDA3DGuideOnly): Gray, YUV420 with a bypassed plane,
-YUV444, RGB joint and RGB plane by plane, small and odd shapes, several
-noise levels; plus a second run with two streams for determinism. Exits 77
-without VapourSynth or a CUDA device.
+"""nss_cuda.DA3D vs nss.DA3D: the device runs the CPU model with tree sums
+over a patch instead of the CPU's 32-lane chains (2026-10-22), so its output
+is close to the CPU's, not the same bits: every frame must be within
+MIN_PSNR dB of the CPU's, its PSNR to the clean frame within MAX_DPSNR dB of
+the CPU's, and its patch count within MAX_DPATCH of the CPU's; and a second
+run with two streams must give the same bits. Gray, YUV420 with a bypassed
+plane, YUV444, RGB joint and RGB plane by plane, small and odd shapes,
+several noise levels. Exits 77 without VapourSynth or a CUDA device.
 
 usage: test_cuda_da3d_live.py --cpu PATH --cuda PATH
 """
 import argparse
 import sys
+
+MIN_PSNR = 100.0     # dB between the CPU's and the device's output
+MAX_DPSNR = 0.01     # dB between their PSNRs to the clean frame
+MAX_DPATCH = 0.01    # relative difference of the patch counts
 
 try:
     import numpy as np
@@ -23,9 +29,9 @@ except ImportError as error:
 def make_clip(core, fmt, width, height, seed, sigma, length=2):
     rng = np.random.default_rng(seed)
     blank = core.std.BlankClip(width=width, height=height, format=fmt, length=length)
-    noisy, guide = [], []
+    noisy, guide, cleans = [], [], []
     for t in range(length):
-        np_, gp = [], []
+        np_, gp, cp = [], [], []
         for p in range(blank.format.num_planes):
             w = width >> (blank.format.subsampling_w if p else 0)
             h = height >> (blank.format.subsampling_h if p else 0)
@@ -33,10 +39,12 @@ def make_clip(core, fmt, width, height, seed, sigma, length=2):
             clean = 0.45 + 0.25 * (((x + 3 * t) // 11 + y // 9) % 2) + 0.1 * np.sin((x + 2 * t) / (5 + p)) * np.cos(y / 7)
             if blank.format.color_family == vs.YUV and p:
                 clean = clean - 0.5
+            cp.append(clean.astype(np.float32))
             np_.append((clean + rng.normal(0, sigma / 255, clean.shape)).astype(np.float32))
             gp.append((clean + rng.normal(0, 0.4 * sigma / 255, clean.shape)).astype(np.float32))
         noisy.append(np_)
         guide.append(gp)
+        cleans.append(cp)
 
     def clip_of(frames):
         def fill(n, f):
@@ -45,11 +53,16 @@ def make_clip(core, fmt, width, height, seed, sigma, length=2):
                 np.asarray(out[p])[:] = plane
             return out
         return core.std.ModifyFrame(blank, blank, fill)
-    return clip_of(noisy), clip_of(guide)
+    return clip_of(noisy), clip_of(guide), cleans
 
 
 def planes(frame):
     return [np.array(frame[p], dtype=np.float32) for p in range(frame.format.num_planes)]
+
+
+def psnr(a, b):
+    mse = np.mean([np.mean((x.astype(np.float64) - y) ** 2) for x, y in zip(a, b)])
+    return float("inf") if mse == 0 else 10 * np.log10(1 / mse)
 
 
 def main():
@@ -79,21 +92,24 @@ def main():
     ]
     failures = 0
     for i, (fmt, w, h, sigma, sig) in enumerate(cases):
-        noisy, guide = make_clip(core, fmt, w, h, 100 + i, sigma)
+        noisy, guide, cleans = make_clip(core, fmt, w, h, 100 + i, sigma)
         kw = dict(sigma=sig if sig is not None else sigma)
         cpu = core.nss.DA3D(noisy, guide, **kw)
         gpu = core.nss_cuda.DA3D(noisy, guide, **kw)
         gpu2 = core.nss_cuda.DA3D(noisy, guide, num_streams=2, **kw)
         for n in range(noisy.num_frames):
             fc, fg, fg2 = cpu.get_frame(n), gpu.get_frame(n), gpu2.get_frame(n)
-            same = all(np.array_equal(a, b) for a, b in zip(planes(fc), planes(fg)))
-            again = all(np.array_equal(a, b) for a, b in zip(planes(fg), planes(fg2)))
-            props = all(fc.props[k] == fg.props[k] for k in ("_NSSDA3DPatches", "_NSSDA3DGuideOnly"))
-            ok = same and again and props
+            pc, pg = planes(fc), planes(fg)
+            between = psnr(pc, pg)
+            dpsnr = abs(psnr(pg, cleans[n]) - psnr(pc, cleans[n]))
+            again = all(np.array_equal(a, b) for a, b in zip(pg, planes(fg2)))
+            nc, ng = fc.props["_NSSDA3DPatches"], fg.props["_NSSDA3DPatches"]
+            dpatch = abs(ng - nc) / max(nc, 1)
+            ok = between >= MIN_PSNR and dpsnr <= MAX_DPSNR and dpatch <= MAX_DPATCH and again
             failures += not ok
             print(f"{vs.core.get_video_format(fmt).name} {w}x{h} sigma {kw['sigma']} frame {n}: "
-                  f"{'same bits' if same else 'DIFFERENT'}, {'repeatable' if again else 'NOT REPEATABLE'}, "
-                  f"patches {fg.props['_NSSDA3DPatches']} {'=' if props else '!='} {fc.props['_NSSDA3DPatches']}")
+                  f"{between:.1f} dB from the CPU, PSNR to clean {dpsnr:.5f} dB apart, "
+                  f"patches {ng} / {nc}, {'repeatable' if again else 'NOT REPEATABLE'}{'' if ok else '  FAIL'}")
     print("test_cuda_da3d_live:", "ok" if not failures else f"{failures} failure(s)")
     return 1 if failures else 0
 

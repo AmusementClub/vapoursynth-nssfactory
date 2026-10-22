@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // nss_cuda.DA3D device pipeline: the CPU model (include/nss/params/da3d.hpp)
-// ported operation for operation, so the output is the CPU's bit for bit.
+// with the CPU's transform arithmetic; the sums over a patch are trees, so
+// the output is within a level of the CPU's (not bit for bit) and the same on
+// every run.
 #pragma once
 
 #include <cuda_runtime.h>
@@ -31,10 +33,12 @@ std::size_t da3d_work_bytes(int width, int height, int channels);
 // Upload of the constant tables; table holds da3d_table_floats() floats.
 std::size_t da3d_table_floats();
 void da3d_fill_tables(float* host);
-// Runs DA3D on the unit; work holds da3d_work_bytes. stats receives
-// (patches, guide-only patches) of the unit, summed, on the host after the
+// Runs DA3D on one joint unit, or on up to three single-channel units (the
+// planes of a frame) in one launch, so that small planes fill the GPU beside
+// the large one; work holds the sum of their da3d_work_bytes. stats receives
+// (patches, guide-only patches) of the units, summed, on the host after the
 // stream has synchronized: stats_device is 2 ints of device memory, cleared here.
-void da3d_run(const Da3dUnit& unit, const Da3dTables& tables, void* work, std::size_t work_bytes,
+void da3d_run(const Da3dUnit* units, int count, const Da3dTables& tables, void* work, std::size_t work_bytes,
               unsigned long long* stats_device, cudaStream_t stream);
 
 }  // namespace nss_cuda

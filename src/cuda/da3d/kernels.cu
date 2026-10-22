@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-only
-// nss_cuda.DA3D: the CPU model (include/nss/params/da3d.hpp, src/cpu/da3d)
-// operation for operation. One block per tile walks the tile's greedy patch
-// loop; every 32-lane sum is one warp's chain (lane l adds the terms l,
-// l + 32, ... in order, then the halving tree), the radix-4 64 x 64 DFT runs
-// in shared memory with the CPU's butterflies, and every fused multiply-add
-// is explicit (this TU is built with --fmad=false). The tiles' sums are added
-// in tile order by a second kernel.
+// nss_cuda.DA3D: the CPU model (include/nss/params/da3d.hpp, src/cpu/da3d).
+// One block per tile walks the tile's greedy patch loop; the radix-4 64 x 64
+// DFT runs in shared memory with the CPU's butterflies and every fused
+// multiply-add is explicit (this TU is built with --fmad=false). The sums
+// over a patch (the regression's, mass, energy, the averages) are trees over
+// the block instead of the CPU's 32-lane chains (2026-10-22: 1.15x gray, the
+// owner accepted output within a level of the CPU's): the output is not the
+// CPU's bit for bit but is the same on every run (the trees' order is fixed).
+// The tiles' sums are added in tile order by a second kernel.
 #include "cuda/da3d/kernels.hpp"
 #include "cuda/runtime/error.hpp"
 #include "nss/params/da3d.hpp"
@@ -23,7 +25,6 @@ constexpr int kS = nss::kDa3dPatch;
 constexpr int kR = nss::kDa3dRadius;
 constexpr int kArea = kS * kS;
 constexpr int kAfter = kS - kR - 1;
-constexpr int kThreads = 512;
 // Shared-memory rows of the transform padded to 65 floats: a warp reading one
 // column of 32 rows touches 32 banks.
 constexpr int kPitch = 65;
@@ -113,19 +114,28 @@ __device__ __forceinline__ int tile_start(int n, int count, int i) {
     return static_cast<int>(static_cast<long long>(n) * i / count);
 }
 
-// One warp: the 32-lane sum of term(acc, i) over i in [0, 4096).
-template <class Term>
-__device__ __forceinline__ float warp_lane_sum(const Term& term) {
-    const int lane = threadIdx.x & 31;
-    float acc = 0.f;
-#pragma unroll 8
-    for (int i = lane; i < kArea; i += 32) acc = term(acc, i);
+// N sums over the block of W warps by a tree: each thread's own terms, the
+// warp by shuffles, the warps' partials in order (part: W N floats); every
+// thread gets the totals. The order is fixed, so the sums are the same on
+// every run.
+template <int N, int W>
+__device__ __forceinline__ void block_reduce(float (&v)[N], float* part) {
+    const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
 #pragma unroll
-    for (int half = 16; half > 0; half >>= 1) {
-        const float other = __shfl_down_sync(0xffffffffu, acc, half);
-        acc = acc + other;
+    for (int q = 0; q < N; ++q)
+#pragma unroll
+        for (int o = 16; o; o >>= 1) v[q] += __shfl_xor_sync(0xffffffffu, v[q], o);
+    if (lane == 0)
+#pragma unroll
+        for (int q = 0; q < N; ++q) part[warp * N + q] = v[q];
+    __syncthreads();
+#pragma unroll
+    for (int q = 0; q < N; ++q) {
+        float t = part[q];
+#pragma unroll
+        for (int w = 1; w < W; ++w) t += part[w * N + q];
+        v[q] = t;
     }
-    return acc;  // lane 0
 }
 
 // (xr, xi) times (wr, wi): (xr wr - xi wi, xr wi + xi wr), fused as on the CPU.
@@ -178,15 +188,17 @@ __device__ __forceinline__ void butterfly(float* xr, float* xi, int t, bool inve
 }
 
 // The stage of quarter Q (rows g + j + {0, Q, 2Q, 3Q}) along the rows (Rows:
-// each column) or along the columns (each row), on threads lt of nt.
-template <bool Dit, bool Rows, int Q>
+// each column) or along the columns (each row), on threads lt of nt; on the
+// lines l < Lines only, line rev4(l) with Rev (the real inverse's halves).
+template <bool Dit, bool Rows, int Q, int Lines = 64, bool Rev = false>
 __device__ __forceinline__ void radix4_stage(float* re, float* im, bool inverse, const float* tw, int lt, int nt) {
     constexpr int S = 16 / Q;
-    for (int item = lt; item < 1024; item += nt) {
+    for (int item = lt; item < Lines * 16; item += nt) {
         // Rows: lanes along the columns; columns: lanes along the rows (one
         // butterfly position of 64 rows; the 65-float pitch keeps their banks apart)
-        const int line = item & 63;
-        const int pair = item >> 6;
+        const int l = item % Lines;
+        const int line = Rev ? rev4(l) : l;
+        const int pair = item / Lines;
         const int j = pair % Q, g = (pair / Q) * 4 * Q;
         constexpr int unit = Rows ? kPitch : 1;
         const int base = Rows ? (g + j) * kPitch + line : line * kPitch + g + j;
@@ -208,10 +220,11 @@ __device__ __forceinline__ void radix4_stage(float* re, float* im, bool inverse,
 // The stages of quarters 16 and 4 together (DIF: 16 then 4; DIT: 4 then
 // 16): a task holds the 16 elements j0 + 4a + 16b (a, b < 4) of a line in
 // registers; both stages' butterflies stay within them.
-template <bool Dit, bool Rows>
+template <bool Dit, bool Rows, int Lines = 64, bool Rev = false>
 __device__ __forceinline__ void radix4_stages_16_4(float* re, float* im, bool inverse, const float* tw, int lt, int nt) {
-    for (int task = lt; task < 256; task += nt) {
-        const int line = task & 63, j0 = task >> 6;
+    for (int task = lt; task < Lines * 4; task += nt) {
+        const int l = task % Lines, j0 = task / Lines;
+        const int line = Rev ? rev4(l) : l;
         constexpr int unit = Rows ? kPitch : 1;
         const int base = Rows ? j0 * kPitch + line : line * kPitch + j0;
         float vr[16], vi[16];  // [a * 4 + b]: position j0 + 4a + 16b
@@ -317,42 +330,94 @@ __device__ __forceinline__ void transform_step(bool inverse, int step, float* re
         }
     }
 }
-__device__ void forward2(float* re, float* im, const float* tw) {
+__device__ void forward2(float* re, float* im, const float* tw, int nt) {
     for (int step = 0; step < kForwardSteps; ++step) {
-        transform_step(false, step, re, im, tw, threadIdx.x, kThreads);
+        transform_step(false, step, re, im, tw, threadIdx.x, nt);
         __syncthreads();
     }
 }
-__device__ void inverse2(float* re, float* im, const float* tw) {
-    for (int step = 0; step < kInverseSteps; ++step) {
-        transform_step(true, step, re, im, tw, threadIdx.x, kThreads);
+// The inverse of a Hermitian spectrum (X[-f] = conj X[f], the shrunk
+// spectrum of a real patch), whose output is real, in about half the work:
+// along the columns only the rows fr <= 32 (row -fr of the result is the
+// conjugate of row fr); then each column is Hermitian along the rows, so
+// columns n2 and n2 + 32 go together as C = S[.][n2] + i S[.][n2 + 32] (the
+// rows fr > 32 by conjugation), and the transform along the rows of the 32
+// columns gives y[n1][n2] in the real part and y[n1][n2 + 32] in the
+// imaginary part, at row rev4 n1. Whole block (NT threads).
+template <int NT>
+__device__ void inverse2_real(float* re, float* im, const float* tw) {
+    radix4_stage<true, false, 1, 33, true>(re, im, true, tw, threadIdx.x, NT);
+    __syncthreads();
+    radix4_stages_16_4<true, false, 33, true>(re, im, true, tw, threadIdx.x, NT);
+    __syncthreads();
+    {
+        constexpr int kItems = 32 * 64 / NT;
+        static_assert(kItems * NT == 32 * 64, "pack items");
+        float cr[kItems], ci[kItems];
+#pragma unroll
+        for (int u = 0; u < kItems; ++u) {
+            const int e = threadIdx.x + NT * u, n2 = e & 31, k1 = e >> 5;
+            const bool lower = k1 <= 32;
+            const int row = rev4(lower ? k1 : 64 - k1) * kPitch;
+            const float sign = lower ? 1.f : -1.f;
+            const float ar = re[row + n2], ai = sign * im[row + n2];
+            const float br = re[row + n2 + 32], bi = sign * im[row + n2 + 32];
+            cr[u] = ar - bi;
+            ci[u] = ai + br;
+        }
+        __syncthreads();
+#pragma unroll
+        for (int u = 0; u < kItems; ++u) {
+            const int e = threadIdx.x + NT * u, n2 = e & 31, k1 = e >> 5;
+            re[k1 * kPitch + n2] = cr[u];
+            im[k1 * kPitch + n2] = ci[u];
+        }
         __syncthreads();
     }
+    radix4_stages_16_4<false, true, 32>(re, im, true, tw, threadIdx.x, NT);
+    __syncthreads();
+    radix4_stage<false, true, 1, 32>(re, im, true, tw, threadIdx.x, NT);
+    __syncthreads();
+}
+// y[row][col] of inverse2_real's output
+__device__ __forceinline__ float real_out(const float* re, const float* im, int row, int col) {
+    const int at = rev4(row) * kPitch + (col & 31);
+    return col < 32 ? re[at] : im[at];
 }
 
-// Each thread keeps the 8 elements t + 512 k (k < 8) of the patch arrays in
-// registers: row (t >> 6) + 8 k, column t & 63. Global scratch is written
-// once and read once a patch (stores do not fill L1, so a store-then-load is
-// an L2 round trip); the 32-lane sums read operands staged in the transform's
-// shared buffer, which is idle until the forward transform.
-constexpr int kPer = kArea / kThreads;  // 8
-constexpr int kRowStep = kThreads / 64;
-static_assert(kThreads % 64 == 0 && kPer * kThreads == kArea, "element ownership");
+// With T threads, each thread keeps the kArea / T elements t + T k of the
+// patch arrays in registers: row (t >> 6) + (T / 64) k, column t & 63. Global
+// scratch is written once and read once a patch (stores do not fill L1, so a
+// store-then-load is an L2 round trip); the 32-lane sums read operands staged
+// in the transform's shared buffer, which is idle until the forward transform.
 
-template <int C>
-__global__ void __launch_bounds__(kThreads) da3d_tile_kernel(TileParams p) {
+// Up to three planes (single-channel units) share one launch: block b runs
+// tile b - first[k] of plane k.
+struct TileSet {
+    TileParams plane[3];
+    int first[4];
+};
+
+// T threads a block, B blocks an SM; Compact: only the first two transform
+// buffers (gray).
+template <int C, int T, int B, bool Compact>
+__global__ void __launch_bounds__(T, B) da3d_tile_kernel(const __grid_constant__ TileSet set) {
+    constexpr int kThreads = T;
+    constexpr int kPer = kArea / T;
+    constexpr int kRowStep = T / 64;
+    static_assert(T % 64 == 0 && kPer * T == kArea && (!Compact || C == 1), "element ownership");
+    const int unit = static_cast<int>(blockIdx.x) >= set.first[1] ? (static_cast<int>(blockIdx.x) >= set.first[2] ? 2 : 1) : 0;
+    const TileParams& p = set.plane[unit];
     extern __shared__ float shared[];
     float* are = shared;
     float* aim = are + kShared;
-    float* bre = aim + kShared;  // RGB: channels 0 and 1 combined; staging for the sums
+    float* bre = aim + kShared;  // RGB: the second transform at a time
     float* bim = bre + kShared;
-    // Staging for the sums: two arrays of kArea in the transform's buffer.
-    float* st0 = shared;
-    // with the second buffer, up to four arrays staged at once
-    float* const stage[4] = {shared, shared + kArea, shared + 2 * kShared, shared + 2 * kShared + kArea};
     // Pyramid levels from kSharedLevel up live in shared memory.
     __shared__ float swm[kSharedLevelFloats];
-    __shared__ float sums[16];
+    // the warps' partial sums of the regression (partA) and of mass, energy
+    // and the averages (partB); three channels take two rounds of each
+    __shared__ float partA[(kThreads / 32) * (3 + 2 * C)], partB[(kThreads / 32) * (2 + 2 * C)];
     __shared__ float centers[3];
     __shared__ int sh_pr, sh_pc, sh_go;
     __shared__ int lv_rows[32], lv_cols[32];
@@ -360,13 +425,12 @@ __global__ void __launch_bounds__(kThreads) da3d_tile_kernel(TileParams p) {
     __shared__ int levels;
     __shared__ float tw[128];
 
-    const int tile = blockIdx.x;
+    const int tile = static_cast<int>(blockIdx.x) - set.first[unit];
     const int tr = tile / p.cols_t, tc = tile % p.cols_t;
     const int r0 = tile_start(p.height, p.rows_t, tr), r1 = tile_start(p.height, p.rows_t, tr + 1);
     const int c0 = tile_start(p.width, p.cols_t, tc), c1 = tile_start(p.width, p.cols_t, tc + 1);
     const int core_h = r1 - r0, core_w = c1 - c0;
     const int ph = core_h + kS - 1, pw = core_w + kS - 1;
-    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
     const int ts = p.tile_w;
     const int my_col = threadIdx.x & 63, my_row = threadIdx.x >> 6;  // element k: row my_row + kRowStep k
     constexpr int kCenter = kR * kS + kR;
@@ -479,65 +543,56 @@ __global__ void __launch_bounds__(kThreads) da3d_tile_kernel(TileParams p) {
         float center[C];
 #pragma unroll
         for (int c = 0; c < C; ++c) center[c] = centers[c];
-        // k_reg (in kv), staged with y of channel 0
+        // k_reg (in kv) and the regression sums a, b, c, d_c, e_c by a tree
+        // (three channels: two rounds, fewer live accumulators)
+        float sa[3 + 2 * C];
+        {
+            constexpr int kFirst = C == 1 ? 3 + 2 * C : 5;  // a, b, c, d0, e0 first
+            float s1[kFirst] = {};
 #pragma unroll
-        for (int k = 0; k < kPer; ++k) {
-            const int i = threadIdx.x + kThreads * k;
-            float e = g[0][k] - center[0];
-            float x = e * e;
+            for (int k = 0; k < kPer; ++k) {
+                const int i = threadIdx.x + kThreads * k;
+                float e = g[0][k] - center[0];
+                float x = e * e;
 #pragma unroll
-            for (int c = 1; c < C; ++c) {
-                e = g[c][k] - center[c];
-                x = fmaf(e, e, x);
-            }
-            x = fmaf(x, inv_reg, p.dist_reg[i]);
-            kv[k] = fastexp(-x);
-            st0[i] = kv[k];
-#pragma unroll
-            for (int c = 0; c < C; ++c) stage[1 + c][i] = y[c][k];
-        }
-        __syncthreads();
-        // warps 0-2: a, b, c; warps 3 + 2c, 4 + 2c: d and e of channel c (its y in stage 1 + c)
-        if (warp < 3 + 2 * C) {
-            float v;
-            if (warp == 0) {
-                v = warp_lane_sum([&](float acc, int i) {
-                    const int dr = (i >> 6) - kR;
-                    return fmaf(static_cast<float>(dr * dr), st0[i], acc);
-                });
-            } else if (warp == 1) {
-                v = warp_lane_sum([&](float acc, int i) {
-                    const int dr = (i >> 6) - kR, dc = (i & 63) - kR;
-                    return fmaf(static_cast<float>(dr * dc), st0[i], acc);
-                });
-            } else if (warp == 2) {
-                v = warp_lane_sum([&](float acc, int i) {
-                    const int dc = (i & 63) - kR;
-                    return fmaf(static_cast<float>(dc * dc), st0[i], acc);
-                });
-            } else {
-                const int c = (warp - 3) / 2;
-                const float central = center[c];
-                const float* yc = stage[1 + c];
-                if ((warp - 3) % 2 == 0) {
-                    v = warp_lane_sum([&](float acc, int i) {
-                        const float t = static_cast<float>((i >> 6) - kR) * (yc[i] - central);
-                        return fmaf(t, st0[i], acc);
-                    });
-                } else {
-                    v = warp_lane_sum([&](float acc, int i) {
-                        const float t = static_cast<float>((i & 63) - kR) * (yc[i] - central);
-                        return fmaf(t, st0[i], acc);
-                    });
+                for (int c = 1; c < C; ++c) {
+                    e = g[c][k] - center[c];
+                    x = fmaf(e, e, x);
                 }
+                x = fmaf(x, inv_reg, p.dist_reg[i]);
+                kv[k] = fastexp(-x);
+                const int dr = my_row + kRowStep * k - kR, dcol = my_col - kR;
+                s1[0] = fmaf(static_cast<float>(dr * dr), kv[k], s1[0]);
+                s1[1] = fmaf(static_cast<float>(dr * dcol), kv[k], s1[1]);
+                s1[2] = fmaf(static_cast<float>(dcol * dcol), kv[k], s1[2]);
+                const float yc = y[0][k] - center[0];
+                s1[3] = fmaf(static_cast<float>(dr) * yc, kv[k], s1[3]);
+                s1[4] = fmaf(static_cast<float>(dcol) * yc, kv[k], s1[4]);
             }
-            if (lane == 0) sums[warp] = v;  // a, b, c, then d0, e0, d1, e1, ...
+            block_reduce<kFirst, kThreads / 32>(s1, partA);
+#pragma unroll
+            for (int q = 0; q < kFirst; ++q) sa[q] = s1[q];
+            if constexpr (C == 3) {
+                float s2[4] = {};
+#pragma unroll
+                for (int k = 0; k < kPer; ++k) {
+                    const int dr = my_row + kRowStep * k - kR, dcol = my_col - kR;
+#pragma unroll
+                    for (int c = 1; c < C; ++c) {
+                        const float yc = y[c][k] - center[c];
+                        s2[2 * c - 2] = fmaf(static_cast<float>(dr) * yc, kv[k], s2[2 * c - 2]);
+                        s2[2 * c - 1] = fmaf(static_cast<float>(dcol) * yc, kv[k], s2[2 * c - 1]);
+                    }
+                }
+                block_reduce<4, kThreads / 32>(s2, partA + (kThreads / 32) * 5);
+#pragma unroll
+                for (int q = 0; q < 4; ++q) sa[5 + q] = s2[q];
+            }
         }
-        __syncthreads();
         PH(1);
         float slope_r[C], slope_c[C];
         {
-            const float a = sums[0], b = sums[1], cq = sums[2];
+            const float a = sa[0], b = sa[1], cq = sa[2];
             const float det = a * cq - b * b;
             const bool fit = !(fabsf(det) < nss::kDa3dRegressionEpsilon);
 #pragma unroll
@@ -545,7 +600,7 @@ __global__ void __launch_bounds__(kThreads) da3d_tile_kernel(TileParams p) {
                 slope_r[c] = 0.f;
                 slope_c[c] = 0.f;
                 if (fit) {
-                    const float dd = sums[3 + 2 * c], ee = sums[4 + 2 * c];
+                    const float dd = sa[3 + 2 * c], ee = sa[4 + 2 * c];
                     slope_r[c] = (cq * dd - b * ee) / det;
                     slope_c[c] = (a * ee - b * dd) / det;
                 }
@@ -567,30 +622,48 @@ __global__ void __launch_bounds__(kThreads) da3d_tile_kernel(TileParams p) {
         __syncthreads();
 #pragma unroll
         for (int c = 0; c < C; ++c) center[c] = centers[c];
-        // k, staged for mass and energy
+        // k, and mass, energy and the sums of k y, k g by a tree (three
+        // channels: two rounds)
+        float sb[2 + 2 * C];
+        {
+            constexpr int kFirst = C == 1 ? 4 : 4;  // mass, energy, k y0, k g0
+            float s1[kFirst] = {};
 #pragma unroll
-        for (int k = 0; k < kPer; ++k) {
-            const int i = threadIdx.x + kThreads * k;
-            float e = g[0][k] - center[0];
-            float x = e * e;
+            for (int k = 0; k < kPer; ++k) {
+                const int i = threadIdx.x + kThreads * k;
+                float e = g[0][k] - center[0];
+                float x = e * e;
 #pragma unroll
-            for (int c = 1; c < C; ++c) {
-                e = g[c][k] - center[c];
-                x = fmaf(e, e, x);
+                for (int c = 1; c < C; ++c) {
+                    e = g[c][k] - center[c];
+                    x = fmaf(e, e, x);
+                }
+                x = fmaf(x, inv_k, p.dist_k[i]);
+                kv[k] = fastexp(-x);
+                s1[0] += kv[k];
+                s1[1] = fmaf(kv[k], kv[k], s1[1]);
+                s1[2] = fmaf(kv[k], y[0][k], s1[2]);
+                s1[3] = fmaf(kv[k], g[0][k], s1[3]);
             }
-            x = fmaf(x, inv_k, p.dist_k[i]);
-            kv[k] = fastexp(-x);
-            st0[i] = kv[k];
+            block_reduce<kFirst, kThreads / 32>(s1, partB);
+#pragma unroll
+            for (int q = 0; q < kFirst; ++q) sb[q] = s1[q];
+            if constexpr (C == 3) {
+                float s2[4] = {};
+#pragma unroll
+                for (int k = 0; k < kPer; ++k)
+#pragma unroll
+                    for (int c = 1; c < C; ++c) {
+                        s2[2 * c - 2] = fmaf(kv[k], y[c][k], s2[2 * c - 2]);
+                        s2[2 * c - 1] = fmaf(kv[k], g[c][k], s2[2 * c - 1]);
+                    }
+                block_reduce<4, kThreads / 32>(s2, partB + (kThreads / 32) * 4);
+#pragma unroll
+                for (int q = 0; q < 4; ++q) sb[4 + q] = s2[q];
+            }
         }
-        __syncthreads();
-        if (warp < 2) {
-            const float v = warp == 0 ? warp_lane_sum([&](float acc, int i) { return acc + st0[i]; })
-                                      : warp_lane_sum([&](float acc, int i) { return fmaf(st0[i], st0[i], acc); });
-            if (lane == 0) sums[8 + warp] = v;
-        }
-        __syncthreads();
         PH(2);
-        const float mass = sums[8], energy = sums[9];
+        const float mass = sb[0], energy = sb[1];
 
         // Tile sums of this patch: loads first, then the stores.
         auto add_tile = [&](auto value_of) {
@@ -622,39 +695,11 @@ __global__ void __launch_bounds__(kThreads) da3d_tile_kernel(TileParams p) {
                 return fmaf(g[c][k] + pl, kk, old);
             });
         } else {
-            // averages: k in stage 0, y (then g) of each channel in the others;
-            // one round when they all fit
             float avg[C], gavg[C];
-            constexpr int kRounds = 2 * C + 1 <= 4 ? 1 : 2;
-            for (int round = 0; round < kRounds; ++round) {
-#pragma unroll
-                for (int k = 0; k < kPer; ++k)
-#pragma unroll
-                    for (int c = 0; c < C; ++c) {
-                        if (kRounds == 1) {
-                            stage[1 + c][threadIdx.x + kThreads * k] = y[c][k];
-                            stage[1 + C + c][threadIdx.x + kThreads * k] = g[c][k];
-                        } else {
-                            stage[1 + c][threadIdx.x + kThreads * k] = round ? g[c][k] : y[c][k];
-                        }
-                    }
-                __syncthreads();
-                const int chains = kRounds == 1 ? 2 * C : C;
-                if (warp < chains) {
-                    const float* src = stage[1 + warp];
-                    const float v = warp_lane_sum([&](float acc, int i) { return fmaf(st0[i], src[i], acc); });
-                    // stage 1 + c: y of channel c (or g in round 1); with one round, g at 1 + C + c
-                    const int c = warp % C;
-                    const int which = kRounds == 1 ? warp / C : round;
-                    if (lane == 0) sums[10 + 2 * c + which] = v;
-                }
-                __syncthreads();
-            }
-            PH(3);
 #pragma unroll
             for (int c = 0; c < C; ++c) {
-                avg[c] = sums[10 + 2 * c] / mass;
-                gavg[c] = sums[11 + 2 * c] / mass;
+                avg[c] = sb[2 + 2 * c] / mass;
+                gavg[c] = sb[3 + 2 * c] / mass;
             }
             const float coef = -nss::kDa3dGammaF * (energy * sigma2);
             const float inv_n = 1.f / static_cast<float>(kArea);
@@ -707,14 +752,26 @@ __global__ void __launch_bounds__(kThreads) da3d_tile_kernel(TileParams p) {
                     result[c][k] = fmaf(pl, kv[k], v);
                 }
             };
+            // the same from inverse2_real's output in (re_, im_)
+            auto take_real = [&](int c, const float* re_, const float* im_) {
+#pragma unroll
+                for (int k = 0; k < kPer; ++k) {
+                    const int row = my_row + kRowStep * k;
+                    const float rr = static_cast<float>(row - kR);
+                    const float pl = fmaf(slope_c[c], cc, slope_r[c] * rr);
+                    const float rest = 1.f - kv[k];
+                    float v = real_out(re_, im_, row, my_col) * inv_n - rest * avg[c];
+                    result[c][k] = fmaf(pl, kv[k], v);
+                }
+            };
             if (C == 1) {
                 prep(0, are, aim);
                 __syncthreads();
-                forward2(are, aim, tw);
+                forward2(are, aim, tw, kThreads);
                 shrink(are, aim, threadIdx.x, kThreads);
                 __syncthreads();
-                inverse2(are, aim, tw);
-                take(0, are);
+                inverse2_real<kThreads>(are, aim, tw);
+                take_real(0, are, aim);
             } else {
                 // two transforms at a time, one on each half of the block
                 const bool lower = threadIdx.x < kThreads / 2;
@@ -749,8 +806,8 @@ __global__ void __launch_bounds__(kThreads) da3d_tile_kernel(TileParams p) {
                 take(1, aim);
                 shrink(bre, bim, threadIdx.x, kThreads);
                 __syncthreads();
-                inverse2(bre, bim, tw);
-                take(2, bre);
+                inverse2_real<kThreads>(bre, bim, tw);
+                take_real(2, bre, bim);
             }
             add_tile([&](int c, int k, float old) { return fmaf(result[c][k], kv[k], old); });
         }
@@ -902,76 +959,95 @@ void da3d_fill_tables(float* host) {
     }
 }
 
-void da3d_run(const Da3dUnit& u, const Da3dTables& tables, void* work, std::size_t work_bytes,
+void da3d_run(const Da3dUnit* units, int count, const Da3dTables& tables, void* work, std::size_t work_bytes,
               unsigned long long* stats_device, cudaStream_t stream) {
-    const int C = u.channels;
-    const Layout l = layout(u.width, u.height, C);
-    if (work_bytes < l.total) throw std::invalid_argument("nss_cuda: DA3D work buffer too small");
-    auto* base = static_cast<std::uint8_t*>(work);
-    const std::size_t n = static_cast<std::size_t>(u.width) * u.height;
+    if (count < 1 || count > 3 || (count > 1 && units[0].channels != 1))
+        throw std::invalid_argument("nss_cuda: DA3D takes one joint unit or up to three planes");
+    const int C = units[0].channels;
     const float rs2 = std::sqrt(2.f), rs3 = std::sqrt(3.f), rs6 = std::sqrt(6.f);
-    TileParams p{};
-    if (u.rgb) {
-        da3d_color_kernel<<<static_cast<unsigned>((n + 255) / 256), 256, 0, stream>>>(u.noisy[0], u.noisy[1], u.noisy[2],
-                                                                                    u.transformed, n, rs2, rs3, rs6);
-        NSS_CUDA_CHECK_LAUNCH();
-        da3d_color_kernel<<<static_cast<unsigned>((n + 255) / 256), 256, 0, stream>>>(u.guide[0], u.guide[1], u.guide[2],
-                                                                                    u.transformed + 3 * n, n, rs2, rs3, rs6);
-        NSS_CUDA_CHECK_LAUNCH();
-        for (int c = 0; c < 3; ++c) {
-            p.plane_noisy[c] = u.transformed + c * n;
-            p.plane_guide[c] = u.transformed + (3 + c) * n;
+    TileSet set{};
+    Layout ls[3];
+    std::size_t offset = 0;
+    auto* base = static_cast<std::uint8_t*>(work);
+    for (int k = 0; k < count; ++k) {
+        const Da3dUnit& u = units[k];
+        const Layout l = layout(u.width, u.height, C);
+        ls[k] = l;
+        const std::size_t n = static_cast<std::size_t>(u.width) * u.height;
+        TileParams& p = set.plane[k];
+        if (u.rgb) {
+            da3d_color_kernel<<<static_cast<unsigned>((n + 255) / 256), 256, 0, stream>>>(u.noisy[0], u.noisy[1], u.noisy[2],
+                                                                                        u.transformed, n, rs2, rs3, rs6);
+            NSS_CUDA_CHECK_LAUNCH();
+            da3d_color_kernel<<<static_cast<unsigned>((n + 255) / 256), 256, 0, stream>>>(u.guide[0], u.guide[1], u.guide[2],
+                                                                                        u.transformed + 3 * n, n, rs2, rs3, rs6);
+            NSS_CUDA_CHECK_LAUNCH();
+            for (int c = 0; c < 3; ++c) {
+                p.plane_noisy[c] = u.transformed + c * n;
+                p.plane_guide[c] = u.transformed + (3 + c) * n;
+            }
+        } else {
+            for (int c = 0; c < C; ++c) {
+                p.plane_noisy[c] = u.noisy[c];
+                p.plane_guide[c] = u.guide[c];
+            }
         }
-    } else {
-        for (int c = 0; c < C; ++c) {
-            p.plane_noisy[c] = u.noisy[c];
-            p.plane_guide[c] = u.guide[c];
-        }
+        p.width = u.width;
+        p.height = u.height;
+        p.rows_t = l.rows_t;
+        p.cols_t = l.cols_t;
+        p.tile_w = l.tile_w;
+        p.tile_area = l.tile_area;
+        p.wm_stride = l.wm_stride;
+        p.sigma2 = u.sigma * u.sigma;
+        p.twiddle = tables.twiddle;
+        p.dist_reg = tables.dist;
+        p.dist_k = tables.dist + kArea;
+        p.tile_num = reinterpret_cast<float*>(base + offset);
+        p.tile_den = reinterpret_cast<float*>(base + offset + l.num);
+        p.wm = reinterpret_cast<float*>(base + offset + l.num + l.den);
+        p.scratch = reinterpret_cast<float*>(base + offset + l.num + l.den + l.wm);
+        p.stats = stats_device;
+        set.first[k + 1] = set.first[k] + l.tiles;
+        offset += l.total;
     }
-    p.width = u.width;
-    p.height = u.height;
-    p.rows_t = l.rows_t;
-    p.cols_t = l.cols_t;
-    p.tile_w = l.tile_w;
-    p.tile_area = l.tile_area;
-    p.wm_stride = l.wm_stride;
-    p.sigma2 = u.sigma * u.sigma;
-    p.twiddle = tables.twiddle;
-    p.dist_reg = tables.dist;
-    p.dist_k = tables.dist + kArea;
-    p.tile_num = reinterpret_cast<float*>(base);
-    p.tile_den = reinterpret_cast<float*>(base + l.num);
-    p.wm = reinterpret_cast<float*>(base + l.num + l.den);
-    p.scratch = reinterpret_cast<float*>(base + l.num + l.den + l.wm);
-    p.stats = stats_device;
+    for (int k = count; k < 3; ++k) set.first[k + 1] = set.first[k];
+    if (work_bytes < offset) throw std::invalid_argument("nss_cuda: DA3D work buffer too small");
     NSS_CUDA_CHECK(cudaMemsetAsync(stats_device, 0, 2 * sizeof(unsigned long long), stream));
-    const std::size_t smem = 4 * kShared * sizeof(float);  // the second buffer also stages sums
-    if (C == 3) {
-        NSS_CUDA_CHECK(cudaFuncSetAttribute(da3d_tile_kernel<3>, cudaFuncAttributeMaxDynamicSharedMemorySize, static_cast<int>(smem)));
-        da3d_tile_kernel<3><<<l.tiles, kThreads, smem, stream>>>(p);
-    } else {
-        NSS_CUDA_CHECK(cudaFuncSetAttribute(da3d_tile_kernel<1>, cudaFuncAttributeMaxDynamicSharedMemorySize, static_cast<int>(smem)));
-        da3d_tile_kernel<1><<<l.tiles, kThreads, smem, stream>>>(p);
+    const unsigned blocks = static_cast<unsigned>(set.first[count]);
+    auto launch = [&](auto kernel, int threads, std::size_t smem) {
+        NSS_CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, static_cast<int>(smem)));
+        kernel<<<blocks, threads, smem, stream>>>(set);
+    };
+    const std::size_t full = 4 * kShared * sizeof(float), compact = 2 * kShared * sizeof(float);
+    // One channel: 256 threads and two buffers (about 40 KiB), so two tiles
+    // share an SM and fill each other's barrier waits (512 threads in 64
+    // registers spilled). Joint RGB keeps its four buffers and 512 threads.
+    if (C == 3) launch(da3d_tile_kernel<3, 512, 1, false>, 512, full);
+    else launch(da3d_tile_kernel<1, 256, 2, true>, 256, compact);
+    NSS_CUDA_CHECK_LAUNCH();
+    for (int k = 0; k < count; ++k) {
+        const Da3dUnit& u = units[k];
+        const TileParams& p = set.plane[k];
+        MergeParams m{};
+        m.width = u.width;
+        m.height = u.height;
+        m.rows_t = ls[k].rows_t;
+        m.cols_t = ls[k].cols_t;
+        m.tile_w = ls[k].tile_w;
+        m.tile_area = ls[k].tile_area;
+        m.tile_num = p.tile_num;
+        m.tile_den = p.tile_den;
+        for (int c = 0; c < C; ++c) m.out[c] = u.out[c];
+        m.rgb = u.rgb;
+        m.rs2 = rs2;
+        m.rs3 = rs3;
+        m.rs6 = rs6;
+        const dim3 grid((u.width + 127) / 128, u.height);
+        if (C == 3) da3d_merge_kernel<3><<<grid, 128, 0, stream>>>(m);
+        else da3d_merge_kernel<1><<<grid, 128, 0, stream>>>(m);
+        NSS_CUDA_CHECK_LAUNCH();
     }
-    NSS_CUDA_CHECK_LAUNCH();
-    MergeParams m{};
-    m.width = u.width;
-    m.height = u.height;
-    m.rows_t = l.rows_t;
-    m.cols_t = l.cols_t;
-    m.tile_w = l.tile_w;
-    m.tile_area = l.tile_area;
-    m.tile_num = p.tile_num;
-    m.tile_den = p.tile_den;
-    for (int c = 0; c < C; ++c) m.out[c] = u.out[c];
-    m.rgb = u.rgb;
-    m.rs2 = rs2;
-    m.rs3 = rs3;
-    m.rs6 = rs6;
-    const dim3 grid((u.width + 127) / 128, u.height);
-    if (C == 3) da3d_merge_kernel<3><<<grid, 128, 0, stream>>>(m);
-    else da3d_merge_kernel<1><<<grid, 128, 0, stream>>>(m);
-    NSS_CUDA_CHECK_LAUNCH();
 }
 
 }  // namespace nss_cuda

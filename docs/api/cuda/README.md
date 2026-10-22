@@ -24,13 +24,14 @@ warm-up; the images differ by at most 3%.
 | [LSSC](lssc.md) | 230 | 145 | (no temporal mode) |
 | [NLH](nlh.md) | 37 | 31 | 13 / 11 |
 | [TWSC](twsc.md) | 77 | 44 | |
-| [BM4D](bm4d.md) | 16 | — | (temporal by construction; gray 23) |
-| [DA3D](da3d.md) | 16 / 37 | 5.6 / 14 | (sigma 3 / 10; a last step on a guide) |
+| [BM4D](bm4d.md) | 27 | — | (temporal by construction; gray 40) |
+| [DA3D](da3d.md) | 37 / 70 | 5.6 / 14 | (sigma 3 / 10; a last step on a guide) |
 
-- BM4D and DA3D are measured differently: BM4D on 64 frames of an anime episode
+- BM4D and DA3D are measured differently: BM4D on 160 frames of an anime episode
   with grain of sigma 5, DA3D on one test image at the sigma given, with
-  `BM3D(final=1)` at 4/3 sigma as its guide (computed beforehand). Both give
-  the CPU plugin's output bit for bit.
+  `BM3D(final=1)` at 4/3 sigma as its guide (computed beforehand). DA3D's
+  output is within a level of the CPU plugin's; BM4D's matching takes FP16
+  distances (its PSNR is the CPU's).
 - NLH runs its default blind noise estimation; giving `sigma` skips it.
 - TWSC's default is a speed setting. Its quality geometry (`block_step=1,
   group_size=90, iters=12`) denoises 8 to 10 dB better and takes about 80 s
