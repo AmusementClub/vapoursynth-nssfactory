@@ -530,7 +530,8 @@ __global__ void __launch_bounds__(kCenterWarps * 32) center_kernel(LsscWork w) {
 // alpha0 = D^T y for kAlphaTile patches of the batch per block: thread
 // (ta, tp) of 64 x 4 takes the atoms ta + 64 u (u < 4) and the patches
 // tp * 16 + v (v < 16) in registers; each entry one fma chain over the pixels
-// in order (as the CPU).
+// in order (as the CPU). Shapes alpha_tiled_kernel does not take (m not a
+// multiple of 4, or above 128).
 constexpr int kAlphaTile = 64;
 __global__ void __launch_bounds__(256) alpha_kernel(LsscWork w, int begin, int count, int tile) {
     extern __shared__ float tile_y[];  // tile * m
@@ -571,6 +572,75 @@ __global__ void __launch_bounds__(256) alpha_kernel(LsscWork w, int begin, int c
         for (int u = 0; u < 4; ++u) {
             const int a = ta + 64 * u;
             if (a < atoms) out[a] = acc[u][v];
+        }
+    }
+}
+
+// alpha0 = D^T y register-tiled, for m a multiple of 4 up to 128: a block takes kAlphaTile patches and every
+// atom (padded to 256), thread (lane, warp) the atoms 4 lane + i and 128 + 4 lane + i (i < 4) and the
+// patches 4 warp + j and 32 + 4 warp + j (j < 4). D^T comes through shared memory kTiledRows pixels at a
+// time (a float4 of atoms a load), y from the block's tile as float4 along the pixels: six shared loads per
+// 64 fma where alpha_kernel issued twenty. Each entry is the same fma chain over the pixels in order, so the
+// same bits as alpha_kernel.
+constexpr int kTiledRows = 16, kTiledAtoms = 256;
+constexpr std::size_t alpha_tiled_bytes(int m) {
+    return (static_cast<std::size_t>(kAlphaTile) * m + kTiledRows * kTiledAtoms) * sizeof(float);
+}
+__global__ void __launch_bounds__(256) alpha_tiled_kernel(LsscWork w, int begin, int count) {
+    extern __shared__ float4 alpha_shared[];
+    const int m = w.m, atoms = w.atoms;
+    float* const tile_y = reinterpret_cast<float*>(alpha_shared);  // kAlphaTile * m
+    float* const dsh = tile_y + kAlphaTile * m;                     // kTiledRows * kTiledAtoms
+    const float4* const dsh4 = reinterpret_cast<const float4*>(dsh);
+    const long long first = begin + static_cast<long long>(blockIdx.x) * kAlphaTile;
+    const int n = static_cast<int>(min(static_cast<long long>(kAlphaTile), begin + static_cast<long long>(count) - first));
+    const int tid = threadIdx.x, lane = tid % 32, warp = tid / 32;
+    for (int e = tid; e < n * m; e += 256) tile_y[e] = w.values[first * m + e];
+    for (int e = n * m + tid; e < kAlphaTile * m; e += 256) tile_y[e] = 0.f;
+    float acc[8][8];
+#pragma unroll
+    for (int i = 0; i < 8; ++i)
+#pragma unroll
+        for (int j = 0; j < 8; ++j) acc[i][j] = 0.f;
+    for (int k0 = 0; k0 < m; k0 += kTiledRows) {
+        const int rows = min(kTiledRows, m - k0);
+        __syncthreads();  // the tile is loaded; the chunk before is no longer read
+        for (int e = tid; e < rows * kTiledAtoms; e += 256) {
+            const int r = e / kTiledAtoms, a = e % kTiledAtoms;
+            dsh[e] = a < atoms ? __ldg(w.transpose + static_cast<long long>(k0 + r) * atoms + a) : 0.f;
+        }
+        __syncthreads();
+        for (int kk = 0; kk < rows; kk += 4) {
+#pragma unroll
+            for (int h = 0; h < 2; ++h) {
+                float4 yv[4];
+#pragma unroll
+                for (int j = 0; j < 4; ++j)
+                    yv[j] = *reinterpret_cast<const float4*>(tile_y + (32 * h + 4 * warp + j) * m + k0 + kk);
+#pragma unroll
+                for (int q = 0; q < 4; ++q) {
+                    const float4 d0 = dsh4[(kk + q) * (kTiledAtoms / 4) + lane];
+                    const float4 d1 = dsh4[(kk + q) * (kTiledAtoms / 4) + 32 + lane];
+                    const float d[8] = {d0.x, d0.y, d0.z, d0.w, d1.x, d1.y, d1.z, d1.w};
+#pragma unroll
+                    for (int j = 0; j < 4; ++j) {
+                        const float y = q == 0 ? yv[j].x : q == 1 ? yv[j].y : q == 2 ? yv[j].z : yv[j].w;
+#pragma unroll
+                        for (int i = 0; i < 8; ++i) acc[i][4 * h + j] = fmaf(d[i], y, acc[i][4 * h + j]);
+                    }
+                }
+            }
+        }
+    }
+#pragma unroll
+    for (int j = 0; j < 8; ++j) {
+        const int p = 32 * (j / 4) + 4 * warp + j % 4;
+        if (p >= n) continue;
+        float* out = w.alpha0 + (first - begin + p) * atoms;
+#pragma unroll
+        for (int i = 0; i < 8; ++i) {
+            const int a = 128 * (i / 4) + 4 * lane + i % 4;
+            if (a < atoms) out[a] = acc[i][j];
         }
     }
 }
@@ -811,6 +881,7 @@ void lssc_code(const LsscWork& w, float sigma, cudaStream_t stream) {
     const float budget = nss::lssc_omp_budget(w.m, sigma);
     center_kernel<<<blocks_for(w.np, kCenterWarps), kCenterWarps * 32, 0, stream>>>(w);
     NSS_CUDA_CHECK_LAUNCH();
+    const bool tiled = w.m % 4 == 0 && alpha_tiled_bytes(w.m) <= 48 * 1024 && w.atoms <= kTiledAtoms;
     const int tile = w.m <= 64 ? kAlphaTile : 16;
     const std::size_t tile_bytes = static_cast<std::size_t>(tile) * w.m * sizeof(float);
     static std::atomic<std::size_t> opted{0};
@@ -823,7 +894,11 @@ void lssc_code(const LsscWork& w, float sigma, cudaStream_t stream) {
     NSS_CUDA_CHECK(cudaMemsetAsync(w.counters, 0, static_cast<std::size_t>((w.np + w.batch - 1) / w.batch) * sizeof(int), stream));
     for (int begin = 0, b = 0; begin < w.np; begin += w.batch, ++b) {
         const int count = std::min(w.batch, w.np - begin);
-        alpha_kernel<<<blocks_for(count, tile), 256, tile_bytes, stream>>>(w, begin, count, tile);
+        if (tiled) {
+            alpha_tiled_kernel<<<blocks_for(count, kAlphaTile), 256, alpha_tiled_bytes(w.m), stream>>>(w, begin, count);
+        } else {
+            alpha_kernel<<<blocks_for(count, tile), 256, tile_bytes, stream>>>(w, begin, count, tile);
+        }
         NSS_CUDA_CHECK_LAUNCH();
         const int grid = std::min((count + kCodeWarps - 1) / kCodeWarps, warps / kCodeWarps);
         code_kernel<<<grid, kCodeWarps * 32, shared, stream>>>(w, budget, begin, count, w.counters + b);
