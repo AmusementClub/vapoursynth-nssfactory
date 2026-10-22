@@ -1,0 +1,58 @@
+--- a/DA3D.cpp
++++ b/DA3D.cpp
+@@ -1,3 +1,5 @@
++#include <cstdlib>
++#include <cstdio>
+ /*
+  * DA3D.cpp
+  *
+@@ -245,8 +247,10 @@
+   Image output(guide.rows(), guide.columns(), guide.channels());
+   Image weights(guide.rows(), guide.columns());
+ 
++  long n_iter = 0, n_guide = 0;
+   // main loop
+   while (agg_weights.Minimum() < threshold) {  // line 4
++    ++n_iter;
+     tie(pr, pc) = agg_weights.FindMinimum();  // line 5
+     ExtractPatch(noisy, pr, pc, &y);  // line 6
+     ExtractPatch(guide, pr, pc, &g);  // line 7
+@@ -256,6 +260,7 @@
+     SubtractPlane(r, reg_plane, &g);  // line 11
+     BilateralWeight(g, &k, r, gamma_r_sigma2, sigma_s2);  // line 12
+     if (accumulate(k.begin(), k.end(), 0.f) < 10.f) {     // line 13
++      ++n_guide;
+       for (float& v : k) v *= v;  // Square the weights   // line 14
+       for (int row = 0; row < s; ++row) {                 // line 15-16
+         for (int col = 0; col < s; ++col) {
+@@ -313,6 +318,7 @@
+     agg_weights.IncreaseWeights(k, pr - r, pc - r);  // line 29
+   }
+ 
++  fprintf(stderr, "tile %dx%d iter %ld guide_only %ld\n", guide.columns(), guide.rows(), n_iter, n_guide);
+   return {move(output), move(weights)};
+ }
+ 
+@@ -332,14 +338,19 @@
+ 
+   pair<int, int> tiling = ComputeTiling(guide.rows(), guide.columns(),
+                                         nthreads);
++  if (const char* t = getenv("DA3D_TILE")) {  // nssfactory: fixed tile grid (nss.DA3D model 1)
++    const int T = atoi(t);
++    tiling = {std::max(1, (guide.rows() + T / 2) / T), std::max(1, (guide.columns() + T / 2) / T)};
++  }
++  const int ntiles = tiling.first * tiling.second;
+   vector<Image> noisy_tiles = SplitTiles(ColorTransform(noisy.copy()), r,
+                                          s - r - 1, tiling);
+   vector<Image> guide_tiles = SplitTiles(ColorTransform(guide.copy()), r,
+                                          s - r - 1, tiling);
+-  vector<pair<Image, Image>> result_tiles(nthreads);
++  vector<pair<Image, Image>> result_tiles(ntiles);
+ 
+-#pragma omp parallel for num_threads(nthreads)
+-  for (int i = 0; i < nthreads; ++i) {
++#pragma omp parallel for num_threads(nthreads) schedule(dynamic)
++  for (int i = 0; i < ntiles; ++i) {
+     result_tiles[i] = DA3D_block(noisy_tiles[i], guide_tiles[i], sigma,
+                                  r, sigma_s, gamma_r, threshold);
+   }
