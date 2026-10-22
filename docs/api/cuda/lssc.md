@@ -17,11 +17,11 @@ fine = core.nss_cuda.LSSC(clip, sigma=25, block_step=3)
 
 | Call | YUV420 | RGB |
 |---|---:|---:|
-| default | 315 | 170 |
+| default | 305 | 165 |
 
 The cost of a patch grows with the atoms it needs, so the speed depends on the
 content and the noise: on a grainy, text-heavy 1080p RGB frame the default
-runs at 96 fps at sigma 3 and 205 at sigma 25 (gray: 300 and 645).
+runs at 92 fps at sigma 3 and 195 at sigma 25 (gray: 285 and 635).
 
 Model version 3 (k-means clusters and a group soft threshold, default
 `block_step=8`) ran the same images at 205 (YUV420) and 145 (RGB), where
@@ -36,8 +36,8 @@ The defaults are fast settings. Settings closer to the paper, with their quality
 
 | Arguments | PSNR, sigma 15 | PSNR, sigma 25 | fps YUV420 / RGB |
 |---|---:|---:|---:|
-| defaults, `sigma=σ` | 31.86 dB | 28.75 dB | 315 / 170 |
-| `block_step=3, sigma=σ` | 32.19 dB | 29.17 dB | 257 / 122 |
+| defaults, `sigma=σ` | 31.86 dB | 28.75 dB | 305 / 165 |
+| `block_step=3, sigma=σ` | 32.19 dB | 29.17 dB | 249 / 116 |
 
 - The defaults are close to the paper's sparse coding already (overlapping patches, error-constrained OMP); a denser step adds a little. Model version 3 gave 29.15 / 26.28 dB here.
 

@@ -17,11 +17,11 @@ warm-up; the images differ by at most 3%.
 | Filter | YUV420 | RGB | Temporal, `radius=1` (YUV420 / RGB) |
 |---|---:|---:|---:|
 | [BM3D](bm3d.md) | 495 | 280 | 455 / 230 |
-| [NLM](nlm.md) | 490 | 255 | (temporal by default, `d=1`) |
+| [NLM](nlm.md) | 620 | 260 | (temporal by default, `d=1`) |
 | [WNNM](wnnm.md) | 500 | 285 | 455 / 230 |
 | [MCWNNM](mcwnnm.md) | — | 200 | — / 135 |
 | [NCSR](ncsr.md) | 390 | 215 | 265 / 135 |
-| [LSSC](lssc.md) | 315 | 170 | (no temporal mode) |
+| [LSSC](lssc.md) | 305 | 165 | (no temporal mode) |
 | [NLH](nlh.md) | 37 | 31 | 13 / 11 |
 | [TWSC](twsc.md) | 77 | 44 | |
 | [BM4D](bm4d.md) | 27 | — | (temporal by construction; gray 40) |
@@ -37,9 +37,9 @@ warm-up; the images differ by at most 3%.
   group_size=90, iters=12`) denoises 8 to 10 dB better and takes about 80 s
   per YUV420 1080p frame and 45 s per RGB frame; its page has the trade-offs.
 - MCWNNM takes RGB only.
-- The release packages are built with CUDA 12.9. A CUDA 13 build gives the same output and
-  the same speed within 5% for every filter except NLM, which runs about 1.25x faster at its
-  defaults (620 / 260 fps).
+- The release packages are built with CUDA 13.3. Up to r2 they were built with CUDA 12.9, which
+  gives the same output and the same speed within 5% for every filter except NLM, about 1.25x
+  slower at its defaults (490 / 255 fps).
 - Against BM3DCUDA, VapourSynth-WNNM, vs-nlm-ispc and vs-nlm-cuda at the same arguments, and
   r2 against r1: [Against other plugins](compare.md).
 - The CPU plugin's speed is on the [CPU API guide](../README.md).
@@ -58,10 +58,10 @@ noise added; PSNR against the frame without it, noisy input 24.97 dB):
 | [WNNM](wnnm.md#closer-to-the-papers) | `block_step=4, group_size=32, bm_range=15, sigma=1.41 σ` | 26.3 → 33.7 | 285 → 4.3 |
 | [MCWNNM](mcwnnm.md#closer-to-the-papers) | `block_step=4, group_size=32, iters=4` | 25.6 → 33.7 | 200 → 0.38 |
 | [NCSR](ncsr.md#closer-to-the-papers) | `block_step=4, group_size=16` | 29.4 → 33.4 | 215 → 18.5 |
-| [LSSC](lssc.md#closer-to-the-papers) | `block_step=3` | 31.9 → 32.2 | 170 → 122 |
+| [LSSC](lssc.md#closer-to-the-papers) | `block_step=3` | 31.9 → 32.2 | 165 → 116 |
 | [TWSC](twsc.md#closer-to-the-papers) | `block_step=4, group_size=90, iters=4` | 25.3 → 36.8 | 44 → 0.38 |
 | [NLH](nlh.md#closer-to-the-papers) | defaults (or `sigma=σ`) | 35.2 (35.6) | 31 |
-| [NLM](nlm.md#closer-to-the-papers) | `a=10, s=3, d=0, h=0.6 σ` | 25.0 → 33.3 | 255 → 79 |
+| [NLM](nlm.md#closer-to-the-papers) | `a=10, s=3, d=0, h=0.6 σ` | 25.0 → 33.3 | 260 → 81 |
 
 - One image: take these as starting points, not tuned presets.
 
@@ -152,9 +152,10 @@ GPU. NLM is temporal through `d`; LSSC has no temporal mode.
 
 ### Driver and GPU support
 
-- The release packages are built with CUDA 12.9 and need a driver for it or
-  newer.
+- The release packages are built with CUDA 13.3 and need an NVIDIA driver of
+  the r580 branch (CUDA 13.0) or newer.
 - Native code covers compute capability 7.5, 8.6, 8.9 and 12.0 (RTX 20, 30,
   40 and 50 series). Other GPUs of 7.5 or newer run through the driver's PTX
-  JIT (untested, best effort); `Backend()` reports which one a device gets.
+  JIT (untested, best effort; it needs a driver for CUDA 13.3 or newer);
+  `Backend()` reports which one a device gets.
 - Building is described in [Building](../building.md).

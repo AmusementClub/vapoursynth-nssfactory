@@ -247,11 +247,12 @@ jobs:
           path: nssfactory-*-windows-x86_64.zip
           if-no-files-found: error
 
-  # CUDA plugin: built with the release toolkit (12.9: native cubins for
+  # CUDA plugin: built with the release toolkit (13.3: native cubins for
   # sm_75/86/89/120 plus compute_75 PTX), CUDA runtime linked statically.
+  # The packages need an NVIDIA driver of the r580 branch or newer.
   build-linux-cuda:
     runs-on: ubuntu-latest
-    container: nvidia/cuda:12.9.1-devel-ubuntu24.04
+    container: nvidia/cuda:13.3.0-devel-ubuntu24.04
     env:  # no ccache in the toolkit image
       CMAKE_C_COMPILER_LAUNCHER: ""
       CMAKE_CXX_COMPILER_LAUNCHER: ""
@@ -299,8 +300,7 @@ jobs:
           if-no-files-found: error
 
   build-windows-cuda:
-    # CUDA 12.9 supports MSVC through VS 2022; windows-latest ships VS 2026
-    # (MSVC 14.5x), which nvcc 12.9 rejects.
+    # Pinned to VS 2022, which CUDA 13.3 supports; windows-latest ships VS 2026.
     runs-on: windows-2022
     env:  # no ccache on this runner image
       CMAKE_C_COMPILER_LAUNCHER: ""
@@ -309,9 +309,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: Jimver/cuda-toolkit@v0.2.36
         with:
-          cuda: "12.9.1"
+          cuda: "13.3.0"
           method: network
-          sub-packages: '["nvcc", "cudart", "cuobjdump", "nvtx", "visual_studio_integration"]'
+          # CUDA 13 ships the crt headers and NVVM as packages of their own.
+          sub-packages: '["nvcc", "crt", "nvvm", "cudart", "cuobjdump", "nvtx", "visual_studio_integration"]'
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64

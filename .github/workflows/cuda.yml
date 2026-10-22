@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0-only
 # CUDA backend (libnss_cuda) compile lanes. Runners have no GPU: these lanes
-# prove the toolchain and architecture contract (the minimum and newest
-# toolkits build, the fat binary carries the expected cubins and PTX) and the
-# plugin's no-device load path; numerical and performance gates run on a GPU host.
+# prove the toolchain and architecture contract (the release toolkit, CUDA 13.3,
+# builds on Linux and with MSVC, and the fat binary carries the expected cubins
+# and PTX) and the plugin's no-device load path; numerical and performance gates
+# run on a GPU host.
 name: cuda
 
 on:
@@ -51,19 +52,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Minimum supported toolkit: no sm_120 cubin, RTX 50 falls back to PTX.
-          - cuda: "12.4"
-            image: 12.4.1-devel-ubuntu22.04
-            cpu: "OFF"
-            cubins: "sm_75 sm_86 sm_89"
           # Release toolkit, built together with the CPU tree.
-          - cuda: "12.9"
-            image: 12.9.1-devel-ubuntu24.04
-            cpu: "ON"
-            cubins: "sm_75 sm_86 sm_89 sm_120"
           - cuda: "13.3"
             image: 13.3.0-devel-ubuntu24.04
-            cpu: "OFF"
+            cpu: "ON"
             cubins: "sm_75 sm_86 sm_89 sm_120"
     steps:
       - name: packages
@@ -91,22 +83,21 @@ jobs:
           cuobjdump --list-elf --list-ptx build/src/cuda/libnss_cuda.so | tee fatbin.txt
           for arch in ${{ matrix.cubins }}; do grep -q "\.${arch}\.cubin" fatbin.txt || { echo "missing $arch cubin"; exit 1; }; done
           grep -q "\.sm_75\.ptx" fatbin.txt || { echo "missing compute_75 PTX"; exit 1; }
-          if [ "${{ matrix.cuda }}" = "12.4" ] && grep -q "sm_120" fatbin.txt; then echo "unexpected sm_120 on 12.4"; exit 1; fi
       - name: cuda tests (skip without a GPU)
         run: /opt/venv/bin/ctest --test-dir build -L cuda --output-on-failure
 
   windows:
-    name: windows-cuda-12.9-msvc
-    # CUDA 12.9 supports MSVC through VS 2022; windows-latest ships VS 2026
-    # (MSVC 14.5x), which nvcc 12.9 rejects.
+    name: windows-cuda-13.3-msvc
+    # Pinned to VS 2022, which CUDA 13.3 supports; windows-latest ships VS 2026.
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
       - uses: Jimver/cuda-toolkit@v0.2.36
         with:
-          cuda: "12.9.1"
+          cuda: "13.3.0"
           method: network
-          sub-packages: '["nvcc", "cudart", "cuobjdump", "nvtx", "visual_studio_integration"]'
+          # CUDA 13 ships the crt headers and NVVM as packages of their own.
+          sub-packages: '["nvcc", "crt", "nvvm", "cudart", "cuobjdump", "nvtx", "visual_studio_integration"]'
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
