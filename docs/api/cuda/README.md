@@ -17,11 +17,11 @@ warm-up; the images differ by at most 3%.
 | Filter | YUV420 | RGB | Temporal, `radius=1` (YUV420 / RGB) |
 |---|---:|---:|---:|
 | [BM3D](bm3d.md) | 495 | 280 | 455 / 230 |
-| [NLM](nlm.md) | 415 | 215 | (temporal by default, `d=1`) |
+| [NLM](nlm.md) | 490 | 255 | (temporal by default, `d=1`) |
 | [WNNM](wnnm.md) | 500 | 285 | 455 / 230 |
 | [MCWNNM](mcwnnm.md) | — | 200 | — / 135 |
 | [NCSR](ncsr.md) | 390 | 215 | 265 / 135 |
-| [LSSC](lssc.md) | 230 | 145 | (no temporal mode) |
+| [LSSC](lssc.md) | 315 | 170 | (no temporal mode) |
 | [NLH](nlh.md) | 37 | 31 | 13 / 11 |
 | [TWSC](twsc.md) | 77 | 44 | |
 | [BM4D](bm4d.md) | 27 | — | (temporal by construction; gray 40) |
@@ -38,8 +38,8 @@ warm-up; the images differ by at most 3%.
   per YUV420 1080p frame and 45 s per RGB frame; its page has the trade-offs.
 - MCWNNM takes RGB only.
 - The release packages are built with CUDA 12.9. A CUDA 13 build gives the same output and
-  the same speed within 4% for every filter except NLM, which runs about 1.35x faster at its
-  defaults (565 / 235 fps).
+  the same speed within 5% for every filter except NLM, which runs about 1.25x faster at its
+  defaults (620 / 260 fps).
 - Against BM3DCUDA, VapourSynth-WNNM, vs-nlm-ispc and vs-nlm-cuda at the same arguments, and
   r2 against r1: [Against other plugins](compare.md).
 - The CPU plugin's speed is on the [CPU API guide](../README.md).
@@ -58,10 +58,10 @@ noise added; PSNR against the frame without it, noisy input 24.97 dB):
 | [WNNM](wnnm.md#closer-to-the-papers) | `block_step=4, group_size=32, bm_range=15, sigma=1.41 σ` | 26.3 → 33.7 | 285 → 4.3 |
 | [MCWNNM](mcwnnm.md#closer-to-the-papers) | `block_step=4, group_size=32, iters=4` | 25.6 → 33.7 | 200 → 0.38 |
 | [NCSR](ncsr.md#closer-to-the-papers) | `block_step=4, group_size=16` | 29.4 → 33.4 | 215 → 18.5 |
-| [LSSC](lssc.md#closer-to-the-papers) | `block_step=3` | 31.9 → 32.2 | 145 → 93 |
+| [LSSC](lssc.md#closer-to-the-papers) | `block_step=3` | 31.9 → 32.2 | 170 → 122 |
 | [TWSC](twsc.md#closer-to-the-papers) | `block_step=4, group_size=90, iters=4` | 25.3 → 36.8 | 44 → 0.38 |
 | [NLH](nlh.md#closer-to-the-papers) | defaults (or `sigma=σ`) | 35.2 (35.6) | 31 |
-| [NLM](nlm.md#closer-to-the-papers) | `a=10, s=3, d=0, h=0.6 σ` | 25.0 → 33.3 | 235 → 78 |
+| [NLM](nlm.md#closer-to-the-papers) | `a=10, s=3, d=0, h=0.6 σ` | 25.0 → 33.3 | 255 → 79 |
 
 - One image: take these as starting points, not tuned presets.
 

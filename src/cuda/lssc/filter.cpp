@@ -31,7 +31,10 @@ namespace {
 
 constexpr int kAtoms = 256;     // nss::kLsscDefaultAtoms
 constexpr unsigned kSeed = 0x4C535343u;
-constexpr int kMaxDepth = 3;  // buffer sets per slot
+// Buffer sets per slot: three, and a fourth for subsampled clips of several planes (a chroma plane codes in a
+// fraction of its dictionary's time, so the next frame's first plane must not wait for this frame's last set:
+// YUV420 1080p 1.15x for one set, 42 MiB; more sets measured the same; gray and RGB gain nothing).
+constexpr int kMaxDepth = 4;
 // Frames in flight per instance (staging sets) where the limit leaves room:
 // three for one denoised plane (gray 1080p, one stream: 1.045 against two;
 // four measured the same as three), two for more planes (RGB measured no gain).
@@ -52,23 +55,26 @@ private:
 };
 
 // A plane runs on the streams of its slot: `load` uploads it, a `front`
-// stream packs its patches, `side` builds the dictionary and its Gram matrix,
-// and `stream` codes and aggregates once both are done; `copy` downloads the
-// result. Where the limit leaves room the buffers the front end and side
-// write and the coding reads (input, patches, dictionary) are held up to three
-// times, each set with a front stream of its own, and planes take them in
-// turn (`depth`): the front end of the next plane then runs while the stream
-// still codes. A plane waits for the coding of the plane that last used its
+// stream packs its patches, a `side` stream builds the dictionary and its Gram
+// matrix, and `stream` codes and aggregates once both are done; `copy`
+// downloads the result. Where the limit leaves room the buffers the front end
+// and side write and the coding reads (input, patches, dictionary, K-SVD
+// samples) are held up to three times, each set with a front and a side
+// stream of its own, and planes take them in turn (`depth`): the front end of
+// the next plane then runs while the stream still codes, and the dictionaries
+// of a frame's planes are built at the same time (K-SVD runs on 16 blocks; on
+// one side stream the three chains of a YUV420 frame were its critical path). A plane waits for the coding of the plane that last used its
 // buffers (`coded`), and for the download before it rewrites `out`.
 struct Slot {
-    Stream stream, side, copy, load;
-    Stream front[kMaxDepth];
-    Event packed, dictionary, downloaded;
-    Event uploaded[kMaxDepth], coded[kMaxDepth];
+    Stream stream, copy, load;
+    Stream front[kMaxDepth], side[kMaxDepth];
+    Event downloaded;
+    Event packed[kMaxDepth], dictionary[kMaxDepth], uploaded[kMaxDepth], coded[kMaxDepth];
     DeviceBuffer input[kMaxDepth], patches[kMaxDepth], dict[kMaxDepth], transpose[kMaxDepth], gram[kMaxDepth],
-        inv_norm[kMaxDepth];
+        inv_norm[kMaxDepth], sample_y[kMaxDepth], sample_a[kMaxDepth], sample_r[kMaxDepth], ksvd_sync[kMaxDepth],
+        sources[kMaxDepth];
     DeviceBuffer num, den, out;
-    DeviceBuffer values, mean, yy, flags, alpha0, ubuf, counters, sample_y, sample_a, sample_r, ksvd_sync, meta, sources;
+    DeviceBuffer values, mean, yy, flags, alpha0, ubuf, counters, meta;
     int turn = 0;  // the buffer set of the next plane
     std::unique_ptr<OrderedAggregator> aggregator;
 };
@@ -162,23 +168,23 @@ LsscWork make_work(const LsscData& d, Slot& s, int plane, int b) {
     w.transpose = s.transpose[b].as<float>();
     w.gram = s.gram[b].as<float>();
     w.inv_norm = s.inv_norm[b].as<float>();
-    w.sample_y = s.sample_y.as<float>();
-    w.sample_a = s.sample_a.as<float>();
-    w.sample_r = s.sample_r.as<float>();
-    w.ksvd_sync = s.ksvd_sync.as<int>();
+    w.sample_y = s.sample_y[b].as<float>();
+    w.sample_a = s.sample_a[b].as<float>();
+    w.sample_r = s.sample_r[b].as<float>();
+    w.ksvd_sync = s.ksvd_sync[b].as<int>();
     w.meta = s.meta.as<AggregatePatch>();
     return w;
 }
 
 void denoise_plane(const LsscData& d, Slot& s, int plane, float sigma, int b) {
-    cudaStream_t stream = s.stream, front = s.front[b], side = s.side;
+    cudaStream_t stream = s.stream, front = s.front[b], side = s.side[b];
     const PlaneShape& p = d.planes[plane];
     LsscWork w = make_work(d, s, plane, b);
     NSS_CUDA_CHECK(cudaStreamWaitEvent(front, s.uploaded[b], 0));
     NSS_CUDA_CHECK(cudaStreamWaitEvent(front, s.coded[b], 0));
     lssc_pack(w, front);
-    NSS_CUDA_CHECK(cudaEventRecord(s.packed, front));
-    NSS_CUDA_CHECK(cudaStreamWaitEvent(side, s.packed, 0));
+    NSS_CUDA_CHECK(cudaEventRecord(s.packed[b], front));
+    NSS_CUDA_CHECK(cudaStreamWaitEvent(side, s.packed[b], 0));
     {
         NSS_CUDA_RANGE("lssc.dictionary");
         // DCT atoms first, the rest from LCG-sampled patches.
@@ -191,14 +197,14 @@ void denoise_plane(const LsscData& d, Slot& s, int plane, float sigma, int b) {
             state = state * 1664525u + 1013904223u;
             sources[a - dct] = static_cast<int>(state % static_cast<unsigned>(w.np));
         }
-        NSS_CUDA_CHECK(cudaMemcpyAsync(s.sources.get(), sources.data(), sources.size() * sizeof(int),
+        NSS_CUDA_CHECK(cudaMemcpyAsync(s.sources[b].get(), sources.data(), sources.size() * sizeof(int),
                                        cudaMemcpyHostToDevice, side));
-        lssc_patch_atoms(w, s.sources.as<int>(), dct, side);
+        lssc_patch_atoms(w, s.sources[b].as<int>(), dct, side);
         if (w.np >= 2) lssc_ksvd(w, side);
         lssc_prepare(w, side);
-        NSS_CUDA_CHECK(cudaEventRecord(s.dictionary, side));
+        NSS_CUDA_CHECK(cudaEventRecord(s.dictionary[b], side));
     }
-    NSS_CUDA_CHECK(cudaStreamWaitEvent(stream, s.dictionary, 0));
+    NSS_CUDA_CHECK(cudaStreamWaitEvent(stream, s.dictionary[b], 0));
     {
         NSS_CUDA_RANGE("lssc.code");
         lssc_code(w, sigma, stream);
@@ -253,9 +259,10 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
             bool armed = true;
             ~Drain() {
                 if (!armed) return;
-                for (cudaStream_t stream : {s.load.get(), s.front[0].get(), s.front[1].get(), s.front[2].get(), s.side.get(),
-                                            s.stream.get(), s.copy.get()}) {
-                    cudaStreamSynchronize(stream);
+                for (cudaStream_t stream : {s.load.get(), s.stream.get(), s.copy.get()}) cudaStreamSynchronize(stream);
+                for (int b = 0; b < kMaxDepth; ++b) {
+                    cudaStreamSynchronize(s.front[b].get());
+                    cudaStreamSynchronize(s.side[b].get());
                 }
             }
         } drain{s};
@@ -324,6 +331,11 @@ std::unique_ptr<Slot> make_slot(const LsscData& d) {
         slot->transpose[b] = floats(atoms * m);
         slot->gram[b] = floats(atoms * atoms);
         slot->inv_norm[b] = floats(atoms);
+        slot->sample_y[b] = floats(samples * m);
+        slot->sample_a[b] = floats(atoms * samples);
+        slot->sample_r[b] = floats(samples * m);
+        slot->ksvd_sync[b] = ints(atoms * (kLsscSamples / 32 + 1));
+        slot->sources[b] = ints(kAtoms);
     }
     slot->num = DeviceBuffer(plane_bytes, d.budget);
     slot->den = DeviceBuffer(plane_bytes, d.budget);
@@ -335,12 +347,7 @@ std::unique_ptr<Slot> make_slot(const LsscData& d) {
     slot->alpha0 = floats(std::min<std::size_t>(np, kLsscBatch) * atoms);
     slot->ubuf = DeviceBuffer(lssc_code_scratch_bytes(d.code_slots, static_cast<int>(m), static_cast<int>(atoms)), d.budget);
     slot->counters = ints((np + kLsscBatch - 1) / kLsscBatch + 1);
-    slot->sample_y = floats(samples * m);
-    slot->sample_a = floats(atoms * samples);
-    slot->sample_r = floats(samples * m);
-    slot->ksvd_sync = ints(atoms * (kLsscSamples / 32 + 1));
     slot->meta = DeviceBuffer(np * sizeof(AggregatePatch), d.budget);
-    slot->sources = ints(kAtoms);
     int max_w = 1, max_h = 1;
     for (const PlaneShape& p : d.planes) {
         max_w = std::max(max_w, p.width);
@@ -414,8 +421,13 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     }
     const std::size_t np = static_cast<std::size_t>(d.max_np), m = static_cast<std::size_t>(d.block_size) * d.block_size;
     const std::size_t atoms = std::min<std::size_t>(kAtoms, np);
-    const std::size_t extra_set = plane_bytes + (np * m + 2 * atoms * m + atoms * atoms + atoms) * sizeof(float);
-    while (d.max_np > 0 && d.depth < kMaxDepth && room / streams >= extra_set) {
+    const std::size_t samples = std::min<std::size_t>(kLsscSamples, np);
+    const std::size_t extra_set = plane_bytes +
+                                  (np * m + 2 * atoms * m + atoms * atoms + atoms + 2 * samples * m + atoms * samples) * sizeof(float) +
+                                  (atoms * (kLsscSamples / 32 + 1) + kAtoms) * sizeof(int);
+    const bool subsampled = d.vi.format.subSamplingW > 0 || d.vi.format.subSamplingH > 0;
+    const int max_depth = d.denoised > 1 && subsampled ? kMaxDepth : 3;
+    while (d.max_np > 0 && d.depth < max_depth && room / streams >= extra_set) {
         ++d.depth;
         if (room != SIZE_MAX) room -= streams * extra_set;
     }

@@ -441,8 +441,15 @@ void tile_frame(NlmData& d, int n, const Frames& srcf, const Frames& reff, VSFra
     NSS_CUDA_RANGE("nlm.stage_out");
     for (int c = 0; c < nc; ++c) {
         const int plane = d.first_plane + c;
-        finish_download(out + d.plane_bytes * c, row_bytes, h, vsapi->getWritePtr(dst, plane),
-                        vsapi->getStride(dst, plane));
+        // Three planes go out with non-temporal stores: RGB 1080p 236 -> 250 fps in three sessions, where
+        // one plane lost 2% with them (docs/archive/cuda-head-r2-20261020.md).
+        if (nc == 3) {
+            copy_to_frame(out + d.plane_bytes * c, static_cast<std::ptrdiff_t>(row_bytes), vsapi->getWritePtr(dst, plane),
+                          vsapi->getStride(dst, plane), row_bytes, h);
+        } else {
+            finish_download(out + d.plane_bytes * c, row_bytes, h, vsapi->getWritePtr(dst, plane),
+                            vsapi->getStride(dst, plane));
+        }
     }
 }
 
