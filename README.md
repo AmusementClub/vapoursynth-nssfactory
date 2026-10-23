@@ -68,8 +68,8 @@ cmake --build build -j
 ```
 
 This needs CMake 3.24+, a C++20 compiler and the VapourSynth API4 headers
-(Highway is fetched at configure time); the GPU plugin also needs CUDA 12.4
-or newer. Copy the built plugin into the VapourSynth plugin directory. See
+(Highway is fetched at configure time); the GPU plugin also needs CUDA (13.3
+is the tested toolkit). Copy the built plugin into the VapourSynth plugin directory. See
 [Building](docs/api/building.md) for the details.
 
 ## License

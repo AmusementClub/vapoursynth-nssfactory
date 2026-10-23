@@ -2,6 +2,7 @@
 // Image-load probe: a trivial kernel whose first launch forces the driver to
 // pick the device's cubin or JIT-compile the embedded PTX.
 #include "cuda/runtime/device.hpp"
+#include "cuda/runtime/error.hpp"
 
 #include <cuda_runtime.h>
 
@@ -19,7 +20,7 @@ __global__ void probe_kernel(int* out) {
 }
 
 std::string message(const char* step, cudaError_t error) {
-    return std::string(step) + ": " + cudaGetErrorName(error) + ": " + cudaGetErrorString(error);
+    return std::string(step) + ": " + cuda_error_name(error) + ": " + cuda_error_string(error);
 }
 
 }  // namespace

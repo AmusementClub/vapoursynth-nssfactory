@@ -20,6 +20,18 @@ private:
     cudaError_t code_;
 };
 
+// The error's name and description. Without a driver, CUDA 13 returns null for
+// some codes (cudaGetErrorName(cudaErrorInsufficientDriver) on Windows), so a
+// missing text falls back to the number.
+inline std::string cuda_error_name(cudaError_t code) {
+    const char* name = cudaGetErrorName(code);
+    return name ? name : "cudaError " + std::to_string(static_cast<int>(code));
+}
+inline std::string cuda_error_string(cudaError_t code) {
+    const char* text = cudaGetErrorString(code);
+    return text ? text : "no description";
+}
+
 [[noreturn]] void throw_cuda_error(cudaError_t code, const char* expression, const char* file, int line);
 
 inline void check_cuda(cudaError_t code, const char* expression, const char* file, int line) {
