@@ -19693,7 +19693,7 @@
    }
   },
   "NLM|GRAYS|wmode=-1": {
-   "error": "nss.NLM: only wmode=0 (Welsch) is implemented"
+   "error": "nss.NLM: wmode must be 0 (Welsch) or 1, 2, 3 (Bisquare A, B, C)"
   },
   "NLM|GRAYS|wmode=0": {
    "ok": {
@@ -19704,40 +19704,55 @@
    }
   },
   "NLM|GRAYS|wmode=1": {
-   "error": "nss.NLM: only wmode=0 (Welsch) is implemented"
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
   },
   "NLM|GRAYS|wmode=1000": {
-   "error": "nss.NLM: only wmode=0 (Welsch) is implemented"
+   "error": "nss.NLM: wmode must be 0 (Welsch) or 1, 2, 3 (Bisquare A, B, C)"
   },
   "NLM|GRAYS|wmode=16": {
-   "error": "nss.NLM: only wmode=0 (Welsch) is implemented"
+   "error": "nss.NLM: wmode must be 0 (Welsch) or 1, 2, 3 (Bisquare A, B, C)"
   },
   "NLM|GRAYS|wmode=17": {
-   "error": "nss.NLM: only wmode=0 (Welsch) is implemented"
+   "error": "nss.NLM: wmode must be 0 (Welsch) or 1, 2, 3 (Bisquare A, B, C)"
   },
   "NLM|GRAYS|wmode=2": {
-   "error": "nss.NLM: only wmode=0 (Welsch) is implemented"
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
   },
   "NLM|GRAYS|wmode=3": {
-   "error": "nss.NLM: only wmode=0 (Welsch) is implemented"
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
   },
   "NLM|GRAYS|wmode=33": {
-   "error": "nss.NLM: only wmode=0 (Welsch) is implemented"
+   "error": "nss.NLM: wmode must be 0 (Welsch) or 1, 2, 3 (Bisquare A, B, C)"
   },
   "NLM|GRAYS|wmode=4": {
-   "error": "nss.NLM: only wmode=0 (Welsch) is implemented"
+   "error": "nss.NLM: wmode must be 0 (Welsch) or 1, 2, 3 (Bisquare A, B, C)"
   },
   "NLM|GRAYS|wmode=65": {
-   "error": "nss.NLM: only wmode=0 (Welsch) is implemented"
+   "error": "nss.NLM: wmode must be 0 (Welsch) or 1, 2, 3 (Bisquare A, B, C)"
   },
   "NLM|GRAYS|wmode=7": {
-   "error": "nss.NLM: only wmode=0 (Welsch) is implemented"
+   "error": "nss.NLM: wmode must be 0 (Welsch) or 1, 2, 3 (Bisquare A, B, C)"
   },
   "NLM|GRAYS|wmode=8": {
-   "error": "nss.NLM: only wmode=0 (Welsch) is implemented"
+   "error": "nss.NLM: wmode must be 0 (Welsch) or 1, 2, 3 (Bisquare A, B, C)"
   },
   "NLM|GRAYS|wmode=9": {
-   "error": "nss.NLM: only wmode=0 (Welsch) is implemented"
+   "error": "nss.NLM: wmode must be 0 (Welsch) or 1, 2, 3 (Bisquare A, B, C)"
   },
   "NLM|GRAYS|wref=-1.0": {
    "error": "nss.NLM: invalid d/a/s/h/wref"
@@ -20284,7 +20299,7 @@
    }
   },
   "NLM|RGBS|wmode=-1": {
-   "error": "nss.NLM: only wmode=0 (Welsch) is implemented"
+   "error": "nss.NLM: wmode must be 0 (Welsch) or 1, 2, 3 (Bisquare A, B, C)"
   },
   "NLM|RGBS|wmode=0": {
    "ok": {
@@ -20295,40 +20310,55 @@
    }
   },
   "NLM|RGBS|wmode=1": {
-   "error": "nss.NLM: only wmode=0 (Welsch) is implemented"
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
   },
   "NLM|RGBS|wmode=1000": {
-   "error": "nss.NLM: only wmode=0 (Welsch) is implemented"
+   "error": "nss.NLM: wmode must be 0 (Welsch) or 1, 2, 3 (Bisquare A, B, C)"
   },
   "NLM|RGBS|wmode=16": {
-   "error": "nss.NLM: only wmode=0 (Welsch) is implemented"
+   "error": "nss.NLM: wmode must be 0 (Welsch) or 1, 2, 3 (Bisquare A, B, C)"
   },
   "NLM|RGBS|wmode=17": {
-   "error": "nss.NLM: only wmode=0 (Welsch) is implemented"
+   "error": "nss.NLM: wmode must be 0 (Welsch) or 1, 2, 3 (Bisquare A, B, C)"
   },
   "NLM|RGBS|wmode=2": {
-   "error": "nss.NLM: only wmode=0 (Welsch) is implemented"
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
   },
   "NLM|RGBS|wmode=3": {
-   "error": "nss.NLM: only wmode=0 (Welsch) is implemented"
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
   },
   "NLM|RGBS|wmode=33": {
-   "error": "nss.NLM: only wmode=0 (Welsch) is implemented"
+   "error": "nss.NLM: wmode must be 0 (Welsch) or 1, 2, 3 (Bisquare A, B, C)"
   },
   "NLM|RGBS|wmode=4": {
-   "error": "nss.NLM: only wmode=0 (Welsch) is implemented"
+   "error": "nss.NLM: wmode must be 0 (Welsch) or 1, 2, 3 (Bisquare A, B, C)"
   },
   "NLM|RGBS|wmode=65": {
-   "error": "nss.NLM: only wmode=0 (Welsch) is implemented"
+   "error": "nss.NLM: wmode must be 0 (Welsch) or 1, 2, 3 (Bisquare A, B, C)"
   },
   "NLM|RGBS|wmode=7": {
-   "error": "nss.NLM: only wmode=0 (Welsch) is implemented"
+   "error": "nss.NLM: wmode must be 0 (Welsch) or 1, 2, 3 (Bisquare A, B, C)"
   },
   "NLM|RGBS|wmode=8": {
-   "error": "nss.NLM: only wmode=0 (Welsch) is implemented"
+   "error": "nss.NLM: wmode must be 0 (Welsch) or 1, 2, 3 (Bisquare A, B, C)"
   },
   "NLM|RGBS|wmode=9": {
-   "error": "nss.NLM: only wmode=0 (Welsch) is implemented"
+   "error": "nss.NLM: wmode must be 0 (Welsch) or 1, 2, 3 (Bisquare A, B, C)"
   },
   "NLM|RGBS|wref=-1.0": {
    "error": "nss.NLM: invalid d/a/s/h/wref"
@@ -20875,7 +20905,7 @@
    }
   },
   "NLM|YUV420PS|wmode=-1": {
-   "error": "nss.NLM: only wmode=0 (Welsch) is implemented"
+   "error": "nss.NLM: wmode must be 0 (Welsch) or 1, 2, 3 (Bisquare A, B, C)"
   },
   "NLM|YUV420PS|wmode=0": {
    "ok": {
@@ -20886,40 +20916,55 @@
    }
   },
   "NLM|YUV420PS|wmode=1": {
-   "error": "nss.NLM: only wmode=0 (Welsch) is implemented"
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
   },
   "NLM|YUV420PS|wmode=1000": {
-   "error": "nss.NLM: only wmode=0 (Welsch) is implemented"
+   "error": "nss.NLM: wmode must be 0 (Welsch) or 1, 2, 3 (Bisquare A, B, C)"
   },
   "NLM|YUV420PS|wmode=16": {
-   "error": "nss.NLM: only wmode=0 (Welsch) is implemented"
+   "error": "nss.NLM: wmode must be 0 (Welsch) or 1, 2, 3 (Bisquare A, B, C)"
   },
   "NLM|YUV420PS|wmode=17": {
-   "error": "nss.NLM: only wmode=0 (Welsch) is implemented"
+   "error": "nss.NLM: wmode must be 0 (Welsch) or 1, 2, 3 (Bisquare A, B, C)"
   },
   "NLM|YUV420PS|wmode=2": {
-   "error": "nss.NLM: only wmode=0 (Welsch) is implemented"
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
   },
   "NLM|YUV420PS|wmode=3": {
-   "error": "nss.NLM: only wmode=0 (Welsch) is implemented"
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
   },
   "NLM|YUV420PS|wmode=33": {
-   "error": "nss.NLM: only wmode=0 (Welsch) is implemented"
+   "error": "nss.NLM: wmode must be 0 (Welsch) or 1, 2, 3 (Bisquare A, B, C)"
   },
   "NLM|YUV420PS|wmode=4": {
-   "error": "nss.NLM: only wmode=0 (Welsch) is implemented"
+   "error": "nss.NLM: wmode must be 0 (Welsch) or 1, 2, 3 (Bisquare A, B, C)"
   },
   "NLM|YUV420PS|wmode=65": {
-   "error": "nss.NLM: only wmode=0 (Welsch) is implemented"
+   "error": "nss.NLM: wmode must be 0 (Welsch) or 1, 2, 3 (Bisquare A, B, C)"
   },
   "NLM|YUV420PS|wmode=7": {
-   "error": "nss.NLM: only wmode=0 (Welsch) is implemented"
+   "error": "nss.NLM: wmode must be 0 (Welsch) or 1, 2, 3 (Bisquare A, B, C)"
   },
   "NLM|YUV420PS|wmode=8": {
-   "error": "nss.NLM: only wmode=0 (Welsch) is implemented"
+   "error": "nss.NLM: wmode must be 0 (Welsch) or 1, 2, 3 (Bisquare A, B, C)"
   },
   "NLM|YUV420PS|wmode=9": {
-   "error": "nss.NLM: only wmode=0 (Welsch) is implemented"
+   "error": "nss.NLM: wmode must be 0 (Welsch) or 1, 2, 3 (Bisquare A, B, C)"
   },
   "NLM|YUV420PS|wref=-1.0": {
    "error": "nss.NLM: invalid d/a/s/h/wref"

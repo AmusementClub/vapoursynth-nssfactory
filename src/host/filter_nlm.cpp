@@ -301,7 +301,7 @@ struct NlmPass {
     void accumulate_center(const Stripe& s, const PlanePtrs& src, const PlaneStrides& src_st, int ox, int oy) const {
         const int core_end = s.core_local + s.core_height;
         if (mixed_strides) {
-            nss::nlm_vertical_welsch(s.temp_bwd, s.temp, d->s, h2_inv_norm, w, s.ext_h, stride, s.buffer);
+            nss::nlm_vertical_weight(s.temp_bwd, s.temp, d->s, d->weight, h2_inv_norm, w, s.ext_h, stride, s.buffer);
             const auto cs = compact(d, src);
             const auto css = compact(d, src_st);
             nss::nlm_accum_strided(s.weight, s.wdst[0], s.wdst[1], s.wdst[2], s.max_weight, cs.data(), css.data(),
@@ -315,8 +315,8 @@ struct NlmPass {
         const int abs_oy = std::abs(oy);
         const int base_y = std::max(0, s.core_local - abs_oy);
         const int end_y = std::min(s.ext_h, core_end + abs_oy);
-        nss::nlm_vertical_welsch_range(s.temp_bwd, s.temp, d->s, h2_inv_norm, w, s.ext_h, stride, base_y, end_y,
-                                       s.buffer);
+        nss::nlm_vertical_weight_range(s.temp_bwd, s.temp, d->s, d->weight, h2_inv_norm, w, s.ext_h, stride, base_y,
+                                       end_y, s.buffer);
         if (d->channels == nss::ChannelMode::Y) {
             nss::nlm_accum_ch1_base_range(s.weight, s.wdst[0], s.max_weight, src[0], src[0], s.temp_bwd, s.temp_bwd,
                                           ox, oy, w, s.ext_h, stride, s.core_local, core_end, base_y);
@@ -339,7 +339,7 @@ struct NlmPass {
                          const PlanePtrs& src_fwd, const PlaneStrides& src_fwd_st, int ox, int oy) const {
         const int core_end = s.core_local + s.core_height;
         if (mixed_strides) {
-            nss::nlm_vertical_welsch(s.temp_bwd, s.temp, d->s, h2_inv_norm, w, s.ext_h, stride, s.buffer);
+            nss::nlm_vertical_weight(s.temp_bwd, s.temp, d->s, d->weight, h2_inv_norm, w, s.ext_h, stride, s.buffer);
             for (int yy = 0; yy < s.core_height; ++yy) {
                 std::memcpy(s.saved_bwd + static_cast<std::size_t>(yy) * static_cast<std::size_t>(stride),
                             s.temp_bwd + static_cast<std::size_t>(s.core_local + yy) * static_cast<std::size_t>(stride),
@@ -349,12 +349,12 @@ struct NlmPass {
             // Write the consumed core rows directly into saved_bwd: same
             // sliding trajectory as a full-ext pass, with the dead rows and
             // the core-row memcpy skipped.
-            nss::nlm_vertical_welsch_range(s.saved_bwd, s.temp, d->s, h2_inv_norm, w, s.ext_h, stride, s.core_local,
-                                           core_end, s.buffer);
+            nss::nlm_vertical_weight_range(s.saved_bwd, s.temp, d->s, d->weight, h2_inv_norm, w, s.ext_h, stride,
+                                           s.core_local, core_end, s.buffer);
         }
         distance_horizontal(s, ref_fwd, ref_fwd_st, ref, ref_st, ox, oy);
         if (mixed_strides) {
-            nss::nlm_vertical_welsch(s.temp_bwd, s.temp, d->s, h2_inv_norm, w, s.ext_h, stride, s.buffer);
+            nss::nlm_vertical_weight(s.temp_bwd, s.temp, d->s, d->weight, h2_inv_norm, w, s.ext_h, stride, s.buffer);
             const auto csb = compact(d, src_bwd);
             const auto csf = compact(d, src_fwd);
             const auto cssb = compact(d, src_bwd_st);
@@ -366,8 +366,8 @@ struct NlmPass {
         }
         const int base_y = std::clamp(s.core_local - oy, 0, s.ext_h - 1);
         const int end_y = std::clamp(core_end - 1 - oy, 0, s.ext_h - 1) + 1;
-        nss::nlm_vertical_welsch_range(s.temp_bwd, s.temp, d->s, h2_inv_norm, w, s.ext_h, stride, base_y, end_y,
-                                       s.buffer);
+        nss::nlm_vertical_weight_range(s.temp_bwd, s.temp, d->s, d->weight, h2_inv_norm, w, s.ext_h, stride, base_y,
+                                       end_y, s.buffer);
         if (d->channels == nss::ChannelMode::Y) {
             nss::nlm_accum_ch1_core_range(s.weight, s.wdst[0], s.max_weight, src_bwd[0], src_fwd[0], s.saved_bwd,
                                           s.temp_bwd, ox, oy, w, s.ext_h, stride, s.core_local, core_end, base_y);

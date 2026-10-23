@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-only
 """nss_cuda.NLM vs nss.NLM on small random clips across channel modes,
-temporal radius, search/patch radii, h, wref and rclip, including clip
+temporal radius, search/patch radii, h, wref, wmode and rclip, including clip
 boundary frames. Each case must reach the NLM tolerance
 (tests/data/cuda_tolerances_v1.json) and be run-to-run identical. Exits 77
 without VapourSynth or a CUDA device.
@@ -103,6 +103,12 @@ def main():
         ("gray 200x150 rclip", make_clip(core, vs.GRAYS, 200, 150, 7, length=3),
          dict(rclip=make_clip(core, vs.GRAYS, 200, 150, 8, length=3))),
         ("rgb 150x110", make_clip(core, vs.RGBS, 150, 110, 9, length=3), {}),
+        # Bisquare weights (zero past u = 1, so a larger h) on the tile path and beyond it.
+        ("gray wmode1 h12", gray, dict(wmode=1, h=12.0)),
+        ("gray wmode2 d2 h20", gray, dict(wmode=2, d=2, h=20.0)),
+        ("gray 200x150 wmode3 h20", make_clip(core, vs.GRAYS, 200, 150, 7, length=3), dict(wmode=3, h=20.0)),
+        ("rgb wmode2 h20", rgb, dict(wmode=2, h=20.0)),
+        ("gray s30 wmode3 h20", gray, dict(s=30, wmode=3, h=20.0)),
     ]
     if args.quick:
         cases = [cases[0], cases[5], cases[7], cases[9]]
@@ -126,7 +132,8 @@ def main():
     long_gray = make_clip(core, vs.GRAYS, 53, 47, 21, length=24)
     long_rgb = make_clip(core, vs.RGBS, 41, 37, 22, length=24)
     orders = [("d1", long_gray, {}), ("d2 rclip", long_gray, dict(d=2, rclip=make_clip(core, vs.GRAYS, 53, 47, 23, length=24))),
-              ("rgb d1", long_rgb, {}), ("d3 s30", long_gray, dict(d=3, a=1, s=30))]
+              ("rgb d1", long_rgb, {}), ("d3 s30", long_gray, dict(d=3, a=1, s=30)),
+              ("d1 wmode2", long_gray, dict(wmode=2, h=20.0))]
     for label, clip, kw in ([orders[0]] if args.quick else orders):
         cpu = core.nss.NLM(clip, **kw)
         expected = [frame_planes(core.nss_cuda.NLM(clip, **kw), n) for n in range(clip.num_frames)]

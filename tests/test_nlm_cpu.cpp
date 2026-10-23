@@ -209,6 +209,95 @@ bool check_vertical_welsch() {
     return true;
 }
 
+// The weight modes against max(1 - u, 0)^p in double; Welsch through the
+// mode entry point must be the bits of nlm_vertical_welsch, and the range
+// pass the bits of the full one. Weights past u = 1 are exactly zero.
+bool check_vertical_weight() {
+    constexpr nss::NlmWeight kModes[] = {nss::NlmWeight::Welsch, nss::NlmWeight::BisquareA,
+                                         nss::NlmWeight::BisquareB, nss::NlmWeight::BisquareC};
+    for (const nss::NlmWeight mode : kModes) {
+        const int power = mode == nss::NlmWeight::BisquareA ? 1 : mode == nss::NlmWeight::BisquareB ? 2 : 8;
+        for (const float scale : {0.037f, 0.9f, 1000.f}) {
+            for (const int w : {1, 7, 16, 31, 65}) {
+                for (const int h : {1, 5, 11}) {
+                    const int stride = w + 5;
+                    std::vector<float> src(static_cast<std::size_t>(stride * h), -7.f);
+                    std::vector<float> got(static_cast<std::size_t>(stride * h), -11.f);
+                    std::vector<float> welsch(static_cast<std::size_t>(stride * h), -11.f);
+                    std::vector<float> buffer(static_cast<std::size_t>(w), 0.f);
+                    for (int y = 0; y < h; ++y) {
+                        for (int x = 0; x < w; ++x) {
+                            src[static_cast<std::size_t>(y * stride + x)] =
+                                0.0002f * static_cast<float>(1 + (x * 37 + y * 101) % 997);
+                        }
+                    }
+                    for (int radius = 0; radius <= 8; ++radius) {
+                        std::fill(got.begin(), got.end(), -11.f);
+                        nss::nlm_vertical_weight(got.data(), src.data(), radius, mode, scale, w, h, stride,
+                                                 buffer.data());
+                        if (mode == nss::NlmWeight::Welsch) {
+                            nss::nlm_vertical_welsch(welsch.data(), src.data(), radius, scale, w, h, stride,
+                                                     buffer.data());
+                            if (std::memcmp(got.data(), welsch.data(), got.size() * sizeof(float)) != 0) {
+                                std::fprintf(stderr, "vertical weight Welsch differs from nlm_vertical_welsch\n");
+                                return false;
+                            }
+                        }
+                        for (int y = 0; y < h; ++y) {
+                            for (int x = 0; x < stride; ++x) {
+                                const float value = got[static_cast<std::size_t>(y * stride + x)];
+                                if (x >= w) {
+                                    if (value != -11.f) {
+                                        std::fprintf(stderr, "vertical weight overwrote padding\n");
+                                        return false;
+                                    }
+                                    continue;
+                                }
+                                if (mode == nss::NlmWeight::Welsch) continue;
+                                double sum = 0.0;
+                                for (int j = -radius; j <= radius; ++j) {
+                                    sum += src[static_cast<std::size_t>(std::clamp(y + j, 0, h - 1) * stride + x)];
+                                }
+                                const double u = static_cast<double>(scale) * sum;
+                                const double want = std::pow(std::max(1.0 - u, 0.0), power);
+                                const bool zero_band = u > 1.0 + 1e-4;
+                                if ((zero_band && value != 0.f) || std::fabs(value - want) > 2e-5) {
+                                    std::fprintf(stderr,
+                                                 "vertical weight mode=%d mismatch w=%d h=%d radius=%d at %d,%d: "
+                                                 "%.9g vs %.9g\n",
+                                                 static_cast<int>(mode), w, h, radius, x, y,
+                                                 static_cast<double>(value), want);
+                                    return false;
+                                }
+                            }
+                        }
+                        if (h > 1) {
+                            const int y0 = h / 2;
+                            std::vector<float> compact(static_cast<std::size_t>((h - y0) * stride), -11.f);
+                            nss::nlm_vertical_weight_range(compact.data(), src.data(), radius, mode, scale, w, h,
+                                                           stride, y0, h, buffer.data());
+                            // The rows before y0 replay the sums through add_sub_row, whose scalar tail a
+                            // fast-math compiler may reassociate: equal to rounding, not to the bit.
+                            for (std::size_t i = 0; i < compact.size(); ++i) {
+                                const float value = compact[i];
+                                const float want = got[static_cast<std::size_t>(y0) * stride + i];
+                                const bool pad = static_cast<int>(i % static_cast<std::size_t>(stride)) >= w;
+                                if (pad ? value != -11.f : std::fabs(value - want) > 2e-5f) {
+                                    std::fprintf(stderr,
+                                                 "vertical weight range differs mode=%d w=%d h=%d radius=%d\n",
+                                                 static_cast<int>(mode), w, h, radius);
+                                    return false;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return true;
+}
+
 bool check_mixed_plane_strides() {
     constexpr int w = 7;
     constexpr int h = 5;
@@ -450,7 +539,7 @@ int main() {
         return 1;
     }
     if (!check_horizontal() || !check_distance_horizontal_luma() || !check_vertical_welsch() ||
-        !check_mixed_plane_strides()) {
+        !check_vertical_weight() || !check_mixed_plane_strides()) {
         return 1;
     }
     return 0;

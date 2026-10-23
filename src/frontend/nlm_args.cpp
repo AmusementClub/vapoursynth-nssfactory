@@ -32,9 +32,10 @@ NlmParams parse_nlm(const VSAPI* vsapi, const VSMap* in, const VSVideoInfo& vi, 
         fail(ns, "NLM", "temporal radius d pins too much frame memory for this frame size");
     }
     const int wmode = map_int(vsapi, in, "wmode", 0);
-    if (wmode != 0) {
-        fail(ns, "NLM", "only wmode=0 (Welsch) is implemented");
+    if (wmode < 0 || wmode > 3) {
+        fail(ns, "NLM", "wmode must be 0 (Welsch) or 1, 2, 3 (Bisquare A, B, C)");
     }
+    p.weight = static_cast<NlmWeight>(wmode);
     int err = 0;
     const char* ch = vsapi->mapGetData(in, "channels", 0, &err);
     std::string cs = (!err && ch) ? ch : "AUTO";

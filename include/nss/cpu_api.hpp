@@ -42,6 +42,11 @@ void nlm_vertical_welsch(float* dst, const float* src, int radius, float h2_inv_
 // Writes only source rows [y0, y1) to a compact destination whose row zero is y0.
 void nlm_vertical_welsch_range(float* dst, const float* src, int radius, float h2_inv_norm,
                                int w, int h, int stride, int y0, int y1, float* buffer);
+// The same with any NlmWeight; Welsch gives the bits of nlm_vertical_welsch*.
+void nlm_vertical_weight(float* dst, const float* src, int radius, NlmWeight weight, float h2_inv_norm,
+                         int w, int h, int stride, float* buffer);
+void nlm_vertical_weight_range(float* dst, const float* src, int radius, NlmWeight weight, float h2_inv_norm,
+                               int w, int h, int stride, int y0, int y1, float* buffer);
 void nlm_accum_ch1(float* weight, float* wdst, float* maxw,
                    const float* src_bwd, const float* src_fwd,
                    const float* temp1, const float* temp2,

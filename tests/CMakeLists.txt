@@ -312,6 +312,11 @@ if(VapourSynth_FOUND)
              COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_ncsr_variance_plugin.py"
                      --plugin "$<TARGET_FILE:nss>")
     set_tests_properties(test_ncsr_variance_plugin PROPERTIES LABELS "plugin" SKIP_RETURN_CODE 77)
+    # NLM wmode 0..3 against a direct float64 NLM.
+    add_test(NAME test_nlm_wmode_plugin
+             COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_nlm_wmode_plugin.py"
+                     --plugin "$<TARGET_FILE:nss>")
+    set_tests_properties(test_nlm_wmode_plugin PROPERTIES LABELS "plugin" SKIP_RETURN_CODE 77)
     # Frozen public creation interface (signatures, defaults, validation text).
     add_test(NAME test_plugin_interface
              COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_plugin_interface.py"

@@ -12,6 +12,7 @@ struct NlmParams {
     float h = kNlmDefaultH;
     float wref = kNlmDefaultWref;
     ChannelMode channels = ChannelMode::Y;
+    NlmWeight weight = NlmWeight::Welsch;
 };
 
 }  // namespace nss

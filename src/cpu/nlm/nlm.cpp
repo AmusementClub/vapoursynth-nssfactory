@@ -33,21 +33,37 @@ static inline void add_row(float* dst, const float* src, int n) {
     }
 }
 
-static inline void add_exp_sub_row(float* dst, float* buffer, const float* add, const float* sub, float scale, int n) {
+// The weight of box sums at scale = -h2_inv_norm (nss::NlmWeight).
+template <NlmWeight W, class D>
+static inline hn::Vec<D> weight_of(D d, hn::Vec<D> sum, hn::Vec<D> scale) {
+    if constexpr (W == NlmWeight::Welsch) {
+        return hn::FastExp</*kHandleSubnormals=*/false>(d, hn::Mul(sum, scale));
+    } else {
+        const auto t = hn::Max(hn::MulAdd(sum, scale, hn::Set(d, 1.0f)), hn::Zero(d));
+        if constexpr (W == NlmWeight::BisquareA) return t;
+        const auto t2 = hn::Mul(t, t);
+        if constexpr (W == NlmWeight::BisquareB) return t2;
+        const auto t4 = hn::Mul(t2, t2);
+        return hn::Mul(t4, t4);
+    }
+}
+
+template <NlmWeight W>
+static inline void add_weight_sub_row(float* dst, float* buffer, const float* add, const float* sub, float scale,
+                                      int n) {
     const hn::ScalableTag<float> d;
     const int N = static_cast<int>(hn::Lanes(d));
     const auto vs = hn::Set(d, scale);
     int x = 0;
     for (; x + N <= n; x += N) {
         const auto sum = hn::Add(hn::LoadU(d, buffer + x), hn::LoadU(d, add + x));
-        const auto exponent = hn::Mul(sum, vs);
-        hn::StoreU(hn::FastExp</*kHandleSubnormals=*/false>(d, exponent), d, dst + x);
+        hn::StoreU(weight_of<W>(d, sum, vs), d, dst + x);
         hn::StoreU(hn::Sub(sum, hn::LoadU(d, sub + x)), d, buffer + x);
     }
     if (x < n) {
         const std::size_t remaining = static_cast<std::size_t>(n - x);
         const auto sum = hn::Add(hn::LoadN(d, buffer + x, remaining), hn::LoadN(d, add + x, remaining));
-        hn::StoreN(hn::FastExp</*kHandleSubnormals=*/false>(d, hn::Mul(sum, vs)), d, dst + x, remaining);
+        hn::StoreN(weight_of<W>(d, sum, vs), d, dst + x, remaining);
         hn::StoreN(hn::Sub(sum, hn::LoadN(d, sub + x, remaining)), d, buffer + x, remaining);
     }
 }
@@ -413,8 +429,9 @@ void Horizontal(float* dst, const float* src, int s, int w, int h, int stride) {
     }
 }
 
-void VerticalWelschRange(float* dst, const float* src, int radius, float h2_inv_norm, int w, int h, int stride,
-                         int y0, int y1, float* buffer) {
+template <NlmWeight W>
+static void vertical_range(float* dst, const float* src, int radius, float h2_inv_norm, int w, int h, int stride,
+                           int y0, int y1, float* buffer) {
     const float nscale = -h2_inv_norm;
     scale_row(buffer, src, static_cast<float>(radius), w);
     for (int y = 0; y < radius; ++y) {
@@ -427,14 +444,38 @@ void VerticalWelschRange(float* dst, const float* src, int radius, float h2_inv_
         if (y < y0) {
             add_sub_row(buffer, src + yadd * stride, src + ysub * stride, w);
         } else {
-            add_exp_sub_row(dst + (y - y0) * stride, buffer, src + yadd * stride, src + ysub * stride, nscale, w);
+            add_weight_sub_row<W>(dst + (y - y0) * stride, buffer, src + yadd * stride, src + ysub * stride, nscale,
+                                  w);
         }
     }
+}
+
+void VerticalWelschRange(float* dst, const float* src, int radius, float h2_inv_norm, int w, int h, int stride,
+                         int y0, int y1, float* buffer) {
+    vertical_range<NlmWeight::Welsch>(dst, src, radius, h2_inv_norm, w, h, stride, y0, y1, buffer);
 }
 
 void VerticalWelsch(float* dst, const float* src, int radius, float h2_inv_norm, int w, int h, int stride,
                     float* buffer) {
     VerticalWelschRange(dst, src, radius, h2_inv_norm, w, h, stride, 0, h, buffer);
+}
+
+void VerticalWeightRange(float* dst, const float* src, int radius, NlmWeight weight, float h2_inv_norm, int w, int h,
+                         int stride, int y0, int y1, float* buffer) {
+    switch (weight) {
+    case NlmWeight::Welsch:
+        vertical_range<NlmWeight::Welsch>(dst, src, radius, h2_inv_norm, w, h, stride, y0, y1, buffer);
+        break;
+    case NlmWeight::BisquareA:
+        vertical_range<NlmWeight::BisquareA>(dst, src, radius, h2_inv_norm, w, h, stride, y0, y1, buffer);
+        break;
+    case NlmWeight::BisquareB:
+        vertical_range<NlmWeight::BisquareB>(dst, src, radius, h2_inv_norm, w, h, stride, y0, y1, buffer);
+        break;
+    case NlmWeight::BisquareC:
+        vertical_range<NlmWeight::BisquareC>(dst, src, radius, h2_inv_norm, w, h, stride, y0, y1, buffer);
+        break;
+    }
 }
 
 static void accum_inner(float* weight, float* wdst0, float* wdst1, float* wdst2, float* maxw,
@@ -816,6 +857,7 @@ HWY_EXPORT(DistanceRGB);
 HWY_EXPORT(Horizontal);
 HWY_EXPORT(VerticalWelsch);
 HWY_EXPORT(VerticalWelschRange);
+HWY_EXPORT(VerticalWeightRange);
 HWY_EXPORT(AccumCh1);
 HWY_EXPORT(AccumCh2);
 HWY_EXPORT(AccumCh3);
@@ -863,6 +905,14 @@ void nlm_vertical_welsch(float* dst, const float* src, int radius, float h2_inv_
 void nlm_vertical_welsch_range(float* dst, const float* src, int radius, float h2_inv_norm, int w, int h, int stride,
                                int y0, int y1, float* buffer) {
     HWY_DYNAMIC_DISPATCH(VerticalWelschRange)(dst, src, radius, h2_inv_norm, w, h, stride, y0, y1, buffer);
+}
+void nlm_vertical_weight(float* dst, const float* src, int radius, NlmWeight weight, float h2_inv_norm, int w, int h,
+                         int stride, float* buffer) {
+    HWY_DYNAMIC_DISPATCH(VerticalWeightRange)(dst, src, radius, weight, h2_inv_norm, w, h, stride, 0, h, buffer);
+}
+void nlm_vertical_weight_range(float* dst, const float* src, int radius, NlmWeight weight, float h2_inv_norm, int w,
+                               int h, int stride, int y0, int y1, float* buffer) {
+    HWY_DYNAMIC_DISPATCH(VerticalWeightRange)(dst, src, radius, weight, h2_inv_norm, w, h, stride, y0, y1, buffer);
 }
 void nlm_accum_ch1(float* weight, float* wdst, float* maxw, const float* src_bwd, const float* src_fwd,
                    const float* temp1, const float* temp2, int ox, int oy, int w, int h, int stride) {
