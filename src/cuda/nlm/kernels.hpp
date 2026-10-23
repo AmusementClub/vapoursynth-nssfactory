@@ -2,7 +2,7 @@
 // Device NLM (the CPU nlm.cpp model): for every offset (frame i, oy, ox) in
 // the lower half of the search volume, a clamped distance map between the
 // centre frame and the neighbour is box-summed over (2s+1)^2, turned into a
-// Welsch weight exp(-sum * h2_inv_norm), and accumulated symmetrically: pixel
+// weight of u = sum * h2_inv_norm (NlmWeight), and accumulated symmetrically: pixel
 // p receives the neighbour at p + o with w1(p) and the mirrored neighbour at
 // p - o with w2(p - o). Every pixel is owned by one thread, so results are
 // run-to-run identical.
@@ -13,6 +13,8 @@
 namespace nss_cuda {
 
 enum class NlmDistance : int { Luma, Chroma, Yuv, Rgb };  // nss::ChannelMode Y / UV / YUV / RGB
+// nss::NlmWeight: exp(-u), then max(1 - u, 0) to the power 1, 2 and 8.
+enum class NlmWeight : int { Welsch, BisquareA, BisquareB, BisquareC };
 
 struct NlmPlanes {
     const float* p[3];  // used channels, tight pitch (width floats)
@@ -29,6 +31,7 @@ struct NlmAccumArgs {
     NlmPlanes src_fwd;
     int channels;
     int ox, oy, s;
+    NlmWeight weight_mode;
     float h2_inv_norm;
     int width, height;
     float* weight;
@@ -62,6 +65,7 @@ struct NlmTileArgs {
     NlmPlanes ref[kNlmTileFrames];  // window slot t: the planes the distances are taken on
     NlmPlanes src[kNlmTileFrames];  // window slot t: the planes that are averaged (ref without rclip)
     NlmDistance distance;
+    NlmWeight weight_mode;
     int channels;
     int d, a, s;
     float h2_inv_norm, wref;

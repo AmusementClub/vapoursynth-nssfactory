@@ -225,6 +225,7 @@ void plane_frame(const NlmData& d, const Frames& srcf, const Frames& reff, VSFra
                 args.ox = ox;
                 args.oy = oy;
                 args.s = d.s;
+                args.weight_mode = static_cast<NlmWeight>(d.weight);
                 args.h2_inv_norm = h2;
                 args.width = w;
                 args.height = h;
@@ -411,6 +412,7 @@ void tile_frame(NlmData& d, int n, const Frames& srcf, const Frames& reff, VSFra
         args.d = d.d;
         args.a = d.a;
         args.s = d.s;
+        args.weight_mode = static_cast<NlmWeight>(d.weight);
         args.h2_inv_norm = h2_inv_norm(d);
         args.wref = d.wref;
         args.width = d.width;

@@ -34,7 +34,7 @@ core.nss.NLM(clip clip[, int d = 1, int a = 2, int s = 4, float h = 1.2,
 | Parameter | Default | Range | Meaning |
 |---|---|---|---|
 | `wref` | 1.0 | > 0 | Weight of the reference (center) pixel's own contribution. Below 1 trusts neighbours more. |
-| `wmode` | 0 | 0 only | Weight kernel. Only `0` (Welsch) is implemented; other values are rejected. |
+| `wmode` | 0 | [0, 3] | Weight of `u`, the mean squared patch difference in 8-bit units over `h²` (the KNLMeansCL / nlm-ispc modes): `0` Welsch `exp(-u)`; `1`, `2`, `3` Bisquare A, B, C, `max(1-u, 0)` to the power 1, 2, 8. Bisquare weights are exactly zero past `u = 1` and need a much larger `h` (see Pitfalls). |
 | `rclip` | none | clip | Reference clip for similarity search (same format/size). |
 | `memory_limit_mb` | none | — | Workspace cap; the call fails instead of degrading output. |
 
@@ -58,6 +58,10 @@ Settings closer to the paper, with their measured quality and GPU speed, are on 
 
 - `h` is **not** in sigma units and does not track the noise level by itself;
   retune it when noise changes materially.
+- With `wmode` 1–3 even a perfect match under Gaussian noise of σ (8-bit units)
+  has `u ≈ 2σ²/h²`, so every weight is zero and the output equals the input
+  until `h` exceeds about `1.4σ`. Welsch never reaches zero, so the same `h`
+  is not comparable across modes.
 - `radius`-style fat-frame output does not exist here: temporal support is the
   `d` parameter and the result stays normal-height.
 - `a` must be smaller than the processed plane width (creation-time error).

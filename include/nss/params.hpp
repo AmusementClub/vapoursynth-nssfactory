@@ -22,6 +22,9 @@ inline constexpr int kNlmMaxS = 1024;
 inline constexpr int kNlmMaxA = 64;
 // NLM distance channels (shared by every backend).
 enum class ChannelMode { Y, UV, YUV, RGB };
+// NLM weight of a box-summed distance, u = sum * h2_inv_norm (KNLMeansCL
+// wmode 0..3): exp(-u), then max(1 - u, 0) to the power 1, 2 and 8.
+enum class NlmWeight { Welsch, BisquareA, BisquareB, BisquareC };
 inline constexpr std::int64_t kNlmMaxPinnedFrameBytes = std::int64_t{2} << 30;  // 2 GiB
 
 inline constexpr int kBmBlock = 8;

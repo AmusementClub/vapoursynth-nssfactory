@@ -55,6 +55,18 @@ __device__ __forceinline__ float fast_exp(float x) {
     return fmaf(term2, r2, term0) * __int_as_float((q + 0x7f) << 23);
 }
 
+// The weight of a box sum (NlmWeight) by the CPU's operations in the CPU's
+// order: exp(-u), or max(1 - u, 0) as one fma and its powers by squaring.
+__device__ __forceinline__ float weight_of(NlmWeight mode, float sum, float h2_inv_norm) {
+    if (mode == NlmWeight::Welsch) return fast_exp(-sum * h2_inv_norm);
+    const float t = fmaxf(fmaf(sum, -h2_inv_norm, 1.0f), 0.0f);
+    if (mode == NlmWeight::BisquareA) return t;
+    const float t2 = t * t;
+    if (mode == NlmWeight::BisquareB) return t2;
+    const float t4 = t2 * t2;
+    return t4 * t4;
+}
+
 // The same distances with the channel values taken through c(channel) and n(channel).
 template <class Center, class Neighbor>
 __device__ __forceinline__ float pair_distance_of(NlmDistance mode, Center c, Neighbor n) {
@@ -100,11 +112,11 @@ __global__ void hsum_kernel(NlmPlanes center, NlmPlanes neighbor, NlmDistance mo
     hsum[row + x] = sum;
 }
 
-__device__ __forceinline__ float welsch(const float* hsum, int x, int y, int s, float h2_inv_norm, int width,
-                                        int height) {
+__device__ __forceinline__ float column_weight(const float* hsum, int x, int y, int s, NlmWeight mode,
+                                               float h2_inv_norm, int width, int height) {
     float sum = 0.f;
     for (int k = -s; k <= s; ++k) sum += hsum[static_cast<long long>(clampi(y + k, 0, height - 1)) * width + x];
-    return fast_exp(-sum * h2_inv_norm);
+    return weight_of(mode, sum, h2_inv_norm);
 }
 
 __global__ void accumulate_kernel(NlmAccumArgs a) {
@@ -117,8 +129,8 @@ __global__ void accumulate_kernel(NlmAccumArgs a) {
     const long long mq = static_cast<long long>(my) * a.width + mx;
     const long long pq = static_cast<long long>(clampi(y + a.oy, 0, a.height - 1)) * a.width +
                          clampi(x + a.ox, 0, a.width - 1);
-    const float u4 = welsch(a.hsum_bwd, x, y, a.s, a.h2_inv_norm, a.width, a.height);
-    const float u4_mq = welsch(a.hsum_fwd, mx, my, a.s, a.h2_inv_norm, a.width, a.height);
+    const float u4 = column_weight(a.hsum_bwd, x, y, a.s, a.weight_mode, a.h2_inv_norm, a.width, a.height);
+    const float u4_mq = column_weight(a.hsum_fwd, mx, my, a.s, a.weight_mode, a.h2_inv_norm, a.width, a.height);
     a.weight[i] += u4 + u4_mq;
     a.max_weight[i] = fmaxf(fmaxf(u4, u4_mq), a.max_weight[i]);
     for (int c = 0; c < a.channels; ++c) {
@@ -158,7 +170,7 @@ __device__ __forceinline__ float box_sum(const float* first, int stride, int s) 
     return sum;
 }
 
-// Weights exp(-box sum * h2_inv_norm) of the distance map
+// Weights (weight_of) of the box sums of the distance map
 // D(center(x, y), neighbor(clamp(x + ox), clamp(y + oy))) for the pixels
 // [rx0, rx1] x [ry0, ry1] (inside the image) into wt, row by row. dm takes the
 // distance map of the region with a halo of s, hs its row sums; both are
@@ -184,9 +196,9 @@ template <int NT, int S, bool IMG>
 __device__ __forceinline__ void tile_weights(float* dm, float* hs, float* wt, const float* center_window,
                                              const float* neighbor_window, const NlmPlanes& center,
                                              const NlmPlanes& neighbor, NlmDistance mode, int ox, int oy, int s,
-                                             float h2_inv_norm, int width, int height, int rx0, int ry0, int rx1,
-                                             int ry1, int tid, bool interior, int stride, int origin, int plane,
-                                             float* save = nullptr) {
+                                             NlmWeight weight, float h2_inv_norm, int width, int height, int rx0,
+                                             int ry0, int rx1, int ry1, int tid, bool interior, int stride,
+                                             int origin, int plane, float* save = nullptr) {
     const int rw = rx1 - rx0 + 1, rh = ry1 - ry0 + 1;
     const int dw = rw + 2 * s, dh = rh + 2 * s;
     // Row pitches of the distance map and the row sums (map_pitch): multiples of four floats, so that the
@@ -259,7 +271,7 @@ __device__ __forceinline__ void tile_weights(float* dm, float* hs, float* wt, co
                 float sum = 0.f;
 #pragma unroll
                 for (int t = 0; t < kTaps; ++t) sum += v[k + t];
-                const float value = fast_exp(-sum * h2_inv_norm);
+                const float value = weight_of(weight, sum, h2_inv_norm);
                 wt[(ey0 + k) * rw + x] = value;
                 if (save) save[(ry0 + ey0 + k) * width + rx0 + x] = value;
             }
@@ -272,7 +284,7 @@ __device__ __forceinline__ void tile_weights(float* dm, float* hs, float* wt, co
         __syncthreads();
         for (int e = tid; e < rw * rh; e += NT) {
             const int ey = element_row(e, inv_rw);
-            const float value = fast_exp(-box_sum<S>(hs + ey * hp + e - ey * rw, hp, s) * h2_inv_norm);
+            const float value = weight_of(weight, box_sum<S>(hs + ey * hp + e - ey * rw, hp, s), h2_inv_norm);
             wt[e] = value;
             if (save) save[(ry0 + ey) * width + rx0 + e - ey * rw] = value;
         }
@@ -369,8 +381,8 @@ __global__ void NSS_NLM_TILE_BOUNDS(TW * TH / PIX) tile_kernel(NlmTileArgs a) {
                     // One map serves both: the weights of the tile and of its mirror.
                     const int rx0 = min(x0, qx0), rx1 = max(x1, qx1), ry0 = min(y0, qy0), ry1 = max(y1, qy1);
                     tile_weights<NT, S, IMG>(dm, hs, wt, img, img, center, center, a.distance, ox, oy, s,
-                                             a.h2_inv_norm, width, height, rx0, ry0, rx1, ry1, tid, interior, stride,
-                                             origin, plane);
+                                             a.weight_mode, a.h2_inv_norm, width, height, rx0, ry0, rx1, ry1, tid,
+                                             interior, stride, origin, plane);
                     const int rw = rx1 - rx0 + 1;
                     for (int k = 0; k < PIX; ++k) {
                         if (!inside[k]) continue;
@@ -387,15 +399,16 @@ __global__ void NSS_NLM_TILE_BOUNDS(TW * TH / PIX) tile_kernel(NlmTileArgs a) {
                         }
                     } else {
                         tile_weights<NT, S, IMG>(dm, hs, wt, img, bwd_img, center, bwd, a.distance, ox, oy, s,
-                                                 a.h2_inv_norm, width, height, x0, y0, x1, y1, tid, interior, stride,
-                                                 origin, plane);
+                                                 a.weight_mode, a.h2_inv_norm, width, height, x0, y0, x1, y1, tid,
+                                                 interior, stride, origin, plane);
                         for (int k = 0; k < PIX; ++k) {
                             if (inside[k]) u4[k] = wt[(y[k] - y0) * (x1 - x0 + 1) + x[k] - x0];
                         }
                     }
                     tile_weights<NT, S, IMG>(dm, hs, wt, fwd_img, img, fwd, center, a.distance, ox, oy, s,
-                                             a.h2_inv_norm, width, height, qx0, qy0, qx1, qy1, tid, interior, stride,
-                                             origin, plane, weight_save ? weight_save + maps : nullptr);
+                                             a.weight_mode, a.h2_inv_norm, width, height, qx0, qy0, qx1, qy1, tid,
+                                             interior, stride, origin, plane,
+                                             weight_save ? weight_save + maps : nullptr);
                     for (int k = 0; k < PIX; ++k) {
                         if (!inside[k]) continue;
                         const int mx = clampi(x[k] - ox, 0, width - 1), my = clampi(y[k] - oy, 0, height - 1);
