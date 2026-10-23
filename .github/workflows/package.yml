@@ -345,3 +345,88 @@ jobs:
           name: windows-x86_64-cuda
           path: nssfactory-*-windows-x86_64-cuda.zip
           if-no-files-found: error
+
+  # Vulkan plugin (docs/vulkan-plan.md): packaged for testing only. draft-release
+  # does not attach these until phase V12.
+  build-linux-vk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: release-ccache-linux-vk-${{ github.sha }}
+          restore-keys: release-ccache-linux-vk-
+      - name: packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build git ccache python3-venv g++
+          python3 -m venv .vsenv
+          .vsenv/bin/pip install vapoursynth
+          echo "VapourSynth_INCLUDE_DIR=$(.vsenv/bin/python -c "import vapoursynth, pathlib; print(pathlib.Path(vapoursynth.__file__).parent / 'include')")" >> "$GITHUB_ENV"
+      - name: package label
+        run: echo "PKG_LABEL=${PKG_LABEL:-${GITHUB_SHA::7}}" >> "$GITHUB_ENV"
+      - name: configure
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DNSS_ENABLE_VULKAN=ON -DNSS_BUILD_CPU=OFF \
+            -DNSS_GIT_DESCRIBE="$PKG_LABEL" \
+            -DVapourSynth_INCLUDE_DIR="$VapourSynth_INCLUDE_DIR" \
+            -DPython3_EXECUTABLE="$GITHUB_WORKSPACE/.vsenv/bin/python"
+      - name: build
+        run: cmake --build build -j
+      - name: "vk tests (no device: classification, load, signatures)"
+        run: ctest --test-dir build -L vk --output-on-failure
+      - name: package
+        run: |
+          pkg="nssfactory-${PKG_LABEL}-linux-x86_64-vk"
+          mkdir -p "pkg/$pkg"
+          cp build/src/vulkan/libnss_vk.so README.md LICENSE NOTICE "pkg/$pkg/"
+          tar -C pkg -czf "$pkg.tar.gz" "$pkg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64-vk
+          path: nssfactory-*-linux-x86_64-vk.tar.gz
+          if-no-files-found: error
+
+  build-windows-vk:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: release-ccache-windows-vk-${{ github.sha }}
+          restore-keys: release-ccache-windows-vk-
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: packages
+        run: |
+          choco install ccache llvm ninja --no-progress
+          pip install vapoursynth
+      - name: package label
+        shell: bash
+        run: echo "PKG_LABEL=${PKG_LABEL:-${GITHUB_SHA::7}}" >> "$GITHUB_ENV"
+      - name: configure
+        run: |
+          $vsInclude = python -c "import vapoursynth, pathlib; print(pathlib.Path(vapoursynth.__file__).parent / 'include')"
+          $pythonExe = (Get-Command python).Source
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DNSS_ENABLE_VULKAN=ON -DNSS_BUILD_CPU=OFF -DNSS_GIT_DESCRIBE="$env:PKG_LABEL" -DVapourSynth_INCLUDE_DIR="$vsInclude" -DPython3_EXECUTABLE="$pythonExe"
+      - name: build
+        run: cmake --build build -j
+      - name: "vk tests (no device: classification, load, signatures)"
+        run: ctest --test-dir build -L vk --output-on-failure
+      - name: package
+        run: |
+          $dll = Get-ChildItem -Recurse build -Filter libnss_vk.dll | Select-Object -First 1
+          if (-not $dll) { throw "libnss_vk.dll was not produced" }
+          $pkg = "nssfactory-${env:PKG_LABEL}-windows-x86_64-vk"
+          New-Item -ItemType Directory "pkg/$pkg" | Out-Null
+          Copy-Item $dll.FullName, README.md, LICENSE, NOTICE "pkg/$pkg/"
+          tar -C pkg -a -c -f "$pkg.zip" "$pkg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86_64-vk
+          path: nssfactory-*-windows-x86_64-vk.zip
+          if-no-files-found: error

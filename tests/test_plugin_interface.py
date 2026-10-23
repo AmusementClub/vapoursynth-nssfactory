@@ -240,6 +240,9 @@ def main():
                 if "ok" not in cases[key]:
                     problems.append(f"{key}: adaptive cache arguments rejected: {cases[key]}")
                 cases[key] = golden["cases"][key]  # checked above; not a difference
+    # Checked without a device too: the cache arguments fail in the frontend
+    # before the device is acquired. Skipped only where BM3D is not registered.
+    if args.rolling_cache == "adaptive" and "BM3D" in functions and "BM3D" not in expect_missing:
         try:
             plugin.BM3D(clips["GRAYS"], radius=1, temporal_mode="rolling", rolling_cache_chunks=4, rolling_cache_limit=2)
             problems.append("rolling_cache_limit below rolling_cache_chunks accepted")
