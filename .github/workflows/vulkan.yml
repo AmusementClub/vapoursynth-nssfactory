@@ -1,0 +1,161 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Vulkan backend (libnss_vk) build lanes. CI only builds nss_vk (owner,
+# 2026-10-24): runners have no GPU and lavapipe is below D22, so these lanes
+# prove the pinned toolchain (glslang -> spirv-opt -> spirv-val -> embedded
+# SPIR-V), the isolation guards, the device-free unit tests and the plugin's
+# no-device load path. Device gates run on the dev host (docs/vulkan-plan.md).
+name: vulkan
+
+on:
+  # Branches are tested through their pull request (see linux.yml). Only changes
+  # that reach libnss_vk or its tests start these lanes.
+  push:
+    branches: [master]
+    paths:
+      - src/vulkan/**
+      - src/frontend/**
+      - include/**
+      - cmake/**
+      - CMakeLists.txt
+      - tests/vk/**
+      - tests/test_plugin_interface.py
+      - .github/workflows/vulkan.yml
+  pull_request:
+    paths:
+      - src/vulkan/**
+      - src/frontend/**
+      - include/**
+      - cmake/**
+      - CMakeLists.txt
+      - tests/vk/**
+      - tests/test_plugin_interface.py
+      - .github/workflows/vulkan.yml
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
+permissions:
+  contents: read
+  actions: write  # to delete superseded caches
+
+env:
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_MAXSIZE: 2G
+  CMAKE_C_COMPILER_LAUNCHER: ccache
+  CMAKE_CXX_COMPILER_LAUNCHER: ccache
+
+jobs:
+  linux:
+    name: linux-vk-${{ matrix.cc }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Together with the CPU tree: both plugins from one configure.
+          - cc: gcc
+            cxx: g++
+            cpu: "ON"
+          - cc: clang
+            cxx: clang++
+            cpu: "OFF"
+    steps:
+      - uses: actions/checkout@v4
+      # Every run reads master's compiler cache; only runs on master write one.
+      - uses: actions/cache/restore@v4
+        with:
+          path: .ccache
+          key: vulkan-ccache-linux-${{ matrix.cc }}-master-${{ github.sha }}
+          restore-keys: vulkan-ccache-linux-${{ matrix.cc }}-master-
+      - name: packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build git ccache python3-venv ${{ matrix.cxx == 'g++' && 'g++' || 'clang' }}
+          python3 -m venv .vsenv
+          .vsenv/bin/pip install vapoursynth numpy scipy
+          echo "VapourSynth_INCLUDE_DIR=$(.vsenv/bin/python -c "import vapoursynth, pathlib; print(pathlib.Path(vapoursynth.__file__).parent / 'include')")" >> "$GITHUB_ENV"
+      - name: configure
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=${{ matrix.cc }} -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} \
+            -DNSS_ENABLE_VULKAN=ON -DNSS_BUILD_CPU=${{ matrix.cpu }} \
+            -DVapourSynth_INCLUDE_DIR="$VapourSynth_INCLUDE_DIR" \
+            -DPython3_EXECUTABLE="$GITHUB_WORKSPACE/.vsenv/bin/python"
+      - name: build
+        run: cmake --build build -j
+      - name: plugin does not link the Vulkan loader (D25)
+        run: |
+          ldd build/src/vulkan/libnss_vk.so | tee ldd.txt
+          if grep -q libvulkan ldd.txt; then echo "libnss_vk links libvulkan"; exit 1; fi
+      - name: "vk tests (no device: classification, load, signatures)"
+        run: ctest --test-dir build -L vk --output-on-failure
+      - name: ccache stats
+        run: ccache --show-stats
+      - name: save the compiler cache (master only)
+        if: github.ref == 'refs/heads/master'
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: vulkan-ccache-linux-${{ matrix.cc }}-master-${{ github.sha }}
+      - name: drop master's older compiler caches
+        if: github.ref == 'refs/heads/master'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREFIX: vulkan-ccache-linux-${{ matrix.cc }}-master-
+        run: |
+          gh cache list --repo "$GITHUB_REPOSITORY" --key "$PREFIX" --limit 100 --json id,key \
+            --jq ".[] | select(.key != \"${PREFIX}${GITHUB_SHA}\") | .id" |
+            while read -r id; do gh cache delete "$id" --repo "$GITHUB_REPOSITORY" || true; done
+
+  windows:
+    # The CPU release toolchain: GNU-driver clang++ targeting the MSVC ABI.
+    name: windows-vk-clang
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache/restore@v4
+        with:
+          path: .ccache
+          key: vulkan-ccache-windows-clang-master-${{ github.sha }}
+          restore-keys: vulkan-ccache-windows-clang-master-
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: packages
+        run: |
+          choco install ccache llvm ninja --no-progress
+          pip install vapoursynth
+      - name: configure
+        run: |
+          $vsInclude = python -c "import vapoursynth, pathlib; print(pathlib.Path(vapoursynth.__file__).parent / 'include')"
+          $pythonExe = (Get-Command python).Source
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DNSS_ENABLE_VULKAN=ON -DNSS_BUILD_CPU=OFF -DVapourSynth_INCLUDE_DIR="$vsInclude" -DPython3_EXECUTABLE="$pythonExe"
+      - name: build
+        run: cmake --build build -j
+      - name: plugin DLL
+        run: |
+          $dll = Get-ChildItem -Recurse build -Filter libnss_vk.dll | Select-Object -First 1
+          if (-not $dll) { throw "libnss_vk.dll was not produced" }
+          $imports = llvm-readobj --coff-imports $dll.FullName | Select-String "Name: "
+          $imports
+          if ($imports -match "vulkan-1") { throw "libnss_vk.dll imports vulkan-1.dll" }
+      - name: "vk tests (no device: classification, load, signatures)"
+        run: ctest --test-dir build -L vk --output-on-failure
+      - name: save the compiler cache (master only)
+        if: github.ref == 'refs/heads/master'
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: vulkan-ccache-windows-clang-master-${{ github.sha }}
+      - name: drop master's older compiler caches
+        if: github.ref == 'refs/heads/master'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREFIX: vulkan-ccache-windows-clang-master-
+        run: |
+          gh cache list --repo "$GITHUB_REPOSITORY" --key "$PREFIX" --limit 100 --json id,key \
+            --jq ".[] | select(.key != \"${PREFIX}${GITHUB_SHA}\") | .id" |
+            while read -r id; do gh cache delete "$id" --repo "$GITHUB_REPOSITORY" || true; done

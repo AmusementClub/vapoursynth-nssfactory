@@ -64,11 +64,33 @@ builds only the CUDA plugin, without Highway or the CPU kernels.
 - **One GPU only:** `-DNSS_CUDA_ARCHITECTURES=120-real` (for example) builds
   much faster.
 
+## Vulkan plugin (in development)
+
+```bash
+cmake -S . -B build-vk -DCMAKE_BUILD_TYPE=Release -DNSS_ENABLE_VULKAN=ON
+cmake --build build-vk -j
+ctest --test-dir build-vk -L vk
+```
+
+This builds `libnss_vk` (namespace `nss_vk`; not
+shipped). It has no filters yet: `core.nss_vk.Backend(device_id=...)` reports
+the device, its support level (`native`, `emulated` or `unsupported`, with the
+missing Vulkan 1.3 features) and runs a load probe. `-DNSS_BUILD_CPU=OFF`
+builds only the Vulkan plugin.
+
+- **No SDK needed:** Vulkan-Headers, volk, VMA, glslang and SPIRV-Tools are
+  fetched at configure time, pinned to Vulkan SDK 1.4.363.0 (VMA 3.4.0).
+  Building glslang and SPIRV-Tools adds several minutes to the first build.
+- **No loader needed to load:** the plugin finds the Vulkan loader at run time
+  and reports its absence through `Backend()`.
+
 ## Options
 
 | Option | Default | Meaning |
 |---|---|---|
 | `NSS_ENABLE_CUDA` | OFF | Build the CUDA plugin. |
+| `NSS_ENABLE_VULKAN` | OFF | Build the Vulkan plugin (in development, not released). |
+| `NSS_VK_GLSLANG`, `NSS_VK_SPIRV_OPT`, `NSS_VK_SPIRV_VAL` | empty | Installed `glslang`, `spirv-opt` and `spirv-val` to use instead of building the pinned ones; set all three or none. |
 | `NSS_BUILD_CPU` | ON | Build the CPU plugin and its tests. |
 | `NSS_CUDA_ARCHITECTURES` | see above | CUDA architectures to compile for. |
 | `NSS_CUDA_MATHDX` | empty | Path to a MathDx package root (`nvidia/mathdx/<version>`, holding `include/cusolverdx.hpp`; MathDx 25.12 or newer, the CUDA 12 or CUDA 13 package to match nvcc). The eigen steps of NCSR's groups of 17 to 32 and TWSC's caps of 17 to 32 then use cuSolverDx `heev` (NCSR group 32 1.16x; TWSC block 8, group 24 1.10x, group 32 1.05x). Needs CMake 3.25 or newer; the NCSR and TWSC kernels are compiled separately and linked with link-time optimization. |

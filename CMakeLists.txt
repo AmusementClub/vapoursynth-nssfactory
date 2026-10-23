@@ -9,14 +9,16 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   message(STATUS "NSSFactory: CMAKE_BUILD_TYPE unset, defaulting to Release")
 endif()
 
-# Plugin selection. The CPU tree (libnss, Highway, nss_cpu and its tests) and
-# the CUDA tree (libnss_cuda, docs/cuda-plan.md) share only the backend-neutral
-# frontend below. NSS_BUILD_CPU=OFF lets a CUDA-only configure (e.g. MSVC +
-# nvcc on Windows) skip the CPU toolchain contract entirely.
+# Plugin selection. The CPU tree (libnss, Highway, nss_cpu and its tests), the
+# CUDA tree (libnss_cuda, docs/cuda-plan.md) and the Vulkan tree (libnss_vk,
+# docs/vulkan-plan.md) share only the backend-neutral frontend below.
+# NSS_BUILD_CPU=OFF lets a GPU-only configure (e.g. MSVC + nvcc on Windows)
+# skip the CPU toolchain contract entirely.
 option(NSS_BUILD_CPU "Build the CPU plugin libnss, its kernels and tests" ON)
 option(NSS_ENABLE_CUDA "Build the CUDA plugin libnss_cuda (namespace nss_cuda)" OFF)
-if(NOT NSS_BUILD_CPU AND NOT NSS_ENABLE_CUDA)
-  message(FATAL_ERROR "Nothing to build: enable NSS_BUILD_CPU and/or NSS_ENABLE_CUDA")
+option(NSS_ENABLE_VULKAN "Build the Vulkan plugin libnss_vk (namespace nss_vk; in development, not released)" OFF)
+if(NOT NSS_BUILD_CPU AND NOT NSS_ENABLE_CUDA AND NOT NSS_ENABLE_VULKAN)
+  message(FATAL_ERROR "Nothing to build: enable NSS_BUILD_CPU, NSS_ENABLE_CUDA and/or NSS_ENABLE_VULKAN")
 endif()
 
 set(CMAKE_CXX_STANDARD 20)
@@ -624,7 +626,7 @@ endif()  # NSS_BUILD_CPU: CPU tree
 # CMakeLists) from reaching CPU kernels or CPU host code.
 function(nss_forbid_cpu_includes label)
   foreach(_nss_file IN LISTS ARGN)
-    if(_nss_file MATCHES "\\.(hpp|cpp|h|cu|cuh)$")
+    if(_nss_file MATCHES "\\.(hpp|cpp|h|cu|cuh|comp|glsl)$")
       file(STRINGS "${_nss_file}" _nss_hits
            REGEX "#[ \t]*include[ \t]+[\"<](cpu/|host/|nss/cpu_|nss/backend\\.hpp|nss/avx2)")
       if(_nss_hits)
@@ -667,6 +669,9 @@ endif()
 if(NSS_ENABLE_CUDA AND NOT VapourSynth_FOUND)
   message(FATAL_ERROR "NSS_ENABLE_CUDA requires VapourSynth headers (set VapourSynth_INCLUDE_DIR)")
 endif()
+if(NSS_ENABLE_VULKAN AND NOT VapourSynth_FOUND)
+  message(FATAL_ERROR "NSS_ENABLE_VULKAN requires VapourSynth headers (set VapourSynth_INCLUDE_DIR)")
+endif()
 
 if(NSS_BUILD_CPU AND VapourSynth_FOUND)
   file(GLOB NSS_HOST_FILTERS CONFIGURE_DEPENDS src/host/filter_*.cpp)
@@ -695,4 +700,8 @@ endif()
 if(NSS_ENABLE_CUDA)
   add_subdirectory(src/cuda)
   add_subdirectory(tests/cuda)
+endif()
+if(NSS_ENABLE_VULKAN)
+  add_subdirectory(src/vulkan)
+  add_subdirectory(tests/vk)
 endif()

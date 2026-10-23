@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: GPL-2.0-only
+// Load probe (runtime/probe.cpp): proves on one dispatch that the embedded
+// SPIR-V runs with buffer device addresses, a required subgroup size, the D22
+// subgroup operations and 64-bit buffer atomics.
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_shader_atomic_int64 : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_vote : require
+#extension GL_KHR_shader_subgroup_ballot : require
+#extension GL_KHR_shader_subgroup_shuffle : require
+#extension GL_KHR_shader_subgroup_arithmetic : require
+
+layout(local_size_x = 128) in;
+
+layout(buffer_reference, std430, buffer_reference_align = 8) buffer Result {
+    uint64_t sum;   // atomic sum of (index + 1) over every invocation
+    uint lanes[];   // per invocation: the subgroup width, 0 when a check failed
+};
+
+layout(push_constant) uniform Push {
+    Result result;
+} pc;
+
+void main() {
+    const uint index = gl_GlobalInvocationID.x;
+    const uint lane = gl_SubgroupInvocationID;
+    const uint width = subgroupAdd(1u);
+    bool ok = width == gl_SubgroupSize;
+    ok = ok && subgroupShuffleXor(lane, 1u) == (lane ^ 1u);
+    ok = ok && subgroupBallotBitCount(subgroupBallot(true)) == width;
+    ok = ok && subgroupBroadcastFirst(lane) == 0u;
+    ok = ok && subgroupAll(lane < width);
+    pc.result.lanes[index] = ok ? width : 0u;
+    atomicAdd(pc.result.sum, uint64_t(index) + 1ul);
+}
