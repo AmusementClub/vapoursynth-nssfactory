@@ -39,9 +39,11 @@ std::string result_name(VkResult code) {
 }
 
 void throw_vk_error(VkResult code, const char* expression, const char* file, int line) {
-    const char* base = std::strrchr(file, '/');
-    throw VkError(code, result_name(code) + " in " + expression + " (" + (base ? base + 1 : file) + ":" +
-                            std::to_string(line) + ")");
+    std::string where(file);
+    const auto slash = where.find_last_of("/\\");
+    if (slash != std::string::npos) where.erase(0, slash + 1);
+    throw VkError(code, "nss_vk: " + result_name(code) + " in " + expression + " at " + where + ":" +
+                            std::to_string(line));
 }
 
 }  // namespace nss_vk

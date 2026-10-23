@@ -73,11 +73,11 @@ Fetched at configure time (cmake/Vulkan.cmake) and compiled into libnss_vk:
 
 - Vulkan-Headers (https://github.com/KhronosGroup/Vulkan-Headers), used under
   the MIT license (the headers are dual-licensed Apache-2.0 OR MIT).
-  Copyright 2015-2025 The Khronos Group Inc.
+  Copyright 2015-2026 The Khronos Group Inc.
 - volk (https://github.com/zeux/volk), MIT license.
-  Copyright (c) 2018-2025 Arseny Kapoulkine
+  Copyright (c) 2018-2026 Arseny Kapoulkine
 - Vulkan Memory Allocator (https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator),
-  MIT license. Copyright (c) 2017-2025 Advanced Micro Devices, Inc.
+  MIT license. Copyright (c) 2017-2026 Advanced Micro Devices, Inc. All rights reserved.
 
 The MIT license text:
 

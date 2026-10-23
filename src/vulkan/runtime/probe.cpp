@@ -61,6 +61,9 @@ void run_probe(VkPhysicalDevice physical, const DeviceCaps& caps, ProbeResult& r
     if ((caps.subgroup_ops & kRequiredSubgroupOps) != kRequiredSubgroupOps || !caps.subgroup_in_compute) {
         missing.push_back("subgroup operations");
     }
+    if (caps.min_subgroup_size == 0 || caps.min_subgroup_size > caps.max_subgroup_size) {
+        missing.push_back("a valid subgroup size range");
+    }
     if (!missing.empty()) {
         result.error = "probe needs " + join(missing);
         return;
@@ -97,7 +100,11 @@ void run_probe(VkPhysicalDevice physical, const DeviceCaps& caps, ProbeResult& r
     VkDeviceCreateInfo device_info{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, &features};
     device_info.queueCreateInfoCount = 1;
     device_info.pQueueCreateInfos = &queue_info;
-    NSS_VK_CHECK(vkCreateDevice(physical, &device_info, nullptr, &o.device));
+    // Output parameters are undefined when creation fails: only a created
+    // device reaches ProbeObjects.
+    VkDevice created = VK_NULL_HANDLE;
+    NSS_VK_CHECK(vkCreateDevice(physical, &device_info, nullptr, &created));
+    o.device = created;
     volkLoadDeviceTable(&o.vk, o.device);
     const VolkDeviceTable& vk = o.vk;
     VkQueue queue = VK_NULL_HANDLE;
@@ -187,13 +194,20 @@ void run_probe(VkPhysicalDevice physical, const DeviceCaps& caps, ProbeResult& r
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &commands;
     NSS_VK_CHECK(vk.vkQueueSubmit(queue, 1, &submit, o.fence));
-    const VkResult waited = vk.vkWaitForFences(o.device, 1, &o.fence, VK_TRUE, kWaitNs);
-    NSS_VK_CHECK(waited);
-    if (waited == VK_TIMEOUT) {
-        // Destroying objects still in use is undefined; wait for the queue
-        // before ProbeObjects tears them down.
-        vk.vkQueueWaitIdle(queue);
-        result.error = "probe: dispatch did not finish within 5 s";
+    VkResult waited = vk.vkWaitForFences(o.device, 1, &o.fence, VK_TRUE, kWaitNs);
+    if (waited != VK_SUCCESS && waited != VK_ERROR_DEVICE_LOST) {
+        // One more bounded wait; objects still in use must not be destroyed.
+        waited = vk.vkWaitForFences(o.device, 1, &o.fence, VK_TRUE, kWaitNs);
+    }
+    if (waited == VK_ERROR_DEVICE_LOST) {
+        result.error = "probe: device lost";
+        return;  // a lost device's objects may be destroyed
+    }
+    if (waited != VK_SUCCESS) {
+        // Still running (or the wait failed): leak the device on purpose
+        // rather than hang without a bound or free objects in use.
+        o.device = VK_NULL_HANDLE;
+        result.error = "probe: dispatch did not finish within 10 s (" + result_name(waited) + "); device leaked";
         return;
     }
 

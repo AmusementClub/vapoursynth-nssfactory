@@ -95,10 +95,14 @@ DeviceCaps query_caps(VkPhysicalDevice device) {
     DeviceCaps caps;
 
     std::uint32_t extension_count = 0;
-    vkEnumerateDeviceExtensionProperties(device, nullptr, &extension_count, nullptr);
-    std::vector<VkExtensionProperties> extensions(extension_count);
-    vkEnumerateDeviceExtensionProperties(device, nullptr, &extension_count, extensions.data());
-    extensions.resize(extension_count);
+    std::vector<VkExtensionProperties> extensions;
+    if (vkEnumerateDeviceExtensionProperties(device, nullptr, &extension_count, nullptr) == VK_SUCCESS) {
+        extensions.resize(extension_count);
+        if (vkEnumerateDeviceExtensionProperties(device, nullptr, &extension_count, extensions.data()) < VK_SUCCESS) {
+            extension_count = 0;
+        }
+        extensions.resize(extension_count);
+    }
     auto has_extension = [&](const char* name) {
         return std::any_of(extensions.begin(), extensions.end(),
                            [&](const VkExtensionProperties& e) { return std::strcmp(e.extensionName, name) == 0; });
@@ -116,8 +120,12 @@ DeviceCaps query_caps(VkPhysicalDevice device) {
     VkPhysicalDeviceDriverProperties driver{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
     VkPhysicalDeviceVulkan11Properties p11{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES, &driver};
     VkPhysicalDeviceVulkan13Properties p13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES, &p11};
-    VkPhysicalDeviceProperties2 properties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, v13 ? &p13 : nullptr};
-    vkGetPhysicalDeviceProperties2(device, &properties);
+    VkPhysicalDeviceProperties2 properties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &p13};
+    if (v13) {
+        vkGetPhysicalDeviceProperties2(device, &properties);
+    } else {
+        properties.properties = basic;
+    }
     const VkPhysicalDeviceProperties& p = properties.properties;
     caps.name = p.deviceName;
     caps.vendor_id = p.vendorID;

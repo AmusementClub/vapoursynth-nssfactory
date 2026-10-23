@@ -702,6 +702,7 @@ if(NSS_ENABLE_CUDA)
   add_subdirectory(tests/cuda)
 endif()
 if(NSS_ENABLE_VULKAN)
+  enable_language(C)  # volk.c (cmake/Vulkan.cmake), linked by src/vulkan and tests/vk
   add_subdirectory(src/vulkan)
   add_subdirectory(tests/vk)
 endif()

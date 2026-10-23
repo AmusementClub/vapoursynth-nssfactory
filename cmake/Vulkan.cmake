@@ -7,7 +7,8 @@
 # (MIT); see NOTICE. Build tools only, never linked: glslang and SPIRV-Tools
 # (+ SPIRV-Headers). NSS_VK_GLSLANG / NSS_VK_SPIRV_OPT / NSS_VK_SPIRV_VAL may
 # name installed tools instead (R5); the embedded SPIR-V then depends on their
-# versions, which Backend() reports as "system".
+# versions, which Backend() reports as "system". They must accept the pinned
+# tools' options: glslang --depfile, spirv-opt --target-env=vulkan1.3.
 set(NSS_VK_SDK_TAG "vulkan-sdk-1.4.363.0")
 set(NSS_VK_VMA_TAG "v3.4.0")
 
@@ -44,8 +45,8 @@ target_include_directories(nss_vk_headers SYSTEM INTERFACE
 # volk declares every entry point; nothing may link the loader directly (D25).
 target_compile_definitions(nss_vk_headers INTERFACE VK_NO_PROTOTYPES)
 
-# volk.c is the only C source of the project.
-enable_language(C)
+# volk.c is the only C source of the project (C is enabled in the root
+# CMakeLists.txt, the directory common to every user of nss_volk).
 add_library(nss_volk STATIC "${nss_volk_SOURCE_DIR}/volk.c")
 target_link_libraries(nss_volk PUBLIC nss_vk_headers)
 set_target_properties(nss_volk PROPERTIES POSITION_INDEPENDENT_CODE ON C_VISIBILITY_PRESET hidden)
@@ -58,7 +59,8 @@ if(NSS_VK_GLSLANG AND NSS_VK_SPIRV_OPT AND NSS_VK_SPIRV_VAL)
   set(NSS_VK_SPIRV_OPT_COMMAND "${NSS_VK_SPIRV_OPT}")
   set(NSS_VK_SPIRV_VAL_COMMAND "${NSS_VK_SPIRV_VAL}")
   set(NSS_VK_SHADER_TOOLS "system")
-  set(NSS_VK_SHADER_TOOL_TARGETS "")
+  set(NSS_VK_GLSLANG_DEPENDS "${NSS_VK_GLSLANG}")
+  set(NSS_VK_SPIRV_TOOLS_DEPENDS "${NSS_VK_SPIRV_OPT}" "${NSS_VK_SPIRV_VAL}")
 elseif(NSS_VK_GLSLANG OR NSS_VK_SPIRV_OPT OR NSS_VK_SPIRV_VAL)
   message(FATAL_ERROR "NSS_VK_GLSLANG, NSS_VK_SPIRV_OPT and NSS_VK_SPIRV_VAL are set together or not at all")
 else()
@@ -97,6 +99,10 @@ else()
   set(CMAKE_CXX_VISIBILITY_PRESET default)
   FetchContent_MakeAvailable(nss_spirv_tools nss_glslang)
   set(CMAKE_CXX_VISIBILITY_PRESET "${_nss_vk_saved_visibility}")
+  # Only the three tools the shader build depends on are built; the rest of
+  # SPIRV-Tools and glslang (other tools, shared libraries) stays out of `all`.
+  set_property(DIRECTORY "${nss_spirv_tools_SOURCE_DIR}" PROPERTY EXCLUDE_FROM_ALL ON)
+  set_property(DIRECTORY "${nss_glslang_SOURCE_DIR}" PROPERTY EXCLUDE_FROM_ALL ON)
   foreach(_nss_tool glslang-standalone spirv-opt spirv-val)
     if(NOT TARGET ${_nss_tool})
       message(FATAL_ERROR "Pinned shader toolchain did not define target ${_nss_tool}")
@@ -106,7 +112,8 @@ else()
   set(NSS_VK_SPIRV_OPT_COMMAND "$<TARGET_FILE:spirv-opt>")
   set(NSS_VK_SPIRV_VAL_COMMAND "$<TARGET_FILE:spirv-val>")
   set(NSS_VK_SHADER_TOOLS "glslang ${NSS_VK_SDK_TAG}, SPIRV-Tools ${NSS_VK_SDK_TAG}")
-  set(NSS_VK_SHADER_TOOL_TARGETS glslang-standalone spirv-opt spirv-val)
+  set(NSS_VK_GLSLANG_DEPENDS glslang-standalone)
+  set(NSS_VK_SPIRV_TOOLS_DEPENDS spirv-opt spirv-val)
 endif()
 message(STATUS "NSSFactory Vulkan: headers/volk ${NSS_VK_SDK_TAG}, VMA ${NSS_VK_VMA_TAG}, shader tools: ${NSS_VK_SHADER_TOOLS}")
 
@@ -141,7 +148,7 @@ function(nss_vk_add_shader out_var id source)
     COMMAND ${NSS_VK_GLSLANG_COMMAND} -V --target-env vulkan1.3 -S comp
             "-I${CMAKE_CURRENT_SOURCE_DIR}/shaders" ${defines}
             --depfile "${raw}.d" -o "${raw}" "${src}"
-    DEPENDS "${src}" ${NSS_VK_SHADER_TOOL_TARGETS}
+    DEPENDS "${src}" ${NSS_VK_GLSLANG_DEPENDS}
     DEPFILE "${raw}.d"
     COMMENT "glslang ${id}"
     VERBATIM)
@@ -151,7 +158,7 @@ function(nss_vk_add_shader out_var id source)
     COMMAND ${NSS_VK_SPIRV_VAL_COMMAND} --target-env vulkan1.3 "${spv}"
     COMMAND ${CMAKE_COMMAND} -DNSS_VK_ID=${id} "-DNSS_VK_SPV=${spv}" "-DNSS_VK_CPP=${cpp}"
             -P "${PROJECT_SOURCE_DIR}/cmake/VulkanEmbed.cmake"
-    DEPENDS "${raw}" "${PROJECT_SOURCE_DIR}/cmake/VulkanEmbed.cmake" ${NSS_VK_SHADER_TOOL_TARGETS}
+    DEPENDS "${raw}" "${PROJECT_SOURCE_DIR}/cmake/VulkanEmbed.cmake" ${NSS_VK_SPIRV_TOOLS_DEPENDS}
     COMMENT "spirv-opt ${id}"
     VERBATIM)
   set(${out_var} ${${out_var}} "${cpp}" PARENT_SCOPE)

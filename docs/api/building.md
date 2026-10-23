@@ -80,7 +80,8 @@ builds only the Vulkan plugin.
 
 - **No SDK needed:** Vulkan-Headers, volk, VMA, glslang and SPIRV-Tools are
   fetched at configure time, pinned to Vulkan SDK 1.4.363.0 (VMA 3.4.0).
-  Building glslang and SPIRV-Tools adds several minutes to the first build.
+  Building glslang and SPIRV-Tools needs Python 3 and adds several minutes to
+  the first build.
 - **No loader needed to load:** the plugin finds the Vulkan loader at run time
   and reports its absence through `Backend()`.
 
