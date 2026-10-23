@@ -11,8 +11,8 @@ void throw_cuda_error(cudaError_t code, const char* expression, const char* file
     std::string where(file);
     const auto slash = where.find_last_of("/\\");
     if (slash != std::string::npos) where.erase(0, slash + 1);
-    throw CudaError(code, std::string("nss_cuda: ") + cudaGetErrorName(code) + " (" + cudaGetErrorString(code) +
-                              ") in " + expression + " at " + where + ":" + std::to_string(line));
+    throw CudaError(code, "nss_cuda: " + cuda_error_name(code) + " (" + cuda_error_string(code) + ") in " + expression +
+                              " at " + where + ":" + std::to_string(line));
 }
 
 DeviceBuffer::DeviceBuffer(std::size_t bytes, const std::shared_ptr<nss::ResourceBudget>& budget)

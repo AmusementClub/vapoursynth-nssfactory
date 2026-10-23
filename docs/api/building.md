@@ -11,8 +11,8 @@ VapourSynth plugin directory.
 | `linux-arm64` | `libnss.so` | glibc 2.38 or newer (libstdc++ is built in): Ubuntu 24.04, Debian 13, Fedora 39 or later |
 | `macos-arm64` | `libnss.dylib` | Apple silicon, macOS 13.3 or newer |
 | `windows-x86_64` | `libnss.dll` | Windows x86-64 with AVX2 and the Microsoft Visual C++ 2015–2022 Redistributable (x64) |
-| `linux-x86_64-cuda` | `libnss_cuda.so` | as `linux-x86_64`, with an NVIDIA driver for CUDA 12.9 or newer |
-| `windows-x86_64-cuda` | `libnss_cuda.dll` | an NVIDIA driver for CUDA 12.9 or newer and the Visual C++ Redistributable as above |
+| `linux-x86_64-cuda` | `libnss_cuda.so` | as `linux-x86_64`, with an NVIDIA driver of the r580 branch (CUDA 13.0) or newer |
+| `windows-x86_64-cuda` | `libnss_cuda.dll` | an NVIDIA driver of the r580 branch (CUDA 13.0) or newer and the Visual C++ Redistributable as above |
 
 On an older Linux (Ubuntu 22.04, Debian 12) the plugin fails to load with a
 `GLIBCXX` version error; build it from source there.
@@ -25,8 +25,9 @@ On an older Linux (Ubuntu 22.04, Debian 12) the plugin fails to load with a
   `-DVapourSynth_INCLUDE_DIR=<site-packages>/vapoursynth/include`.
 - [Highway](https://github.com/google/highway) 1.4.0 is fetched at configure
   time.
-- For the CUDA plugin: nvcc from CUDA 12.4 or newer (Windows: nvcc with MSVC
-  `cl.exe`).
+- For the CUDA plugin: nvcc from CUDA 13.3, the toolkit of the release
+  packages and of CI (Windows: nvcc with MSVC `cl.exe` from Visual Studio
+  2022). Older toolkits down to 12.4 still configure but are no longer tested.
 
 ## CPU plugin
 

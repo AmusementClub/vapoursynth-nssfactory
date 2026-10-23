@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include "cuda/runtime/device.hpp"
+#include "cuda/runtime/error.hpp"
 
 #include <cuda_runtime.h>
 
@@ -14,7 +15,7 @@ constexpr int kCubinArchs[] = {0, NSS_CUDA_CUBIN_ARCHS};
 constexpr int kPtxArchs[] = {0, NSS_CUDA_PTX_ARCHS};
 
 std::string cuda_message(cudaError_t error) {
-    return std::string(cudaGetErrorName(error)) + ": " + cudaGetErrorString(error);
+    return cuda_error_name(error) + ": " + cuda_error_string(error);
 }
 
 }  // namespace

@@ -19,6 +19,9 @@ find_package(CUDAToolkit REQUIRED)
 # over std::min/std::max.
 if(WIN32)
   add_compile_definitions(NOMINMAX)
+  # nvcc's host compiler here is cl.exe; CCCL (CUB) from CUDA 13 rejects its
+  # traditional preprocessor. Host-side preprocessing only.
+  add_compile_options($<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/Zc:preprocessor>)
 endif()
 set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
