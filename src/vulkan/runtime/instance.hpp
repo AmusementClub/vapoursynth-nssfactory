@@ -21,6 +21,7 @@ struct Instance {
     std::uint32_t loader_version = 0;  // vkEnumerateInstanceVersion; 0 without a loader
     std::vector<VkPhysicalDevice> devices;  // loader order; device_id indexes this
     std::string error;                 // non-empty when the loader or instance is unusable
+    bool debug_utils = false;          // VK_EXT_debug_utils enabled (labels)
 };
 
 const Instance& instance();

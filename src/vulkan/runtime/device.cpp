@@ -149,6 +149,7 @@ DeviceCaps query_caps(VkPhysicalDevice device) {
         caps.shader_float64 = features.features.shaderFloat64;
         caps.buffer_device_address = f12.bufferDeviceAddress;
         caps.timeline_semaphore = f12.timelineSemaphore;
+        caps.host_query_reset = f12.hostQueryReset;
         caps.buffer_int64_atomics = f12.shaderBufferInt64Atomics;
         caps.subgroup_size_control = f13.subgroupSizeControl;
         caps.compute_full_subgroups = f13.computeFullSubgroups;

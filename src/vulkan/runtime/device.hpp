@@ -47,6 +47,7 @@ struct DeviceCaps {
 
     // Optional, reported (D22, D28).
     bool shader_float64 = false;
+    bool host_query_reset = false;      // timestamps reset from the host (Slot)
     bool cooperative_matrix = false;    // VK_KHR_cooperative_matrix
     bool external_memory_host = false;  // VK_EXT_external_memory_host (not used: D28)
     std::uint32_t transfer_queues = 0;  // queues in copy-only (transfer, no compute/graphics/video) families
