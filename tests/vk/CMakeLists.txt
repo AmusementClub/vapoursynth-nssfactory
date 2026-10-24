@@ -29,6 +29,15 @@ target_link_libraries(test_vk_warp PRIVATE nss_vk_core)
 add_test(NAME test_vk_warp COMMAND test_vk_warp)
 set_tests_properties(test_vk_warp PROPERTIES LABELS vk SKIP_RETURN_CODE 77)
 
+# Lane matchers against the CPU matcher (V3; needs the CPU tree).
+if(TARGET nss_cpu)
+  add_executable(test_vk_match test_vk_match.cpp)
+  target_link_libraries(test_vk_match PRIVATE nss_vk_core nss_cpu)
+  target_include_directories(test_vk_match PRIVATE "${PROJECT_SOURCE_DIR}/include" "${PROJECT_SOURCE_DIR}/src")
+  add_test(NAME test_vk_match COMMAND test_vk_match)
+  set_tests_properties(test_vk_match PROPERTIES LABELS vk SKIP_RETURN_CODE 77)
+endif()
+
 # Queue-layout throughput (D28), run by hand on a device; not a test.
 add_executable(bench_vk_queues bench_vk_queues.cpp)
 target_link_libraries(bench_vk_queues PRIVATE nss_vk_core)

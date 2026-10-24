@@ -21,6 +21,12 @@
 // and (emulated) WARP_WARPS, the 32-lane warps of a workgroup
 // (local_size_x = 32 * WARP_WARPS).
 //
+// Never put an operation on the right of && or || or in a ?: arm: short
+// circuits skip it on some lanes. Callers keep lane state changes between these operations branch-free
+// (selects): Vulkan does not promise that a subgroup's invocations reconverge
+// after divergent control flow (maximal reconvergence is not in D22), and an
+// operation reached by part of a segment reads lanes that are not there.
+//
 // Loops around these operations must unroll in the SPIR-V (constant trip
 // count, +-1 or shift steps; spirv-opt --loop-unroll) or be written out: the
 // NVIDIA Vulkan compiler keeps such loops rolled (V0 spike, D24 rule).
@@ -63,6 +69,7 @@ uint64_t w_shfl64(uint64_t x, int src) { return packUint2x32(w_exchange(unpackUi
 uint64_t w_up64(uint64_t x) {
     return packUint2x32(w_exchange(unpackUint2x32(x), w_sub() == 0 ? w_index() : w_index() - 1));
 }
+uint w_up(uint x) { return w_exchange(uvec2(x, 0u), w_sub() == 0 ? w_index() : w_index() - 1).x; }
 bool w_any(bool p) { return true; }
 // Lanes of the segment where p holds, as a mask (bit i: lane i).
 uint w_ballot(bool p) {
@@ -98,6 +105,10 @@ uint64_t w_up64(uint64_t x) {
     const uvec2 h = unpackUint2x32(x);
     const uint at = uint(max(w_lane() - 1, 0));
     const uint64_t up = packUint2x32(uvec2(subgroupShuffle(h.x, at), subgroupShuffle(h.y, at)));
+    return w_sub() == 0 ? x : up;
+}
+uint w_up(uint x) {
+    const uint up = subgroupShuffle(x, uint(max(w_lane() - 1, 0)));
     return w_sub() == 0 ? x : up;
 }
 bool w_any(bool p) { return subgroupAny(p); }
