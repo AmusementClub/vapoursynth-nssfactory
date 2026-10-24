@@ -56,9 +56,9 @@ int main() {
     expect(computed == 3, "hits do not recompute");
     chunk(0);
     expect(computed == 3, "0 stayed cached");
-    chunk(4);   // dropped once: recomputed, no growth yet
-    chunk(8);   // was dropped by 4: recomputed
-    chunk(0);   // dropped by 8 -> second miss on a dropped chunk: the cache grows to 3
+    chunk(4);   // first miss on a dropped chunk: recomputed, drops 8, no growth yet
+    chunk(8);   // second miss on a dropped chunk: the cache grows to 3 (nothing dropped)
+    chunk(0);   // hit
     const int before = computed;
     chunk(4);
     chunk(8);
