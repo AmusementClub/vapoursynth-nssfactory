@@ -10,6 +10,7 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <utility>
 #include <vector>
 
@@ -69,6 +70,21 @@ public:
         free_.pop_front();
         return Lease(this, slot);
     }
+    // As acquire(), but the waiting thread with the lowest order goes first
+    // (a frame number: requests that VapourSynth's threads bring in any order
+    // then take their turns in clip order). A pool is used with one of the two.
+    Lease acquire(long long order) {
+        std::unique_lock lock(mutex_);
+        const auto me = waiting_.insert(order);
+        available_.wait(lock, [&] { return !free_.empty() && *waiting_.begin() == order; });
+        waiting_.erase(me);
+        Slot* slot = free_.front();
+        free_.pop_front();
+        const bool more = !free_.empty() && !waiting_.empty();
+        lock.unlock();
+        if (more) available_.notify_all();
+        return Lease(this, slot);
+    }
     std::size_t size() const noexcept { return slots_.size(); }
     template <class F> void for_each(F&& f) {
         for (auto& slot : slots_) f(*slot);
@@ -76,14 +92,22 @@ public:
 
 private:
     void give_back(Slot* slot) {
+        bool ordered;
         {
             std::lock_guard lock(mutex_);
             free_.push_back(slot);
+            ordered = !waiting_.empty();
         }
-        available_.notify_one();
+        // An ordered waiter must be the lowest one: wake them all.
+        if (ordered) {
+            available_.notify_all();
+        } else {
+            available_.notify_one();
+        }
     }
     std::vector<std::unique_ptr<Slot>> slots_;
     std::deque<Slot*> free_;
+    std::multiset<long long> waiting_;  // orders of the threads in acquire(order)
     std::mutex mutex_;
     std::condition_variable available_;
 };

@@ -465,7 +465,12 @@ private:
 void tile_frame(NlmData& d, int n, const Frames& srcf, const Frames& reff, VSFrame* dst, const VSAPI* vsapi) {
     const int h = d.height, nc = d.nc;
     const std::size_t row_bytes = static_cast<std::size_t>(d.width) * sizeof(float);
-    auto stage = d.tile_stages->acquire();
+    // Stages and streams go to the waiting requests in frame order: windows
+    // then move through the cache as the clip does (in the order VapourSynth's
+    // threads came, the cache dropped frames that waiting requests needed:
+    // 1080p gray d = 1 on cached input uploaded 1.49 frames a frame), and a
+    // frame mostly finds the weight maps of the frame before it.
+    auto stage = d.tile_stages->acquire(n);
     Window window(d.window, n, d.d, d.vi.numFrames);
     const std::vector<WindowFrame*>& uploads = window.uploads();
     // Per upload and staging region: the frame whose plane is uploaded
@@ -497,7 +502,7 @@ void tile_frame(NlmData& d, int n, const Frames& srcf, const Frames& reff, VSFra
     window.wait_queued();
     auto* out = stage->bytes.as<std::uint8_t>();
     {
-        auto slot = d.tile_pool->acquire();
+        auto slot = d.tile_pool->acquire(n);
         TileSlot& s = *slot;
         // On an error the queued copies must not outlive the pins of the
         // frames and the lease of the staging they read and write.
