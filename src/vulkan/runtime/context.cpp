@@ -123,14 +123,25 @@ std::shared_ptr<Device> Device::open(int index, bool allow_unsupported) {
         throw std::runtime_error("device_id " + std::to_string(index) + " out of range (" +
                                  std::to_string(vk.devices.size()) + " Vulkan devices)");
     }
-    // One logical device per physical device while any filter (or test) holds
-    // it; the last holder destroys it. VapourSynth unloads plugins with their
-    // cores (unless disableLibraryUnloading), so a device kept for the life of
-    // the process would leak a VkDevice and VMA's retained blocks per reload.
-    static std::mutex mutex;
-    static std::map<int, std::weak_ptr<Device>> devices;
-    std::lock_guard lock(mutex);
-    std::shared_ptr<Device> slot = devices[index].lock();
+    // One logical device per physical device for the life of the process, as
+    // CUDA's primary context: filters come and go, the device stays, and
+    // creating a filter never pays for vkCreateDevice again (owner,
+    // 2026-10-24). The registry is never destroyed: no Vulkan calls at exit
+    // or plugin unload, where the loader may already be gone. The price is
+    // one leaked device per plugin reload when VapourSynth unloads plugins
+    // with their cores (unless disableLibraryUnloading).
+    static auto* mutex = new std::mutex();
+    static auto* devices = new std::map<int, std::shared_ptr<Device>>();
+    // A poisoned device (a wait timed out or the device was lost) leaks
+    // everything freed on it: it is set aside here, never destroyed, and the
+    // next filter gets a fresh device.
+    static auto* poisoned = new std::vector<std::shared_ptr<Device>>();
+    std::lock_guard lock(*mutex);
+    std::shared_ptr<Device> slot = (*devices)[index];
+    if (slot && slot->poisoned()) {
+        poisoned->push_back(std::move(slot));
+        slot.reset();
+    }
     if (!slot) {
         std::shared_ptr<Device> device(new Device());
         device->physical_ = vk.devices[static_cast<std::size_t>(index)];
@@ -140,7 +151,7 @@ std::shared_ptr<Device> Device::open(int index, bool allow_unsupported) {
             throw std::runtime_error(device->label() + " is not supported: missing " + join(device->support_.missing));
         }
         device->create(index);  // on failure ~Device frees what was created
-        devices[index] = device;
+        (*devices)[index] = device;
         slot = std::move(device);
     } else if (slot->support_.support == Support::unsupported && !allow_unsupported) {
         throw std::runtime_error(slot->label() + " is not supported: missing " + join(slot->support_.missing));
