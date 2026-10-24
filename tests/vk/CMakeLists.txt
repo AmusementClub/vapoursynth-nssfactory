@@ -39,7 +39,7 @@ add_test(NAME test_vk_backend
 # D21 parity against the CPU golden. Filters still pending in
 # docs/vulkan-plan.md are expected to be missing; each phase removes the
 # filters it delivers. VAggregate is the CPU's alone (D21).
-set(NSS_VK_PENDING_FILTERS "BM3D,NLM,WNNM,MCWNNM,NCSR,NLH,TWSC,LSSC,DA3D,BM4D")
+set(NSS_VK_PENDING_FILTERS "BM3D,WNNM,MCWNNM,NCSR,NLH,TWSC,LSSC,DA3D,BM4D")
 add_test(NAME test_vk_plugin_interface
          COMMAND ${Python3_EXECUTABLE} "${PROJECT_SOURCE_DIR}/tests/test_plugin_interface.py"
                  --plugin "${NSS_VK_PLUGIN}" --namespace nss_vk
@@ -47,3 +47,12 @@ add_test(NAME test_vk_plugin_interface
                  --cpu-only VAggregate
                  --default-temporal rolling --rolling-cache adaptive)
 set_tests_properties(test_vk_backend test_vk_plugin_interface PROPERTIES LABELS vk SKIP_RETURN_CODE 77)
+# Filters against the CPU plugin (needs the CPU tree).
+if(TARGET nss)
+  foreach(filter nlm)
+    add_test(NAME test_vk_${filter}_live
+             COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_vk_${filter}_live.py"
+                     --cpu "$<TARGET_FILE:nss>" --vk "${NSS_VK_PLUGIN}")
+    set_tests_properties(test_vk_${filter}_live PROPERTIES LABELS vk SKIP_RETURN_CODE 77)
+  endforeach()
+endif()

@@ -178,8 +178,45 @@ void DownloadPlane::record_download(VkCommandBuffer commands) const {
 }
 
 void DownloadPlane::read(void* host, std::ptrdiff_t host_stride, std::size_t row_bytes) const {
-    readback_.invalidate(0, pitch_ * static_cast<std::size_t>(rows_));
-    copy_rows(readback_.mapped(), static_cast<std::ptrdiff_t>(pitch_), host, host_stride, row_bytes, rows_);
+    read(host, host_stride, row_bytes, 0, rows_);
+}
+
+void DownloadPlane::read(void* host, std::ptrdiff_t host_stride, std::size_t row_bytes, int first, int rows) const {
+    const std::size_t offset = pitch_ * static_cast<std::size_t>(first);
+    readback_.invalidate(offset, pitch_ * static_cast<std::size_t>(rows));
+    copy_rows(readback_.as<std::uint8_t>() + offset, static_cast<std::ptrdiff_t>(pitch_), host, host_stride, row_bytes,
+              rows);
+}
+
+PlaneStore::PlaneStore(std::shared_ptr<Device> device, std::size_t region_bytes, int regions,
+                       const std::shared_ptr<nss::ResourceBudget>& budget, UploadPlane::Mode mode)
+    : device_(std::move(device)), region_bytes_(region_bytes), regions_(regions) {
+    const std::size_t bytes = region_bytes * static_cast<std::size_t>(regions);
+    if (mode == UploadPlane::Mode::automatic && device_->rebar()) {
+        try {
+            device_buffer_ = Buffer(device_, bytes, Memory::Rebar, budget);
+            return;
+        } catch (const VkError&) {
+            // BAR memory exhausted: fall back to staging.
+        }
+    }
+    device_buffer_ = Buffer(device_, bytes, Memory::Device, budget);
+    staging_ = Buffer(device_, bytes, Memory::Staging, budget);
+}
+
+void PlaneStore::write(int region, std::size_t offset, const void* host, std::ptrdiff_t host_stride,
+                       std::size_t row_bytes, int rows, std::size_t pitch) {
+    const Buffer& target = staging_ ? staging_ : device_buffer_;
+    const std::size_t at = region_bytes_ * static_cast<std::size_t>(region) + offset;
+    copy_rows(host, host_stride, target.as<std::uint8_t>() + at, static_cast<std::ptrdiff_t>(pitch), row_bytes, rows);
+    target.flush(at, pitch * static_cast<std::size_t>(rows));
+}
+
+void PlaneStore::record_upload(VkCommandBuffer commands, int region) const {
+    if (!staging_) return;
+    const VkDeviceSize at = region_bytes_ * static_cast<std::size_t>(region);
+    const VkBufferCopy copy{at, at, region_bytes_};
+    device_->vk().vkCmdCopyBuffer(commands, staging_.get(), device_buffer_.get(), 1, &copy);
 }
 
 }  // namespace nss_vk

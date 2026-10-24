@@ -26,6 +26,24 @@ set(NSS_VK_SHADER_SOURCES "")
 set(NSS_VK_SPIRV_SOURCES "")
 nss_vk_add_shader(NSS_VK_SPIRV_SOURCES runtime_probe runtime/probe.comp)
 nss_vk_add_shader(NSS_VK_SPIRV_SOURCES runtime_plane_scale runtime/plane_scale.comp)
+# NLM (V4): the tile kernel per patch radius (0-8 unrolled, x = at run time)
+# and with the windows in shared memory (i); the plane path.
+foreach(_nss_s RANGE -1 8)
+  if(_nss_s EQUAL -1)
+    set(_nss_sid x)
+  else()
+    set(_nss_sid ${_nss_s})
+  endif()
+  foreach(_nss_img 0 1)
+    nss_vk_add_shader(NSS_VK_SPIRV_SOURCES nlm_tile_s${_nss_sid}_i${_nss_img} nlm/tile.comp
+                      DEFINES S=${_nss_s} IMG=${_nss_img})
+  endforeach()
+endforeach()
+set(_nss_kernel 0)
+foreach(_nss_name hsum accumulate reset finish)
+  nss_vk_add_shader(NSS_VK_SPIRV_SOURCES nlm_plane_${_nss_name} nlm/plane.comp DEFINES KERNEL=${_nss_kernel})
+  math(EXPR _nss_kernel "${_nss_kernel} + 1")
+endforeach()
 
 file(GLOB_RECURSE _nss_vk_all_comp CONFIGURE_DEPENDS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}/shaders"
      "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.comp")
@@ -130,7 +148,10 @@ elseif(MSVC)
   set_source_files_properties(runtime/vma.cpp PROPERTIES COMPILE_OPTIONS "/w")
 endif()
 
-add_library(nss_vk SHARED plugin.cpp)
+add_library(nss_vk SHARED
+  plugin.cpp
+  nlm/filter.cpp
+)
 set_target_properties(nss_vk PROPERTIES
   PREFIX "lib"
   OUTPUT_NAME "nss_vk"

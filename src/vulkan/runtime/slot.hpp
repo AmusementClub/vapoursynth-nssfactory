@@ -46,6 +46,13 @@ public:
     // queue (copy and compute queues have unrelated clocks in general).
     void mark(Stage stage, std::uint32_t query);
 
+    // Makes `stage` of this frame wait until another slot's timeline reaches
+    // `value` (a frame that slot uploads into a cache shared by the slots).
+    void wait_for(Stage stage, VkSemaphore semaphore, std::uint64_t value);
+    // After submit(): the timeline and value that mark `stage` of this frame
+    // done, for other slots' wait_for. {null, 0} when the stage was empty.
+    std::pair<VkSemaphore, std::uint64_t> done(Stage stage) const noexcept;
+
     // Ends and submits the recorded stages in order, each waiting for the one
     // before. A frame with nothing recorded submits nothing. On a device with
     // one copy queue for both directions the download stage is submitted by
@@ -70,6 +77,8 @@ private:
         VkCommandPool pool = VK_NULL_HANDLE;
         VkCommandBuffer buffer = VK_NULL_HANDLE;
         bool recording = false;
+        std::vector<std::pair<VkSemaphore, std::uint64_t>> waits;  // other slots' timelines
+        std::uint64_t done = 0;  // the value its submission signals, 0: not submitted
     };
 
     void release() noexcept;
