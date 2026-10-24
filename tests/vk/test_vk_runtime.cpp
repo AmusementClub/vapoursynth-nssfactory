@@ -60,6 +60,7 @@ struct Push {
     VkDeviceAddress dst;
     std::uint32_t width, height, src_pitch, dst_pitch;
     float a, b;
+    std::uint32_t repeat;
 };
 
 constexpr int kWidth = 1923;  // odd sizes: partial workgroups, padded pitch
@@ -99,7 +100,7 @@ void run_frame(Work& w, const Pipeline& pipeline, const std::vector<float>& inpu
     w.slot.mark(Slot::Compute, 0);
     const Push push{w.in.address(), w.out.address(), kWidth, kHeight,
                     static_cast<std::uint32_t>(kPitch / sizeof(float)), static_cast<std::uint32_t>(kPitch / sizeof(float)),
-                    2.0f, b};
+                    2.0f, b, 1};
     pipeline.dispatch(w.slot.commands(Slot::Compute), &push, (kWidth + 15) / 16, (kHeight + 15) / 16);
     w.slot.mark(Slot::Compute, 1);
     if (label) w.slot.end_label(Slot::Compute);
@@ -234,7 +235,7 @@ int main(int argc, char** argv) {
         std::vector<float> output;
         try {
             auto lease = pool.acquire();
-            const Push push{lease->in.address(), lease->out.address(), kWidth, kHeight, 0, 0, 7.0f, 7.0f};
+            const Push push{lease->in.address(), lease->out.address(), kWidth, kHeight, 0, 0, 7.0f, 7.0f, 1};
             pipeline.dispatch(lease->slot.commands(Slot::Compute), &push, 1, 1);  // pitch 0: garbage on purpose
             throw std::runtime_error("abandoned");
         } catch (const std::runtime_error&) {

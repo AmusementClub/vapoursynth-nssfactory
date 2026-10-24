@@ -265,7 +265,21 @@ void Device::create(int index) {
     };
     compute_ = make_queue(compute_family, 0, 0);
     upload_ = copies.empty() ? compute_ : make_queue(copies[0].first, copies[0].second, 1);
-    download_ = copies.size() < 2 ? upload_ : make_queue(copies[1].first, copies[1].second, 2);
+    if (copies.size() >= 2) {
+        download_ = make_queue(copies[1].first, copies[1].second, 2);
+    } else {
+        // One copy queue (D28 as amended: uploads run ahead). Queues run their
+        // batches in order, so a download batch waiting there for its kernel
+        // would hold every later upload. Default: both directions on the copy
+        // queue, downloads submitted only once their kernel is done (Slot).
+        // NSS_VK_ONE_COPY_QUEUE=compute puts downloads behind the kernels on
+        // the compute queue instead, =shared submits them at once (the layout
+        // before; diagnostics for A/B measurements).
+        const char* one = env("NSS_VK_ONE_COPY_QUEUE");
+        const bool compute = one && std::strcmp(one, "compute") == 0;
+        download_ = compute ? compute_ : upload_;
+        defer_downloads_ = !copies.empty() && !compute && !(one && std::strcmp(one, "shared") == 0);
+    }
     for (const Queue* q : {&compute_, &upload_, &download_}) {
         if (std::find(families_.begin(), families_.end(), q->family) == families_.end()) families_.push_back(q->family);
     }

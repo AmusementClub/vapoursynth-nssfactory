@@ -15,6 +15,10 @@ target_link_libraries(test_vk_runtime PRIVATE nss_vk_core)
 add_test(NAME test_vk_runtime COMMAND test_vk_runtime)
 set_tests_properties(test_vk_runtime PROPERTIES LABELS vk SKIP_RETURN_CODE 77)
 
+# Queue-layout throughput (D28), run by hand on a device; not a test.
+add_executable(bench_vk_queues bench_vk_queues.cpp)
+target_link_libraries(bench_vk_queues PRIVATE nss_vk_core)
+
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(NOT Python3_Interpreter_FOUND)
   message(WARNING "Python3 interpreter unavailable: Vulkan plugin tests are not registered")
