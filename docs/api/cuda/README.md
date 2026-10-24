@@ -196,12 +196,16 @@ GPU. NLM is temporal through `d`; LSSC has no temporal mode.
 
 Under [vapoursynth-classic](https://github.com/AmusementClub/vapoursynth-classic)
 builds that provide its `VSFrameMemory.h` extension (frame pool blocks and
-release hooks), BM3D, WNNM, MCWNNM, NCSR and NLM copy between the GPU and
-the VapourSynth frames directly, without the pinned staging copies.
+release hooks), every filter copies between the GPU and the VapourSynth
+frames directly, without the pinned staging copies.
 
-- **Where:** NLM always; the other four with spatial output and
-  `temporal_mode="legacy"`. Rolling output and the other filters still stage.
-  Output is the same either way.
+- **Where:** every input frame. Every output frame of spatial output,
+  `temporal_mode="legacy"`, NLM, LSSC and DA3D. Rolling output and BM4D
+  compute several frames at once, before their output frames exist: those
+  are downloaded into the chunk cache and copied into each frame as it is
+  asked for. Output is the same either way.
+- **NLH and TWSC** still reject infinite and NaN input samples: a plane
+  uploaded directly is read on the host for that, but not copied.
 - **How:** a frame pool block is page-locked the second time one of its
   planes is transferred, and unlocked when the pool returns it to the system.
   At most half the core's frame cache (`core.max_cache_size`) is locked;
@@ -211,8 +215,10 @@ the VapourSynth frames directly, without the pinned staging copies.
   1.17–1.19×, MCWNNM RGB 1.13×; with `num_streams=3`, 1.53–1.67× across the
   four. NLM at its default two streams: gray 1.73×, YUV420 1.47×, RGB 1.67×,
   gray `d=0` 1.79× (two runs each), ahead of `nss_vk.NLM` on the same core by
-  1.23–1.49×. Direct transfers raise the [default streams](#default-streams)
-  of the other four. With a small frame cache the lock cap keeps most blocks
+  1.23–1.49×. Rolling `radius=1` (two runs, output hashed): BM3D gray 1.20×,
+  YUV420 1.11×, WNNM gray 1.21×; NCSR, MCWNNM, LSSC, DA3D, BM4D, NLH and TWSC
+  within ±3% (their kernels set the pace). Direct transfers raise the
+  [default streams](#default-streams) of BM3D, WNNM, MCWNNM and NCSR. With a small frame cache the lock cap keeps most blocks
   staged, and the gain shrinks.
 - **Environment:** `NSS_CUDA_DIRECT_IO=0` turns it off,
   `NSS_CUDA_DIRECT_IO_MAX_MB` sets the lock cap in MiB, and
