@@ -43,7 +43,7 @@ The defaults are fast settings. Settings closer to the paper, with their quality
 core.nss_cuda.NLM(clip clip[, int d = 1, int a = 2, int s = 4, float h = 1.2,
                   string channels = "AUTO", int wmode = 0, float wref = 1.0,
                   clip rclip = None,
-                  int memory_limit_mb, int device_id = 0, int num_streams = 1])
+                  int memory_limit_mb, int device_id = 0, int num_streams])
 ```
 
 ## Primary parameters
@@ -68,7 +68,7 @@ core.nss_cuda.NLM(clip clip[, int d = 1, int a = 2, int s = 4, float h = 1.2,
 
 | Parameter | Default | Meaning |
 |---|---|---|
-| `device_id`, `num_streams`, `memory_limit_mb` | 0, 1, none | The GPU, the frames in flight, and a memory cap; see [shared arguments](README.md#shared-by-every-filter). |
+| `device_id`, `num_streams`, `memory_limit_mb` | 0, 2, none | The GPU, the frames in flight ([default streams](README.md#default-streams)), and a memory cap; see [shared arguments](README.md#shared-by-every-filter). |
 
 ## Notes
 

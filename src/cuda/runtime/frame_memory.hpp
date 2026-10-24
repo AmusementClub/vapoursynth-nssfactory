@@ -37,6 +37,8 @@ public:
     // another thread is locking the same block, when locking failed, and
     // without the extension.
     bool pinned(const VSFrame* f, int plane);
+    // The extension is there (pinned() may return true).
+    bool available() const { return core_ != nullptr; }
 
 private:
     VSCore* core_ = nullptr;  // nullptr: not available

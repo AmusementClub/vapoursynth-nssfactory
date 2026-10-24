@@ -42,6 +42,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     config.radius = p.radius;
     config.mode = rolling ? GroupMode::Rolling : GroupMode::Legacy;
     config.backend = parse_backend_args(vsapi, in, "BM3D");
+    config.direct_streams = 2;  // a third measured no faster
     config.device = acquire_device(config.backend.device_id, "BM3D", core, vsapi);
     for (int plane = 0; plane < config.vi.format.numPlanes; ++plane) {
         GroupPlane& g = config.planes[plane];

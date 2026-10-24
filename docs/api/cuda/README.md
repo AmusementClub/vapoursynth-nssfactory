@@ -125,11 +125,43 @@ defaults, ranges and error messages, under the `nss_cuda` name) plus these:
 | Parameter | Default | Range | Meaning |
 |---|---|---|---|
 | `device_id` | 0 | device index | The GPU the instance runs on. `core.nss_cuda.Backend(device_id)` reports whether it is supported. |
-| `num_streams` | 1 | [1, 16] | Frames (or temporal chunks) in flight on the GPU at once. One stream keeps the GPU busy; each extra stream adds its own buffers. |
+| `num_streams` | per filter, see [default streams](#default-streams) | [1, 16] | Frames (or temporal chunks) in flight on the GPU at once. Each stream adds its own buffers. |
 | `memory_limit_mb` | none | > 0 | Caps the instance's GPU and pinned host memory; the work is batched to fit, the output does not change, and a limit too small for the streams is an error when the filter is created. Without it the filter takes what it needs. |
 
 Input conventions (`sigma`, `rclip`, `bm_range`, frame properties) are those
 of the [CPU plugin](../README.md#conventions).
+
+### Default streams
+
+Without `num_streams`, each filter takes the fewest streams that measured as
+fast as any count up to three, and fewer where `memory_limit_mb` does not
+hold them. Extra streams
+overlap one frame's transfers and host work with another frame's kernels.
+They pay where those leave the GPU idle, and not where the kernels dominate.
+
+| Filter | Default | Gain over one stream | Peak GPU memory, one stream → default |
+|---|---|---|---|
+| NLM | 2 | 1.23× (YUV420, d = 1) | 901 → 1328 MiB |
+| TWSC | 3 | 1.22× (gray; two streams: 1.03×) | 385 → 1084 MiB |
+| NCSR | 2; 3 with direct transfers | 1.10× (YUV420); with direct transfers 1.38–1.52× | 170 → 258 MiB (three: 346 MiB) |
+| BM3D, WNNM | 1; 2 with direct transfers | 0.99× staged; with direct transfers 1.01–1.14× (three streams; two equal them on YUV420) | YUV420 150 / 162 MiB, plus about 68 / 80 MiB per stream |
+| MCWNNM | 1; 3 with direct transfers | 0.99× staged; with direct transfers 1.46× (RGB) | 478 → 1009 MiB |
+| DA3D | 3; 2 for joint RGB | see [da3d.md](da3d.md) | |
+| LSSC, NLH | 1 | three streams: LSSC 0.73×, NLH 0.96× | |
+| BM4D | 1 | computes one chunk at a time | |
+
+- "Direct transfers" means vapoursynth-classic's frame memory extension (see
+  [below](#direct-transfers-with-vapoursynth-classic)), with spatial output or
+  `temporal_mode="legacy"`.
+- Rolling temporal output keeps one stream; it has not been measured with
+  more.
+- The NLM default applies to its tile kernels (`a`, `s` and `d` within their
+  limits, as at the defaults); NLM's plane path keeps one.
+- Measured at 1080p on an RTX 5080 (Ryzen 9 5950X, VapourSynth R78 and a
+  vapoursynth-classic build with the extension). Medians of three paired runs
+  (classic: three runs in alternating order); outputs were identical at every
+  stream count. Other GPUs
+  and hosts may differ, and `num_streams` overrides the default.
 
 ### Temporal output
 
@@ -173,10 +205,12 @@ VapourSynth frames directly, without the pinned staging copies.
   planes is transferred, and unlocked when the pool returns it to the system.
   At most half the core's frame cache (`core.max_cache_size`) is locked;
   further blocks are staged.
-- **Speed** (1080p, RTX 5080, a decoder-like source, single runs): at the
-  default single stream BM3D 1.46–1.65×, WNNM gray 1.63×, NCSR 1.17–1.19×,
-  MCWNNM RGB 1.13×; with `num_streams=3`, 1.53–1.67× across the four. With a
-  small frame cache the lock cap keeps most blocks staged, and the gain shrinks.
+- **Speed** (1080p, RTX 5080, a decoder-like source, single runs, against
+  staging): with one stream BM3D 1.46–1.65×, WNNM gray 1.63×, NCSR
+  1.17–1.19×, MCWNNM RGB 1.13×; with `num_streams=3`, 1.53–1.67× across the
+  four. Direct transfers raise the [default streams](#default-streams) of
+  these four. With a small frame cache the lock cap keeps most blocks staged,
+  and the gain shrinks.
 - **Environment:** `NSS_CUDA_DIRECT_IO=0` turns it off,
   `NSS_CUDA_DIRECT_IO_MAX_MB` sets the lock cap in MiB, and
   `NSS_CUDA_DIRECT_IO_STATS` prints counts when a core's last instance is freed.

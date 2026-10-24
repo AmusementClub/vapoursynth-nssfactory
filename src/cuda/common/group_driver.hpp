@@ -81,6 +81,12 @@ struct GroupFilterConfig {
     std::shared_ptr<nss::ResourceBudget> budget;
     BackendArgs backend;
     DeviceInfo device;
+    // Streams without num_streams (fewer where memory_limit_mb requires) for
+    // spatial and legacy output, and where their frames move by direct DMA
+    // (under a host with VSFrameMemory.h). Rolling output, not measured,
+    // keeps kDefaultStreams.
+    int default_streams = kDefaultStreams;
+    int direct_streams = 3;
     GroupPlane planes[3];
     // Joint groups (MCWNNM): with channels == 3 the three planes are matched
     // and filtered as one unit using planes[0]'s geometry; planes[c].active

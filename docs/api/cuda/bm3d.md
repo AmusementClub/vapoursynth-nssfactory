@@ -54,7 +54,7 @@ core.nss_cuda.BM3D(clip clip[, clip ref, float[] sigma = 3.0, int[] block_size =
                    int[] group_size_basic,
                    string temporal_mode = "rolling", int rolling_chunk = 4,
                    int rolling_cache_chunks = 1, int rolling_cache_limit = 16,
-                   int memory_limit_mb, int device_id = 0, int num_streams = 1])
+                   int memory_limit_mb, int device_id = 0, int num_streams])
 ```
 
 Array-typed parameters take one value per plane; a single value broadcasts.
@@ -137,7 +137,7 @@ matching is a large part of the work.
 
 | Parameter | Default | Meaning |
 |---|---|---|
-| `device_id`, `num_streams`, `memory_limit_mb` | 0, 1, none | The GPU, the frames in flight, and a memory cap; see [shared arguments](README.md#shared-by-every-filter). |
+| `device_id`, `num_streams`, `memory_limit_mb` | 0, 1 or 2, none | The GPU, the frames in flight ([default streams](README.md#default-streams)), and a memory cap; see [shared arguments](README.md#shared-by-every-filter). |
 | `temporal_mode`, `rolling_chunk`, `rolling_cache_chunks`, `rolling_cache_limit` | `"rolling"`, 4, 1, 16 | What `radius > 0` returns (finished frames by default); see [temporal output](README.md#temporal-output). |
 
 ## Notes

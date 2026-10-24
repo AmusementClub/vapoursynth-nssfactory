@@ -549,24 +549,35 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     // flight (two more than there are streams) can have its own new frame and
     // one is spare. A limit takes the frames in flight first, then the spare
     // cache frames; below a bare window the plane path remains.
-    const std::size_t streams = static_cast<std::size_t>(d->backend.num_streams);
     const std::size_t window = static_cast<std::size_t>(2 * d->d + 1);
-    std::size_t stages = streams + kTileExtraStages, cached = 0;
+    std::size_t streams = 0, stages = 0, cached = 0, weight_sets = 0;
     // With d = 1 a frame's forward weight maps are the backward maps of the
     // frame after it, so every stream keeps two sets of (2a + 1)^2 maps: one
     // to read, one to write (in order 469 to 560 fps at 1080p; nothing for
     // other request orders). They are the first thing a limit takes, and
     // without a limit they may use a quarter of the device.
     const std::size_t span = static_cast<std::size_t>(2 * d->a + 1);
-    std::size_t weight_sets = d->d == 1 ? 2 : 0;
-    if (streams * weight_sets * span * span * d->plane_bytes > d->device.total_memory / kWeightShare) weight_sets = 0;
+    const auto plan_tiles = [&](std::size_t n) {
+        streams = n;
+        stages = streams + kTileExtraStages;
+        cached = window + stages;
+        weight_sets = d->d == 1 ? 2 : 0;
+        if (streams * weight_sets * span * span * d->plane_bytes > d->device.total_memory / kWeightShare) weight_sets = 0;
+    };
     auto tile_bytes = [&] {
         return d->plane_bytes * (cached * 2 * regions_per_frame(*d) + streams * d->nc +
                                  stages * (d->nc + d->vi.format.numPlanes) + streams * weight_sets * span * span);
     };
     d->tiles = nlm_tile_supported(d->d, d->a, d->s);
     if (d->tiles) {
-        cached = window + stages;
+        // Without num_streams: two (1080p YUV420 d = 1: 614 fps with one
+        // stream, 758 with two or three), fewer where their weight maps or
+        // the whole plan would not fit.
+        plan_tiles(d->backend.streams_explicit ? static_cast<std::size_t>(d->backend.num_streams) : 2);
+        while (!d->backend.streams_explicit && streams > 1 &&
+               ((d->d == 1 && weight_sets == 0) || tile_bytes() > limit))
+            plan_tiles(streams - 1);
+        d->backend.num_streams = static_cast<int>(streams);
         if (tile_bytes() > limit) weight_sets = 0;
         while (tile_bytes() > limit && stages > streams) cached = window + --stages;
         while (tile_bytes() > limit && cached > window) --cached;

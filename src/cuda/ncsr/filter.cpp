@@ -39,6 +39,9 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     config.delta = p.delta;
     config.backend = parse_backend_args(vsapi, in, "NCSR");
     config.device = acquire_device(config.backend.device_id, "NCSR", core, vsapi);
+    // Frames in flight pay even with staging (1080p YUV420: 390 fps with one
+    // stream, 430 with two, 420 with three; the other group filters 0.99x).
+    config.default_streams = 2;
     for (int plane = 0; plane < config.vi.format.numPlanes; ++plane) {
         GroupPlane& g = config.planes[plane];
         g.sigma = p.sigma[plane] / 255.f;
