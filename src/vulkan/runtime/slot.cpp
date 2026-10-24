@@ -53,8 +53,10 @@ Slot::~Slot() {
 }
 
 void Slot::release() noexcept {
-    // Objects the device may still use are leaked rather than destroyed.
-    if (state_ == State::broken || state_ == State::pending) return;
+    // Objects the device may still use are leaked rather than destroyed: this
+    // slot's, and on a poisoned device any (a broken slot's batch may still
+    // wait on this slot's timeline).
+    if (state_ == State::broken || state_ == State::pending || device_->poisoned()) return;
     const VolkDeviceTable& vk = device_->vk();
     const VkDevice handle = device_->handle();
     if (queries_) vk.vkDestroyQueryPool(handle, queries_, nullptr);
@@ -88,6 +90,8 @@ void Slot::reset_commands() noexcept {
             s.recording = false;
         }
         if (s.pool) vk.vkResetCommandPool(device_->handle(), s.pool, 0);
+        s.waits.clear();
+        s.done = 0;
     }
 }
 
@@ -124,6 +128,17 @@ void Slot::mark(Stage stage, std::uint32_t query) {
     marked_[query] = stage;
 }
 
+void Slot::wait_for(Stage stage, VkSemaphore semaphore, std::uint64_t value) {
+    if (semaphore == VK_NULL_HANDLE || semaphore == timeline_) return;
+    commands(stage);  // the stage must be submitted for the wait to apply
+    stages_[stage].waits.emplace_back(semaphore, value);
+}
+
+std::pair<VkSemaphore, std::uint64_t> Slot::done(Stage stage) const noexcept {
+    const std::uint64_t value = stages_[stage].done;
+    return {value ? timeline_ : VK_NULL_HANDLE, value};
+}
+
 void Slot::submit_stage(StageCommands& s) {
     NSS_VK_CHECK(device_->vk().vkEndCommandBuffer(s.buffer));
     s.recording = false;
@@ -134,23 +149,34 @@ void Slot::submit_stage(StageCommands& s) {
     // only a device-side dependency orders this frame's writes after that
     // frame's (synchronization validation: write-after-write on reused buffers
     // across queues).
-    VkSemaphoreSubmitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
-    wait.semaphore = timeline_;
-    wait.value = value_;
-    wait.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    std::vector<VkSemaphoreSubmitInfo> waits;
+    if (value_ != 0) {
+        VkSemaphoreSubmitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+        wait.semaphore = timeline_;
+        wait.value = value_;
+        wait.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        waits.push_back(wait);
+    }
+    for (const auto& [semaphore, value] : s.waits) {
+        VkSemaphoreSubmitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+        wait.semaphore = semaphore;
+        wait.value = value;
+        wait.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        waits.push_back(wait);
+    }
     VkSemaphoreSubmitInfo signal{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
     signal.semaphore = timeline_;
     signal.value = value_ + 1;
     signal.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
     VkSubmitInfo2 info{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
-    info.waitSemaphoreInfoCount = value_ == 0 ? 0u : 1u;
-    info.pWaitSemaphoreInfos = &wait;
+    info.waitSemaphoreInfoCount = static_cast<std::uint32_t>(waits.size());
+    info.pWaitSemaphoreInfos = waits.data();
     info.commandBufferInfoCount = 1;
     info.pCommandBufferInfos = &buffer;
     info.signalSemaphoreInfoCount = 1;
     info.pSignalSemaphoreInfos = &signal;
     device_->submit(*s.queue, info);
-    ++value_;
+    s.done = ++value_;
 }
 
 void Slot::submit() {

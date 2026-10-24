@@ -1,0 +1,194 @@
+// SPDX-License-Identifier: GPL-2.0-only
+// nss_vk.NLM plane path (the window, a patch or a memory limit the tile
+// kernel cannot take): the GLSL ports of nss_cuda's hsum_kernel,
+// accumulate_kernel, nlm_reset and finish_kernel, one per KERNEL value.
+// Frames are float offsets into one buffer (the slot's centre, backward and
+// forward frames), planes width * height floats apart.
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_control_flow_attributes : require
+
+#define K_HSUM 0
+#define K_ACCUMULATE 1
+#define K_RESET 2
+#define K_FINISH 3
+#ifndef KERNEL
+#error KERNEL must be defined
+#endif
+#define FLT_EPSILON 1.1920928955078125e-07
+
+layout(constant_id = 0) const int DISTANCE = 0;  // as nlm/tile.comp
+layout(constant_id = 1) const int WEIGHT = 0;
+layout(constant_id = 2) const int CHANNELS = 1;
+
+layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer Floats { float v[]; };
+layout(buffer_reference, std430, buffer_reference_align = 4) buffer Rw { float v[]; };
+
+int clampi(int v, int lo, int hi) { return min(max(v, lo), hi); }
+
+#if KERNEL == K_HSUM || KERNEL == K_ACCUMULATE
+layout(local_size_x = 32, local_size_y = 8) in;
+#else
+layout(local_size_x = 256) in;
+#endif
+
+#if KERNEL == K_HSUM
+layout(push_constant) uniform Push {
+    uint64_t frames;
+    uint64_t hsum;
+    uint center, neighbor;  // float offsets of the two frames' reference planes
+    int ox, oy, s, width, height;
+} pc;
+
+float value_at(uint base, int c, int at) { return Floats(pc.frames).v[base + uint(c * pc.width * pc.height + at)]; }
+
+float pair_distance(int ci, int ni) {
+    const float c0 = value_at(pc.center, 0, ci), n0 = value_at(pc.neighbor, 0, ni);
+    if (DISTANCE == 0) {
+        const float t = c0 - n0;
+        return 3.0f * t * t;
+    }
+    const float c1 = value_at(pc.center, 1, ci), n1 = value_at(pc.neighbor, 1, ni);
+    if (DISTANCE == 1) {
+        const float e1 = c0 - n0;
+        const float e2 = c1 - n1;
+        return 1.5f * (e1 * e1 + e2 * e2);
+    }
+    const float c2 = value_at(pc.center, 2, ci), n2 = value_at(pc.neighbor, 2, ni);
+    if (DISTANCE == 2) {
+        const float e0 = c0 - n0;
+        const float e1 = c1 - n1;
+        const float e2 = c2 - n2;
+        return e0 * e0 + e1 * e1 + e2 * e2;
+    }
+    const float m_red = (c0 + n0) / 6.0f;
+    return (2.0f / 3.0f + m_red) * (c0 - n0) * (c0 - n0) + (4.0f / 3.0f) * (c1 - n1) * (c1 - n1) +
+           (1.0f - m_red) * (c2 - n2) * (c2 - n2);
+}
+
+void main() {
+    const int x = int(gl_GlobalInvocationID.x), y = int(gl_GlobalInvocationID.y);
+    if (x >= pc.width || y >= pc.height) return;
+    const int row = y * pc.width;
+    const int nrow = clampi(y + pc.oy, 0, pc.height - 1) * pc.width;
+    float sum = 0.0f;
+    for (int j = -pc.s; j <= pc.s; ++j) {
+        const int xx = clampi(x + j, 0, pc.width - 1);
+        sum += pair_distance(row + xx, nrow + clampi(xx + pc.ox, 0, pc.width - 1));
+    }
+    Rw(pc.hsum).v[row + x] = sum;
+}
+#endif
+
+#if KERNEL == K_ACCUMULATE
+layout(push_constant) uniform Push {
+    uint64_t frames;
+    uint64_t hsum_bwd;   // pair (centre, backward frame at +o)
+    uint64_t hsum_fwd;   // pair (forward frame, centre at +o); == hsum_bwd for the centre frame
+    uint64_t sums;       // weight, max_weight, then CHANNELS weighted sums, width * height each
+    uint src_bwd, src_fwd;  // float offsets of the averaged planes
+    int ox, oy, s, width, height;
+    float h2_inv_norm;
+} pc;
+
+// exp(x) for x <= 0 as the CPU takes it (nlm/tile.comp fast_exp).
+float fast_exp(float x) {
+    x = max(x, -88.0f);
+    const float offset = intBitsToFloat(floatBitsToInt(0.5f) | (floatBitsToInt(x) & int(0x80000000u)));
+    precise float qf = fma(x, 1.442695040888963407359924681f, offset);
+    const int q = int(qf);
+    precise float r = fma(float(q), -0.69314718056f, x);
+    precise float r2 = r * r;
+    precise float term0 = fma(0.99996228117046825901f, r, 1.0000001510806224569f);
+    precise float term1 = fma(0.16792157982876812494f, r, 0.49998365704575670199f);
+    precise float term2 = fma(0.041959439862987071845f, r2, term1);
+    precise float poly = fma(term2, r2, term0);
+    return poly * intBitsToFloat((q + 0x7f) << 23);
+}
+
+float weight_of(float sum) {
+    if (WEIGHT == 0) return fast_exp(-sum * pc.h2_inv_norm);
+    precise float u = fma(sum, -pc.h2_inv_norm, 1.0f);
+    const float t = max(u, 0.0f);
+    if (WEIGHT == 1) return t;
+    const float t2 = t * t;
+    if (WEIGHT == 2) return t2;
+    const float t4 = t2 * t2;
+    return t4 * t4;
+}
+
+float column_weight(uint64_t hsum, int x, int y) {
+    float sum = 0.0f;
+    for (int k = -pc.s; k <= pc.s; ++k) sum += Floats(hsum).v[clampi(y + k, 0, pc.height - 1) * pc.width + x];
+    return weight_of(sum);
+}
+
+void main() {
+    const int x = int(gl_GlobalInvocationID.x), y = int(gl_GlobalInvocationID.y);
+    const int width = pc.width, height = pc.height;
+    if (x >= width || y >= height) return;
+    const int i = y * width + x;
+    const int plane = width * height;
+    const int mx = clampi(x - pc.ox, 0, width - 1), my = clampi(y - pc.oy, 0, height - 1);
+    const int mq = my * width + mx;
+    const int pq = clampi(y + pc.oy, 0, height - 1) * width + clampi(x + pc.ox, 0, width - 1);
+    const float u4 = column_weight(pc.hsum_bwd, x, y);
+    const float u4_mq = column_weight(pc.hsum_fwd, mx, my);
+    Rw sums = Rw(pc.sums);
+    sums.v[i] += u4 + u4_mq;
+    sums.v[plane + i] = max(max(u4, u4_mq), sums.v[plane + i]);
+    [[unroll]] for (int c = 0; c < 3; ++c) {
+        if (c < CHANNELS) {
+            sums.v[(2 + c) * plane + i] += u4 * Floats(pc.frames).v[pc.src_bwd + uint(c * plane + pq)] +
+                                          u4_mq * Floats(pc.frames).v[pc.src_fwd + uint(c * plane + mq)];
+        }
+    }
+}
+#endif
+
+#if KERNEL == K_RESET
+layout(push_constant) uniform Push {
+    uint64_t sums;  // as K_ACCUMULATE
+    uint count;     // width * height
+} pc;
+
+// weight = 0, max_weight = FLT_EPSILON, weighted sums = 0.
+void main() {
+    const uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.count) return;
+    Rw sums = Rw(pc.sums);
+    sums.v[i] = 0.0f;
+    sums.v[pc.count + i] = FLT_EPSILON;
+    [[unroll]] for (int c = 0; c < 3; ++c) {
+        if (c < CHANNELS) sums.v[uint(2 + c) * pc.count + i] = 0.0f;
+    }
+}
+#endif
+
+#if KERNEL == K_FINISH
+layout(push_constant) uniform Push {
+    uint64_t frames;
+    uint64_t sums;
+    uint64_t result;   // CHANNELS planes
+    uint src;       // float offset of the centre's averaged planes
+    uint count;
+    float wref;
+} pc;
+
+// out = (wref * maxw * src + wdst) / (wref * maxw + weight).
+void main() {
+    const uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.count) return;
+    Floats sums = Floats(pc.sums);
+    const float mul = pc.wref * sums.v[pc.count + i];
+    const float weight = sums.v[i];
+    [[unroll]] for (int c = 0; c < 3; ++c) {
+        if (c < CHANNELS) {
+            const uint at = uint(c) * pc.count + i;
+            Rw(pc.result).v[at] = (mul * Floats(pc.frames).v[pc.src + at] + sums.v[uint(2 + c) * pc.count + i]) /
+                               (mul + weight);
+        }
+    }
+}
+#endif

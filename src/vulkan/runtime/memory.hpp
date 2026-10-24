@@ -142,6 +142,8 @@ public:
 
     void record_download(VkCommandBuffer commands) const;
     void read(void* host, std::ptrdiff_t host_stride, std::size_t row_bytes) const;
+    // Rows [first, first + rows) only (several planes stacked in one buffer).
+    void read(void* host, std::ptrdiff_t host_stride, std::size_t row_bytes, int first, int rows) const;
     VkDeviceAddress address() const noexcept { return device_buffer_.address(); }
     VkBuffer buffer() const noexcept { return device_buffer_.get(); }
     std::size_t pitch() const noexcept { return pitch_; }
@@ -153,6 +155,35 @@ private:
     Buffer readback_;
     std::size_t pitch_ = 0;
     int rows_ = 0;
+};
+
+// `regions` equal regions of device memory kernels read (frames of a cache):
+// the host writes a region into BAR memory directly when the device has it,
+// else into a staging mirror that record_upload() copies on the upload queue.
+// A region may be rewritten only once no submitted work reads it.
+class PlaneStore {
+public:
+    PlaneStore() = default;
+    PlaneStore(std::shared_ptr<Device> device, std::size_t region_bytes, int regions,
+               const std::shared_ptr<nss::ResourceBudget>& budget = nullptr,
+               UploadPlane::Mode mode = UploadPlane::Mode::automatic);
+
+    // Host rows (any stride) into region `region` at byte `offset`, `pitch`
+    // bytes per row in the store; flushes when needed. Before Slot::submit().
+    void write(int region, std::size_t offset, const void* host, std::ptrdiff_t host_stride, std::size_t row_bytes,
+               int rows, std::size_t pitch);
+    bool needs_copy() const noexcept { return static_cast<bool>(staging_); }
+    void record_upload(VkCommandBuffer commands, int region) const;
+    VkDeviceAddress address() const noexcept { return device_buffer_.address(); }
+    std::size_t region_bytes() const noexcept { return region_bytes_; }
+    int regions() const noexcept { return regions_; }
+
+private:
+    std::shared_ptr<Device> device_;
+    Buffer device_buffer_;
+    Buffer staging_;
+    std::size_t region_bytes_ = 0;
+    int regions_ = 0;
 };
 
 // Rows of `row_bytes` between two strided layouts (one memcpy when both are tight).

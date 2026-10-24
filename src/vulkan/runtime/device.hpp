@@ -43,6 +43,7 @@ struct DeviceCaps {
     std::uint32_t min_subgroup_size = 0;
     std::uint32_t max_subgroup_size = 0;
     std::uint32_t shared_memory = 0;  // maxComputeSharedMemorySize, bytes
+    std::uint32_t max_workgroup_invocations = 0;  // maxComputeWorkGroupInvocations
     bool has_compute_queue = false;
 
     // Optional, reported (D22, D28).

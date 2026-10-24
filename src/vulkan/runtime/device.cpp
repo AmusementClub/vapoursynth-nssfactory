@@ -131,6 +131,8 @@ DeviceCaps query_caps(VkPhysicalDevice device) {
     caps.vendor_id = p.vendorID;
     caps.type = p.deviceType;
     caps.shared_memory = p.limits.maxComputeSharedMemorySize;
+    caps.max_workgroup_invocations =
+        std::min(p.limits.maxComputeWorkGroupInvocations, p.limits.maxComputeWorkGroupSize[0]);
     if (v13) {
         caps.driver_name = driver.driverName;
         caps.driver_info = driver.driverInfo;

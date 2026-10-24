@@ -14,6 +14,10 @@
 #include <exception>
 #include <string>
 
+namespace nss_vk {
+void register_nlm(VSPlugin* plugin, const VSPLUGINAPI* vspapi);
+}  // namespace nss_vk
+
 namespace {
 
 void VS_CC versionCreate(const VSMap*, VSMap* out, void*, VSCore*, const VSAPI* vsapi) {
@@ -94,4 +98,5 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin* plugin, const VSPLUGINAPI
         "total_memory_mb:int:opt;host_visible_device_mb:int:opt;transfer_queues:int:opt;optional:data:opt;"
         "probe_ok:int:opt;probe_ms:float:opt;probe_subgroup_size:int:opt;probe_error:data:opt;",
         backendCreate, nullptr, plugin);
+    nss_vk::register_nlm(plugin, vspapi);
 }

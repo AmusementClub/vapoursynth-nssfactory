@@ -1,0 +1,391 @@
+// SPDX-License-Identifier: GPL-2.0-only
+// nss_vk.NLM, the whole frame in one dispatch: the GLSL port of nss_cuda's
+// tile_kernel (src/cuda/nlm/kernels.cu), the CPU nlm.cpp model. A workgroup
+// owns a TW x TH tile of the output and keeps its pixels' sums in registers
+// through every offset of every frame pair; per offset the distance map of the
+// tile with its halo, its row sums and the weights go through shared memory.
+// The sums are taken in the CUDA kernel's order (per pixel: j ascending, then
+// k ascending, then the offsets ascending).
+//
+// Variants (preprocessor): S = patch radius 0..8 with unrolled box sums, -1 at
+// run time; IMG = the windows of the frames read are copied into shared
+// memory first. Specialization: DISTANCE, WEIGHT, CHANNELS, SHARED_FLOATS.
+// nss_cuda's weight maps for d = 1 (KEEP) are not ported: they gave nothing
+// here (src/vulkan/nlm/filter.cpp).
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_control_flow_attributes : require
+
+#ifndef S
+#error S must be defined
+#endif
+#ifndef IMG
+#define IMG 0
+#endif
+
+#define TW 32
+#define TH 32
+#define PIX 2
+#define NT (TW * TH / PIX)
+#define FLT_EPSILON 1.1920928955078125e-07
+
+layout(local_size_x = NT) in;
+
+layout(constant_id = 0) const int DISTANCE = 0;  // 0 luma, 1 chroma, 2 YUV, 3 RGB (NlmDistance)
+layout(constant_id = 1) const int WEIGHT = 0;    // 0 Welsch, 1-3 Bisquare A, B, C (NlmWeight)
+layout(constant_id = 2) const int CHANNELS = 1;
+layout(constant_id = 3) const int SHARED_FLOATS = 1;
+
+layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer Floats { float v[]; };
+layout(buffer_reference, std430, buffer_reference_align = 4) writeonly buffer Out { float v[]; };
+
+layout(push_constant) uniform Push {
+    uint64_t frames;       // the frame cache: frame k at k * frame_floats, its planes one after another
+    uint64_t result;          // CHANNELS planes of width * height
+    int width, height, d, a, s;
+    float h2_inv_norm, wref;
+    uint frame_floats;
+    uint ref_offset;       // floats from a frame's averaged planes to its reference planes (0: no rclip)
+    uint slots[5];         // cache frame of window slot t: byte t % 4 of slots[t / 4]
+} pc;
+
+shared float smem[SHARED_FLOATS];
+
+int clampi(int v, int lo, int hi) { return min(max(v, lo), hi); }
+int map_pitch(int floats) { return (floats + 3) & ~3; }
+int element_row(int e, float inverse) { return int((float(e) + 0.5f) * inverse); }
+uint slot_frame(int t) { return (pc.slots[t >> 2] >> (8 * (t & 3))) & 0xffu; }
+
+// The planes of a frame, as offsets: averaged planes at frame_base, reference
+// planes at frame_base + ref_offset.
+uint frame_base(int t) { return slot_frame(t) * pc.frame_floats; }
+
+float pair_distance(float c0, float c1, float c2, float n0, float n1, float n2) {
+    if (DISTANCE == 0) {
+        const float t = c0 - n0;
+        return 3.0f * t * t;
+    }
+    if (DISTANCE == 1) {
+        const float e1 = c0 - n0;
+        const float e2 = c1 - n1;
+        return 1.5f * (e1 * e1 + e2 * e2);
+    }
+    if (DISTANCE == 2) {
+        const float e0 = c0 - n0;
+        const float e1 = c1 - n1;
+        const float e2 = c2 - n2;
+        return e0 * e0 + e1 * e1 + e2 * e2;
+    }
+    const float m_red = (c0 + n0) / 6.0f;
+    return (2.0f / 3.0f + m_red) * (c0 - n0) * (c0 - n0) + (4.0f / 3.0f) * (c1 - n1) * (c1 - n1) +
+           (1.0f - m_red) * (c2 - n2) * (c2 - n2);
+}
+
+// exp(x) for x <= 0 as the CPU takes it (Highway FastExp without subnormals),
+// the same operations in the same order as nss_cuda's fast_exp.
+float fast_exp(float x) {
+    x = max(x, -88.0f);
+    const float offset = intBitsToFloat(floatBitsToInt(0.5f) | (floatBitsToInt(x) & int(0x80000000u)));
+    precise float qf = fma(x, 1.442695040888963407359924681f, offset);
+    const int q = int(qf);
+    precise float r = fma(float(q), -0.69314718056f, x);
+    precise float r2 = r * r;
+    precise float term0 = fma(0.99996228117046825901f, r, 1.0000001510806224569f);
+    precise float term1 = fma(0.16792157982876812494f, r, 0.49998365704575670199f);
+    precise float term2 = fma(0.041959439862987071845f, r2, term1);
+    precise float poly = fma(term2, r2, term0);
+    return poly * intBitsToFloat((q + 0x7f) << 23);
+}
+
+// The weight of a box sum: exp(-u), or max(1 - u, 0) as one fma and its
+// powers by squaring (nss_cuda's weight_of).
+float weight_of(float sum) {
+    if (WEIGHT == 0) return fast_exp(-sum * pc.h2_inv_norm);
+    precise float u = fma(sum, -pc.h2_inv_norm, 1.0f);
+    const float t = max(u, 0.0f);
+    if (WEIGHT == 1) return t;
+    const float t2 = t * t;
+    if (WEIGHT == 2) return t2;
+    const float t4 = t2 * t2;
+    return t4 * t4;
+}
+
+#if IMG
+// Windows in shared memory: channel c of the window at `base` is at
+// base + c * plane; positions at y * stride + x - origin.
+float value_at(uint base, int c, int at, int plane) { return smem[base + uint(c * plane + at)]; }
+#else
+float value_at(uint base, int c, int at, int plane) {
+    return Floats(pc.frames).v[base + uint(c * plane + at)];
+}
+#endif
+
+float distance_at(uint center, uint neighbor, int at, int nat, int plane) {
+    float c0 = 0.0f, c1 = 0.0f, c2 = 0.0f, n0 = 0.0f, n1 = 0.0f, n2 = 0.0f;
+    c0 = value_at(center, 0, at, plane);
+    n0 = value_at(neighbor, 0, nat, plane);
+    if (CHANNELS > 1) {
+        c1 = value_at(center, 1, at, plane);
+        n1 = value_at(neighbor, 1, nat, plane);
+    }
+    if (CHANNELS > 2) {
+        c2 = value_at(center, 2, at, plane);
+        n2 = value_at(neighbor, 2, nat, plane);
+    }
+    return pair_distance(c0, c1, c2, n0, n1, n2);
+}
+
+// Copies the window [ix0, ix0 + iw) x [iy0, iy0 + ih) of a frame's planes
+// (clamped to the image) to smem[dst]. No barrier.
+void load_window(uint dst, uint from, int ix0, int iy0, int iw, int ih, int tid) {
+    const float inv_iw = 1.0f / float(iw);
+    const int plane = pc.width * pc.height;
+    for (int e = tid; e < iw * ih; e += NT) {
+        const int ey = element_row(e, inv_iw);
+        const int at = clampi(iy0 + ey, 0, pc.height - 1) * pc.width + clampi(ix0 + e - ey * iw, 0, pc.width - 1);
+        [[unroll]] for (int c = 0; c < 3; ++c) {
+            if (c < CHANNELS) smem[dst + uint(c * iw * ih + e)] = Floats(pc.frames).v[from + uint(c * plane + at)];
+        }
+    }
+}
+
+// Weights of the box sums of D(center(x, y), neighbor(clamp(x + ox), clamp(y + oy)))
+// for the pixels [rx0, rx1] x [ry0, ry1] into smem[wt], row by row (nss_cuda's
+// tile_weights). dm and hs are the distance map with a halo of s and its row
+// sums. Every invocation calls it; it ends behind a barrier.
+void tile_weights(uint dm, uint hs, uint wt, uint center, uint neighbor, int ox, int oy, int rx0, int ry0, int rx1,
+                  int ry1, int tid, bool interior, int stride, int origin, int plane) {
+    const int s = S >= 0 ? S : pc.s;
+    const int width = pc.width, height = pc.height;
+    const int rw = rx1 - rx0 + 1, rh = ry1 - ry0 + 1;
+    const int dw = rw + 2 * s, dh = rh + 2 * s;
+    const int hp = map_pitch(rw), dp = S >= 0 ? hp + map_pitch(2 * s) : dw;
+    const float inv_dw = 1.0f / float(dw);
+    const float inv_rw = 1.0f / float(rw);
+    if (interior) {
+        const int first = (ry0 - s) * stride + rx0 - s - origin, shift = oy * stride + ox, skip = stride - dw;
+        for (int e = tid; e < dw * dh; e += NT) {
+            const int ey = element_row(e, inv_dw);
+            const int at = first + e + ey * skip;
+            smem[dm + uint(ey * dp + e - ey * dw)] = distance_at(center, neighbor, at, at + shift, plane);
+        }
+    } else {
+        for (int e = tid; e < dw * dh; e += NT) {
+            const int ey = element_row(e, inv_dw);
+            const int px = clampi(rx0 - s + e - ey * dw, 0, width - 1), py = clampi(ry0 - s + ey, 0, height - 1);
+            smem[dm + uint(ey * dp + e - ey * dw)] =
+                distance_at(center, neighbor, py * stride + px - origin,
+                            clampi(py + oy, 0, height - 1) * stride + clampi(px + ox, 0, width - 1) - origin, plane);
+        }
+    }
+    memoryBarrierShared();
+    barrier();
+#if S >= 0
+    // Row sums four a thread, then column sums four rows a thread, each in
+    // ascending order (as nss_cuda's S >= 0 path).
+    const int kTaps = 2 * S + 1, kVals = 4 + 2 * S;
+    const int quads = hp / 4;
+    const float inv_quads = 1.0f / float(quads);
+    for (int e = tid; e < quads * dh; e += NT) {
+        const int ey = element_row(e, inv_quads), c4 = e - ey * quads;
+        const uint row = dm + uint(ey * dp + 4 * c4);
+        float v[4 + 2 * S];
+        [[unroll]] for (int t = 0; t < kVals; ++t) v[t] = smem[row + uint(t)];
+        [[unroll]] for (int k = 0; k < 4; ++k) {
+            float sum = 0.0f;
+            [[unroll]] for (int t = 0; t < kTaps; ++t) sum += v[k + t];
+            smem[hs + uint(ey * hp + 4 * c4 + k)] = sum;
+        }
+    }
+    memoryBarrierShared();
+    barrier();
+    const int groups = (rh + 3) / 4;
+    for (int e = tid; e < rw * groups; e += NT) {
+        const int g = element_row(e, inv_rw), x = e - g * rw, ey0 = 4 * g;
+        float v[4 + 2 * S];
+        [[unroll]] for (int t = 0; t < kVals; ++t) v[t] = ey0 + t < dh ? smem[hs + uint((ey0 + t) * hp + x)] : 0.0f;
+        [[unroll]] for (int k = 0; k < 4; ++k) {
+            if (ey0 + k < rh) {
+                float sum = 0.0f;
+                [[unroll]] for (int t = 0; t < kTaps; ++t) sum += v[k + t];
+                const float value = weight_of(sum);
+                smem[wt + uint((ey0 + k) * rw + x)] = value;
+            }
+        }
+    }
+#else
+    for (int e = tid; e < rw * dh; e += NT) {
+        const int ey = element_row(e, inv_rw);
+        const uint first = dm + uint(ey * dp + (e - ey * rw));
+        float sum = 0.0f;
+        for (int t = 0; t < 2 * s + 1; ++t) sum += smem[first + uint(t)];
+        smem[hs + uint(ey * hp + e - ey * rw)] = sum;
+    }
+    memoryBarrierShared();
+    barrier();
+    for (int e = tid; e < rw * rh; e += NT) {
+        const int ey = element_row(e, inv_rw);
+        const uint first = hs + uint(ey * hp + e - ey * rw);
+        float sum = 0.0f;
+        for (int t = 0; t < 2 * s + 1; ++t) sum += smem[first + uint(t * hp)];
+        const float value = weight_of(sum);
+        smem[wt + uint(e)] = value;
+    }
+#endif
+    memoryBarrierShared();
+    barrier();
+}
+
+void main() {
+    const int tid = int(gl_LocalInvocationID.x);
+    const int width = pc.width, height = pc.height, a = pc.a;
+    const int s = S >= 0 ? S : pc.s;
+    const int x0 = int(gl_WorkGroupID.x) * TW, y0 = int(gl_WorkGroupID.y) * TH;
+    const int x1 = min(x0 + TW, width) - 1, y1 = min(y0 + TH, height) - 1;
+    const uint dm = 0u;
+    const uint hs = dm + uint((map_pitch(TW + a) + map_pitch(2 * s)) * (TH + a + 2 * s));
+    const uint wt = hs + uint(map_pitch(TW + a) * (TH + a + 2 * s));
+
+    int x[PIX], y[PIX];
+    bool inside[PIX];
+    float weight[PIX], max_weight[PIX], sum0[PIX], sum1[PIX], sum2[PIX];
+    [[unroll]] for (int k = 0; k < PIX; ++k) {
+        const int local = tid + k * NT;
+        x[k] = x0 + local % TW;
+        y[k] = y0 + local / TW;
+        inside[k] = x[k] <= x1 && y[k] <= y1;
+        weight[k] = 0.0f;
+        max_weight[k] = FLT_EPSILON;
+        sum0[k] = 0.0f;
+        sum1[k] = 0.0f;
+        sum2[k] = 0.0f;
+    }
+    const int span = 2 * a + 1;
+    // Whether every pixel the tile reads (halo a + s, neighbours a further) is inside the image.
+    const int reach = 2 * a + s;
+    const bool interior = x0 >= reach && y0 >= reach && x0 + TW + reach <= width && y0 + TH + reach <= height;
+    const int frame_plane = width * height;
+    const uint center_ref = frame_base(pc.d) + pc.ref_offset;
+    const bool own_src = pc.ref_offset == 0u;
+#if IMG
+    const int iw = TW + 4 * a + 2 * s, ih = TH + 4 * a + 2 * s, plane = iw * ih;
+    const int ix0 = x0 - 2 * a - s, iy0 = y0 - 2 * a - s;
+    const int stride = iw, origin = iy0 * iw + ix0;
+    const uint img = wt + uint((TW + a) * (TH + a));
+    load_window(img, center_ref, ix0, iy0, iw, ih, tid);
+#else
+    const int plane = frame_plane;
+    const int stride = width, origin = 0;
+#endif
+    for (int i = -pc.d; i <= 0; ++i) {
+        const uint bwd_frame = frame_base(pc.d + i), fwd_frame = frame_base(pc.d - i);
+#if IMG
+        if (i < 0) {
+            const uint pair = img + uint(CHANNELS * plane);
+            memoryBarrierShared();
+            barrier();  // the pair before is no longer read
+            load_window(pair, bwd_frame + pc.ref_offset, ix0, iy0, iw, ih, tid);
+            load_window(pair + uint(CHANNELS * plane), fwd_frame + pc.ref_offset, ix0, iy0, iw, ih, tid);
+        }
+        memoryBarrierShared();
+        barrier();
+        const uint center = img;
+        const uint bwd = img + (i < 0 ? uint(CHANNELS * plane) : 0u);
+        const uint fwd = img + (i < 0 ? uint(2 * CHANNELS * plane) : 0u);
+#else
+        const uint center = center_ref;
+        const uint bwd = bwd_frame + pc.ref_offset;
+        const uint fwd = fwd_frame + pc.ref_offset;
+#endif
+        for (int oy = -a; oy <= a; ++oy) {
+            for (int ox = -a; ox <= a; ++ox) {
+                if (i * span * span + oy * span + ox >= 0) continue;
+                // The mirrored pixels of the tile, q = clamp(p - o).
+                const int qx0 = clampi(x0 - ox, 0, width - 1), qx1 = clampi(x1 - ox, 0, width - 1);
+                const int qy0 = clampi(y0 - oy, 0, height - 1), qy1 = clampi(y1 - oy, 0, height - 1);
+                float u4[PIX], u4_mq[PIX];
+                if (i == 0) {
+                    // One map serves both: the weights of the tile and of its mirror.
+                    const int rx0 = min(x0, qx0), rx1 = max(x1, qx1), ry0 = min(y0, qy0), ry1 = max(y1, qy1);
+                    tile_weights(dm, hs, wt, center, center, ox, oy, rx0, ry0, rx1, ry1, tid, interior, stride,
+                                 origin, plane);
+                    const int rw = rx1 - rx0 + 1;
+                    [[unroll]] for (int k = 0; k < PIX; ++k) {
+                        const int mx = clampi(x[k] - ox, 0, width - 1), my = clampi(y[k] - oy, 0, height - 1);
+                        u4[k] = inside[k] ? smem[wt + uint((y[k] - ry0) * rw + x[k] - rx0)] : 0.0f;
+                        u4_mq[k] = inside[k] ? smem[wt + uint((my - ry0) * rw + mx - rx0)] : 0.0f;
+                    }
+                } else {
+                    tile_weights(dm, hs, wt, center, bwd, ox, oy, x0, y0, x1, y1, tid, interior, stride, origin,
+                                 plane);
+                    [[unroll]] for (int k = 0; k < PIX; ++k) {
+                        u4[k] = inside[k] ? smem[wt + uint((y[k] - y0) * (x1 - x0 + 1) + x[k] - x0)] : 0.0f;
+                    }
+                    tile_weights(dm, hs, wt, fwd, center, ox, oy, qx0, qy0, qx1, qy1, tid, interior, stride, origin,
+                                 plane);
+                    [[unroll]] for (int k = 0; k < PIX; ++k) {
+                        const int mx = clampi(x[k] - ox, 0, width - 1), my = clampi(y[k] - oy, 0, height - 1);
+                        u4_mq[k] = inside[k] ? smem[wt + uint((my - qy0) * (qx1 - qx0 + 1) + mx - qx0)] : 0.0f;
+                    }
+                }
+                [[unroll]] for (int k = 0; k < PIX; ++k) {
+                    if (!inside[k]) continue;
+                    const int px = clampi(x[k] + ox, 0, width - 1), py = clampi(y[k] + oy, 0, height - 1);
+                    const int mx = clampi(x[k] - ox, 0, width - 1), my = clampi(y[k] - oy, 0, height - 1);
+                    weight[k] += u4[k] + u4_mq[k];
+                    max_weight[k] = max(max(u4[k], u4_mq[k]), max_weight[k]);
+                    // The averaged planes: the windows when they are the reference, else the frames.
+                    float b0, b1 = 0.0f, b2 = 0.0f, f0, f1 = 0.0f, f2 = 0.0f;
+#if IMG
+                    if (own_src) {
+                        const int pq = py * stride + px - origin, mq = my * stride + mx - origin;
+                        b0 = smem[bwd + uint(pq)];
+                        f0 = smem[fwd + uint(mq)];
+                        if (CHANNELS > 1) {
+                            b1 = smem[bwd + uint(plane + pq)];
+                            f1 = smem[fwd + uint(plane + mq)];
+                        }
+                        if (CHANNELS > 2) {
+                            b2 = smem[bwd + uint(2 * plane + pq)];
+                            f2 = smem[fwd + uint(2 * plane + mq)];
+                        }
+                    } else
+#endif
+                    {
+                        const uint pq = uint(py * width + px), mq = uint(my * width + mx);
+                        const uint fp = uint(frame_plane);
+                        b0 = Floats(pc.frames).v[bwd_frame + pq];
+                        f0 = Floats(pc.frames).v[fwd_frame + mq];
+                        if (CHANNELS > 1) {
+                            b1 = Floats(pc.frames).v[bwd_frame + fp + pq];
+                            f1 = Floats(pc.frames).v[fwd_frame + fp + mq];
+                        }
+                        if (CHANNELS > 2) {
+                            b2 = Floats(pc.frames).v[bwd_frame + 2u * fp + pq];
+                            f2 = Floats(pc.frames).v[fwd_frame + 2u * fp + mq];
+                        }
+                    }
+                    sum0[k] += u4[k] * b0 + u4_mq[k] * f0;
+                    if (CHANNELS > 1) sum1[k] += u4[k] * b1 + u4_mq[k] * f1;
+                    if (CHANNELS > 2) sum2[k] += u4[k] * b2 + u4_mq[k] * f2;
+                }
+            }
+        }
+    }
+    const uint center_src = frame_base(pc.d);
+    [[unroll]] for (int k = 0; k < PIX; ++k) {
+        if (!inside[k]) continue;
+        const uint at = uint(y[k] * width + x[k]);
+        const uint fp = uint(frame_plane);
+        const float mul = pc.wref * max_weight[k];
+        Out(pc.result).v[at] = (mul * Floats(pc.frames).v[center_src + at] + sum0[k]) / (mul + weight[k]);
+        if (CHANNELS > 1) {
+            Out(pc.result).v[fp + at] = (mul * Floats(pc.frames).v[center_src + fp + at] + sum1[k]) / (mul + weight[k]);
+        }
+        if (CHANNELS > 2) {
+            Out(pc.result).v[2u * fp + at] =
+                (mul * Floats(pc.frames).v[center_src + 2u * fp + at] + sum2[k]) / (mul + weight[k]);
+        }
+    }
+}
