@@ -11,7 +11,7 @@ if(TARGET nss_cpu)
   set_tests_properties(test_cuda_match PROPERTIES LABELS cuda SKIP_RETURN_CODE 77)
 endif()
 
-foreach(test test_cuda_aggregate test_cuda_runtime)
+foreach(test test_cuda_aggregate test_cuda_runtime test_cuda_slot_pool)
   add_executable(${test} ${test}.cpp)
   target_link_libraries(${test} PRIVATE nss_cuda_core)
   add_test(NAME ${test} COMMAND ${test})
