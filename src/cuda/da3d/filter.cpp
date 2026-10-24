@@ -5,6 +5,7 @@
 #include "cuda/da3d/kernels.hpp"
 #include "cuda/runtime/context.hpp"
 #include "cuda/runtime/frame_io.hpp"
+#include "cuda/runtime/frame_memory.hpp"
 #include "cuda/runtime/memory.hpp"
 #include "cuda/runtime/nvtx.hpp"
 #include "cuda/runtime/stream_pool.hpp"
@@ -43,6 +44,7 @@ struct Da3dData : nss::Da3dParams {
     int unit_channels = 1;
     DeviceBuffer tables;
     std::unique_ptr<SlotPool<Slot>> pool;
+    std::unique_ptr<FrameMemory> frame_memory;  // direct DMA (vapoursynth-classic)
 };
 
 const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameContext* ctx, VSCore* core,
@@ -86,10 +88,18 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
             u.guide[u.channels] = s.guide.as<float>() + offset[c];
             u.out[u.channels] = s.out.as<float>() + offset[c];
             ++u.channels;
-            upload_plane(vsapi->getReadPtr(noisy, plane), vsapi->getStride(noisy, plane), row, h,
-                         staging + offset[c] * sizeof(float), s.noisy.as<float>() + offset[c], row, s.stream);
-            upload_plane(vsapi->getReadPtr(guide, plane), vsapi->getStride(guide, plane), row, h,
-                         staging + (frame + offset[c]) * sizeof(float), s.guide.as<float>() + offset[c], row, s.stream);
+            // A page-locked plane goes straight to the device (direct DMA); the frames are held until the
+            // stream has synchronized below.
+            const auto upload = [&](const VSFrame* f, std::size_t region, float* device) {
+                if (d->frame_memory->pinned(f, plane)) {
+                    upload_direct(vsapi->getReadPtr(f, plane), vsapi->getStride(f, plane), row, h, device, row, s.stream);
+                } else {
+                    upload_plane(vsapi->getReadPtr(f, plane), vsapi->getStride(f, plane), row, h,
+                                 staging + region * sizeof(float), device, row, s.stream);
+                }
+            };
+            upload(noisy, offset[c], s.noisy.as<float>() + offset[c]);
+            upload(guide, frame + offset[c], s.guide.as<float>() + offset[c]);
         };
         auto unit_of = [&](int plane, float sigma) {
             Da3dUnit u;
@@ -125,16 +135,24 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
         if (count) {
             da3d_run(units, count, tables, s.work.get(), s.work.bytes(), s.stats.as<unsigned long long>(), s.stream);
             const int outputs = d->joint ? 3 : count;
+            bool direct_out[3]{};
             for (int c = 0; c < outputs; ++c) {
                 const int plane = planes[c];
                 const std::size_t row = static_cast<std::size_t>(nss::plane_width(d->vi, plane)) * sizeof(float);
-                begin_download(s.out.as<float>() + offset[c], row, row, nss::plane_height(d->vi, plane),
-                               staging + (2 * frame + offset[c]) * sizeof(float), s.stream);
+                direct_out[c] = d->frame_memory->pinned(dst, plane);
+                if (direct_out[c]) {
+                    download_direct(s.out.as<float>() + offset[c], row, row, nss::plane_height(d->vi, plane),
+                                    vsapi->getWritePtr(dst, plane), vsapi->getStride(dst, plane), s.stream);
+                } else {
+                    begin_download(s.out.as<float>() + offset[c], row, row, nss::plane_height(d->vi, plane),
+                                   staging + (2 * frame + offset[c]) * sizeof(float), s.stream);
+                }
             }
             NSS_CUDA_CHECK(cudaMemcpyAsync(s.stats_host.get(), s.stats.get(), 2 * sizeof(unsigned long long),
                                            cudaMemcpyDeviceToHost, s.stream));
             s.stream.synchronize();
             for (int c = 0; c < outputs; ++c) {
+                if (direct_out[c]) continue;  // the DMA wrote it
                 const int plane = planes[c];
                 const std::size_t row = static_cast<std::size_t>(nss::plane_width(d->vi, plane)) * sizeof(float);
                 finish_download(staging + (2 * frame + offset[c]) * sizeof(float), row, nss::plane_height(d->vi, plane),
@@ -157,6 +175,7 @@ void VS_CC freeFilter(void* instance, VSCore*, const VSAPI*) {
     {
         DeviceGuard guard(d->device.index);
         d->pool.reset();
+        d->frame_memory.reset();
         d->tables.reset();
     }
     delete d;
@@ -175,6 +194,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     d.backend = parse_backend_args(vsapi, in, "DA3D");
     d.device = acquire_device(d.backend.device_id, "DA3D", core, vsapi);
     d.budget = nss::current_budget();
+    d.frame_memory = std::make_unique<FrameMemory>(core, vsapi);
     d.unit_channels = d.joint ? 3 : 1;
     std::size_t work = 0;  // a joint unit's, or the sum of the planes' (one launch)
     for (int plane = 0; plane < d.vi.format.numPlanes; ++plane) {

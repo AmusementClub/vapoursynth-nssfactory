@@ -25,6 +25,7 @@
 #include "cuda/twsc/kernels.hpp"
 #include "cuda/runtime/context.hpp"
 #include "cuda/runtime/frame_io.hpp"
+#include "cuda/runtime/frame_memory.hpp"
 #include "cuda/runtime/memory.hpp"
 #include "cuda/runtime/nvtx.hpp"
 #include "cuda/runtime/stream_pool.hpp"
@@ -156,6 +157,8 @@ struct ImageData : nss::FullImageParams {
     std::size_t frame_bytes = 0;  // a finished frame, its planes back to back (tight rows)
     std::array<std::size_t, 3> plane_offset{};
     ChunkCache cache;
+    // Direct DMA from and to page-locked VS frame planes (vapoursynth-classic).
+    std::unique_ptr<FrameMemory> frame_memory;
     int radius() const { return model == nss::Model::TWSC ? twsc.radius : nlh.radius; }
     const char* name() const { return model == nss::Model::TWSC ? "TWSC" : "NLH"; }
 };
@@ -690,16 +693,31 @@ void run_nlh(Frame& f, const nss::NlhImageOptions& o) {
     }
 }
 
-// Stages plane c of a source or reference frame into pinned memory (tight
-// rows) and rejects it if any sample is an infinity or a NaN.
-void stage_checked(const ImageData& d, const VSAPI* api, const VSFrame* frame, int c, std::uint8_t* staging) {
-    const std::size_t row_bytes = static_cast<std::size_t>(d.width[c]) * sizeof(float);
-    stage_plane(api->getReadPtr(frame, c), api->getStride(frame, c), row_bytes, d.height[c], staging);
-    const auto* samples = reinterpret_cast<const std::uint32_t*>(staging);
-    const std::size_t floats = static_cast<std::size_t>(d.width[c]) * d.height[c];
+// Rejects `rows` rows of `row_bytes` (any stride) holding an infinity or a NaN.
+void check_finite(const void* data, std::ptrdiff_t stride, std::size_t row_bytes, int rows) {
     std::uint32_t bad = 0;  // an all-ones exponent is an infinity or a NaN
-    for (std::size_t i = 0; i < floats; ++i) bad |= static_cast<std::uint32_t>((samples[i] & 0x7f800000u) == 0x7f800000u);
+    for (int y = 0; y < rows; ++y) {
+        const auto* samples = reinterpret_cast<const std::uint32_t*>(static_cast<const std::uint8_t*>(data) + y * stride);
+        for (std::size_t i = 0; i < row_bytes / sizeof(float); ++i) {
+            bad |= static_cast<std::uint32_t>((samples[i] & 0x7f800000u) == 0x7f800000u);
+        }
+    }
     if (bad) throw std::invalid_argument("nss: nonfinite source/reference sample");
+}
+
+// Stages plane c of a source or reference frame into pinned memory (tight
+// rows) and rejects it if any sample is an infinity or a NaN. A plane that is
+// page-locked for direct DMA (the return value) is only checked: the host
+// reads it but never copies it, and the upload takes it from the frame.
+bool stage_checked(const ImageData& d, const VSAPI* api, const VSFrame* frame, int c, std::uint8_t* staging) {
+    const std::size_t row_bytes = static_cast<std::size_t>(d.width[c]) * sizeof(float);
+    if (d.frame_memory->pinned(frame, c)) {
+        check_finite(api->getReadPtr(frame, c), api->getStride(frame, c), row_bytes, d.height[c]);
+        return true;
+    }
+    stage_plane(api->getReadPtr(frame, c), api->getStride(frame, c), row_bytes, d.height[c], staging);
+    check_finite(staging, static_cast<std::ptrdiff_t>(row_bytes), row_bytes, d.height[c]);
+    return false;
 }
 
 double sigma_units(const Frame& f, int t, int c) {
@@ -899,16 +917,32 @@ std::shared_ptr<ChunkStore> compute_chunk(ImageData& d, int start, int count, VS
     };
     RollTurn turn(d, start, count);
     d.order.planned(start, d.roll.rolling_chunk);
+    // Per upload and region: the frame a page-locked plane is uploaded from
+    // directly (held until the staging's event has passed), else staged.
+    std::vector<std::array<const VSFrame*, 6>> direct(turn.uploads.size());
+    std::vector<const VSFrame*> held;
     {
         NSS_CUDA_RANGE("image.stage_in");
+        const auto stage = [&](std::size_t i, const VSFrame* frame, int c, int k) {
+            if (stage_checked(d, api, frame, c, region(i, k))) direct[i][static_cast<std::size_t>(k)] = frame;
+        };
+        const auto keep = [&](std::size_t i, const VSFrame* frame, int k0, int planes) {
+            bool used = false;
+            for (int k = k0; k < k0 + planes; ++k) used = used || direct[i][static_cast<std::size_t>(k)];
+            if (used) {
+                held.push_back(frame);
+            } else {
+                owned.freeFrame(frame);
+            }
+        };
         for (std::size_t i = 0; i < turn.uploads.size(); ++i) {
             const VSFrame* frame = owned.getFrameFilter(turn.uploads[i], d.node, ctx);
-            for (int c = 0; c < d.planes; ++c) stage_checked(d, api, frame, c, region(i, c));
-            owned.freeFrame(frame);
+            for (int c = 0; c < d.planes; ++c) stage(i, frame, c, c);
+            keep(i, frame, 0, d.planes);
             if (d.reference) {
                 const VSFrame* ref = owned.getFrameFilter(turn.uploads[i], d.reference, ctx);
-                for (int c = 0; c < d.reference_planes; ++c) stage_checked(d, api, ref, c, region(i, d.planes + c));
-                owned.freeFrame(ref);
+                for (int c = 0; c < d.reference_planes; ++c) stage(i, ref, c, d.planes + c);
+                keep(i, ref, d.planes, d.reference_planes);
             }
         }
     }
@@ -929,14 +963,16 @@ std::shared_ptr<ChunkStore> compute_chunk(ImageData& d, int start, int count, VS
     const auto upload_through = [&](int last) {
         for (; uploaded < turn.uploads.size() && turn.uploads[uploaded] <= last; ++uploaded) {
             const int frame = turn.uploads[uploaded];
-            for (int c = 0; c < d.planes; ++c) {
-                upload_staged(region(uploaded, c), row_bytes(c), d.height[c], ring_plane(d, s, frame, c), row_bytes(c),
-                              s.stream);
-            }
-            for (int c = 0; c < d.reference_planes; ++c) {
-                upload_staged(region(uploaded, d.planes + c), row_bytes(c), d.height[c],
-                              reference_ring_plane(d, s, frame, c), row_bytes(c), s.stream);
-            }
+            const auto upload = [&](int k, int c, float* device) {
+                if (const VSFrame* f = direct[uploaded][static_cast<std::size_t>(k)]) {
+                    upload_direct(api->getReadPtr(f, c), api->getStride(f, c), row_bytes(c), d.height[c], device,
+                                  row_bytes(c), s.stream);
+                } else {
+                    upload_staged(region(uploaded, k), row_bytes(c), d.height[c], device, row_bytes(c), s.stream);
+                }
+            };
+            for (int c = 0; c < d.planes; ++c) upload(c, c, ring_plane(d, s, frame, c));
+            for (int c = 0; c < d.reference_planes; ++c) upload(d.planes + c, c, reference_ring_plane(d, s, frame, c));
         }
     };
     // A finished frame goes through s.out into the store (stream order keeps
@@ -996,6 +1032,7 @@ std::shared_ptr<ChunkStore> compute_chunk(ImageData& d, int start, int count, VS
     turn.leave();
     NSS_CUDA_RANGE("image.wait");
     NSS_CUDA_CHECK(cudaEventSynchronize(g.done));
+    for (const VSFrame* frame : held) owned.freeFrame(frame);
     return store;
 }
 
@@ -1022,12 +1059,36 @@ const VSFrame* rolling_frame(ImageData& d, int n, VSFrameContext* ctx, VSCore* c
     return owned.keep(dst);
 }
 
+// The output frame of a spatial or legacy request: planes page-locked for
+// direct DMA (direct[c]) are downloaded into it rather than into the staging.
+struct Output {
+    const VSAPI* api;
+    VSFrame* frame;
+    bool direct[3]{};
+    // Rows of slice k (k * the plane's height on) of plane c.
+    void* rows(int c, int k, int height) const {
+        return api->getWritePtr(frame, c) + static_cast<std::ptrdiff_t>(k) * height * api->getStride(frame, c);
+    }
+};
+
 // Queues the downloads of a frame's result into its staging, behind the
 // uploads (regions from `downloads` on): per plane, `rows` regions from
 // downloads + c * rows, the finished plane (spatial) or the window's num and
-// den slices (legacy). Planes that are not filtered download nothing.
-void queue_downloads(const ImageData& d, Frame& f, Slot& s, int n, int first, int downloads, int rows) {
+// den slices (legacy), or into the output frame directly. Planes that are not
+// filtered download nothing.
+void queue_downloads(const ImageData& d, Frame& f, Slot& s, int n, int first, int downloads, int rows,
+                     const Output& target) {
     const int radius = d.radius();
+    // Slice k of plane c, from the device rows at `device`.
+    const auto download = [&](const float* device, int c, int k) {
+        const std::size_t row_bytes = static_cast<std::size_t>(d.width[c]) * sizeof(float);
+        if (target.direct[c]) {
+            download_direct(device, row_bytes, row_bytes, d.height[c], target.rows(c, k, d.height[c]),
+                            target.api->getStride(target.frame, c), s.stream);
+        } else {
+            begin_download(device, row_bytes, row_bytes, d.height[c], f.staging(downloads + c * rows + k), s.stream);
+        }
+    };
     if (d.split) {
         // Each plane's estimate, then back to RGB before the planes are copied out.
         for (int c = 0; c < d.planes; ++c) {
@@ -1036,32 +1097,24 @@ void queue_downloads(const ImageData& d, Frame& f, Slot& s, int n, int first, in
         }
         twsc_opponent(f.plane(s.basic, f.center, 0), f.plane(s.basic, f.center, 1), f.plane(s.basic, f.center, 2),
                       d.plane_floats, true, s.stream);
-        for (int c = 0; c < d.planes; ++c) {
-            const std::size_t row_bytes = static_cast<std::size_t>(d.width[c]) * sizeof(float);
-            begin_download(f.plane(s.basic, f.center, c), row_bytes, row_bytes, d.height[c],
-                           f.staging(downloads + c * rows), s.stream);
-        }
+        for (int c = 0; c < d.planes; ++c) download(f.plane(s.basic, f.center, c), c, 0);
         return;
     }
     for (int c = 0; c < d.planes; ++c) {
-        const std::size_t row_bytes = static_cast<std::size_t>(d.width[c]) * sizeof(float);
         if (!d.estimate && d.sigma[c] == 0) continue;
         if (radius == 0) {
             // The fallback is only reached by planes no group covered,
             // which are never RGB (see run_pass), so the input is the source.
             aggregate_finish(f.accum(s.num, c, f.center), f.accum(s.den, c, f.center), f.plane(s.input, f.center, c),
                              d.width[c], d.height[c], d.width[c], f.plane(s.basic, f.center, c), s.stream);
-            begin_download(f.plane(s.basic, f.center, c), row_bytes, row_bytes, d.height[c],
-                           f.staging(downloads + c * rows), s.stream);
+            download(f.plane(s.basic, f.center, c), c, 0);
             continue;
         }
         for (int sl = 0; sl < 2 * radius + 1; ++sl) {
             const int t = n - radius + sl - first;
             if (t < 0 || t >= f.count) continue;
-            begin_download(f.accum(s.num, c, t), row_bytes, row_bytes, d.height[c],
-                           f.staging(downloads + c * rows + 2 * sl), s.stream);
-            begin_download(f.accum(s.den, c, t), row_bytes, row_bytes, d.height[c],
-                           f.staging(downloads + c * rows + 2 * sl + 1), s.stream);
+            download(f.accum(s.num, c, t), c, 2 * sl);
+            download(f.accum(s.den, c, t), c, 2 * sl + 1);
         }
     }
 }
@@ -1070,7 +1123,7 @@ void queue_downloads(const ImageData& d, Frame& f, Slot& s, int n, int first, in
 // is not filtered (its identity slices when legacy), else the staged rows
 // (zero slices for window frames outside the clip).
 void write_plane(const ImageData& d, Frame& f, const VSAPI* api, VSFrame* dst, const VSFrame* source, int c,
-                 bool filtered, int n, int first, int downloads, int rows) {
+                 bool filtered, int n, int first, int downloads, int rows, bool direct) {
     const int radius = d.radius();
     const std::size_t row_bytes = static_cast<std::size_t>(d.width[c]) * sizeof(float);
     auto* out = api->getWritePtr(dst, c);
@@ -1093,7 +1146,7 @@ void write_plane(const ImageData& d, Frame& f, const VSAPI* api, VSFrame* dst, c
         const int t = n - radius + k / 2 - first;
         if (radius && (t < 0 || t >= f.count)) {
             for (int y = 0; y < d.height[c]; ++y) std::memset(target + y * stride, 0, row_bytes);
-        } else {
+        } else if (!direct) {  // else the DMA wrote it
             finish_download(f.staging(downloads + c * rows + k), row_bytes, d.height[c], target, stride);
         }
     }
@@ -1155,16 +1208,22 @@ const VSFrame* window_frame(ImageData& d, int n, int first, int last, VSFrameCon
 
     // Stage the window: every source plane, and the reference planes the
     // luma guide needs.
+    // A page-locked plane is uploaded from its frame (direct, held until the
+    // staging's event has passed) and takes no region.
     struct Upload {
         int region, t, c;
         bool reference;
+        const VSFrame* direct;
     };
     std::vector<Upload> uploads;
-    std::vector<const VSFrame*> source(count);
+    std::vector<const VSFrame*> source(count), references;
+    int regions = 0;
     const auto stage = [&](const VSFrame* frame, int t, int c, bool reference) {
-        const int region = static_cast<int>(uploads.size());
-        stage_checked(d, api, frame, c, region_at(region));
-        uploads.push_back({region, t, c, reference});
+        if (stage_checked(d, api, frame, c, region_at(regions))) {
+            uploads.push_back({-1, t, c, reference, frame});
+        } else {
+            uploads.push_back({regions++, t, c, reference, nullptr});
+        }
     };
     for (int t = 0; t < count; ++t) {
         source[t] = owned.getFrameFilter(first + t, d.node, ctx);
@@ -1172,7 +1231,7 @@ const VSFrame* window_frame(ImageData& d, int n, int first, int last, VSFrameCon
         if (d.reference) {
             const VSFrame* frame = owned.getFrameFilter(first + t, d.reference, ctx);
             for (int c = 0; c < d.reference_planes; ++c) stage(frame, t, c, true);
-            owned.freeFrame(frame);
+            references.push_back(frame);
         }
     }
 
@@ -1193,25 +1252,34 @@ const VSFrame* window_frame(ImageData& d, int n, int first, int last, VSFrameCon
     Frame f{d, s, g, count, n - first};
     for (const Upload& u : uploads) {
         const std::size_t row_bytes = static_cast<std::size_t>(d.width[u.c]) * sizeof(float);
-        upload_staged(region_at(u.region), row_bytes, d.height[u.c], f.plane(u.reference ? s.reference : s.input, u.t, u.c),
-                      row_bytes, s.stream);
+        float* device = f.plane(u.reference ? s.reference : s.input, u.t, u.c);
+        if (u.direct) {
+            upload_direct(api->getReadPtr(u.direct, u.c), api->getStride(u.direct, u.c), row_bytes, d.height[u.c], device,
+                          row_bytes, s.stream);
+        } else {
+            upload_staged(region_at(u.region), row_bytes, d.height[u.c], device, row_bytes, s.stream);
+        }
     }
-    const int downloads = static_cast<int>(uploads.size());
+    const int downloads = regions;
     const int rows = d.radius() ? 2 * (2 * d.radius() + 1) : 1;
     VSFrame* dst = owned.newVideoFrame(&d.output.format, d.output.width, d.output.height, source[f.center], core);
     nss::stamp_contribution(dst, d.radius(), n, d.model, api);
+    // Output planes page-locked for direct DMA take the downloads themselves.
+    Output target{api, dst};
+    for (int c = 0; c < d.planes; ++c) target.direct[c] = d.frame_memory->pinned(dst, c);
     const CenterWork work = run_center(f);
-    if (!work.bypass) queue_downloads(d, f, s, n, first, downloads, rows);
+    if (!work.bypass) queue_downloads(d, f, s, n, first, downloads, rows, target);
     NSS_CUDA_CHECK(cudaEventRecord(g.done, s.stream));
     drain.armed = false;
     slot.reset();
     NSS_CUDA_CHECK(cudaEventSynchronize(g.done));
     for (int c = 0; c < d.planes; ++c) {
         const bool filtered = !work.bypass && (d.estimate || d.sigma[c] != 0);
-        write_plane(d, f, api, dst, source[f.center], c, filtered, n, first, downloads, rows);
+        write_plane(d, f, api, dst, source[f.center], c, filtered, n, first, downloads, rows, target.direct[c]);
     }
     stamp_diagnostics(d, f, work.o, dst, api);
     for (const VSFrame* frame : source) owned.freeFrame(frame);
+    for (const VSFrame* frame : references) owned.freeFrame(frame);
     return owned.keep(dst);
 }
 
@@ -1248,6 +1316,7 @@ void VS_CC freeFilter(void* instance, VSCore*, const VSAPI*) {
         d->pool.reset();
         d->staging.reset();
         d->cache.clear();
+        d->frame_memory.reset();
     }
     delete d;
 }
@@ -1505,6 +1574,7 @@ void create(const VSMap* in, VSMap* out, VSCore* core, const VSAPI* api, nss::Mo
     d.backend = parse_backend_args(api, in, d.name());
     d.device = acquire_device(d.backend.device_id, d.name(), core, api);
     d.budget = nss::current_budget();
+    d.frame_memory = std::make_unique<FrameMemory>(core, api);
     const bool twsc = model == nss::Model::TWSC;
     d.rgb = !twsc && d.vi.format.colorFamily == cfRGB;  // NLH works in YUV
     d.split = twsc && nss::twsc_color_split(d.twsc, d.vi.format.colorFamily == cfRGB, d.estimate, d.sigma_units.data());

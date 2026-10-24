@@ -8,6 +8,7 @@
 #include "cuda/bm4d/kernels.hpp"
 #include "cuda/runtime/context.hpp"
 #include "cuda/runtime/frame_io.hpp"
+#include "cuda/runtime/frame_memory.hpp"
 #include "cuda/runtime/memory.hpp"
 #include "cuda/runtime/nvtx.hpp"
 #include "cuda/runtime/stream_pool.hpp"
@@ -68,6 +69,7 @@ struct Bm4dData : nss::Bm4dParams {
     std::unique_ptr<Stream> stream;  // tiles
     DeviceBuffer volume, filtered, work;
     DeviceBuffer outputs;  // kBm4dChunk planes
+    std::unique_ptr<FrameMemory> frame_memory;  // direct DMA (vapoursynth-classic)
     DeviceBuffer out_ptrs;
     // chunk cache
     static constexpr int kCacheLimit = 2;
@@ -159,12 +161,21 @@ std::shared_ptr<ChunkStore> compute_chunk(Bm4dData* d, int first, int count, int
         }
         {
             NSS_CUDA_RANGE("bm4d.upload");  // the volume's frames (pitch: the plane's width)
+            // Page-locked planes go straight to the device (direct DMA); the
+            // others share the one staging region, which each waits for.
+            bool staged = false;
             for (int z = 0; z < depth; ++z) {
-                upload_plane(vsapi->getReadPtr(frames[static_cast<std::size_t>(z)], plane),
-                             vsapi->getStride(frames[static_cast<std::size_t>(z)], plane), row, ph, staging,
-                             sl.frames.as<float>() + static_cast<std::size_t>(z) * d->max_plane, row, io);
-                sl.stream->synchronize();  // the staging region is reused
+                const VSFrame* f = frames[static_cast<std::size_t>(z)];
+                float* device = sl.frames.as<float>() + static_cast<std::size_t>(z) * d->max_plane;
+                if (d->frame_memory->pinned(f, plane)) {
+                    upload_direct(vsapi->getReadPtr(f, plane), vsapi->getStride(f, plane), row, ph, device, row, io);
+                    continue;
+                }
+                if (staged) sl.stream->synchronize();  // the staging region is reused
+                upload_plane(vsapi->getReadPtr(f, plane), vsapi->getStride(f, plane), row, ph, staging, device, row, io);
+                staged = true;
             }
+            sl.stream->synchronize();  // the tiles read the frames on another stream
         }
         {
             // the tiles run in chunk order: a prefetched chunk's upload
@@ -313,6 +324,7 @@ void VS_CC freeFilter(void* instance, VSCore*, const VSAPI*) {
         d->work.reset();
         d->outputs.reset();
         d->out_ptrs.reset();
+        d->frame_memory.reset();
     }
     delete d;
 }
@@ -326,6 +338,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     d.backend = parse_backend_args(vsapi, in, "BM4D");
     d.device = acquire_device(d.backend.device_id, "BM4D", core, vsapi);
     d.budget = nss::current_budget();
+    d.frame_memory = std::make_unique<FrameMemory>(core, vsapi);
     std::size_t max_volume = 0, work = 0;
     for (int plane = 0; plane < d.vi.format.numPlanes; ++plane) {
         const int pw = nss::plane_width(d.vi, plane), ph = nss::plane_height(d.vi, plane);
