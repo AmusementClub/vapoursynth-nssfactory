@@ -10,8 +10,10 @@
 // Variants (preprocessor): S = patch radius 0..8 with unrolled box sums, -1 at
 // run time; IMG = the windows of the frames read are copied into shared
 // memory first. Specialization: DISTANCE, WEIGHT, CHANNELS, SHARED_FLOATS.
-// nss_cuda's weight maps for d = 1 (KEEP) are not ported: they gave nothing
-// here (src/vulkan/nlm/filter.cpp).
+// With d = 1 and weight_save / weight_load (nss_cuda's KEEP): the frame
+// saves its forward weight maps for the frame after it, and loads what the
+// frame before it saved instead of computing its backward maps (tiles whose
+// pixels plus the offset stay inside the image).
 #version 460
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
@@ -48,6 +50,9 @@ layout(push_constant) uniform Push {
     uint frame_floats;
     uint ref_offset;       // floats from a frame's averaged planes to its reference planes (0: no rclip)
     uint slots[5];         // cache frame of window slot t: byte t % 4 of slots[t / 4]
+    // d = 1, either may be 0: (2a + 1)^2 maps of width * height, offset (ox, oy)
+    // at (oy + a) * (2a + 1) + ox + a (nss_cuda NlmTileArgs::weight_save, weight_load).
+    uint64_t weight_save, weight_load;
 } pc;
 
 shared float smem[SHARED_FLOATS];
@@ -153,9 +158,10 @@ void load_window(uint dst, uint from, int ix0, int iy0, int iw, int ih, int tid)
 // Weights of the box sums of D(center(x, y), neighbor(clamp(x + ox), clamp(y + oy)))
 // for the pixels [rx0, rx1] x [ry0, ry1] into smem[wt], row by row (nss_cuda's
 // tile_weights). dm and hs are the distance map with a halo of s and its row
-// sums. Every invocation calls it; it ends behind a barrier.
+// sums. Every invocation calls it; it ends behind a barrier. save (0: none)
+// takes the weights too, at their pixels in a width * height map.
 void tile_weights(uint dm, uint hs, uint wt, uint center, uint neighbor, int ox, int oy, int rx0, int ry0, int rx1,
-                  int ry1, int tid, bool interior, int stride, int origin, int plane) {
+                  int ry1, int tid, bool interior, int stride, int origin, int plane, uint64_t save) {
     const int s = S >= 0 ? S : pc.s;
     const int width = pc.width, height = pc.height;
     const int rw = rx1 - rx0 + 1, rh = ry1 - ry0 + 1;
@@ -211,6 +217,7 @@ void tile_weights(uint dm, uint hs, uint wt, uint center, uint neighbor, int ox,
                 [[unroll]] for (int t = 0; t < kTaps; ++t) sum += v[k + t];
                 const float value = weight_of(sum);
                 smem[wt + uint((ey0 + k) * rw + x)] = value;
+                if (save != 0ul) Out(save).v[(ry0 + ey0 + k) * width + rx0 + x] = value;
             }
         }
     }
@@ -231,6 +238,7 @@ void tile_weights(uint dm, uint hs, uint wt, uint center, uint neighbor, int ox,
         for (int t = 0; t < 2 * s + 1; ++t) sum += smem[first + uint(t * hp)];
         const float value = weight_of(sum);
         smem[wt + uint(e)] = value;
+        if (save != 0ul) Out(save).v[(ry0 + ey) * width + rx0 + e - ey * rw] = value;
     }
 #endif
     memoryBarrierShared();
@@ -309,7 +317,7 @@ void main() {
                     // One map serves both: the weights of the tile and of its mirror.
                     const int rx0 = min(x0, qx0), rx1 = max(x1, qx1), ry0 = min(y0, qy0), ry1 = max(y1, qy1);
                     tile_weights(dm, hs, wt, center, center, ox, oy, rx0, ry0, rx1, ry1, tid, interior, stride,
-                                 origin, plane);
+                                 origin, plane, 0ul);
                     const int rw = rx1 - rx0 + 1;
                     [[unroll]] for (int k = 0; k < PIX; ++k) {
                         const int mx = clampi(x[k] - ox, 0, width - 1), my = clampi(y[k] - oy, 0, height - 1);
@@ -317,13 +325,23 @@ void main() {
                         u4_mq[k] = inside[k] ? smem[wt + uint((my - ry0) * rw + mx - rx0)] : 0.0f;
                     }
                 } else {
-                    tile_weights(dm, hs, wt, center, bwd, ox, oy, x0, y0, x1, y1, tid, interior, stride, origin,
-                                 plane);
-                    [[unroll]] for (int k = 0; k < PIX; ++k) {
-                        u4[k] = inside[k] ? smem[wt + uint((y[k] - y0) * (x1 - x0 + 1) + x[k] - x0)] : 0.0f;
+                    // Floats from the maps' start to offset o's map (64-bit: (2a + 1)^2 planes).
+                    const uint64_t map = uint64_t((oy + a) * span + ox + a) * uint64_t(frame_plane) * 4ul;
+                    // The frame before saved this map wherever p + o is inside the image (uniform
+                    // in the workgroup, so the barriers in tile_weights are reached by all).
+                    if (pc.weight_load != 0ul && x0 + ox >= 0 && x1 + ox < width && y0 + oy >= 0 && y1 + oy < height) {
+                        [[unroll]] for (int k = 0; k < PIX; ++k) {
+                            u4[k] = inside[k] ? Floats(pc.weight_load + map).v[y[k] * width + x[k]] : 0.0f;
+                        }
+                    } else {
+                        tile_weights(dm, hs, wt, center, bwd, ox, oy, x0, y0, x1, y1, tid, interior, stride, origin,
+                                     plane, 0ul);
+                        [[unroll]] for (int k = 0; k < PIX; ++k) {
+                            u4[k] = inside[k] ? smem[wt + uint((y[k] - y0) * (x1 - x0 + 1) + x[k] - x0)] : 0.0f;
+                        }
                     }
                     tile_weights(dm, hs, wt, fwd, center, ox, oy, qx0, qy0, qx1, qy1, tid, interior, stride, origin,
-                                 plane);
+                                 plane, pc.weight_save != 0ul ? pc.weight_save + map : 0ul);
                     [[unroll]] for (int k = 0; k < PIX; ++k) {
                         const int mx = clampi(x[k] - ox, 0, width - 1), my = clampi(y[k] - oy, 0, height - 1);
                         u4_mq[k] = inside[k] ? smem[wt + uint((my - qy0) * (qx1 - qx0 + 1) + mx - qx0)] : 0.0f;
