@@ -5,14 +5,13 @@
 #pragma once
 
 #include "cuda/common/aggregate.hpp"
+#include "gpuhost/fixed.hpp"
 
 #include <cuda_runtime.h>
 
 namespace nss_cuda {
 
-// 2^32: a float converts without rounding unless it carries bits below
-// 2^-32, and sums up to 2^31 in magnitude fit.
-constexpr float kFixedScale = 4294967296.f;
+using nss::gpuhost::kFixedScale;  // 2^32 (gpuhost/fixed.hpp)
 
 // Ring cell of the slice of a patch of window slot t, or -1 when the target
 // has none for it.

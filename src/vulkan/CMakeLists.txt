@@ -114,7 +114,7 @@ add_library(nss_vk_core STATIC
   runtime/vma.cpp
 )
 target_include_directories(nss_vk_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")
-target_link_libraries(nss_vk_core PUBLIC nss_frontend nss_vk_headers nss_volk nss_vk_shaders)
+target_link_libraries(nss_vk_core PUBLIC nss_frontend nss_gpuhost nss_vk_headers nss_volk nss_vk_shaders)
 set_target_properties(nss_vk_core PROPERTIES
   POSITION_INDEPENDENT_CODE ON
   CXX_VISIBILITY_PRESET hidden

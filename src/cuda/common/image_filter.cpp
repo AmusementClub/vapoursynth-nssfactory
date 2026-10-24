@@ -1459,7 +1459,8 @@ void allocate(ImageData& d, const MemoryPlan& plan) {
     for (int i = 0; i < d.backend.num_streams; ++i) slots.push_back(make_slot(d));
     for (const auto& slot : slots) d.slots.push_back(slot.get());
     if (d.rolling) {
-        d.cache.configure(d.roll.rolling_chunk, d.frame_bytes, d.plane_offset, d.roll.cache_chunks, plan.cache_cap, d.budget);
+        d.cache.configure(d.roll.rolling_chunk, d.frame_bytes, d.plane_offset, d.roll.cache_chunks, plan.cache_cap,
+                        pinned_blocks(d.budget));
     }
     std::vector<std::unique_ptr<Staging>> sets;
     for (int i = 0; i < plan.staging_sets; ++i) {

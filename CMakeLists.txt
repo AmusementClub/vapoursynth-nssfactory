@@ -666,6 +666,28 @@ if(VapourSynth_FOUND)
     VISIBILITY_INLINES_HIDDEN ON
   )
 endif()
+# Backend-free host helpers shared by the GPU trees (D27): the rolling chunk
+# cache and plan order, raster/match geometry, the fixed-point scale. It may
+# not include any backend, the CPU tree or the frontend's VapourSynth parts.
+if(NSS_ENABLE_CUDA OR NSS_ENABLE_VULKAN)
+  file(GLOB_RECURSE NSS_GPUHOST_GUARDED CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/gpuhost/*")
+  nss_forbid_cpu_includes("gpuhost" ${NSS_GPUHOST_GUARDED})
+  foreach(_nss_file IN LISTS NSS_GPUHOST_GUARDED)
+    if(_nss_file MATCHES "\\.(hpp|cpp|h)$")
+      file(STRINGS "${_nss_file}" _nss_hits REGEX "#[ \t]*include[ \t]+[\"<](cuda/|vulkan/|frontend/|cuda_runtime|volk|vulkan)")
+      if(_nss_hits)
+        message(FATAL_ERROR "gpuhost file includes a backend: ${_nss_file}: ${_nss_hits}")
+      endif()
+    endif()
+  endforeach()
+  add_library(nss_gpuhost STATIC src/gpuhost/geometry.cpp)
+  target_include_directories(nss_gpuhost PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  set_target_properties(nss_gpuhost PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN ON
+  )
+endif()
 if(NSS_ENABLE_CUDA AND NOT VapourSynth_FOUND)
   message(FATAL_ERROR "NSS_ENABLE_CUDA requires VapourSynth headers (set VapourSynth_INCLUDE_DIR)")
 endif()
@@ -700,6 +722,10 @@ endif()
 if(NSS_ENABLE_CUDA)
   add_subdirectory(src/cuda)
   add_subdirectory(tests/cuda)
+endif()
+if(NSS_ENABLE_CUDA OR NSS_ENABLE_VULKAN)
+  find_package(Threads REQUIRED)
+  add_subdirectory(tests/gpuhost)
 endif()
 if(NSS_ENABLE_VULKAN)
   enable_language(C)  # volk.c (cmake/Vulkan.cmake), linked by src/vulkan and tests/vk

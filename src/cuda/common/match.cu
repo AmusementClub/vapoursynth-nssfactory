@@ -1584,14 +1584,6 @@ bool launch_tensor(const float* plane, const MatchGeometry& g, const RasterGrid&
 
 }  // namespace
 
-RasterGrid make_raster_grid(int width, int height, int block, int step) {
-    RasterGrid grid{0, 0, step, width - block, height - block};
-    if (width < block || height < block || step < 1) return grid;
-    grid.nx = (width - block + step - 1) / step + 1;
-    grid.ny = (height - block + step - 1) / step + 1;
-    return grid;
-}
-
 bool spatial_match_tensor(const MatchGeometry& g, const RasterGrid& grid) {
     const int side = g.lo() + g.hi() + 1;
     return g.channels == 1 && g.block == 8 && g.group >= 2 && g.group <= 16 && side >= kTensorMinSide &&
