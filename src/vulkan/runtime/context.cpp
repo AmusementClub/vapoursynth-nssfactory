@@ -130,10 +130,18 @@ std::shared_ptr<Device> Device::open(int index, bool allow_unsupported) {
     // or plugin unload, where the loader may already be gone. The price is
     // one leaked device per plugin reload when VapourSynth unloads plugins
     // with their cores (unless disableLibraryUnloading).
-    static std::mutex mutex;
+    static auto* mutex = new std::mutex();
     static auto* devices = new std::map<int, std::shared_ptr<Device>>();
-    std::lock_guard lock(mutex);
+    // A poisoned device (a wait timed out or the device was lost) leaks
+    // everything freed on it: it is set aside here, never destroyed, and the
+    // next filter gets a fresh device.
+    static auto* poisoned = new std::vector<std::shared_ptr<Device>>();
+    std::lock_guard lock(*mutex);
     std::shared_ptr<Device> slot = (*devices)[index];
+    if (slot && slot->poisoned()) {
+        poisoned->push_back(std::move(slot));
+        slot.reset();
+    }
     if (!slot) {
         std::shared_ptr<Device> device(new Device());
         device->physical_ = vk.devices[static_cast<std::size_t>(index)];
