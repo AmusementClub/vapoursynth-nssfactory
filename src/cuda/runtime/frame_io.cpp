@@ -99,6 +99,18 @@ void finish_download(const void* staging, std::size_t row_bytes, int rows, void*
     copy_rows(staging, static_cast<std::ptrdiff_t>(row_bytes), host, host_stride, row_bytes, rows);
 }
 
+void upload_direct(const void* host, std::ptrdiff_t host_stride, std::size_t row_bytes, int rows, void* device,
+                   std::size_t device_pitch, cudaStream_t stream) {
+    NSS_CUDA_CHECK(cudaMemcpy2DAsync(device, device_pitch, host, static_cast<std::size_t>(host_stride), row_bytes,
+                                     static_cast<std::size_t>(rows), cudaMemcpyHostToDevice, stream));
+}
+
+void download_direct(const void* device, std::size_t device_pitch, std::size_t row_bytes, int rows, void* host,
+                     std::ptrdiff_t host_stride, cudaStream_t stream) {
+    NSS_CUDA_CHECK(cudaMemcpy2DAsync(host, static_cast<std::size_t>(host_stride), device, device_pitch, row_bytes,
+                                     static_cast<std::size_t>(rows), cudaMemcpyDeviceToHost, stream));
+}
+
 void copy_to_frame(const void* src, std::ptrdiff_t src_stride, void* dst, std::ptrdiff_t dst_stride, std::size_t row_bytes,
                    int rows) {
     stream_rows(src, src_stride, dst, dst_stride, row_bytes, rows);

@@ -124,6 +124,7 @@ set(NSS_CUDA_RUNTIME_SOURCES
   runtime/context.cpp
   runtime/device.cpp
   runtime/frame_io.cpp
+  runtime/frame_memory.cpp
   runtime/memory.cpp
 )
 
@@ -192,7 +193,9 @@ target_include_directories(nss_cuda_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/.."
 # comma-separated -D value into several macros.
 set_source_files_properties(runtime/device.cpp PROPERTIES COMPILE_DEFINITIONS
   "NSS_CUDA_ARCH_STRING=\"${NSS_CUDA_ARCH_STRING}\";NSS_CUDA_CUBIN_ARCHS=${NSS_CUDA_CUBIN_ARCHS_CSV};NSS_CUDA_PTX_ARCHS=${NSS_CUDA_PTX_ARCHS_CSV}")
-target_link_libraries(nss_cuda_core PUBLIC nss_frontend nss_gpuhost CUDA::cudart_static)
+# CMAKE_DL_LIBS: runtime/frame_memory.cpp finds vapoursynth-classic's
+# VSFrameMemory.h extension with dladdr / dlsym.
+target_link_libraries(nss_cuda_core PUBLIC nss_frontend nss_gpuhost CUDA::cudart_static ${CMAKE_DL_LIBS})
 if(NSS_CUDA_MATHDX)
   target_link_libraries(nss_cuda_core PUBLIC nss_cuda_solverdx)
 endif()
