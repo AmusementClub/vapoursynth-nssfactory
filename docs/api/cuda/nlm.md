@@ -76,8 +76,10 @@ core.nss_cuda.NLM(clip clip[, int d = 1, int a = 2, int s = 4, float h = 1.2,
   exact box sums); identical from run to run.
 - **Frames are uploaded once**, however many windows they are part of. With
   `d=1` and frames rendered in order, the weights of a frame pair are computed
-  once for both frames: 396 MiB more at 1080p with the default `a=2`, the first
-  thing `memory_limit_mb` takes away (the output is the same without it).
+  once for both frames, whichever streams they run on: one set of maps more
+  than there are streams, 198 MiB each at 1080p with the default `a=2` (594 MiB
+  at the default two streams). They are the first thing `memory_limit_mb`
+  takes away (the output is the same without them).
 - **Memory.** About `2d + 4` frames of the clip per stream. Large `d`, patches
   or search windows fall back to a slower path with fewer frames resident.
 
