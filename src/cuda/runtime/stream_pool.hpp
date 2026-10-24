@@ -7,6 +7,7 @@
 #include "cuda/runtime/error.hpp"
 
 #include <condition_variable>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <utility>
@@ -60,8 +61,12 @@ public:
     Lease acquire() {
         std::unique_lock lock(mutex_);
         available_.wait(lock, [&] { return !free_.empty(); });
-        Slot* slot = free_.back();
-        free_.pop_back();
+        // The slot free the longest: frames that give their slot back once
+        // their work is queued then rotate over the streams, so that one
+        // frame's copies overlap another's kernels. Taking the slot just given
+        // back (LIFO) put every frame on one stream: num_streams had no effect.
+        Slot* slot = free_.front();
+        free_.pop_front();
         return Lease(this, slot);
     }
     std::size_t size() const noexcept { return slots_.size(); }
@@ -78,7 +83,7 @@ private:
         available_.notify_one();
     }
     std::vector<std::unique_ptr<Slot>> slots_;
-    std::vector<Slot*> free_;
+    std::deque<Slot*> free_;
     std::mutex mutex_;
     std::condition_variable available_;
 };
