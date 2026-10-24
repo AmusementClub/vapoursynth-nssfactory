@@ -141,7 +141,7 @@ They pay where those leave the GPU idle, and not where the kernels dominate.
 
 | Filter | Default | Gain over one stream | Peak GPU memory, one stream → default |
 |---|---|---|---|
-| NLM | 2 | 1.23× (YUV420, d = 1) | 901 → 1328 MiB |
+| NLM | 2 | 1.23× (YUV420, d = 1); with direct transfers 1.06–1.50× (three: no faster) | 901 → 1328 MiB |
 | TWSC | 3 | 1.22× (gray; two streams: 1.03×) | 385 → 1084 MiB |
 | NCSR | 2; 3 with direct transfers | 1.10× (YUV420); with direct transfers 1.38–1.52× | 170 → 258 MiB (three: 346 MiB) |
 | BM3D, WNNM | 1; 2 with direct transfers | 0.99× staged; with direct transfers 1.01–1.14× (three streams; two equal them on YUV420) | YUV420 150 / 162 MiB, plus about 68 / 80 MiB per stream |
@@ -196,11 +196,12 @@ GPU. NLM is temporal through `d`; LSSC has no temporal mode.
 
 Under [vapoursynth-classic](https://github.com/AmusementClub/vapoursynth-classic)
 builds that provide its `VSFrameMemory.h` extension (frame pool blocks and
-release hooks), BM3D, WNNM, MCWNNM and NCSR copy between the GPU and the
-VapourSynth frames directly, without the pinned staging copies.
+release hooks), BM3D, WNNM, MCWNNM, NCSR and NLM copy between the GPU and
+the VapourSynth frames directly, without the pinned staging copies.
 
-- **Where:** spatial output and `temporal_mode="legacy"`. Rolling output and
-  the other filters still stage. Output is the same either way.
+- **Where:** NLM always; the other four with spatial output and
+  `temporal_mode="legacy"`. Rolling output and the other filters still stage.
+  Output is the same either way.
 - **How:** a frame pool block is page-locked the second time one of its
   planes is transferred, and unlocked when the pool returns it to the system.
   At most half the core's frame cache (`core.max_cache_size`) is locked;
@@ -208,9 +209,11 @@ VapourSynth frames directly, without the pinned staging copies.
 - **Speed** (1080p, RTX 5080, a decoder-like source, single runs, against
   staging): with one stream BM3D 1.46–1.65×, WNNM gray 1.63×, NCSR
   1.17–1.19×, MCWNNM RGB 1.13×; with `num_streams=3`, 1.53–1.67× across the
-  four. Direct transfers raise the [default streams](#default-streams) of
-  these four. With a small frame cache the lock cap keeps most blocks staged,
-  and the gain shrinks.
+  four. NLM at its default two streams: gray 1.73×, YUV420 1.47×, RGB 1.67×,
+  gray `d=0` 1.79× (two runs each), ahead of `nss_vk.NLM` on the same core by
+  1.23–1.49×. Direct transfers raise the [default streams](#default-streams)
+  of the other four. With a small frame cache the lock cap keeps most blocks
+  staged, and the gain shrinks.
 - **Environment:** `NSS_CUDA_DIRECT_IO=0` turns it off,
   `NSS_CUDA_DIRECT_IO_MAX_MB` sets the lock cap in MiB, and
   `NSS_CUDA_DIRECT_IO_STATS` prints counts when a core's last instance is freed.

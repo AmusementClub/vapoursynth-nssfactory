@@ -10,9 +10,14 @@
 // The plane path (a window, a patch or a memory limit the tile path cannot
 // take) keeps only the centre frame and the current backward/forward pair
 // resident, so large d does not grow device memory.
+//
+// Both copy page-locked VapourSynth frame planes (FrameMemory, under
+// vapoursynth-classic) to and from the device directly; other planes go
+// through pinned staging.
 #include "cuda/nlm/kernels.hpp"
 #include "cuda/runtime/context.hpp"
 #include "cuda/runtime/frame_io.hpp"
+#include "cuda/runtime/frame_memory.hpp"
 #include "cuda/runtime/memory.hpp"
 #include "cuda/runtime/nvtx.hpp"
 #include "cuda/runtime/stream_pool.hpp"
@@ -112,6 +117,7 @@ struct NlmData : nss::NlmParams {
     std::unique_ptr<SlotPool<TileSlot>> tile_pool;
     std::unique_ptr<SlotPool<TileStage>> tile_stages;
     WindowCache window;
+    std::unique_ptr<FrameMemory> frame_memory;
 };
 
 // Staging regions (one plane each): centre, backward, forward uploads for
@@ -176,15 +182,21 @@ void plane_frame(const NlmData& d, const Frames& srcf, const Frames& reff, VSFra
     const std::size_t row_bytes = static_cast<std::size_t>(w) * sizeof(float);
     auto* staging = s.staging.as<std::uint8_t>();
     const int per_frame = regions_per_frame(d);
+    // The frames are held until the stream has synchronized below.
+    const auto upload = [&](const VSFrame* frame, int plane, int region, void* device) {
+        if (d.frame_memory->pinned(frame, plane)) {
+            upload_direct(vsapi->getReadPtr(frame, plane), vsapi->getStride(frame, plane), row_bytes, h, device,
+                          row_bytes, s.stream);
+        } else {
+            upload_plane(vsapi->getReadPtr(frame, plane), vsapi->getStride(frame, plane), row_bytes, h,
+                         staging + d.plane_bytes * region, device, row_bytes, s.stream);
+        }
+    };
     auto upload_frame = [&](FramePlanes& planes, int t, int region) {
         for (int c = 0; c < nc; ++c) {
             const int plane = d.first_plane + c;
-            upload_plane(vsapi->getReadPtr(srcf[t], plane), vsapi->getStride(srcf[t], plane), row_bytes, h,
-                         staging + d.plane_bytes * (region + c), planes.src[c].get(), row_bytes, s.stream);
-            if (d.rclip) {
-                upload_plane(vsapi->getReadPtr(reff[t], plane), vsapi->getStride(reff[t], plane), row_bytes, h,
-                             staging + d.plane_bytes * (region + nc + c), planes.ref[c].get(), row_bytes, s.stream);
-            }
+            upload(srcf[t], plane, region + c, planes.src[c].get());
+            if (d.rclip) upload(reff[t], plane, region + nc + c, planes.ref[c].get());
         }
     };
     upload_frame(s.center, d.d, 0);
@@ -237,13 +249,23 @@ void plane_frame(const NlmData& d, const Frames& srcf, const Frames& reff, VSFra
         }
     }
     const int out_region = per_frame * (d.d > 0 ? 3 : 1);
+    std::array<bool, 3> direct_out{};
     for (int c = 0; c < nc; ++c) {
+        const int plane = d.first_plane + c;
         nlm_finish(center_src.p[c], s.weight.as<float>(), s.max_weight.as<float>(), wdst[c], d.wref, w, h,
                    s.out[c].as<float>(), s.stream);
-        begin_download(s.out[c].get(), row_bytes, row_bytes, h, staging + d.plane_bytes * (out_region + c), s.stream);
+        direct_out[c] = d.frame_memory->pinned(dst, plane);
+        if (direct_out[c]) {
+            download_direct(s.out[c].get(), row_bytes, row_bytes, h, vsapi->getWritePtr(dst, plane),
+                            vsapi->getStride(dst, plane), s.stream);
+        } else {
+            begin_download(s.out[c].get(), row_bytes, row_bytes, h, staging + d.plane_bytes * (out_region + c),
+                           s.stream);
+        }
     }
     s.stream.synchronize();
     for (int c = 0; c < nc; ++c) {
+        if (direct_out[c]) continue;  // the DMA wrote it
         const int plane = d.first_plane + c;
         finish_download(staging + d.plane_bytes * (out_region + c), row_bytes, h, vsapi->getWritePtr(dst, plane),
                         vsapi->getStride(dst, plane));
@@ -355,23 +377,33 @@ void tile_frame(NlmData& d, int n, const Frames& srcf, const Frames& reff, VSFra
     const std::size_t row_bytes = static_cast<std::size_t>(d.width) * sizeof(float);
     auto stage = d.tile_stages->acquire();
     Window window(d.window, n, d.d, d.vi.numFrames);
+    const std::vector<WindowFrame*>& uploads = window.uploads();
+    // Per upload and staging region: the frame whose plane is uploaded
+    // directly (page-locked; held until the stage's event has passed)
+    // instead of from the staging.
+    std::vector<std::array<const VSFrame*, 6>> direct_in(uploads.size());
     {
         NSS_CUDA_RANGE("nlm.stage_in");
-        for (WindowFrame* f : window.uploads()) {
+        for (std::size_t i = 0; i < uploads.size(); ++i) {
             int t = 0;
-            while (&window.slot(t) != f) ++t;
-            auto* staging = f->staging.as<std::uint8_t>();
-            for (int c = 0; c < nc; ++c) {
-                const int plane = d.first_plane + c;
-                stage_plane(vsapi->getReadPtr(srcf[t], plane), vsapi->getStride(srcf[t], plane), row_bytes, h,
-                            staging + d.plane_bytes * c);
-                if (d.rclip) {
-                    stage_plane(vsapi->getReadPtr(reff[t], plane), vsapi->getStride(reff[t], plane), row_bytes, h,
-                                staging + d.plane_bytes * (nc + c));
+            while (&window.slot(t) != uploads[i]) ++t;
+            auto* staging = uploads[i]->staging.as<std::uint8_t>();
+            const auto stage_in = [&](const VSFrame* frame, int plane, int region) {
+                if (d.frame_memory->pinned(frame, plane)) {
+                    direct_in[i][static_cast<std::size_t>(region)] = frame;
+                    return;
                 }
+                stage_plane(vsapi->getReadPtr(frame, plane), vsapi->getStride(frame, plane), row_bytes, h,
+                            staging + d.plane_bytes * region);
+            };
+            for (int c = 0; c < nc; ++c) {
+                stage_in(srcf[t], d.first_plane + c, c);
+                if (d.rclip) stage_in(reff[t], d.first_plane + c, nc + c);
             }
         }
     }
+    std::array<bool, 3> direct_out{};
+    for (int c = 0; c < nc; ++c) direct_out[c] = d.frame_memory->pinned(dst, d.first_plane + c);
     window.wait_queued();
     auto* out = stage->bytes.as<std::uint8_t>();
     {
@@ -386,14 +418,20 @@ void tile_frame(NlmData& d, int n, const Frames& srcf, const Frames& reff, VSFra
                 if (armed) cudaStreamSynchronize(stream);
             }
         } drain{s.stream};
-        for (WindowFrame* f : window.uploads()) {
+        for (std::size_t i = 0; i < uploads.size(); ++i) {
+            WindowFrame* f = uploads[i];
             auto* staging = f->staging.as<std::uint8_t>();
-            for (int c = 0; c < nc; ++c) {
-                upload_staged(staging + d.plane_bytes * c, row_bytes, h, f->planes.src[c].get(), row_bytes, s.stream);
-                if (d.rclip) {
-                    upload_staged(staging + d.plane_bytes * (nc + c), row_bytes, h, f->planes.ref[c].get(), row_bytes,
-                                  s.stream);
+            const auto upload = [&](int plane, int region, void* device) {
+                if (const VSFrame* frame = direct_in[i][static_cast<std::size_t>(region)]) {
+                    upload_direct(vsapi->getReadPtr(frame, plane), vsapi->getStride(frame, plane), row_bytes, h,
+                                  device, row_bytes, s.stream);
+                } else {
+                    upload_staged(staging + d.plane_bytes * region, row_bytes, h, device, row_bytes, s.stream);
                 }
+            };
+            for (int c = 0; c < nc; ++c) {
+                upload(d.first_plane + c, c, f->planes.src[c].get());
+                if (d.rclip) upload(d.first_plane + c, nc + c, f->planes.ref[c].get());
             }
             NSS_CUDA_CHECK(cudaEventRecord(f->ready.event, s.stream));
         }
@@ -430,7 +468,13 @@ void tile_frame(NlmData& d, int n, const Frames& srcf, const Frames& reff, VSFra
         nlm_tile(args, s.stream);
         if (save >= 0) s.weights_of[save] = n;
         for (int c = 0; c < nc; ++c) {
-            begin_download(s.out[c].get(), row_bytes, row_bytes, h, out + d.plane_bytes * c, s.stream);
+            const int plane = d.first_plane + c;
+            if (direct_out[c]) {
+                download_direct(s.out[c].get(), row_bytes, row_bytes, h, vsapi->getWritePtr(dst, plane),
+                                vsapi->getStride(dst, plane), s.stream);
+            } else {
+                begin_download(s.out[c].get(), row_bytes, row_bytes, h, out + d.plane_bytes * c, s.stream);
+            }
         }
         NSS_CUDA_CHECK(cudaEventRecord(stage->done.event, s.stream));
         drain.armed = false;
@@ -442,6 +486,7 @@ void tile_frame(NlmData& d, int n, const Frames& srcf, const Frames& reff, VSFra
     }
     NSS_CUDA_RANGE("nlm.stage_out");
     for (int c = 0; c < nc; ++c) {
+        if (direct_out[c]) continue;  // the DMA wrote it
         const int plane = d.first_plane + c;
         // Three planes go out with non-temporal stores: RGB 1080p 236 -> 250 fps in three sessions, where
         // one plane lost 2% with them (docs/archive/cuda-head-r2-20261020.md).
@@ -512,6 +557,7 @@ void VS_CC freeFilter(void* instance, VSCore*, const VSAPI*) {
         d->tile_pool.reset();
         d->tile_stages.reset();
         d->window.frames.clear();
+        d->frame_memory.reset();
     }
     delete d;
 }
@@ -532,6 +578,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     d->backend = parse_backend_args(vsapi, in, "NLM");
     d->device = acquire_device(d->backend.device_id, "NLM", core, vsapi);
     d->budget = nss::current_budget();
+    d->frame_memory = std::make_unique<FrameMemory>(core, vsapi);
 
     const bool uv = d->channels == nss::ChannelMode::UV;
     d->width = uv ? d->vi.width >> d->vi.format.subSamplingW : d->vi.width;
