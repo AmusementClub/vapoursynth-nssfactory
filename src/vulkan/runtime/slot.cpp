@@ -53,8 +53,10 @@ Slot::~Slot() {
 }
 
 void Slot::release() noexcept {
-    // Objects the device may still use are leaked rather than destroyed.
-    if (state_ == State::broken || state_ == State::pending) return;
+    // Objects the device may still use are leaked rather than destroyed: this
+    // slot's, and on a poisoned device any (a broken slot's batch may still
+    // wait on this slot's timeline).
+    if (state_ == State::broken || state_ == State::pending || device_->poisoned()) return;
     const VolkDeviceTable& vk = device_->vk();
     const VkDevice handle = device_->handle();
     if (queries_) vk.vkDestroyQueryPool(handle, queries_, nullptr);

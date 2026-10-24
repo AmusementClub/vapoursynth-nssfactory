@@ -24,6 +24,8 @@ namespace nss_vk {
 // Appended to every shared k<Filter>Signature (D21).
 inline constexpr const char* kBackendSignature = "device_id:int:opt;num_streams:int:opt;";
 inline constexpr int kDefaultStreams = 1;
+// memory_limit_mb when the argument is not given: 0, no limit (as nss_cuda).
+inline constexpr int kDefaultMemoryLimitMb = 0;
 inline constexpr int kMaxStreams = 16;
 // Host waits on the device are bounded (the GPU may drive a desktop). A frame
 // that has not finished after this long is an error; NSS_VK_WAIT_TIMEOUT_MS

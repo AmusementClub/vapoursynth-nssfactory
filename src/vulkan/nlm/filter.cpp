@@ -25,6 +25,7 @@
 #include <array>
 #include <condition_variable>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -47,6 +48,9 @@ constexpr int kTileWidth = 32, kTileHeight = 32, kTileThreads = kTileWidth * kTi
 constexpr std::size_t kTileSharedBytes = 48 * 1024;
 constexpr int kTileFixedS = 8;
 // Frames in flight beyond num_streams on the tile path (nss_cuda's stages).
+// nss_cuda's two extra stages are host staging around its streams; here every
+// frame in flight is a Slot of its own (command buffers, timeline, readback):
+// the tile path has num_streams + 2 slots, the plane path num_streams.
 constexpr std::size_t kTileExtraSlots = 2;
 
 constexpr int map_pitch(int floats) { return (floats + 3) & ~3; }
@@ -199,8 +203,15 @@ void read_result(const NlmData& d, const DownloadPlane& out, VSFrame* dst, const
     }
 }
 
-void plane_frame(NlmData& d, const Frames& srcf, const Frames& reff, VSFrame* dst, const VSAPI* vsapi) {
+// The output frame is made once the request holds its slot (make_output), so
+// that frames in flight, and their charges, stay within the slots the memory
+// plan counts however many VapourSynth threads ask.
+using MakeOutput = std::function<VSFrame*()>;
+
+void plane_frame(NlmData& d, const Frames& srcf, const Frames& reff, const MakeOutput& make_output,
+                 const VSAPI* vsapi) {
     auto lease = d.pool->acquire();
+    VSFrame* dst = make_output();
     PlaneSlot& p = *lease;
     Slot& slot = p.slot;
     const int w = d.width, h = d.height;
@@ -362,7 +373,8 @@ private:
     std::vector<WindowFrame*> slots_, pinned_, uploads_;
 };
 
-void tile_frame(NlmData& d, int n, const Frames& srcf, const Frames& reff, VSFrame* dst, const VSAPI* vsapi) {
+void tile_frame(NlmData& d, int n, const Frames& srcf, const Frames& reff, const MakeOutput& make_output,
+                const VSAPI* vsapi) {
     // The pins outlive the lease: returning it settles the slot (waits for
     // submitted work), and only then may other requests reuse the cache
     // frames this frame reads.
@@ -383,6 +395,7 @@ void tile_frame(NlmData& d, int n, const Frames& srcf, const Frames& reff, VSFra
     if (!staged) window.mark_queued(VK_NULL_HANDLE, 0);
     window.wait_queued();
     auto lease = d.tile_pool->acquire();
+    VSFrame* dst = make_output();
     Slot& slot = lease->slot;
     if (staged) {
         for (WindowFrame* f : window.uploads()) store.record_upload(slot.commands(Slot::Upload), f->region);
@@ -445,21 +458,24 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
     }
     const VSFrame* src_center = srcf[d->d];
     VSFrame* dst = nullptr;
-    if (d->channels == nss::ChannelMode::Y && d->vi.format.numPlanes > 1) {
-        const VSFrame* fr[3]{nullptr, src_center, src_center};
-        const int pl[3]{0, 1, 2};
-        dst = frames.newVideoFrame2(&d->vi.format, d->vi.width, d->vi.height, fr, pl, src_center, core);
-    } else if (d->channels == nss::ChannelMode::UV && d->vi.format.numPlanes > 1) {
-        const VSFrame* fr[3]{src_center, nullptr, nullptr};
-        const int pl[3]{0, 1, 2};
-        dst = frames.newVideoFrame2(&d->vi.format, d->vi.width, d->vi.height, fr, pl, src_center, core);
-    } else {
-        dst = frames.newVideoFrame(&d->vi.format, d->vi.width, d->vi.height, src_center, core);
-    }
+    const MakeOutput make_output = [&]() -> VSFrame* {
+        if (d->channels == nss::ChannelMode::Y && d->vi.format.numPlanes > 1) {
+            const VSFrame* fr[3]{nullptr, src_center, src_center};
+            const int pl[3]{0, 1, 2};
+            dst = frames.newVideoFrame2(&d->vi.format, d->vi.width, d->vi.height, fr, pl, src_center, core);
+        } else if (d->channels == nss::ChannelMode::UV && d->vi.format.numPlanes > 1) {
+            const VSFrame* fr[3]{src_center, nullptr, nullptr};
+            const int pl[3]{0, 1, 2};
+            dst = frames.newVideoFrame2(&d->vi.format, d->vi.width, d->vi.height, fr, pl, src_center, core);
+        } else {
+            dst = frames.newVideoFrame(&d->vi.format, d->vi.width, d->vi.height, src_center, core);
+        }
+        return dst;
+    };
     if (d->tiles) {
-        tile_frame(*d, n, srcf, reff, dst, vsapi);
+        tile_frame(*d, n, srcf, reff, make_output, vsapi);
     } else {
-        plane_frame(*d, srcf, reff, dst, vsapi);
+        plane_frame(*d, srcf, reff, make_output, vsapi);
     }
     for (int t = 0; t < ntemp; ++t) {
         frames.freeFrame(srcf[t]);
@@ -506,6 +522,9 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     d->plane_bytes = static_cast<std::size_t>(d->width) * d->height * sizeof(float);
     const std::size_t row_bytes = static_cast<std::size_t>(d->width) * sizeof(float);
     const std::size_t frame_bytes = d->plane_bytes * static_cast<std::size_t>(planes_per_frame(*d));
+    // The plan assumes BAR uploads on a ReBAR device. Should BAR memory run
+    // out (other users), PlaneStore falls back to staging, which doubles the
+    // cache: under a limit that is reported as memory_limit_mb exceeded.
     const bool staged = !d->device->rebar();
 
     const std::size_t limit = d->budget ? d->budget->snapshot().limit : SIZE_MAX;
@@ -530,7 +549,8 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     d->tiles = 2 * d->d + 1 <= kTileFrames &&
                shared_maps * static_cast<long long>(sizeof(float)) <= static_cast<long long>(kTileSharedBytes) &&
                d->device->caps().max_workgroup_invocations >= static_cast<std::uint32_t>(kTileThreads) &&
-               // Float offsets into the cache are 32-bit.
+               // Float offsets into the cache are 32-bit (the plane path's into
+               // its three frames are too: fine up to planes of 2^30 / 3 floats).
                frame_bytes / sizeof(float) * (window + slots + 1) < (1ull << 32);
     if (d->tiles) {
         cached = window + slots;
@@ -602,7 +622,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
 
 void register_nlm(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
     static const std::string args = signature(nss::frontend::kNlmSignature);
-    vspapi->registerFunction("NLM", args.c_str(), "clip:vnode;", nss::checked_create<create, 0>, nullptr, plugin);
+    vspapi->registerFunction("NLM", args.c_str(), "clip:vnode;", nss::checked_create<create, kDefaultMemoryLimitMb>, nullptr, plugin);
 }
 
 }  // namespace nss_vk

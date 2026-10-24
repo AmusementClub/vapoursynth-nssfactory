@@ -150,8 +150,8 @@ def main():
             count += 1
             if value < floor:
                 failures.append(f"order {label} frame {n}: psnr {value:.2f} < {floor}")
-        # One node asked in order keeps what a frame computed for the next one
-        # (the weight maps of d = 1): the frames must be those of the fresh nodes.
+        # One node asked in order keeps the window frames on the device between
+        # requests: the frames must be those of the fresh nodes.
         node = vk(clip, num_streams=1, **kw)
         for n in range(clip.num_frames):
             count += 1
@@ -168,6 +168,31 @@ def main():
                 count += 1
                 if any(not np.array_equal(x, y) for x, y in zip(got, expected[n])):
                     failures.append(f"order {label} streams {streams} frame {n}: differs from the in-order frame")
+    # memory_limit_mb, downward until refused (where depends on BAR uploads):
+    # smaller caches down to the bare window must give the same frames within
+    # their limit; below the smallest plan, creation fails naming the limit.
+    big = make_clip(core, vs.GRAYS, 1280, 720, 31, length=6)
+    reference = [frame_planes(vk(big), n) for n in range(big.num_frames)]
+    accepted = []
+    for limit in (80, 60, 50, 40, 34, 30, 26, 23, 20, 4):
+        try:
+            node = vk(big, memory_limit_mb=limit)
+            futures = [(n, node.get_frame_async(n)) for n in [5, 0, 3, 1, 4, 2] * 2]
+            for n, future in futures:
+                f = future.result()
+                count += 1
+                if any(not np.array_equal(np.array(f[p], dtype=np.float64), reference[n][p]) for p in range(f.format.num_planes)):
+                    failures.append(f"memory_limit_mb={limit} frame {n}: differs from the unlimited frame")
+                if f.props.get("_NSSResourcePeak", 0) > limit << 20:
+                    failures.append(f"memory_limit_mb={limit} frame {n}: peak {f.props['_NSSResourcePeak']} over the limit")
+            accepted.append(limit)
+        except vs.Error as error:
+            if "memory_limit_mb" not in str(error):
+                failures.append(f"memory_limit_mb={limit}: unexpected error {error}")
+            elif accepted and accepted[-1] < limit:
+                failures.append(f"memory_limit_mb={limit} refused after {accepted[-1]} was accepted")
+    if len(accepted) < 3 or 4 in accepted:
+        failures.append(f"memory_limit_mb: accepted {accepted}")
     # More VapourSynth threads than slots: requests that wait for a frame
     # another request uploads must not hold the slots that one needs.
     core.num_threads = 16

@@ -54,5 +54,12 @@ if(TARGET nss)
              COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_vk_${filter}_live.py"
                      --cpu "$<TARGET_FILE:nss>" --vk "${NSS_VK_PLUGIN}")
     set_tests_properties(test_vk_${filter}_live PROPERTIES LABELS vk SKIP_RETURN_CODE 77)
+    # Staged uploads on one copy queue: the cross-slot upload waits and the
+    # deferred downloads.
+    add_test(NAME test_vk_${filter}_live_staged
+             COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_vk_${filter}_live.py"
+                     --cpu "$<TARGET_FILE:nss>" --vk "${NSS_VK_PLUGIN}" --quick)
+    set_tests_properties(test_vk_${filter}_live_staged PROPERTIES LABELS vk SKIP_RETURN_CODE 77
+                         ENVIRONMENT "NSS_VK_REBAR=0;NSS_VK_COPY_QUEUES=1")
   endforeach()
 endif()
