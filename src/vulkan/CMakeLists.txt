@@ -39,6 +39,35 @@ foreach(_nss_s RANGE -1 8)
                       DEFINES S=${_nss_s} IMG=${_nss_img})
   endforeach()
 endforeach()
+# Warp layer test (tests/vk/test_vk_warp.cpp): segments of 1 to 32 lanes,
+# native (n) and emulated (e).
+foreach(_nss_l 1 2 4 8 16 32)
+  nss_vk_add_shader(NSS_VK_SPIRV_SOURCES test_warp_l${_nss_l}_n test/warp.comp DEFINES WARP_L=${_nss_l} WARP_EMULATED=0)
+  nss_vk_add_shader(NSS_VK_SPIRV_SOURCES test_warp_l${_nss_l}_e test/warp.comp DEFINES WARP_L=${_nss_l} WARP_EMULATED=1)
+endforeach()
+# Block matching lane kernels (V3, common/match_lane.comp): the BM3D blocks,
+# one channel, 8 / 16 / 32 lanes a reference, spatial (s) and predictive (p),
+# native (n) and emulated (e; D22 does not guarantee even 8-lane subgroups).
+foreach(_nss_b 1 2 4 8 12 16 32)
+  if(_nss_b EQUAL 32)
+    set(_nss_lanes 32)
+  else()
+    set(_nss_lanes 8 16 32)
+  endif()
+  foreach(_nss_l IN LISTS _nss_lanes)
+    foreach(_nss_kind s p)
+      if(_nss_kind STREQUAL "p")
+        set(_nss_pred 1)
+      else()
+        set(_nss_pred 0)
+      endif()
+      nss_vk_add_shader(NSS_VK_SPIRV_SOURCES match_lane_b${_nss_b}_l${_nss_l}_c1_${_nss_kind}_n common/match_lane.comp
+                        DEFINES B=${_nss_b} L=${_nss_l} C=1 PREDICTIVE=${_nss_pred} WARP_EMULATED=0)
+      nss_vk_add_shader(NSS_VK_SPIRV_SOURCES match_lane_b${_nss_b}_l${_nss_l}_c1_${_nss_kind}_e common/match_lane.comp
+                        DEFINES B=${_nss_b} L=${_nss_l} C=1 PREDICTIVE=${_nss_pred} WARP_EMULATED=1)
+    endforeach()
+  endforeach()
+endforeach()
 set(_nss_kernel 0)
 foreach(_nss_name hsum accumulate reset finish)
   nss_vk_add_shader(NSS_VK_SPIRV_SOURCES nlm_plane_${_nss_name} nlm/plane.comp DEFINES KERNEL=${_nss_kernel})
@@ -121,6 +150,7 @@ set_target_properties(nss_vk_shaders PROPERTIES
 
 # nss_vk_core: host runtime + embedded shaders, static so tests/vk can link it.
 add_library(nss_vk_core STATIC
+  common/match.cpp
   runtime/context.cpp
   runtime/device.cpp
   runtime/error.cpp

@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: GPL-2.0-only
+// Warp layer test (tests/vk/test_vk_warp.cpp): every operation of
+// common/warp.glsl on known inputs, one record of kOut words per lane, so the
+// native and emulated layers can be compared lane by lane and with the host.
+// Test only: embedded with the plugin's shaders like every listed variant.
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_GOOGLE_include_directive : require
+
+#define WARP_WARPS 4
+#include "common/warp.glsl"
+
+layout(local_size_x = 32 * WARP_WARPS) in;
+
+layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer In { uint v[]; };
+layout(buffer_reference, std430, buffer_reference_align = 4) writeonly buffer Out { uint v[]; };
+layout(push_constant) uniform Push {
+    uint64_t input_words;
+    uint64_t result;
+} pc;
+
+const int kOut = 11;
+
+void main() {
+    const int seg = w_segment(), sub = w_sub();
+    const int lane = seg * WARP_L + sub;
+    const uint u = In(pc.input_words).v[lane];
+    // Built from bits (no arithmetic the compiler could contract): [1, 2) * 2^(u % 8).
+    const float f = uintBitsToFloat(((u >> 9) & 0x7fffffu) | ((127u + (u % 8u)) << 23));
+    const uint64_t wide = (uint64_t(u) << 32) | uint64_t(u * 2654435761u);
+    const uint64_t moved = w_shfl64(wide, (sub * 3 + 1) % WARP_L);
+    const uint64_t up = w_up64(wide);
+    uint o[kOut];
+    o[0] = w_xor(u, WARP_L > 1 ? WARP_L / 2 : 0);
+    o[1] = w_shfl(u, (sub * 3 + 1) % WARP_L);
+    o[2] = uint(moved >> 32);
+    o[3] = uint(moved);
+    o[4] = uint(up >> 32);
+    o[5] = uint(up);
+    o[6] = w_ballot((u & 1u) != 0u);
+    o[7] = uint(w_count(u % 3u == 0u));
+    o[8] = floatBitsToUint(w_sum_f(f));
+    o[9] = w_any(u == uint(seg)) ? 1u : 0u;  // native only: constant true when emulated
+    o[10] = floatBitsToUint(w_sum_up_f(f));
+    [[unroll]] for (int k = 0; k < kOut; ++k) Out(pc.result).v[lane * kOut + k] = o[k];
+}

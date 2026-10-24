@@ -1,0 +1,260 @@
+// SPDX-License-Identifier: GPL-2.0-only
+// Block matching, lane kernels: the GLSL port of nss_cuda's
+// spatial_match_lane_kernel and predictive_match_lane_kernel
+// (src/cuda/common/match.cu), for the CPU matcher contract (reference first,
+// then (finite, distance, t, y, x)). L lanes serve one reference and hold its
+// list, one entry a lane, as 64-bit keys (distance bits << 32 | y << 16 | x).
+// Per lane an fma chain over the block rows (columns inner), then a butterfly
+// over the lanes of a candidate: the same arithmetic order as CUDA. Lane
+// state changes by selects between subgroup operations: without maximal
+// reconvergence (not in D22) a divergent branch may leave a later ballot or
+// shuffle with part of the subgroup.
+//
+// Defines: B (block), L (lanes per reference, 8 / 16 / 32), C (channels, 1 or
+// 3 joint), PREDICTIVE (0 spatial, 1 the predictive temporal search),
+// WARP_EMULATED (common/warp.glsl). Four 32-lane warps a workgroup.
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_GOOGLE_include_directive : require
+
+#define WARP_L L
+#define WARP_WARPS 4
+#include "common/warp.glsl"
+
+layout(local_size_x = 32 * WARP_WARPS) in;
+
+struct Match {
+    int x;
+    int y;
+    int t;
+    float dist;
+};
+layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer Plane { float v[]; };
+layout(buffer_reference, std430, buffer_reference_align = 8) readonly buffer Table { uint64_t p[]; };
+layout(buffer_reference, std430, buffer_reference_align = 16) writeonly buffer Matches { Match m[]; };
+layout(buffer_reference, std430, buffer_reference_align = 4) writeonly buffer Counts { int c[]; };
+
+layout(push_constant) uniform Push {
+    uint64_t source;   // spatial: the plane; predictive: a table of ntemp plane addresses
+    uint64_t matches;  // ref_count * group entries, group-strided
+    uint64_t counts;   // ref_count
+    int64_t channel_step;  // floats from channel c to c + 1 of a frame (C = 3)
+    int width, height, pitch, group;
+    int lo, hi;            // window [c - lo, c + hi]
+    int nx, step, max_x, max_y;  // raster grid
+    int ref_begin, ref_count;
+    int t0, radius, ntemp, valid_begin, valid_end, ps_num, ps_range;  // predictive
+} pc;
+
+// Lanes that total one candidate, block columns a lane owns, and candidates
+// summed at once (nss_cuda's kLaneWidth, kLaneCols, kLaneParts).
+const int KWIDTH = L <= B ? L : (B <= 1 ? 1 : B <= 2 ? 2 : B <= 4 ? 4 : B <= 8 ? 8 : B <= 16 ? 16 : 32);
+const int KCOLS = L <= B ? (B + L - 1) / L : 1;
+const int KPARTS = L / KWIDTH;
+const bool KEVEN = B % KWIDTH == 0;
+const uint INF_BITS = 0x7f800000u;
+const uint64_t EMPTY = 0xffffffffffffffffUL;
+
+int lane_column(int sub, int c) { return sub % KWIDTH + c * KWIDTH; }
+uint lane_position(int x, int y) { return uint(y) << 16 | uint(x); }
+
+// Channel ch of a joint frame starts channel_step floats after the one before.
+float plane_at(uint64_t plane, int ch, int index) {
+    if (C == 1) return Plane(plane).v[index];
+    return Plane(plane + uint64_t(int64_t(ch) * pc.channel_step * 4l)).v[index];
+}
+
+// The lane's terms of the reference block, channel by channel and row-major.
+float g_ref[C * B * KCOLS];
+
+void lane_reference(uint64_t plane, int cx, int cy, int sub) {
+    [[unroll]] for (int ch = 0; ch < C; ++ch) {
+        [[unroll]] for (int row = 0; row < B; ++row) {
+            [[unroll]] for (int c = 0; c < KCOLS; ++c) {
+                g_ref[(ch * B + row) * KCOLS + c] =
+                    plane_at(plane, ch, (cy + row) * pc.pitch + cx + min(lane_column(sub, c), B - 1));
+            }
+        }
+    }
+}
+
+// Written out: a shift-stepped loop does not unroll in the SPIR-V.
+float lane_tree(float sum) {
+    if (KWIDTH > 1) sum += w_xor_f(sum, 1);
+    if (KWIDTH > 2) sum += w_xor_f(sum, 2);
+    if (KWIDTH > 4) sum += w_xor_f(sum, 4);
+    if (KWIDTH > 8) sum += w_xor_f(sum, 8);
+    if (KWIDTH > 16) sum += w_xor_f(sum, 16);
+    return sum;
+}
+
+// Candidates of the window [mx - lo, mx + hi] x [my - lo, my + hi] of
+// `plane` into the lane-held list `held` (nss_cuda's lane_scan). `skip` never
+// enters (the reference itself), `enabled` switches the window off. With
+// dedupe a key already held is dropped (a position scanned twice from two
+// overlapping windows has the same key both times). Every invocation runs the
+// same iterations: the loop bounds depend on lo and hi only.
+void lane_scan(uint64_t plane, int mx, int my, int lo, int hi, bool enabled, uint skip, bool dedupe,
+               inout uint64_t held) {
+    const int sub = w_sub();
+    int column[KCOLS];
+    bool has[KCOLS];
+    [[unroll]] for (int c = 0; c < KCOLS; ++c) {
+        has[c] = KEVEN || lane_column(sub, c) < B;
+        column[c] = min(lane_column(sub, c), B - 1);
+    }
+    const int max_x = pc.width - B, max_y = pc.height - B, last_row = pc.height - 1;
+    const int bottom = my + hi;
+    for (int x0 = mx - lo; x0 <= mx + hi; x0 += KPARTS) {
+        const int x = x0 + sub / KWIDTH;  // this part's column
+        const bool col_ok = enabled && x >= 0 && x <= max_x && x <= mx + hi;
+        const int col = clamp(x, 0, max_x);
+        // v[(ch * KCOLS + c) * B + k]: row y + k of the candidate's block. The
+        // rows move down one slot per candidate and the new row enters last:
+        // constant indices only (nss_cuda's ring of slots (i + 1 + k) % B needs
+        // its phase loop unrolled, which a break in it prevents in the SPIR-V,
+        // and a dynamic index puts the array in local memory). The sum runs
+        // over k ascending either way: the same bits.
+        float v[C * KCOLS * B];
+        [[unroll]] for (int k = 1; k < B; ++k) {
+            const int row = clamp(my - lo + k - 1, 0, last_row) * pc.pitch + col;
+            [[unroll]] for (int ch = 0; ch < C; ++ch) {
+                [[unroll]] for (int c = 0; c < KCOLS; ++c) v[(ch * KCOLS + c) * B + k] = plane_at(plane, ch, row + column[c]);
+            }
+        }
+        for (int y = my - lo; y <= bottom; ++y) {
+            {
+                const int row = clamp(y + B - 1, 0, last_row) * pc.pitch + col;
+                precise float sum = 0.0f;
+                [[unroll]] for (int ch = 0; ch < C; ++ch) {
+                    [[unroll]] for (int c = 0; c < KCOLS; ++c) {
+                        [[unroll]] for (int k = 0; k < B - 1; ++k) v[(ch * KCOLS + c) * B + k] = v[(ch * KCOLS + c) * B + k + 1];
+                        v[(ch * KCOLS + c) * B + B - 1] = plane_at(plane, ch, row + column[c]);
+                    }
+                    [[unroll]] for (int k = 0; k < B; ++k) {
+                        [[unroll]] for (int c = 0; c < KCOLS; ++c) {
+                            precise float d = has[c] ? g_ref[(ch * B + k) * KCOLS + c] - v[(ch * KCOLS + c) * B + k] : 0.0f;
+                            sum = fma(d, d, sum);
+                        }
+                    }
+                }
+                // The same value on every lane of the candidate.
+                sum = lane_tree(sum);
+                const uint at = lane_position(x, y);
+                const bool ok = col_ok && y >= 0 && y <= max_y && at != skip;
+                const uint64_t mine = ok ? (uint64_t(min(floatBitsToUint(sum), INF_BITS)) << 32 | uint64_t(at)) : EMPTY;
+                [[unroll]] for (int part = 0; part < KPARTS; ++part) {
+#if L <= B
+                    const uint64_t key = mine;  // KPARTS == 1
+#else
+                    const uint64_t key = w_shfl64(mine, part * KWIDTH);
+#endif
+                    bool enters = key < held;
+                    if (dedupe) {
+                        // Every lane takes part in the ballot: computed first, not as
+                        // `enters && ...`, which would skip it on the lanes where
+                        // enters is false, among them the one holding the key.
+                        const int same = w_count(held == key);
+                        enters = enters && same == 0;
+                    }
+                    // Most candidates enter no list: the shift is skipped then (w_any
+                    // is uniform over the subgroup). The update is a select, not a
+                    // branch: Vulkan does not promise that the invocations of a
+                    // subgroup reconverge after divergent control flow (no
+                    // maximal reconvergence in D22), and the next ballot needs
+                    // every lane of the segment.
+                    if (w_any(enters)) {
+                        const uint64_t pre = w_up64(held);
+                        held = enters ? ((sub == 0 || !(key < pre)) ? key : pre) : held;
+                    }
+                }
+            }
+        }
+    }
+}
+
+Match lane_match(uint64_t key, int t) {
+    const uint at = uint(key), bits = uint(key >> 32);
+    return Match(int(at & 0xffffu), int(at >> 16), t, uintBitsToFloat(bits));
+}
+
+void main() {
+    const int sub = w_sub();
+    const int r = w_segment();
+    const bool live = r < pc.ref_count;
+    const int rr = live ? r : pc.ref_count - 1;  // idle lanes mirror the last reference and store nothing
+    const int gi = pc.ref_begin + rr;
+    const int cx = min((gi % pc.nx) * pc.step, pc.max_x);
+    const int cy = min((gi / pc.nx) * pc.step, pc.max_y);
+    const int wanted = pc.group - 1;
+    uint64_t held = EMPTY;
+#if PREDICTIVE
+    const int t0 = pc.t0;
+    const uint64_t center_plane = Table(pc.source).p[t0];
+    lane_reference(center_plane, cx, cy, sub);
+    lane_scan(center_plane, cx, cy, pc.lo, pc.hi, true, lane_position(cx, cy), false, held);
+    held = sub >= wanted ? EMPTY : held;
+    int held_t = t0;
+    if (pc.radius > 0 && pc.ntemp > 1) {
+        // Seeds: the reference itself followed by the best spatial matches.
+        const int spatial = w_count(held != EMPTY);
+        const int seed_count = min(1 + spatial, pc.ps_num);
+        const uint shifted = uint(w_up64(held));
+        const uint seeds = sub == 0 ? lane_position(cx, cy) : shifted;
+        const int first = max(0, pc.valid_begin);
+        const int last = pc.valid_end < 0 ? pc.ntemp : min(pc.ntemp, pc.valid_end);
+        const int local_k = min(pc.ps_num, pc.group);
+        for (int sign = -1; sign <= 1; sign += 2) {
+            uint centers = seeds;
+            int nc = seed_count;
+            for (int dt = 1; dt <= pc.radius; ++dt) {
+                const int t = t0 + sign * dt;
+                if (t < first || t >= last) break;
+                const uint64_t plane = Table(pc.source).p[t];
+                uint64_t local = EMPTY;
+                for (int i = 0; i < pc.ps_num; ++i) {
+                    const uint c = w_shfl(centers, i);
+                    lane_scan(plane, int(c & 0xffffu), int(c >> 16), pc.ps_range, pc.ps_range, i < nc, 0xffffffffu, true,
+                              local);
+                }
+                const int found = w_count(sub < local_k && local != EMPTY);
+                // The layer's best into the global list, one at a time.
+                for (int i = 0; i < pc.ps_num; ++i) {
+                    const uint64_t e = w_shfl64(local, i);
+                    const uint64_t pre = w_up64(held);
+                    const int pre_t = int(w_up(uint(held_t)));
+                    const uint bits = uint(e >> 32), at = uint(e);
+                    const uint h_bits = uint(held >> 32), p_bits = uint(pre >> 32);
+                    const bool before_held =
+                        bits < h_bits || (bits == h_bits && (t < held_t || (t == held_t && at < uint(held))));
+                    const bool before_pre =
+                        bits < p_bits || (bits == p_bits && (t < pre_t || (t == pre_t && at < uint(pre))));
+                    // Selects, not a branch (see lane_scan).
+                    const bool insert = i < found && before_held;
+                    const bool head = sub == 0 || !before_pre;
+                    held = insert ? (head ? e : pre) : held;
+                    held_t = insert ? (head ? t : pre_t) : held_t;
+                }
+                centers = uint(local);
+                nc = found;  // none: the later layers of this direction find nothing either
+            }
+        }
+    }
+#else
+    const int held_t = 0;
+    const int t0 = 0;
+    lane_reference(pc.source, cx, cy, sub);
+    lane_scan(pc.source, cx, cy, pc.lo, pc.hi, true, lane_position(cx, cy), false, held);
+#endif
+    const bool mine = sub < wanted && held != EMPTY;
+    const int filled = w_count(mine);
+    if (!live) return;
+    const int dst = r * pc.group;
+    if (mine) Matches(pc.matches).m[dst + 1 + sub] = lane_match(held, held_t);
+    if (sub == 0) {
+        Matches(pc.matches).m[dst] = Match(cx, cy, t0, 0.0f);
+        Counts(pc.counts).c[r] = 1 + filled;
+    }
+}
