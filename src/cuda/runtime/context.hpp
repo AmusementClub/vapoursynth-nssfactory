@@ -15,9 +15,12 @@ namespace nss_cuda {
 
 // Appended to every shared k<Filter>Signature.
 inline constexpr const char* kBackendSignature = "device_id:int:opt;num_streams:int:opt;";
-// One stream unless num_streams asks for more. More slots hide the per-frame
-// host staging copies behind device work (1080p BM3D: 286 fps with 2, 357
-// with 3, 360 with 4 on an RTX 5080) at one set of device buffers each.
+// Streams when num_streams is not given: one, unless more measured faster
+// for the filter (fewer where memory_limit_mb requires). Each stream is a set
+// of device buffers; further streams overlap a frame's transfers and host
+// work with another frame's kernels, which pays where those leave the GPU
+// idle and not where kernels dominate (1080p, RTX 5080:
+// docs/api/cuda/README.md#shared-by-every-filter).
 inline constexpr int kDefaultStreams = 1;
 // temporal_mode when the argument is not given: finished frames, so that only
 // they cross back to the host. "legacy" still returns the fat intermediate.

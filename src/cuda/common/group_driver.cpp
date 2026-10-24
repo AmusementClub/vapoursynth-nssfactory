@@ -404,6 +404,17 @@ void choose_roll_layout(Driver& d, const SlotPlan& sp, std::size_t limit) {
     d.staging_bytes = rolling ? roll_staging_bytes(d, per_plane) : d.plane_floats * sizeof(float) * d.regions;
 }
 
+// With pinned staging the host copies bound most filters and one stream
+// keeps up; direct DMA takes them out, and further streams then fill the
+// gaps a frame's transfers leave between its kernels (1080p: BM3D YUV420
+// 500 to 570 fps with two or three streams, MCWNNM RGB 184 to 237 with two
+// and 269 with three; without direct DMA 0.99x for both).
+std::size_t implicit_streams(const Driver& d) {
+    if (d.mode == GroupMode::Rolling) return kDefaultStreams;
+    const bool direct = d.frame_memory && d.frame_memory->available();
+    return static_cast<std::size_t>(direct ? d.direct_streams : d.default_streams);
+}
+
 // The streams, unless given: the most that still run a whole plane as one
 // batch (extra batches cost a matching/aggregation launch each), otherwise
 // the most that fit at all. Each must have room for a minimum batch.
@@ -416,7 +427,7 @@ void choose_streams(Driver& d, const SlotPlan& sp, std::size_t fixed, std::size_
         }
         const std::size_t whole = limit / (fixed + full_batch * 4 / 3 + 4096);
         d.backend.num_streams = static_cast<int>(
-            std::clamp<std::size_t>(whole >= 1 ? whole : limit / need, 1, kDefaultStreams));
+            std::clamp<std::size_t>(whole >= 1 ? whole : limit / need, 1, implicit_streams(d)));
     }
     if (limit / static_cast<std::size_t>(d.backend.num_streams) < need) {
         throw std::invalid_argument(prefix(d) + "memory_limit_mb is too small for this clip: each of the " +
@@ -1625,6 +1636,7 @@ void group_filter_install(GroupFilterConfig&& config, VSMap* out, VSCore* core, 
         }
     }
     DeviceGuard guard(d->device.index);
+    d->frame_memory = std::make_unique<FrameMemory>(core, vsapi);
     plan_planes(*d);
     d->cache.configure(d->rolling.rolling_chunk, d->frame_bytes, d->plane_offset, d->cache_size, d->cache_cap,
                        pinned_blocks(d->budget));
@@ -1637,8 +1649,6 @@ void group_filter_install(GroupFilterConfig&& config, VSMap* out, VSCore* core, 
         for (int i = 0; i < d->staging_sets; ++i) sets.push_back(make_staging(*d));
         d->staging = std::make_unique<SlotPool<Staging>>(std::move(sets));
     }
-
-    d->frame_memory = std::make_unique<FrameMemory>(core, vsapi);
 
     const auto pattern = d->mode == GroupMode::Spatial ? rpStrictSpatial : rpGeneral;
     VSFilterDependency deps[2]{{d->node, pattern}, {d->guide, pattern}};

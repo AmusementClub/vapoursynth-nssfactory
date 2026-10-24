@@ -1407,7 +1407,11 @@ MemoryPlan plan_memory(ImageData& d) {
     }
     const std::size_t limit = total == SIZE_MAX ? SIZE_MAX : total - shared_cache;
     if (!d.backend.streams_explicit) {
-        d.backend.num_streams = static_cast<int>(std::clamp<std::size_t>(limit / slot_bytes(arena_cap), 1, kDefaultStreams));
+        // Frames in flight pay for TWSC (1080p gray: 137 fps with one stream,
+        // 142 with two, 168 with three) and not for NLH (YUV420 0.95x with
+        // three); rolling chunks were not measured and keep one.
+        const std::size_t streams = twsc && !d.rolling ? 3 : kDefaultStreams;
+        d.backend.num_streams = static_cast<int>(std::clamp<std::size_t>(limit / slot_bytes(arena_cap), 1, streams));
     }
     const std::size_t share = limit == SIZE_MAX ? SIZE_MAX : limit / static_cast<std::size_t>(d.backend.num_streams);
     if (share < slot_bytes(one_group) && d.match_scratch) {
