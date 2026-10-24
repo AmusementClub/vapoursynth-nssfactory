@@ -2,7 +2,7 @@
 // D23 warp layer (shaders/common/warp.glsl): the native layer (subgroup
 // operations at a required subgroup size) and the emulated one (shared
 // memory and barriers) on the same inputs, lane by lane against a host model
-// of nss_cuda's warp operations, for segments of 4 to 32 lanes. Exits 77
+// of nss_cuda's warp operations, for segments of 1 to 32 lanes. Exits 77
 // without a Vulkan device; an explicit device id may name an unsupported one
 // (lavapipe).
 //
@@ -25,7 +25,7 @@ namespace {
 
 using namespace nss_vk;
 
-constexpr int kOut = 10;
+constexpr int kOut = 11;
 constexpr int kGroups = 8, kThreads = 128;
 constexpr int kLanes = kGroups * kThreads;
 
@@ -53,10 +53,16 @@ std::vector<std::uint32_t> model(const std::vector<std::uint32_t>& in, int L) {
             count += u[i] % 3u == 0u;
             any = any || u[i] == static_cast<std::uint32_t>(seg);
         }
+        std::vector<float> ascending = sum;
         for (int m = L / 2; m >= 1; m /= 2) {  // the butterfly of w_sum_f
             std::vector<float> next(L);
             for (int i = 0; i < L; ++i) next[i] = sum[i] + sum[i ^ m];
             sum = next;
+        }
+        for (int m = 1; m < L; m *= 2) {  // and of w_sum_up_f
+            std::vector<float> next(L);
+            for (int i = 0; i < L; ++i) next[i] = ascending[i] + ascending[i ^ m];
+            ascending = next;
         }
         for (int i = 0; i < L; ++i) {
             std::uint32_t* o = out.data() + (static_cast<std::size_t>(seg) * L + i) * kOut;
@@ -72,6 +78,7 @@ std::vector<std::uint32_t> model(const std::vector<std::uint32_t>& in, int L) {
             o[7] = count;
             o[8] = std::bit_cast<std::uint32_t>(sum[i]);
             o[9] = any ? 1u : 0u;
+            o[10] = std::bit_cast<std::uint32_t>(ascending[i]);
         }
     }
     return out;
@@ -122,7 +129,7 @@ int main(int argc, char** argv) {
     for (std::uint32_t& u : in) u = rng();
     for (int i = 0; i < kLanes; i += 37) in[static_cast<std::size_t>(i)] = static_cast<std::uint32_t>(i / 4);  // w_any hits
     int failures = 0, checked = 0;
-    for (int L : {4, 8, 16, 32}) {
+    for (int L : {1, 2, 4, 8, 16, 32}) {
         const std::vector<std::uint32_t> expected = model(in, L);
         // Native at the widest selectable subgroup up to 32 that L divides.
         const std::uint32_t width = std::min<std::uint32_t>(caps.max_subgroup_size, 32);
@@ -139,7 +146,7 @@ int main(int argc, char** argv) {
                 for (int k = 0; k < kOut; ++k) {
                     const std::size_t at = static_cast<std::size_t>(lane) * kOut + k;
                     // w_any: true whenever the segment's predicate is (more lanes may count).
-                    const bool ok = k == kOut - 1 ? got[at] >= expected[at] : got[at] == expected[at];
+                    const bool ok = k == 9 ? got[at] >= expected[at] : got[at] == expected[at];
                     if (!ok && bad++ < 5) {
                         std::fprintf(stderr, "FAIL: %s lane %d op %d: %08x != %08x\n", id.c_str(), lane, k, got[at],
                                      expected[at]);

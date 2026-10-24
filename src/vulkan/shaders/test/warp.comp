@@ -2,6 +2,7 @@
 // Warp layer test (tests/vk/test_vk_warp.cpp): every operation of
 // common/warp.glsl on known inputs, one record of kOut words per lane, so the
 // native and emulated layers can be compared lane by lane and with the host.
+// Test only: embedded with the plugin's shaders like every listed variant.
 #version 460
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
@@ -20,7 +21,7 @@ layout(push_constant) uniform Push {
     uint64_t result;
 } pc;
 
-const int kOut = 10;
+const int kOut = 11;
 
 void main() {
     const int seg = w_segment(), sub = w_sub();
@@ -42,5 +43,6 @@ void main() {
     o[7] = uint(w_count(u % 3u == 0u));
     o[8] = floatBitsToUint(w_sum_f(f));
     o[9] = w_any(u == uint(seg)) ? 1u : 0u;  // native only: constant true when emulated
+    o[10] = floatBitsToUint(w_sum_up_f(f));
     [[unroll]] for (int k = 0; k < kOut; ++k) Out(pc.result).v[lane * kOut + k] = o[k];
 }

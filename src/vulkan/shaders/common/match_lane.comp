@@ -111,28 +111,31 @@ void lane_scan(uint64_t plane, int mx, int my, int lo, int hi, bool enabled, uin
         const int x = x0 + sub / KWIDTH;  // this part's column
         const bool col_ok = enabled && x >= 0 && x <= max_x && x <= mx + hi;
         const int col = clamp(x, 0, max_x);
-        // v[(ch * KCOLS + c) * B + slot]: the rows of the current block as a
-        // ring; before phase i, row y + k is in slot (i + 1 + k) % B.
+        // v[(ch * KCOLS + c) * B + k]: row y + k of the candidate's block. The
+        // rows move down one slot per candidate and the new row enters last:
+        // constant indices only (nss_cuda's ring of slots (i + 1 + k) % B needs
+        // its phase loop unrolled, which a break in it prevents in the SPIR-V,
+        // and a dynamic index puts the array in local memory). The sum runs
+        // over k ascending either way: the same bits.
         float v[C * KCOLS * B];
-        [[unroll]] for (int k = 0; k < B - 1; ++k) {
-            const int row = clamp(my - lo + k, 0, last_row) * pc.pitch + col;
+        [[unroll]] for (int k = 1; k < B; ++k) {
+            const int row = clamp(my - lo + k - 1, 0, last_row) * pc.pitch + col;
             [[unroll]] for (int ch = 0; ch < C; ++ch) {
-                [[unroll]] for (int c = 0; c < KCOLS; ++c) v[(ch * KCOLS + c) * B + k + 1] = plane_at(plane, ch, row + column[c]);
+                [[unroll]] for (int c = 0; c < KCOLS; ++c) v[(ch * KCOLS + c) * B + k] = plane_at(plane, ch, row + column[c]);
             }
         }
-        int y = my - lo;
-        while (y <= bottom) {
-            [[unroll]] for (int i = 0; i < B; ++i) {
-                if (y > bottom) break;
+        for (int y = my - lo; y <= bottom; ++y) {
+            {
                 const int row = clamp(y + B - 1, 0, last_row) * pc.pitch + col;
                 precise float sum = 0.0f;
                 [[unroll]] for (int ch = 0; ch < C; ++ch) {
-                    [[unroll]] for (int c = 0; c < KCOLS; ++c) v[(ch * KCOLS + c) * B + i] = plane_at(plane, ch, row + column[c]);
+                    [[unroll]] for (int c = 0; c < KCOLS; ++c) {
+                        [[unroll]] for (int k = 0; k < B - 1; ++k) v[(ch * KCOLS + c) * B + k] = v[(ch * KCOLS + c) * B + k + 1];
+                        v[(ch * KCOLS + c) * B + B - 1] = plane_at(plane, ch, row + column[c]);
+                    }
                     [[unroll]] for (int k = 0; k < B; ++k) {
                         [[unroll]] for (int c = 0; c < KCOLS; ++c) {
-                            precise float d = has[c] ? g_ref[(ch * B + k) * KCOLS + c] -
-                                                           v[(ch * KCOLS + c) * B + (i + 1 + k) % B]
-                                                     : 0.0f;
+                            precise float d = has[c] ? g_ref[(ch * B + k) * KCOLS + c] - v[(ch * KCOLS + c) * B + k] : 0.0f;
                             sum = fma(d, d, sum);
                         }
                     }
@@ -143,7 +146,11 @@ void lane_scan(uint64_t plane, int mx, int my, int lo, int hi, bool enabled, uin
                 const bool ok = col_ok && y >= 0 && y <= max_y && at != skip;
                 const uint64_t mine = ok ? (uint64_t(min(floatBitsToUint(sum), INF_BITS)) << 32 | uint64_t(at)) : EMPTY;
                 [[unroll]] for (int part = 0; part < KPARTS; ++part) {
-                    const uint64_t key = KPARTS == 1 ? mine : w_shfl64(mine, part * KWIDTH);
+#if L <= B
+                    const uint64_t key = mine;  // KPARTS == 1
+#else
+                    const uint64_t key = w_shfl64(mine, part * KWIDTH);
+#endif
                     bool enters = key < held;
                     if (dedupe) {
                         // Every lane takes part in the ballot: computed first, not as
@@ -163,7 +170,6 @@ void lane_scan(uint64_t plane, int mx, int my, int lo, int hi, bool enabled, uin
                         held = enters ? ((sub == 0 || !(key < pre)) ? key : pre) : held;
                     }
                 }
-                ++y;
             }
         }
     }

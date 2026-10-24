@@ -22,7 +22,8 @@
 // (local_size_x = 32 * WARP_WARPS).
 //
 // Never put an operation on the right of && or || or in a ?: arm: short
-// circuits skip it on some lanes. Callers keep lane state changes between these operations branch-free
+// circuits skip it on some lanes. Callers keep lane state changes between
+// these operations branch-free
 // (selects): Vulkan does not promise that a subgroup's invocations reconverge
 // after divergent control flow (maximal reconvergence is not in D22), and an
 // operation reached by part of a segment reads lanes that are not there.
@@ -128,7 +129,9 @@ int w_count(bool p) { return bitCount(w_ballot(p)); }
 
 // Sum over the segment as a butterfly (xor masks L/2, ..., 1): every lane
 // gets the same sum, the same bits on both layers and from run to run.
-// Written out: a shift-stepped loop does not unroll in the SPIR-V.
+// Written out: a shift-stepped loop does not unroll in the SPIR-V. nss_cuda
+// sums in both orders (descending masks, e.g. bm3d; ascending, e.g. mcwnnm and
+// gram_group): w_sum_f is descending, w_sum_up_f ascending.
 float w_sum_f(float x) {
 #if WARP_L >= 32
     x += w_xor_f(x, 16);
@@ -144,6 +147,25 @@ float w_sum_f(float x) {
 #endif
 #if WARP_L >= 2
     x += w_xor_f(x, 1);
+#endif
+    return x;
+}
+
+float w_sum_up_f(float x) {
+#if WARP_L >= 2
+    x += w_xor_f(x, 1);
+#endif
+#if WARP_L >= 4
+    x += w_xor_f(x, 2);
+#endif
+#if WARP_L >= 8
+    x += w_xor_f(x, 4);
+#endif
+#if WARP_L >= 16
+    x += w_xor_f(x, 8);
+#endif
+#if WARP_L >= 32
+    x += w_xor_f(x, 16);
 #endif
     return x;
 }

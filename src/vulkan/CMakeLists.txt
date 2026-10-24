@@ -39,9 +39,9 @@ foreach(_nss_s RANGE -1 8)
                       DEFINES S=${_nss_s} IMG=${_nss_img})
   endforeach()
 endforeach()
-# Warp layer test (tests/vk/test_vk_warp.cpp): segments of 4 to 32 lanes,
+# Warp layer test (tests/vk/test_vk_warp.cpp): segments of 1 to 32 lanes,
 # native (n) and emulated (e).
-foreach(_nss_l 4 8 16 32)
+foreach(_nss_l 1 2 4 8 16 32)
   nss_vk_add_shader(NSS_VK_SPIRV_SOURCES test_warp_l${_nss_l}_n test/warp.comp DEFINES WARP_L=${_nss_l} WARP_EMULATED=0)
   nss_vk_add_shader(NSS_VK_SPIRV_SOURCES test_warp_l${_nss_l}_e test/warp.comp DEFINES WARP_L=${_nss_l} WARP_EMULATED=1)
 endforeach()

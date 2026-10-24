@@ -123,16 +123,19 @@ Run run_both(const std::shared_ptr<Device>& device, Matcher& matcher, const Matc
     return std::move(runs[0]);
 }
 
+// pad: extra floats a device row (pitch > width); split: the references in
+// two dispatches (a nonzero ref_begin).
 void spatial_case(const std::shared_ptr<Device>& device, Matcher& matcher, int width, int height, int block, int group,
-                  int step, int range, bool flat, Stats& stats) {
+                  int step, int range, bool flat, Stats& stats, int pad = 0, bool split = false) {
     const auto plane = make_plane(width, height, 7u + block + group, flat);
-    UploadPlane d_plane(device, static_cast<std::size_t>(width) * sizeof(float), height);
+    const int pitch = width + pad;
+    UploadPlane d_plane(device, static_cast<std::size_t>(pitch) * sizeof(float), height);
     d_plane.write(plane.data(), static_cast<std::ptrdiff_t>(width * sizeof(float)), width * sizeof(float));
     const RasterGrid grid = make_raster_grid(width, height, block, step);
-    const MatchGeometry g{width, height, width, block, range, group};
-    char label[96];
-    std::snprintf(label, sizeof label, "spatial %dx%d b%d g%d s%d r%d%s", width, height, block, group, step, range,
-                  flat ? " flat" : "");
+    const MatchGeometry g{width, height, pitch, block, range, group};
+    char label[128];
+    std::snprintf(label, sizeof label, "spatial %dx%d b%d g%d s%d r%d%s%s%s", width, height, block, group, step, range,
+                  flat ? " flat" : "", pad ? " padded" : "", split ? " split" : "");
     if (!matcher.supports(g, 0)) {
         std::printf("skip %s (no lane kernel)\n", label);
         return;
@@ -140,7 +143,11 @@ void spatial_case(const std::shared_ptr<Device>& device, Matcher& matcher, int w
     const int before = failures;
     const Run run = run_both(device, matcher, g, 0, grid.count(), [&](Slot& slot, VkDeviceAddress out, VkDeviceAddress counts) {
         if (d_plane.needs_copy()) d_plane.record_upload(slot.commands(Slot::Upload));
-        matcher.spatial(slot.commands(Slot::Compute), d_plane.address(), g, grid, 0, grid.count(), out, counts);
+        const int first = split ? grid.count() / 3 : grid.count();
+        matcher.spatial(slot.commands(Slot::Compute), d_plane.address(), g, grid, 0, first, out, counts);
+        matcher.spatial(slot.commands(Slot::Compute), d_plane.address(), g, grid, first, grid.count() - first,
+                        out + static_cast<VkDeviceAddress>(first) * group * sizeof(DeviceMatch),
+                        counts + static_cast<VkDeviceAddress>(first) * sizeof(int));
     }, label);
     for (int ref = 0; ref < grid.count(); ++ref) {
         nss::Match cpu[256];
@@ -154,7 +161,7 @@ void spatial_case(const std::shared_ptr<Device>& device, Matcher& matcher, int w
 
 
 void temporal_case(const std::shared_ptr<Device>& device, Matcher& matcher, int width, int height, int block, int group,
-                   int step, int range, int radius, int center, int frame_count, bool flat, Stats& stats) {
+                   int step, int range, int radius, int center, int frame_count, bool flat, Stats& stats, int ps_num = 2) {
     const int ntemp = 2 * radius + 1;
     std::vector<std::vector<float>> frames;
     std::vector<std::unique_ptr<UploadPlane>> d_frames;
@@ -177,7 +184,7 @@ void temporal_case(const std::shared_ptr<Device>& device, Matcher& matcher, int 
     cfg.group = group;
     cfg.bm_range = range;
     cfg.radius = radius;
-    cfg.ps_num = std::min(2, group);
+    cfg.ps_num = std::min(ps_num, group);
     cfg.ps_range = 4;
     cfg.valid_t_begin = std::max(0, radius - center);
     cfg.valid_t_end = radius + std::min(radius + 1, frame_count - center);
@@ -187,8 +194,8 @@ void temporal_case(const std::shared_ptr<Device>& device, Matcher& matcher, int 
     const TemporalWindow w{table.address(), ntemp, radius, radius, cfg.valid_t_begin, cfg.valid_t_end, cfg.ps_num,
                            cfg.ps_range};
     char label[128];
-    std::snprintf(label, sizeof label, "temporal %dx%d b%d g%d s%d r%d R%d c%d/%d%s", width, height, block, group, step,
-                  range, radius, center, frame_count, flat ? " flat" : "");
+    std::snprintf(label, sizeof label, "temporal %dx%d b%d g%d s%d r%d R%d c%d/%d p%d%s", width, height, block, group,
+                  step, range, radius, center, frame_count, cfg.ps_num, flat ? " flat" : "");
     if (!matcher.supports(g, cfg.ps_num)) {
         std::printf("skip %s (no lane kernel)\n", label);
         return;
@@ -255,6 +262,12 @@ int main(int argc, char** argv) {
         temporal_case(device, matcher, 71, 66, 1, 16, 1, 5, 1, 1, 3, flat, stats);
         temporal_case(device, matcher, 71, 66, 32, 8, 9, 7, 1, 1, 3, flat, stats);
         temporal_case(device, matcher, 71, 66, 16, 16, 6, 7, 2, 2, 5, flat, stats);
+        // ps_num up to the lanes of a reference (the shuffle sources reach L - 1).
+        temporal_case(device, matcher, 71, 66, 8, 8, 4, 5, 1, 1, 3, flat, stats, 8);
+        temporal_case(device, matcher, 71, 66, 8, 16, 5, 5, 1, 1, 3, flat, stats, 16);
+        temporal_case(device, matcher, 71, 66, 4, 32, 6, 5, 1, 1, 3, flat, stats, 32);
+        spatial_case(device, matcher, 97, 83, 8, 16, 3, 7, flat, stats, 13, true);
+        spatial_case(device, matcher, 97, 83, 16, 32, 3, 7, flat, stats, 5, true);
     }
     std::printf("vk match: %ld references, %ld entries, %ld near-tie flips, %d failures\n", stats.refs, stats.entries,
                 stats.flips, failures);

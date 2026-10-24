@@ -41,7 +41,9 @@ int lane_group(const MatchGeometry& g, int ps_num) {
 }
 
 bool Matcher::supports(const MatchGeometry& g, int ps_num) const {
-    return g.channels == 1 && built_block(g.block) && lane_group(g, ps_num) != 0;
+    // Plane indices are 32-bit in the shaders (channels move the address).
+    const bool fits = static_cast<long long>(g.pitch) * g.height < (1LL << 31);
+    return fits && g.channels == 1 && built_block(g.block) && lane_group(g, ps_num) != 0;
 }
 
 bool Matcher::emulated(const MatchGeometry& g, int ps_num) const {
