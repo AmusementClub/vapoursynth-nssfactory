@@ -2,7 +2,7 @@
 // V2 runtime test: budget charging, plane round trips through BAR and staging
 // uploads, slots chained on timeline semaphores, frames abandoned by an
 // exception, frames in flight under a memory limit, create/free without
-// growth, the on-disk pipeline cache, timestamps and device destruction.
+// growth, the on-disk pipeline cache, timestamps and the process-lifetime device.
 // Exits 77 when no device is supported; device creation errors fail.
 //
 // usage: test_vk_runtime [device_id]   (an explicit id may name an
@@ -317,12 +317,13 @@ int main(int argc, char** argv) {
                std::to_string(after.block_bytes) + " vs " + std::to_string(baseline.allocations) + " / " +
                std::to_string(baseline.block_bytes) + ")");
 
-    // The last holder destroys the device; opening it again creates a new one.
-    const std::weak_ptr<Device> weak = device;
+    // The device lives for the process: released by every filter, opening it
+    // again returns the same one, still usable.
+    const Device* first = device.get();
     device.reset();
-    expect(weak.expired(), "device destroyed with its last holder");
     try {
         device = Device::open(index, argc > 1);
+        expect(device.get() == first, "the device is kept for the process");
         Work w(device, nullptr, UploadPlane::Mode::automatic);
         Pipeline p(device, {"runtime_plane_scale", sizeof(Push), 0, {}});
         const std::vector<float> input = host_plane(6.0f);
