@@ -25,6 +25,13 @@ void upload_staged(const void* staging, std::size_t row_bytes, int rows, void* d
 void begin_download(const void* device, std::size_t device_pitch, std::size_t row_bytes, int rows, void* staging,
                     cudaStream_t stream);
 void finish_download(const void* staging, std::size_t row_bytes, int rows, void* host, std::ptrdiff_t host_stride);
+// Direct transfers between page-locked host rows (a VapourSynth frame plane
+// that FrameMemory::pinned() accepted) and the device, async on stream: no
+// staging. The host rows must stay allocated until the stream has finished.
+void upload_direct(const void* host, std::ptrdiff_t host_stride, std::size_t row_bytes, int rows, void* device,
+                   std::size_t device_pitch, cudaStream_t stream);
+void download_direct(const void* device, std::size_t device_pitch, std::size_t row_bytes, int rows, void* host,
+                     std::ptrdiff_t host_stride, cudaStream_t stream);
 // Host rows into a frame being output, with non-temporal stores where the
 // target has them (the rolling outputs; finish_download copies plainly).
 void copy_to_frame(const void* src, std::ptrdiff_t src_stride, void* dst, std::ptrdiff_t dst_stride, std::size_t row_bytes,

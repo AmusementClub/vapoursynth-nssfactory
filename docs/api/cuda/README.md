@@ -159,3 +159,25 @@ GPU. NLM is temporal through `d`; LSSC has no temporal mode.
   JIT (untested, best effort; it needs a driver for CUDA 13.3 or newer);
   `Backend()` reports which one a device gets.
 - Building is described in [Building](../building.md).
+
+### Direct transfers with vapoursynth-classic
+
+Under [vapoursynth-classic](https://github.com/AmusementClub/vapoursynth-classic)
+builds that provide its `VSFrameMemory.h` extension (frame pool blocks and
+release hooks), BM3D, WNNM, MCWNNM and NCSR copy between the GPU and the
+VapourSynth frames directly, without the pinned staging copies.
+
+- **Where:** spatial output and `temporal_mode="legacy"`. Rolling output and
+  the other filters still stage. Output is the same either way.
+- **How:** a frame pool block is page-locked the second time one of its
+  planes is transferred, and unlocked when the pool returns it to the system.
+  At most half the core's frame cache (`core.max_cache_size`) is locked;
+  further blocks are staged.
+- **Speed** (1080p, RTX 5080, a decoder-like source, single runs): at the
+  default single stream BM3D 1.46–1.65×, WNNM gray 1.63×, NCSR 1.17–1.19×,
+  MCWNNM RGB 1.13×; with `num_streams=3`, 1.53–1.67× across the four. With a
+  small frame cache the lock cap keeps most blocks staged, and the gain shrinks.
+- **Environment:** `NSS_CUDA_DIRECT_IO=0` turns it off,
+  `NSS_CUDA_DIRECT_IO_MAX_MB` sets the lock cap in MiB, and
+  `NSS_CUDA_DIRECT_IO_STATS` prints counts when a core's last instance is freed.
+- Upstream VapourSynth has no such extension: there nothing changes.

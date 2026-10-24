@@ -5,6 +5,7 @@
 #include "cuda/common/chunk_cache.hpp"
 #include "cuda/common/match.hpp"
 #include "cuda/runtime/frame_io.hpp"
+#include "cuda/runtime/frame_memory.hpp"
 #include "cuda/runtime/memory.hpp"
 #include "cuda/runtime/nvtx.hpp"
 #include "cuda/runtime/stream_pool.hpp"
@@ -122,6 +123,9 @@ struct Driver : GroupFilterConfig {
     bool basic_out[3]{true, true, true};    // two_stage: the first stage filters channel c of a unit
     std::unique_ptr<SlotPool<Slot>> pool;
     std::unique_ptr<SlotPool<Staging>> staging;
+    // Spatial and legacy frames: direct DMA to and from page-locked VS frame
+    // planes where the host allows it (vapoursynth-classic VSFrameMemory.h).
+    std::unique_ptr<FrameMemory> frame_memory;
     // Rolling takes its slots by turn (see RollState) instead of from the pool.
     std::vector<Slot*> slots;
     std::vector<int> roll_state;  // plane -> index in Slot::roll
@@ -817,12 +821,11 @@ void run_rounds(const Driver& d, Slot& s, const GroupPlane& p, int n) {
     }
 }
 
-// Queues the download of each written channel of the unit into staging
-// region slot_region(c, k): the finished plane (spatial, k = 0) or the num
-// and den slices (legacy: slice sl -> num rows at 2*sl*h, den rows at
-// (2*sl+1)*h).
-template <class Region>
-void queue_downloads(const Driver& d, Slot& s, const GroupPlane& p, Staging& g, Region slot_region) {
+// Queues the download of each written channel of the unit: download(c, k,
+// device rows) for the finished plane (spatial, k = 0) or the num and den
+// slices (legacy: slice sl -> num rows at 2*sl*h, den rows at (2*sl+1)*h).
+template <class Download>
+void queue_downloads(const Driver& d, Slot& s, const GroupPlane& p, Download download) {
     const std::size_t row_bytes = static_cast<std::size_t>(p.width) * sizeof(float);
     for (int c = 0; c < d.channels; ++c) {
         if (!d.channel_out[c]) continue;
@@ -844,15 +847,13 @@ void queue_downloads(const Driver& d, Slot& s, const GroupPlane& p, Staging& g, 
                                  p.width, p.height, p.width, s.out.as<float>(), s.stream);
                 result = s.out.as<float>();
             }
-            begin_download(result, row_bytes, row_bytes, p.height, g.regions[slot_region(c, 0)], s.stream);
+            download(c, 0, result);
             continue;
         }
         for (int sl = 0; sl < d.ntemp; ++sl) {
             const std::size_t slice = (static_cast<std::size_t>(c) * d.ntemp + sl) * p.floats;
-            begin_download(s.num.as<float>() + slice, row_bytes, row_bytes, p.height, g.regions[slot_region(c, 2 * sl)],
-                           s.stream);
-            begin_download(s.den.as<float>() + slice, row_bytes, row_bytes, p.height,
-                           g.regions[slot_region(c, 2 * sl + 1)], s.stream);
+            download(c, 2 * sl, s.num.as<float>() + slice);
+            download(c, 2 * sl + 1, s.den.as<float>() + slice);
         }
     }
 }
@@ -892,7 +893,15 @@ const VSFrame* frame_output(Driver* d, int n, VSFrameContext* ctx, VSCore* core,
             for (int c = 0; c < channels; ++c) identity(unit + c);
             continue;
         }
+        // An input plane page-locked for direct DMA skips its staging copy
+        // (direct_in[region]); likewise an output plane (direct_out[c]).
+        std::vector<const VSFrame*> direct_in(static_cast<std::size_t>(downloads), nullptr);
+        std::array<bool, 3> direct_out{};
         const auto stage = [&](int region, const VSFrame* frame, int plane) {
+            if (d->frame_memory->pinned(frame, plane)) {
+                direct_in[region] = frame;
+                return;
+            }
             stage_plane(vsapi->getReadPtr(frame, plane), vsapi->getStride(frame, plane), row_bytes, p.height,
                         g.regions[region]);
         };
@@ -909,6 +918,9 @@ const VSFrame* frame_output(Driver* d, int n, VSFrameContext* ctx, VSCore* core,
         // Download region of row k of channel c.
         const int rows = radius == 0 ? 1 : 2 * d->ntemp;
         const auto slot_region = [&](int c, int k) { return downloads + c * rows + k; };
+        for (int c = 0; c < channels; ++c) {
+            direct_out[c] = d->channel_out[c] && d->frame_memory->pinned(dst, unit + c);
+        }
         // The slot is held only while this unit's work is queued: everything
         // the next frame queues on the stream runs after it, and the staging
         // regions belong to this frame until its event has passed.
@@ -926,14 +938,19 @@ const VSFrame* frame_output(Driver* d, int n, VSFrameContext* ctx, VSCore* core,
                 }
             } drain{s.stream};
             region = 0;
+            const auto upload = [&](const VSFrame* frame, int plane, float* device) {
+                if (direct_in[region]) {
+                    upload_direct(vsapi->getReadPtr(frame, plane), vsapi->getStride(frame, plane), row_bytes, p.height,
+                                  device, row_bytes, s.stream);
+                } else {
+                    upload_staged(g.regions[region], row_bytes, p.height, device, row_bytes, s.stream);
+                }
+                ++region;
+            };
             for (int t = 0; t < d->ntemp; ++t) {
                 for (int c = 0; c < channels; ++c) {
-                    upload_staged(g.regions[region++], row_bytes, p.height, s.src_frames[t].as<float>() + c * p.floats,
-                                  row_bytes, s.stream);
-                    if (w) {
-                        upload_staged(g.regions[region++], row_bytes, p.height, s.ref_frames[t].as<float>() + c * p.floats,
-                                      row_bytes, s.stream);
-                    }
+                    upload(srcf[t], unit + c, s.src_frames[t].as<float>() + c * p.floats);
+                    if (w) upload(reff[t], unit + c, s.ref_frames[t].as<float>() + c * p.floats);
                 }
             }
             const std::size_t unit_floats = p.floats * channels;
@@ -943,7 +960,16 @@ const VSFrame* frame_output(Driver* d, int n, VSFrameContext* ctx, VSCore* core,
             }
             if (d->two_stage) run_first_stage(*d, s, unit, n);
             run_rounds(*d, s, p, n);
-            queue_downloads(*d, s, p, g, slot_region);
+            queue_downloads(*d, s, p, [&](int c, int k, const float* device) {
+                if (direct_out[c]) {
+                    auto* op = static_cast<std::uint8_t*>(static_cast<void*>(vsapi->getWritePtr(dst, unit + c)));
+                    const std::ptrdiff_t ds = vsapi->getStride(dst, unit + c);
+                    download_direct(device, row_bytes, row_bytes, p.height, op + static_cast<std::ptrdiff_t>(k) * p.height * ds,
+                                    ds, s.stream);
+                } else {
+                    begin_download(device, row_bytes, row_bytes, p.height, g.regions[slot_region(c, k)], s.stream);
+                }
+            });
             NSS_CUDA_CHECK(cudaEventRecord(g.done, s.stream));
             drain.armed = false;
         }
@@ -958,6 +984,7 @@ const VSFrame* frame_output(Driver* d, int n, VSFrameContext* ctx, VSCore* core,
                 identity(unit + c);
                 continue;
             }
+            if (direct_out[c]) continue;  // the DMA wrote it
             auto* op = static_cast<std::uint8_t*>(static_cast<void*>(vsapi->getWritePtr(dst, unit + c)));
             const std::ptrdiff_t ds = vsapi->getStride(dst, unit + c);
             for (int k = 0; k < rows; ++k) {
@@ -1542,6 +1569,7 @@ void VS_CC freeFilter(void* instance, VSCore*, const VSAPI*) {
         d->pool.reset();
         d->staging.reset();
         d->cache.clear();
+        d->frame_memory.reset();
     }
     delete d;
 }
@@ -1609,6 +1637,8 @@ void group_filter_install(GroupFilterConfig&& config, VSMap* out, VSCore* core, 
         for (int i = 0; i < d->staging_sets; ++i) sets.push_back(make_staging(*d));
         d->staging = std::make_unique<SlotPool<Staging>>(std::move(sets));
     }
+
+    d->frame_memory = std::make_unique<FrameMemory>(core, vsapi);
 
     const auto pattern = d->mode == GroupMode::Spatial ? rpStrictSpatial : rpGeneral;
     VSFilterDependency deps[2]{{d->node, pattern}, {d->guide, pattern}};
