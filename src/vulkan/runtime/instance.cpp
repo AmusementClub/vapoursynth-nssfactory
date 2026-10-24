@@ -3,6 +3,8 @@
 
 #include "vulkan/runtime/error.hpp"
 
+#include <cstring>
+
 namespace nss_vk {
 namespace {
 
@@ -27,8 +29,21 @@ Instance create_instance() {
     app.pApplicationName = "nss_vk";
     app.pEngineName = "nssfactory";
     app.apiVersion = kRequiredApiVersion;
+    // VK_EXT_debug_utils when the loader offers it: command-buffer labels for
+    // nsys --trace=vulkan-annotations and validation messages (D28).
+    std::uint32_t extension_count = 0;
+    vkEnumerateInstanceExtensionProperties(nullptr, &extension_count, nullptr);
+    std::vector<VkExtensionProperties> extensions(extension_count);
+    vkEnumerateInstanceExtensionProperties(nullptr, &extension_count, extensions.data());
+    extensions.resize(extension_count);
+    const char* debug_utils = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
+    for (const VkExtensionProperties& e : extensions) {
+        if (std::strcmp(e.extensionName, debug_utils) == 0) result.debug_utils = true;
+    }
     VkInstanceCreateInfo info{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     info.pApplicationInfo = &app;
+    info.enabledExtensionCount = result.debug_utils ? 1u : 0u;
+    info.ppEnabledExtensionNames = &debug_utils;
     VkInstance handle = VK_NULL_HANDLE;
     if (const VkResult code = vkCreateInstance(&info, nullptr, &handle); code != VK_SUCCESS) {
         result.error = "vkCreateInstance failed: " + result_name(code);

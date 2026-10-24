@@ -8,6 +8,13 @@ target_link_libraries(test_vk_support PRIVATE nss_vk_core)
 add_test(NAME test_vk_support COMMAND test_vk_support)
 set_tests_properties(test_vk_support PROPERTIES LABELS vk)
 
+# Needs a supported device (skip 77 otherwise): budget, transfers, slots,
+# frames in flight, create/free, pipeline cache, timestamps.
+add_executable(test_vk_runtime test_vk_runtime.cpp)
+target_link_libraries(test_vk_runtime PRIVATE nss_vk_core)
+add_test(NAME test_vk_runtime COMMAND test_vk_runtime)
+set_tests_properties(test_vk_runtime PROPERTIES LABELS vk SKIP_RETURN_CODE 77)
+
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(NOT Python3_Interpreter_FOUND)
   message(WARNING "Python3 interpreter unavailable: Vulkan plugin tests are not registered")

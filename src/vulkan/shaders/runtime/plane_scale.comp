@@ -1,0 +1,30 @@
+// SPDX-License-Identifier: GPL-2.0-only
+// out = a * in + b over a pitched float plane: the runtime test kernel
+// (tests/vk/test_vk_runtime.cpp) for uploads, slots and downloads.
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer Source { float v[]; };
+layout(buffer_reference, std430, buffer_reference_align = 4) writeonly buffer Target { float v[]; };
+
+layout(push_constant) uniform Push {
+    Source src;
+    Target dst;
+    uint width;
+    uint height;
+    uint src_pitch;  // floats
+    uint dst_pitch;  // floats
+    float a;
+    float b;
+} pc;
+
+void main() {
+    const uint x = gl_GlobalInvocationID.x;
+    const uint y = gl_GlobalInvocationID.y;
+    if (x >= pc.width || y >= pc.height) return;
+    precise float value = fma(pc.a, pc.src.v[y * pc.src_pitch + x], pc.b);
+    pc.dst.v[y * pc.dst_pitch + x] = value;
+}

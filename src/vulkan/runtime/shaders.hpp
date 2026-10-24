@@ -18,5 +18,8 @@ struct Spirv {
 Spirv shader(std::string_view id);
 // "glslang vulkan-sdk-..., SPIRV-Tools vulkan-sdk-..." or "system".
 const char* shader_tools();
+// FNV-1a over every embedded variant (ids and words): names the on-disk
+// pipeline cache of this build.
+std::uint64_t shader_set_hash();
 
 }  // namespace nss_vk

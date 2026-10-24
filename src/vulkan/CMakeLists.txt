@@ -25,6 +25,7 @@ set(NSS_VK_SHADER_IDS "")
 set(NSS_VK_SHADER_SOURCES "")
 set(NSS_VK_SPIRV_SOURCES "")
 nss_vk_add_shader(NSS_VK_SPIRV_SOURCES runtime_probe runtime/probe.comp)
+nss_vk_add_shader(NSS_VK_SPIRV_SOURCES runtime_plane_scale runtime/plane_scale.comp)
 
 file(GLOB_RECURSE _nss_vk_all_comp CONFIGURE_DEPENDS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}/shaders"
      "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.comp")
@@ -74,6 +75,21 @@ const char* shader_tools() {
     return \"@NSS_VK_SHADER_TOOLS@\";
 }
 
+std::uint64_t shader_set_hash() {
+    static const std::uint64_t hash = [] {
+        std::uint64_t h = 1469598103934665603ull;
+        const auto mix = [&](std::uint64_t byte) { h = (h ^ byte) * 1099511628211ull; };
+        for (const Entry& entry : kShaders) {
+            for (const char* c = entry.id; *c; ++c) mix(static_cast<unsigned char>(*c));
+            for (std::size_t i = 0; i < entry.code.count; ++i) {
+                for (int b = 0; b < 32; b += 8) mix((entry.code.words[i] >> b) & 0xffu);
+            }
+        }
+        return h;
+    }();
+    return hash;
+}
+
 }  // namespace nss_vk
 " @ONLY)
 
@@ -87,10 +103,15 @@ set_target_properties(nss_vk_shaders PROPERTIES
 
 # nss_vk_core: host runtime + embedded shaders, static so tests/vk can link it.
 add_library(nss_vk_core STATIC
+  runtime/context.cpp
   runtime/device.cpp
   runtime/error.cpp
   runtime/instance.cpp
+  runtime/memory.cpp
+  runtime/pipeline.cpp
   runtime/probe.cpp
+  runtime/slot.cpp
+  runtime/vma.cpp
 )
 target_include_directories(nss_vk_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_link_libraries(nss_vk_core PUBLIC nss_frontend nss_vk_headers nss_volk nss_vk_shaders)
@@ -101,6 +122,12 @@ set_target_properties(nss_vk_core PROPERTIES
 )
 if(WIN32)
   target_compile_definitions(nss_vk_core PUBLIC NOMINMAX)
+endif()
+# VMA is third-party code: its own warnings are not ours to fix.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+  set_source_files_properties(runtime/vma.cpp PROPERTIES COMPILE_OPTIONS "-w")
+elseif(MSVC)
+  set_source_files_properties(runtime/vma.cpp PROPERTIES COMPILE_OPTIONS "/w")
 endif()
 
 add_library(nss_vk SHARED plugin.cpp)
