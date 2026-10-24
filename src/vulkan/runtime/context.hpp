@@ -11,6 +11,7 @@
 
 #include <VapourSynth4.h>
 
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -60,6 +61,7 @@ public:
 
     Device(const Device&) = delete;
     Device& operator=(const Device&) = delete;
+    ~Device();
 
     int index() const noexcept { return index_; }
     VkPhysicalDevice physical() const noexcept { return physical_; }
@@ -87,15 +89,21 @@ public:
     bool debug_labels() const noexcept { return debug_labels_; }
 
     VkPipelineCache pipeline_cache() const noexcept { return pipeline_cache_; }
-    // Writes the pipeline cache to disk when it has grown since the last
-    // write (no-op when the cache is disabled). Errors are not fatal.
+    // Writes the pipeline cache to disk when it changed since the last write
+    // (no-op when the cache is disabled). Errors are not fatal. Filters call
+    // it once after creating their pipelines.
     void save_pipeline_cache();
+
+    // After a failed wait the device may still run work on objects their
+    // owners are about to free: from then on Buffers, Pipelines, Slots and the
+    // device itself leak instead of destroying anything.
+    void poison() noexcept { poisoned_.store(true, std::memory_order_relaxed); }
+    bool poisoned() const noexcept { return poisoned_.load(std::memory_order_relaxed); }
     const std::filesystem::path& pipeline_cache_file() const noexcept { return cache_file_; }
 
 private:
     Device() = default;
     void create(int index);
-    void destroy() noexcept;  // only for a device whose creation failed
     void load_pipeline_cache();
 
     int index_ = 0;
@@ -114,7 +122,8 @@ private:
     VkPipelineCache pipeline_cache_ = VK_NULL_HANDLE;
     std::filesystem::path cache_file_;
     std::mutex cache_mutex_;
-    std::size_t cache_saved_bytes_ = 0;
+    std::uint64_t cache_saved_hash_ = 0;
+    std::atomic<bool> poisoned_{false};
 };
 
 // Resolves device_id for a filter: unsupported devices are a creation error,

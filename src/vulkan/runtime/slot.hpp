@@ -4,6 +4,11 @@
 // adds. A frame records up to three stages (upload, compute, download) and
 // submits them at once; the stages chain on the timeline semaphore, so the
 // host waits once per frame, with a bound.
+//
+// Frame protocol: commands() / mark() / labels, then submit(), then wait().
+// Host writes into upload buffers must happen before submit(). settle()
+// returns the slot to idle from any state (the SlotPool calls it whenever a
+// lease ends, also on error paths), so no frame is left recording or pending.
 #pragma once
 
 #include "vulkan/runtime/context.hpp"
@@ -32,27 +37,32 @@ public:
 
     // The stage's command buffer for the current frame, begun on first use.
     VkCommandBuffer commands(Stage stage);
-    // Debug label around the commands recorded until end_label (no-op without
-    // VK_EXT_debug_utils).
+    // Debug label around commands of one stage (no-op without
+    // VK_EXT_debug_utils); begin and end in the same stage.
     void begin_label(Stage stage, const char* name);
     void end_label(Stage stage);
-    // Writes timestamp `query` after the work recorded so far in `stage`.
+    // Writes timestamp `query` (once per frame) after the work recorded so far
+    // in `stage`. Times are comparable only between queries of one stage's
+    // queue (copy and compute queues have unrelated clocks in general).
     void mark(Stage stage, std::uint32_t query);
 
     // Ends and submits the recorded stages in order, each waiting for the one
     // before. A frame with nothing recorded submits nothing.
     void submit();
-    // Waits for the last submitted stage (bounded: wait_timeout_ns()), then
-    // resets the command pools for the next frame. Throws VkError on timeout
-    // or device loss; the slot is then unusable.
+    // Waits for the submitted stages (bounded: wait_timeout_ns()) and readies
+    // the slot for the next frame. Throws VkError on timeout or device loss;
+    // the slot is then unusable and the device is poisoned (Device::poison).
     void wait();
-    // Times of the marked queries in nanoseconds since query 0, after wait();
-    // unmarked queries read 0. Resets the queries for the next frame.
-    std::vector<double> timestamps_ns();
+    // Times of this frame's marked queries in nanoseconds since query 0 (0 for
+    // unmarked or unavailable ones). Valid after wait() until the next frame.
+    const std::vector<double>& timestamps_ns() const noexcept { return times_; }
+
+    // Back to idle from any state, never throwing: waits for a pending frame
+    // (bounded), drops commands that were recorded but not submitted.
+    void settle() noexcept;
 
 private:
-    void release() noexcept;
-
+    enum class State { idle, recording, pending, broken };
     struct StageCommands {
         const Queue* queue = nullptr;
         VkCommandPool pool = VK_NULL_HANDLE;
@@ -60,19 +70,28 @@ private:
         bool recording = false;
     };
 
+    void release() noexcept;
+    VkResult wait_timeline() noexcept;
+    void reset_commands() noexcept;
+    void read_timestamps() noexcept;
+    void fail() noexcept;
+
     std::shared_ptr<Device> device_;
     StageCommands stages_[kStages];
     VkSemaphore timeline_ = VK_NULL_HANDLE;
-    std::uint64_t value_ = 0;       // last value a submitted stage signals
-    bool pending_ = false;          // submitted, not yet waited for
-    bool broken_ = false;           // a wait failed: never reuse or free in-flight objects
+    std::uint64_t value_ = 0;  // last value a submitted stage signals
+    State state_ = State::idle;
     VkQueryPool queries_ = VK_NULL_HANDLE;
     std::uint32_t query_count_ = 0;
-    std::vector<bool> marked_;
+    std::vector<int> marked_;  // per query: the stage that wrote it, -1 = none
+    std::vector<double> times_;
 };
 
 // num_streams slots per filter instance; getFrame leases one for the whole
-// frame and extra VapourSynth threads wait (as nss_cuda's SlotPool).
+// frame and extra VapourSynth threads wait (as nss_cuda's SlotPool). `S` is a
+// Slot or a filter struct holding one; it provides settle(), which the pool
+// calls when a lease ends so that a frame abandoned by an exception never
+// leaks into the next one.
 template <class S>
 class SlotPool {
 public:
@@ -113,6 +132,7 @@ public:
 
 private:
     void give_back(S* slot) {
+        slot->settle();
         {
             std::lock_guard lock(mutex_);
             free_.push_back(slot);

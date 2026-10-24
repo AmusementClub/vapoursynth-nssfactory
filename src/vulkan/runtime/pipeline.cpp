@@ -13,11 +13,19 @@ Pipeline::Pipeline(std::shared_ptr<Device> device, const PipelineDesc& desc)
     : device_(std::move(device)), push_bytes_(desc.push_bytes) {
     const VolkDeviceTable& vk = device_->vk();
     const VkDevice handle = device_->handle();
-    if (desc.push_bytes > 128) throw std::logic_error("nss_vk: push constants above the guaranteed 128 bytes");
-    if (desc.subgroup_size != 0 && (desc.subgroup_size < device_->caps().min_subgroup_size ||
-                                    desc.subgroup_size > device_->caps().max_subgroup_size)) {
-        throw std::logic_error("nss_vk: subgroup size " + std::to_string(desc.subgroup_size) +
-                               " outside the device's range");
+    if (desc.push_bytes > 128 || desc.push_bytes % 4 != 0) {
+        throw std::logic_error("nss_vk: push constants must be a multiple of 4 bytes, at most 128");
+    }
+    if (desc.subgroup_size != 0) {
+        const DeviceCaps& caps = device_->caps();
+        if (!caps.subgroup_size_control || !caps.compute_full_subgroups || !caps.required_size_in_compute) {
+            throw std::logic_error("nss_vk: required subgroup size without subgroup size control");
+        }
+        if ((desc.subgroup_size & (desc.subgroup_size - 1)) != 0 || desc.subgroup_size < caps.min_subgroup_size ||
+            desc.subgroup_size > caps.max_subgroup_size) {
+            throw std::logic_error("nss_vk: subgroup size " + std::to_string(desc.subgroup_size) +
+                                   " is not a power of two in the device's range");
+        }
     }
     const Spirv code = shader(desc.shader);
     VkShaderModule module = VK_NULL_HANDLE;
@@ -61,7 +69,6 @@ Pipeline::Pipeline(std::shared_ptr<Device> device, const PipelineDesc& desc)
         throw;
     }
     vk.vkDestroyShaderModule(handle, module, nullptr);
-    device_->save_pipeline_cache();
 }
 
 Pipeline& Pipeline::operator=(Pipeline&& other) noexcept {
@@ -76,7 +83,7 @@ Pipeline& Pipeline::operator=(Pipeline&& other) noexcept {
 }
 
 void Pipeline::reset() noexcept {
-    if (device_) {
+    if (device_ && !device_->poisoned()) {
         if (pipeline_) device_->vk().vkDestroyPipeline(device_->handle(), pipeline_, nullptr);
         if (layout_) device_->vk().vkDestroyPipelineLayout(device_->handle(), layout_, nullptr);
     }

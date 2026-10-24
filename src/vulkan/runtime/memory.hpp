@@ -55,6 +55,9 @@ enum class Memory {
     Readback,  // host-cached memory the copy queues write and the host reads
 };
 
+// Buffers this size or larger get a dedicated allocation.
+inline constexpr std::size_t kDedicatedBytes = 4u << 20;
+
 // One VkBuffer with its own VMA allocation, addressable from shaders (buffer
 // device address) and usable by every queue family of the device. Host
 // memory kinds are persistently mapped. Device and Rebar memory is charged as
@@ -94,6 +97,7 @@ private:
     Memory memory_ = Memory::Device;
     void* mapped_ = nullptr;
     BudgetCharge charge_;
+    BudgetCharge padding_;  // allocation size beyond `bytes`
 };
 
 // A pitched plane (`pitch` bytes per row) the host fills and kernels read.
@@ -107,7 +111,9 @@ public:
     UploadPlane(std::shared_ptr<Device> device, std::size_t pitch, int rows,
                 const std::shared_ptr<nss::ResourceBudget>& budget = nullptr, Mode mode = Mode::automatic);
 
-    // Host rows (any stride) into the plane; flushes when needed.
+    // Host rows (any stride) into the plane; flushes when needed. Must happen
+    // before the Slot::submit() of the frame that reads it (host writes are
+    // made visible by the submission).
     void write(const void* host, std::ptrdiff_t host_stride, std::size_t row_bytes);
     // Copy staging -> device; nothing to record with BAR.
     bool needs_copy() const noexcept { return static_cast<bool>(staging_); }

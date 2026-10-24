@@ -2,7 +2,8 @@
 // Compute pipelines from the embedded SPIR-V (runtime/shaders.hpp). Kernels
 // take their pointers and sizes in one push-constant block (buffer device
 // addresses, D24), so there are no descriptor sets. Creation goes through the
-// device's pipeline cache, which is written back to disk afterwards.
+// device's pipeline cache; the filter writes it back to disk once after
+// creating its pipelines (Device::save_pipeline_cache).
 #pragma once
 
 #include "vulkan/runtime/context.hpp"

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // V2 runtime test: budget charging, plane round trips through BAR and staging
-// uploads, slots chained on timeline semaphores, frames in flight under a
-// memory limit, create/free without growth, the on-disk pipeline cache and
-// timestamps. Exits 77 without a supported Vulkan device.
+// uploads, slots chained on timeline semaphores, frames abandoned by an
+// exception, frames in flight under a memory limit, create/free without
+// growth, the on-disk pipeline cache, timestamps and device destruction.
+// Exits 77 when no device is supported; device creation errors fail.
 //
 // usage: test_vk_runtime [device_id]   (an explicit id may name an
 // unsupported device, e.g. lavapipe, for a functional run)
@@ -20,6 +21,7 @@
 #include <cstring>
 #include <filesystem>
 #include <memory>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -38,9 +40,16 @@ void expect(bool condition, const std::string& what) {
     }
 }
 
-void set_env(const char* name, const std::string& value) {
+// UTF-8 text of a path (std::filesystem::path::string() may throw on Windows).
+std::string text(const std::filesystem::path& path) {
+    const std::u8string utf8 = path.u8string();
+    return std::string(utf8.begin(), utf8.end());
+}
+
+void set_env(const char* name, const std::filesystem::path& value) {
 #ifdef _WIN32
-    _putenv_s(name, value.c_str());
+    const std::wstring wide(name, name + std::strlen(name));
+    _wputenv_s(wide.c_str(), value.wstring().c_str());
 #else
     setenv(name, value.c_str(), 1);
 #endif
@@ -67,6 +76,7 @@ struct Work {
     Work(const std::shared_ptr<Device>& device, const std::shared_ptr<nss::ResourceBudget>& budget,
          UploadPlane::Mode mode, std::uint32_t timestamps = 0)
         : slot(device, timestamps), in(device, kPitch, kHeight, budget, mode), out(device, kPitch, kHeight, budget) {}
+    void settle() noexcept { slot.settle(); }
 };
 
 std::vector<float> host_plane(float seed) {
@@ -115,50 +125,55 @@ bool check_frame(const std::vector<float>& input, float b, const std::vector<flo
     return true;
 }
 
-std::uint32_t live_allocations(const Device& device) {
+struct Live {
+    std::uint32_t allocations;
+    VkDeviceSize block_bytes;
+};
+Live live(const Device& device) {
     VmaTotalStatistics stats{};
     vmaCalculateStatistics(device.allocator(), &stats);
-    return stats.total.statistics.allocationCount;
+    return {stats.total.statistics.allocationCount, stats.total.statistics.blockBytes};
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
+    std::error_code ignored;
     const std::filesystem::path cache_dir =
-        std::filesystem::temp_directory_path() / ("nss_vk_cache_test_" + std::to_string(std::rand()));
-    std::filesystem::remove_all(cache_dir);
-    set_env("NSS_VK_PIPELINE_CACHE", cache_dir.string());
+        std::filesystem::temp_directory_path(ignored) / ("nss_vk_cache_test_" + std::to_string(std::random_device{}()));
+    set_env("NSS_VK_PIPELINE_CACHE", cache_dir);
 
     const Instance& vk = instance();
     if (vk.devices.empty()) {
         std::printf("vk runtime SKIP: no Vulkan device (%s)\n", vk.error.c_str());
         return 77;
     }
-    std::shared_ptr<Device> device;
-    try {
-        if (argc > 1) {
-            device = Device::open(std::atoi(argv[1]), true);
-        } else {
-            for (int i = 0; i < static_cast<int>(vk.devices.size()) && !device; ++i) {
-                try {
-                    device = Device::open(i);
-                } catch (const std::runtime_error&) {
-                }
-            }
+    // Skip only when no device is supported; a supported device that fails
+    // to open is a failure.
+    int index = -1;
+    if (argc > 1) {
+        index = std::atoi(argv[1]);
+    } else {
+        for (int i = 0; i < static_cast<int>(vk.devices.size()) && index < 0; ++i) {
+            if (classify(query_caps(vk.devices[static_cast<std::size_t>(i)])).support != Support::unsupported) index = i;
         }
-    } catch (const std::exception& error) {
-        std::printf("vk runtime SKIP: %s\n", error.what());
-        return 77;
     }
-    if (!device) {
+    if (index < 0) {
         std::printf("vk runtime SKIP: no supported Vulkan device\n");
         return 77;
+    }
+    std::shared_ptr<Device> device;
+    try {
+        device = Device::open(index, argc > 1);
+    } catch (const std::exception& error) {
+        std::fprintf(stderr, "FAIL: opening device %d: %s\n", index, error.what());
+        return EXIT_FAILURE;
     }
     std::printf("device %d: %s, support %s, rebar %d, queues compute %u/%u upload %u/%u download %u/%u\n",
                 device->index(), device->label().c_str(), support_name(device->support().support), device->rebar(),
                 device->compute().family, device->compute().index, device->upload().family, device->upload().index,
                 device->download().family, device->download().index);
-    const std::uint32_t baseline = live_allocations(*device);
+    const Live baseline = live(*device);
 
     // Budget: charges, overrun error, release.
     {
@@ -181,8 +196,10 @@ int main(int argc, char** argv) {
     }
 
     Pipeline pipeline(device, {"runtime_plane_scale", sizeof(Push), 0, {}});
-    expect(cache_dir.empty() || std::filesystem::exists(device->pipeline_cache_file()),
-           "pipeline cache written to " + device->pipeline_cache_file().string());
+    device->save_pipeline_cache();
+    expect(std::filesystem::exists(device->pipeline_cache_file(), ignored) &&
+               std::filesystem::file_size(device->pipeline_cache_file(), ignored) > 0,
+           "pipeline cache written to " + text(device->pipeline_cache_file()));
 
     // Round trips: BAR (when the device has it) and staging.
     for (UploadPlane::Mode mode : {UploadPlane::Mode::automatic, UploadPlane::Mode::staging}) {
@@ -199,9 +216,38 @@ int main(int argc, char** argv) {
             expect(times.size() == 2 && times[1] > 0.0, "kernel timestamps");
             std::printf("plane_scale %s: %.1f us\n", path, times[1] / 1000.0);
         }
-        // A second frame on the same slot (pools reset, semaphore continues).
-        run_frame(w, pipeline, input, 5.0f, output);
-        expect(check_frame(input, 5.0f, output), std::string("second frame through ") + path);
+        // More frames on the same slot (pools reset, semaphore continues,
+        // queries reset by every wait).
+        for (int f = 0; f < 3; ++f) {
+            run_frame(w, pipeline, input, 5.0f + f, output);
+            expect(check_frame(input, 5.0f + f, output), std::string("next frame through ") + path);
+        }
+    }
+
+    // A frame abandoned while recording, and one submitted but never waited
+    // for: returning the lease settles the slot and the next frame is clean.
+    {
+        std::vector<std::unique_ptr<Work>> one;
+        one.push_back(std::make_unique<Work>(device, nullptr, UploadPlane::Mode::automatic));
+        SlotPool<Work> pool(std::move(one));
+        const std::vector<float> input = host_plane(2.0f);
+        std::vector<float> output;
+        try {
+            auto lease = pool.acquire();
+            const Push push{lease->in.address(), lease->out.address(), kWidth, kHeight, 0, 0, 7.0f, 7.0f};
+            pipeline.dispatch(lease->slot.commands(Slot::Compute), &push, 1, 1);  // pitch 0: garbage on purpose
+            throw std::runtime_error("abandoned");
+        } catch (const std::runtime_error&) {
+        }
+        {
+            auto lease = pool.acquire();
+            lease->in.write(input.data(), kHostStride, kRowBytes);
+            if (lease->in.needs_copy()) lease->in.record_upload(lease->slot.commands(Slot::Upload));
+            lease->slot.submit();  // pending when the lease ends
+        }
+        auto lease = pool.acquire();
+        run_frame(*lease, pipeline, input, 4.0f, output);
+        expect(check_frame(input, 4.0f, output), "frame after abandoned frames");
     }
 
     // Frames in flight: 3 slots, 8 threads, under a limit that fits exactly 3.
@@ -210,8 +256,14 @@ int main(int argc, char** argv) {
         const std::size_t per_slot = device->rebar() ? 3 * plane : 4 * plane;
         auto budget = std::make_shared<nss::ResourceBudget>(3 * per_slot);
         std::vector<std::unique_ptr<Work>> slots;
-        for (int i = 0; i < 3; ++i) {
-            slots.push_back(std::make_unique<Work>(device, budget, UploadPlane::Mode::automatic));
+        try {
+            for (int i = 0; i < 3; ++i) {
+                slots.push_back(std::make_unique<Work>(device, budget, UploadPlane::Mode::automatic));
+            }
+        } catch (const std::exception& error) {
+            // E.g. BAR exhausted: the staging fallback needs a fourth plane per slot.
+            std::fprintf(stderr, "FAIL: three slots within their limit: %s\n", error.what());
+            return EXIT_FAILURE;
         }
         bool fourth = false;
         try {
@@ -259,11 +311,28 @@ int main(int argc, char** argv) {
         }
     }
     pipeline.reset();
-    expect(live_allocations(*device) == baseline, "no allocations left after create/free (" +
-                                                       std::to_string(live_allocations(*device)) + " vs " +
-                                                       std::to_string(baseline) + ")");
+    const Live after = live(*device);
+    expect(after.allocations == baseline.allocations && after.block_bytes == baseline.block_bytes,
+           "no allocations or blocks left after create/free (" + std::to_string(after.allocations) + " / " +
+               std::to_string(after.block_bytes) + " vs " + std::to_string(baseline.allocations) + " / " +
+               std::to_string(baseline.block_bytes) + ")");
 
-    std::error_code ignored;
+    // The last holder destroys the device; opening it again creates a new one.
+    const std::weak_ptr<Device> weak = device;
+    device.reset();
+    expect(weak.expired(), "device destroyed with its last holder");
+    try {
+        device = Device::open(index, argc > 1);
+        Work w(device, nullptr, UploadPlane::Mode::automatic);
+        Pipeline p(device, {"runtime_plane_scale", sizeof(Push), 0, {}});
+        const std::vector<float> input = host_plane(6.0f);
+        std::vector<float> output;
+        run_frame(w, p, input, 2.0f, output);
+        expect(check_frame(input, 2.0f, output), "frame on a reopened device");
+    } catch (const std::exception& error) {
+        expect(false, std::string("reopening the device: ") + error.what());
+    }
+
     std::filesystem::remove_all(cache_dir, ignored);
     if (failures) return EXIT_FAILURE;
     std::printf("vk runtime OK\n");

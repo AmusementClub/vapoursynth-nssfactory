@@ -15,7 +15,13 @@
 #include <map>
 #include <set>
 #include <stdexcept>
+#include <random>
 #include <system_error>
+#ifdef _WIN32
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace nss_vk {
 namespace {
@@ -27,6 +33,27 @@ std::string prefix(const char* filter) {
 const char* env(const char* name) {
     const char* value = std::getenv(name);
     return value && *value ? value : nullptr;
+}
+
+// A path from the environment; wide on Windows, where the narrow variables
+// are in the ANSI code page and lose other characters.
+std::filesystem::path env_path(const char* name) {
+#ifdef _WIN32
+    const std::wstring wide(name, name + std::strlen(name));
+    const wchar_t* value = _wgetenv(wide.c_str());
+    return value && *value ? std::filesystem::path(value) : std::filesystem::path();
+#else
+    const char* value = env(name);
+    return value ? std::filesystem::path(value) : std::filesystem::path();
+#endif
+}
+
+std::uint64_t process_id() {
+#ifdef _WIN32
+    return static_cast<std::uint64_t>(_getpid());
+#else
+    return static_cast<std::uint64_t>(getpid());
+#endif
 }
 
 // The legacy BAR window: device-local, host-visible heaps of this size or less
@@ -41,7 +68,7 @@ std::uint64_t wait_timeout_ns() {
         if (const char* value = env("NSS_VK_WAIT_TIMEOUT_MS")) {
             char* end = nullptr;
             const unsigned long long parsed = std::strtoull(value, &end, 10);
-            if (end && *end == '\0' && parsed > 0) ms = parsed;
+            if (end && *end == '\0' && parsed > 0) ms = std::min<unsigned long long>(parsed, 86'400'000ull);
         }
         return ms * 1'000'000ull;
     }();
@@ -57,7 +84,9 @@ BackendArgs parse_backend_args(const VSAPI* vsapi, const VSMap* in, const char* 
     int err = 0;
     const int64_t device = vsapi->mapGetInt(in, "device_id", 0, &err);
     if (!err) {
-        if (device < 0 || device > INT32_MAX) throw std::invalid_argument(prefix(filter) + "device_id must be >= 0");
+        if (device < 0 || device > INT32_MAX) {
+            throw std::invalid_argument(prefix(filter) + "device_id must be in [0, " + std::to_string(INT32_MAX) + "]");
+        }
         args.device_id = static_cast<int>(device);
     }
     const int64_t streams = vsapi->mapGetInt(in, "num_streams", 0, &err);
@@ -72,15 +101,15 @@ BackendArgs parse_backend_args(const VSAPI* vsapi, const VSMap* in, const char* 
 }
 
 std::filesystem::path pipeline_cache_directory() {
-    if (const char* value = env("NSS_VK_PIPELINE_CACHE")) {
-        if (std::strcmp(value, "0") == 0 || std::strcmp(value, "off") == 0) return {};
-        return std::filesystem::path(value);
+    if (const std::filesystem::path value = env_path("NSS_VK_PIPELINE_CACHE"); !value.empty()) {
+        if (value == "0" || value == "off") return {};
+        return value;
     }
 #ifdef _WIN32
-    if (const char* local = env("LOCALAPPDATA")) return std::filesystem::path(local) / "nssfactory" / "vk";
+    if (const auto local = env_path("LOCALAPPDATA"); !local.empty()) return local / "nssfactory" / "vk";
 #else
-    if (const char* cache = env("XDG_CACHE_HOME")) return std::filesystem::path(cache) / "nssfactory" / "vk";
-    if (const char* home = env("HOME")) return std::filesystem::path(home) / ".cache" / "nssfactory" / "vk";
+    if (const auto cache = env_path("XDG_CACHE_HOME"); !cache.empty()) return cache / "nssfactory" / "vk";
+    if (const auto home = env_path("HOME"); !home.empty()) return home / ".cache" / "nssfactory" / "vk";
 #endif
     return {};
 }
@@ -94,12 +123,14 @@ std::shared_ptr<Device> Device::open(int index, bool allow_unsupported) {
         throw std::runtime_error("device_id " + std::to_string(index) + " out of range (" +
                                  std::to_string(vk.devices.size()) + " Vulkan devices)");
     }
-    // One logical device per physical device for the life of the process, as
-    // CUDA's primary context: filters come and go, the device stays.
+    // One logical device per physical device while any filter (or test) holds
+    // it; the last holder destroys it. VapourSynth unloads plugins with their
+    // cores (unless disableLibraryUnloading), so a device kept for the life of
+    // the process would leak a VkDevice and VMA's retained blocks per reload.
     static std::mutex mutex;
-    static std::map<int, std::shared_ptr<Device>> devices;
+    static std::map<int, std::weak_ptr<Device>> devices;
     std::lock_guard lock(mutex);
-    std::shared_ptr<Device>& slot = devices[index];
+    std::shared_ptr<Device> slot = devices[index].lock();
     if (!slot) {
         std::shared_ptr<Device> device(new Device());
         device->physical_ = vk.devices[static_cast<std::size_t>(index)];
@@ -108,18 +139,24 @@ std::shared_ptr<Device> Device::open(int index, bool allow_unsupported) {
         if (device->support_.support == Support::unsupported && !allow_unsupported) {
             throw std::runtime_error(device->label() + " is not supported: missing " + join(device->support_.missing));
         }
-        try {
-            device->create(index);
-        } catch (...) {
-            device->destroy();
-            devices.erase(index);
-            throw;
-        }
+        device->create(index);  // on failure ~Device frees what was created
+        devices[index] = device;
         slot = std::move(device);
     } else if (slot->support_.support == Support::unsupported && !allow_unsupported) {
         throw std::runtime_error(slot->label() + " is not supported: missing " + join(slot->support_.missing));
     }
     return slot;
+}
+
+Device::~Device() {
+    // A failed wait may have left work running on objects that are gone with
+    // the device: leak it instead (Device::poison).
+    // Otherwise nothing runs: every Slot holds the device and settles (waits,
+    // bounded) before it releases it.
+    if (poisoned()) return;
+    if (pipeline_cache_) table_.vkDestroyPipelineCache(device_, pipeline_cache_, nullptr);
+    if (allocator_) vmaDestroyAllocator(allocator_);
+    if (device_ != VK_NULL_HANDLE) table_.vkDestroyDevice(device_, nullptr);
 }
 
 std::string Device::label() const {
@@ -198,7 +235,10 @@ void Device::create(int index) {
     info.pQueueCreateInfos = queue_infos.data();
     info.enabledExtensionCount = static_cast<std::uint32_t>(extensions.size());
     info.ppEnabledExtensionNames = extensions.data();
-    NSS_VK_CHECK(vkCreateDevice(physical_, &info, nullptr, &device_));
+    // Output parameters are undefined on failure: only a created device is kept.
+    VkDevice created = VK_NULL_HANDLE;
+    NSS_VK_CHECK(vkCreateDevice(physical_, &info, nullptr, &created));
+    device_ = created;
     volkLoadDeviceTable(&table_, device_);
 
     // One mutex per distinct queue.
@@ -237,19 +277,13 @@ void Device::create(int index) {
     allocator_info.instance = instance().handle;
     allocator_info.vulkanApiVersion = kRequiredApiVersion;
     allocator_info.pVulkanFunctions = &functions;
+    // Smaller blocks than VMA's 256 MiB default: VMA keeps an empty block per
+    // memory type, which memory_limit_mb does not see. Plane-sized buffers
+    // get dedicated allocations anyway (Buffer).
+    allocator_info.preferredLargeHeapBlockSize = 32ull << 20;
     NSS_VK_CHECK(vmaCreateAllocator(&allocator_info, &allocator_));
 
     load_pipeline_cache();
-}
-
-void Device::destroy() noexcept {
-    if (device_ == VK_NULL_HANDLE) return;
-    if (pipeline_cache_) table_.vkDestroyPipelineCache(device_, pipeline_cache_, nullptr);
-    if (allocator_) vmaDestroyAllocator(allocator_);
-    table_.vkDestroyDevice(device_, nullptr);
-    pipeline_cache_ = VK_NULL_HANDLE;
-    allocator_ = VK_NULL_HANDLE;
-    device_ = VK_NULL_HANDLE;
 }
 
 void Device::submit(const Queue& queue, const VkSubmitInfo2& info) const {
@@ -290,26 +324,27 @@ void Device::load_pipeline_cache() {
         NSS_VK_CHECK(table_.vkCreatePipelineCache(device_, &info, nullptr, &pipeline_cache_));
         data.clear();
     }
-    cache_saved_bytes_ = data.size();
+    cache_saved_hash_ = 0;
 }
 
 void Device::save_pipeline_cache() {
     if (cache_file_.empty()) return;
     std::lock_guard lock(cache_mutex_);
     std::size_t size = 0;
-    if (table_.vkGetPipelineCacheData(device_, pipeline_cache_, &size, nullptr) != VK_SUCCESS || size == 0 ||
-        size == cache_saved_bytes_) {
-        return;
-    }
+    if (table_.vkGetPipelineCacheData(device_, pipeline_cache_, &size, nullptr) != VK_SUCCESS || size == 0) return;
     std::vector<char> data(size);
     if (table_.vkGetPipelineCacheData(device_, pipeline_cache_, &size, data.data()) < VK_SUCCESS) return;
     data.resize(size);
+    std::uint64_t hash = 1469598103934665603ull;
+    for (const char c : data) hash = (hash ^ static_cast<unsigned char>(c)) * 1099511628211ull;
+    if (hash == cache_saved_hash_) return;
     // Write a temporary file and rename it over the cache, so a concurrent
     // reader in another process never sees a partial file.
     std::error_code error;
     std::filesystem::create_directories(cache_file_.parent_path(), error);
     std::filesystem::path temporary = cache_file_;
-    temporary += ".tmp" + std::to_string(reinterpret_cast<std::uintptr_t>(this));
+    // Unique per process and call: two processes may save the same cache.
+    temporary += ".tmp" + std::to_string(process_id()) + "-" + std::to_string(std::random_device{}());
     {
         std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
         if (!file || !file.write(data.data(), static_cast<std::streamsize>(data.size()))) {
@@ -323,7 +358,7 @@ void Device::save_pipeline_cache() {
         std::filesystem::remove(temporary, error);
         return;
     }
-    cache_saved_bytes_ = size;
+    cache_saved_hash_ = hash;
 }
 
 std::shared_ptr<Device> acquire_device(int device_id, const char* filter, VSCore* core, const VSAPI* vsapi) {

@@ -64,9 +64,24 @@ Buffer::Buffer(std::shared_ptr<Device> device, std::size_t bytes, Memory memory,
             allocation.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
             break;
     }
+    // Plane-sized buffers get memory of their own: freed at once, never part
+    // of a VMA block that outlives them uncharged.
+    if (bytes >= kDedicatedBytes) allocation.flags |= VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
     VmaAllocationInfo result{};
     NSS_VK_CHECK(vmaCreateBuffer(device_->allocator(), &info, &allocation, &buffer_, &allocation_, &result));
     mapped_ = result.pMappedData;
+    // Charge what the device really reserved (alignment, dedicated rounding).
+    if (result.size > bytes) {
+        try {
+            padding_ = BudgetCharge(budget, host ? nss::ResourceKind::Pinned : nss::ResourceKind::Workspace,
+                                    static_cast<std::size_t>(result.size - bytes));
+        } catch (...) {
+            vmaDestroyBuffer(device_->allocator(), buffer_, allocation_);
+            buffer_ = VK_NULL_HANDLE;
+            allocation_ = VK_NULL_HANDLE;
+            throw;
+        }
+    }
     VkBufferDeviceAddressInfo address{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
     address.buffer = buffer_;
     address_ = device_->vk().vkGetBufferDeviceAddress(device_->handle(), &address);
@@ -83,18 +98,21 @@ Buffer& Buffer::operator=(Buffer&& other) noexcept {
         memory_ = other.memory_;
         mapped_ = std::exchange(other.mapped_, nullptr);
         charge_ = std::move(other.charge_);
+        padding_ = std::move(other.padding_);
     }
     return *this;
 }
 
 void Buffer::reset() noexcept {
-    if (buffer_ != VK_NULL_HANDLE) vmaDestroyBuffer(device_->allocator(), buffer_, allocation_);
+    // A poisoned device may still use the buffer: leak it.
+    if (buffer_ != VK_NULL_HANDLE && !device_->poisoned()) vmaDestroyBuffer(device_->allocator(), buffer_, allocation_);
     buffer_ = VK_NULL_HANDLE;
     allocation_ = VK_NULL_HANDLE;
     address_ = 0;
     bytes_ = 0;
     mapped_ = nullptr;
     charge_ = BudgetCharge();
+    padding_ = BudgetCharge();
     device_.reset();
 }
 

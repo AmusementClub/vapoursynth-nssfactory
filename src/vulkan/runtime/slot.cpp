@@ -38,7 +38,8 @@ Slot::Slot(std::shared_ptr<Device> device, std::uint32_t timestamps) : device_(s
             NSS_VK_CHECK(vk.vkCreateQueryPool(handle, &pool, nullptr, &queries_));
             vk.vkResetQueryPool(handle, queries_, 0, timestamps);
             query_count_ = timestamps;
-            marked_.assign(timestamps, false);
+            marked_.assign(timestamps, -1);
+            times_.assign(timestamps, 0.0);
         }
     } catch (...) {
         release();
@@ -47,34 +48,52 @@ Slot::Slot(std::shared_ptr<Device> device, std::uint32_t timestamps) : device_(s
 }
 
 Slot::~Slot() {
+    settle();
     release();
 }
 
 void Slot::release() noexcept {
+    // Objects the device may still use are leaked rather than destroyed.
+    if (state_ == State::broken || state_ == State::pending) return;
     const VolkDeviceTable& vk = device_->vk();
     const VkDevice handle = device_->handle();
-    if (pending_ && !broken_) {
-        VkSemaphoreWaitInfo info{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
-        info.semaphoreCount = 1;
-        info.pSemaphores = &timeline_;
-        info.pValues = &value_;
-        if (vk.vkWaitSemaphores(handle, &info, wait_timeout_ns()) != VK_SUCCESS) broken_ = true;
-    }
-    // Objects the device may still use are leaked rather than destroyed.
-    if (broken_) return;
     if (queries_) vk.vkDestroyQueryPool(handle, queries_, nullptr);
     if (timeline_) vk.vkDestroySemaphore(handle, timeline_, nullptr);
     for (StageCommands& stage : stages_) {
         if (stage.pool) vk.vkDestroyCommandPool(handle, stage.pool, nullptr);
+        stage.pool = VK_NULL_HANDLE;
     }
     queries_ = VK_NULL_HANDLE;
     timeline_ = VK_NULL_HANDLE;
-    for (StageCommands& stage : stages_) stage.pool = VK_NULL_HANDLE;
+}
+
+void Slot::fail() noexcept {
+    state_ = State::broken;
+    device_->poison();
+}
+
+VkResult Slot::wait_timeline() noexcept {
+    VkSemaphoreWaitInfo info{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
+    info.semaphoreCount = 1;
+    info.pSemaphores = &timeline_;
+    info.pValues = &value_;
+    return device_->vk().vkWaitSemaphores(device_->handle(), &info, wait_timeout_ns());
+}
+
+void Slot::reset_commands() noexcept {
+    const VolkDeviceTable& vk = device_->vk();
+    for (StageCommands& s : stages_) {
+        if (s.recording) {  // recorded but never submitted: drop it
+            vk.vkEndCommandBuffer(s.buffer);
+            s.recording = false;
+        }
+        if (s.pool) vk.vkResetCommandPool(device_->handle(), s.pool, 0);
+    }
 }
 
 VkCommandBuffer Slot::commands(Stage stage) {
-    if (broken_) throw std::runtime_error("nss_vk: execution slot unusable after a failed wait");
-    if (pending_) throw std::logic_error("nss_vk: Slot::commands before wait()");
+    if (state_ == State::broken) throw std::runtime_error("nss_vk: execution slot unusable after a failed wait");
+    if (state_ == State::pending) throw std::logic_error("nss_vk: Slot::commands before wait()");
     StageCommands& s = stages_[stage];
     if (!s.recording) {
         VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -82,6 +101,7 @@ VkCommandBuffer Slot::commands(Stage stage) {
         NSS_VK_CHECK(device_->vk().vkBeginCommandBuffer(s.buffer, &begin));
         s.recording = true;
     }
+    state_ = State::recording;
     return s.buffer;
 }
 
@@ -99,12 +119,14 @@ void Slot::end_label(Stage stage) {
 
 void Slot::mark(Stage stage, std::uint32_t query) {
     if (query >= query_count_ || stages_[stage].queue->timestamp_bits == 0) return;
+    if (marked_[query] >= 0) throw std::logic_error("nss_vk: timestamp query marked twice in one frame");
     device_->vk().vkCmdWriteTimestamp2(commands(stage), VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, queries_, query);
-    marked_[query] = true;
+    marked_[query] = stage;
 }
 
 void Slot::submit() {
-    if (broken_) throw std::runtime_error("nss_vk: execution slot unusable after a failed wait");
+    if (state_ == State::broken) throw std::runtime_error("nss_vk: execution slot unusable after a failed wait");
+    if (state_ != State::recording) return;
     const VolkDeviceTable& vk = device_->vk();
     bool first = true;
     for (StageCommands& s : stages_) {
@@ -127,70 +149,88 @@ void Slot::submit() {
         signal.value = value_ + 1;
         signal.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
         VkSubmitInfo2 info{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
-        info.waitSemaphoreInfoCount = first && value_ == 0 ? 0u : 1u;
+        info.waitSemaphoreInfoCount = value_ == 0 ? 0u : 1u;
         info.pWaitSemaphoreInfos = &wait;
         info.commandBufferInfoCount = 1;
         info.pCommandBufferInfos = &buffer;
         info.signalSemaphoreInfoCount = 1;
         info.pSignalSemaphoreInfos = &signal;
-        device_->submit(*s.queue, info);
+        // Stages submitted before a failing one stay pending; settle() waits
+        // for them (value_ names the last one that was submitted).
+        try {
+            device_->submit(*s.queue, info);
+        } catch (...) {
+            state_ = first ? State::recording : State::pending;
+            throw;
+        }
         ++value_;
-        pending_ = true;
         first = false;
     }
+    state_ = State::pending;
 }
 
 void Slot::wait() {
-    if (broken_) throw std::runtime_error("nss_vk: execution slot unusable after a failed wait");
-    const VolkDeviceTable& vk = device_->vk();
-    const VkDevice handle = device_->handle();
-    if (pending_) {
-        VkSemaphoreWaitInfo info{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
-        info.semaphoreCount = 1;
-        info.pSemaphores = &timeline_;
-        info.pValues = &value_;
-        const VkResult result = vk.vkWaitSemaphores(handle, &info, wait_timeout_ns());
+    if (state_ == State::broken) throw std::runtime_error("nss_vk: execution slot unusable after a failed wait");
+    if (state_ == State::pending) {
+        const VkResult result = wait_timeline();
         if (result != VK_SUCCESS) {
-            broken_ = true;
+            fail();
             if (result == VK_TIMEOUT) {
                 throw VkError(result, "nss_vk: the device did not finish a frame within " +
                                           std::to_string(wait_timeout_ns() / 1'000'000) +
                                           " ms (NSS_VK_WAIT_TIMEOUT_MS)");
             }
-            NSS_VK_CHECK(result);
-            throw VkError(result, "nss_vk: vkWaitSemaphores returned " + result_name(result));
+            throw VkError(result, "nss_vk: waiting for a frame failed: " + result_name(result));
         }
-        pending_ = false;
+        read_timestamps();
     }
-    for (StageCommands& s : stages_) {
-        if (s.recording) {  // recorded but never submitted: drop it
-            NSS_VK_CHECK(vk.vkEndCommandBuffer(s.buffer));
-            s.recording = false;
-        }
-        NSS_VK_CHECK(vk.vkResetCommandPool(handle, s.pool, 0));
-    }
+    reset_commands();
+    state_ = State::idle;
 }
 
-std::vector<double> Slot::timestamps_ns() {
-    std::vector<double> times(query_count_, 0.0);
-    if (query_count_ == 0 || pending_) return times;
+void Slot::settle() noexcept {
+    if (state_ == State::broken) return;
+    if (state_ == State::pending && wait_timeline() != VK_SUCCESS) {
+        fail();
+        return;
+    }
+    reset_commands();
+    if (query_count_) {
+        device_->vk().vkResetQueryPool(device_->handle(), queries_, 0, query_count_);
+        marked_.assign(query_count_, -1);
+    }
+    state_ = State::idle;
+}
+
+void Slot::read_timestamps() noexcept {
+    if (query_count_ == 0) return;
     const VolkDeviceTable& vk = device_->vk();
-    std::uint64_t origin = 0;
+    times_.assign(query_count_, 0.0);
     std::vector<std::uint64_t> raw(query_count_, 0);
+    std::vector<bool> valid(query_count_, false);
     for (std::uint32_t q = 0; q < query_count_; ++q) {
-        if (!marked_[q]) continue;
+        if (marked_[q] < 0) continue;
         // Written and waited for: available without VK_QUERY_RESULT_WAIT_BIT,
         // which would block forever on a query that was never written.
-        vk.vkGetQueryPoolResults(device_->handle(), queries_, q, 1, sizeof(std::uint64_t), &raw[q],
-                                 sizeof(std::uint64_t), VK_QUERY_RESULT_64_BIT);
+        if (vk.vkGetQueryPoolResults(device_->handle(), queries_, q, 1, sizeof(std::uint64_t), &raw[q],
+                                     sizeof(std::uint64_t), VK_QUERY_RESULT_64_BIT) != VK_SUCCESS) {
+            continue;
+        }
+        const std::uint32_t bits = stages_[marked_[q]].queue->timestamp_bits;
+        if (bits < 64) raw[q] &= (std::uint64_t{1} << bits) - 1;
+        valid[q] = true;
     }
-    origin = marked_[0] ? raw[0] : 0;
-    for (std::uint32_t q = 0; q < query_count_; ++q) {
-        if (marked_[q]) times[q] = static_cast<double>(raw[q] - origin) * device_->timestamp_period_ns();
+    if (valid[0]) {
+        for (std::uint32_t q = 0; q < query_count_; ++q) {
+            if (valid[q] && raw[q] >= raw[0]) {
+                times_[q] = static_cast<double>(raw[q] - raw[0]) * device_->timestamp_period_ns();
+            }
+        }
     }
+    // Host reset after the wait: every query is unavailable again before the
+    // next frame writes it.
     vk.vkResetQueryPool(device_->handle(), queries_, 0, query_count_);
-    marked_.assign(query_count_, false);
-    return times;
+    marked_.assign(query_count_, -1);
 }
 
 }  // namespace nss_vk
