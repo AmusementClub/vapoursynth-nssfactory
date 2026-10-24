@@ -73,13 +73,16 @@ public:
     std::string label() const;
 
     // D28 as amended 2026-10-24: kernels run on `compute`; uploads and
-    // downloads take one copy-only queue each when the device has two, share
-    // one when it has one, and use the compute queue otherwise.
+    // downloads take one copy-only queue each when the device has two. With
+    // one, both use it and downloads are submitted once their kernel is done
+    // (defer_downloads, so uploads run ahead); with none, everything is on the
+    // compute queue.
     const Queue& compute() const noexcept { return compute_; }
     const Queue& upload() const noexcept { return upload_; }
     const Queue& download() const noexcept { return download_; }
     // Distinct queue families of the three roles, for concurrent buffers.
     const std::vector<std::uint32_t>& families() const noexcept { return families_; }
+    bool defer_downloads() const noexcept { return defer_downloads_; }
     void submit(const Queue& queue, const VkSubmitInfo2& info) const;
 
     // Uploads write device-local, host-visible memory when it is resizable BAR
@@ -117,6 +120,7 @@ private:
     std::vector<std::uint32_t> families_;
     std::unique_ptr<std::mutex[]> queue_mutexes_;
     bool rebar_ = false;
+    bool defer_downloads_ = false;
     float timestamp_period_ = 1.0f;
     bool debug_labels_ = false;
     VkPipelineCache pipeline_cache_ = VK_NULL_HANDLE;

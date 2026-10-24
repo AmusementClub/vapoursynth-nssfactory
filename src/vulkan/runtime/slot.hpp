@@ -47,7 +47,9 @@ public:
     void mark(Stage stage, std::uint32_t query);
 
     // Ends and submits the recorded stages in order, each waiting for the one
-    // before. A frame with nothing recorded submits nothing.
+    // before. A frame with nothing recorded submits nothing. On a device with
+    // one copy queue for both directions the download stage is submitted by
+    // wait() once the frame's kernels are done.
     void submit();
     // Waits for the submitted stages (bounded: wait_timeout_ns()) and readies
     // the slot for the next frame. Throws VkError on timeout or device loss;
@@ -71,6 +73,8 @@ private:
     };
 
     void release() noexcept;
+    void submit_stage(StageCommands& stage);
+    void wait_or_throw();
     VkResult wait_timeline() noexcept;
     void reset_commands() noexcept;
     void read_timestamps() noexcept;
@@ -81,6 +85,7 @@ private:
     VkSemaphore timeline_ = VK_NULL_HANDLE;
     std::uint64_t value_ = 0;  // last value a submitted stage signals
     State state_ = State::idle;
+    bool deferred_ = false;  // the download stage waits for wait() (Device::defer_downloads)
     VkQueryPool queries_ = VK_NULL_HANDLE;
     std::uint32_t query_count_ = 0;
     std::vector<int> marked_;  // per query: the stage that wrote it, -1 = none

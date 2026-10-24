@@ -124,68 +124,86 @@ void Slot::mark(Stage stage, std::uint32_t query) {
     marked_[query] = stage;
 }
 
+void Slot::submit_stage(StageCommands& s) {
+    NSS_VK_CHECK(device_->vk().vkEndCommandBuffer(s.buffer));
+    s.recording = false;
+    VkCommandBufferSubmitInfo buffer{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
+    buffer.commandBuffer = s.buffer;
+    // Each stage waits for the one before it. The first of a frame waits for
+    // the previous frame's last stage: the host has waited for it already, but
+    // only a device-side dependency orders this frame's writes after that
+    // frame's (synchronization validation: write-after-write on reused buffers
+    // across queues).
+    VkSemaphoreSubmitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+    wait.semaphore = timeline_;
+    wait.value = value_;
+    wait.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    VkSemaphoreSubmitInfo signal{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+    signal.semaphore = timeline_;
+    signal.value = value_ + 1;
+    signal.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    VkSubmitInfo2 info{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+    info.waitSemaphoreInfoCount = value_ == 0 ? 0u : 1u;
+    info.pWaitSemaphoreInfos = &wait;
+    info.commandBufferInfoCount = 1;
+    info.pCommandBufferInfos = &buffer;
+    info.signalSemaphoreInfoCount = 1;
+    info.pSignalSemaphoreInfos = &signal;
+    device_->submit(*s.queue, info);
+    ++value_;
+}
+
 void Slot::submit() {
     if (state_ == State::broken) throw std::runtime_error("nss_vk: execution slot unusable after a failed wait");
     if (state_ != State::recording) return;
-    const VolkDeviceTable& vk = device_->vk();
-    bool first = true;
-    for (StageCommands& s : stages_) {
-        if (!s.recording) continue;
-        NSS_VK_CHECK(vk.vkEndCommandBuffer(s.buffer));
-        s.recording = false;
-        VkCommandBufferSubmitInfo buffer{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
-        buffer.commandBuffer = s.buffer;
-        // Each stage waits for the one before it. The first waits for the
-        // previous frame's last stage: the host has waited for it already, but
-        // only a device-side dependency orders this frame's writes after that
-        // frame's (synchronization validation: write-after-write on reused
-        // buffers across queues).
-        VkSemaphoreSubmitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
-        wait.semaphore = timeline_;
-        wait.value = value_;
-        wait.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-        VkSemaphoreSubmitInfo signal{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
-        signal.semaphore = timeline_;
-        signal.value = value_ + 1;
-        signal.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-        VkSubmitInfo2 info{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
-        info.waitSemaphoreInfoCount = value_ == 0 ? 0u : 1u;
-        info.pWaitSemaphoreInfos = &wait;
-        info.commandBufferInfoCount = 1;
-        info.pCommandBufferInfos = &buffer;
-        info.signalSemaphoreInfoCount = 1;
-        info.pSignalSemaphoreInfos = &signal;
+    // With one copy queue for both directions, a download batch would wait
+    // there for its kernel and hold every later upload (queues run their
+    // batches in order): it is submitted by wait() once the kernel is done, so
+    // that the uploads of other slots run ahead (D28 as amended).
+    const bool defer = device_->defer_downloads() && stages_[Download].recording &&
+                       (stages_[Upload].recording || stages_[Compute].recording);
+    bool submitted = false;
+    for (int stage = 0; stage < kStages; ++stage) {
+        StageCommands& s = stages_[stage];
+        if (!s.recording || (defer && stage == Download)) continue;
         // Stages submitted before a failing one stay pending; settle() waits
         // for them (value_ names the last one that was submitted).
         try {
-            device_->submit(*s.queue, info);
+            submit_stage(s);
         } catch (...) {
-            state_ = first ? State::recording : State::pending;
+            state_ = submitted ? State::pending : State::recording;
             throw;
         }
-        ++value_;
-        first = false;
+        submitted = true;
     }
+    deferred_ = defer;
     state_ = State::pending;
 }
 
 void Slot::wait() {
     if (state_ == State::broken) throw std::runtime_error("nss_vk: execution slot unusable after a failed wait");
     if (state_ == State::pending) {
-        const VkResult result = wait_timeline();
-        if (result != VK_SUCCESS) {
-            fail();
-            if (result == VK_TIMEOUT) {
-                throw VkError(result, "nss_vk: the device did not finish a frame within " +
-                                          std::to_string(wait_timeout_ns() / 1'000'000) +
-                                          " ms (NSS_VK_WAIT_TIMEOUT_MS)");
-            }
-            throw VkError(result, "nss_vk: waiting for a frame failed: " + result_name(result));
+        wait_or_throw();
+        if (deferred_) {
+            deferred_ = false;
+            submit_stage(stages_[Download]);
+            wait_or_throw();
         }
         read_timestamps();
     }
     reset_commands();
     state_ = State::idle;
+}
+
+void Slot::wait_or_throw() {
+    const VkResult result = wait_timeline();
+    if (result == VK_SUCCESS) return;
+    fail();
+    if (result == VK_TIMEOUT) {
+        throw VkError(result, "nss_vk: the device did not finish a frame within " +
+                                  std::to_string(wait_timeout_ns() / 1'000'000) + " ms (NSS_VK_WAIT_TIMEOUT_MS)");
+    }
+    throw VkError(result, "nss_vk: waiting for a frame failed: " + result_name(result));
 }
 
 void Slot::settle() noexcept {
@@ -194,6 +212,7 @@ void Slot::settle() noexcept {
         fail();
         return;
     }
+    deferred_ = false;  // a download never submitted is dropped with the commands
     reset_commands();
     if (query_count_) {
         device_->vk().vkResetQueryPool(device_->handle(), queries_, 0, query_count_);

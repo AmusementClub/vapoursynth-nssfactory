@@ -19,6 +19,7 @@ layout(push_constant) uniform Push {
     uint dst_pitch;  // floats
     float a;
     float b;
+    uint repeat;  // 1: one fma; more: extra work for timing (tests/vk/bench_vk_queues.cpp)
 } pc;
 
 void main() {
@@ -26,5 +27,6 @@ void main() {
     const uint y = gl_GlobalInvocationID.y;
     if (x >= pc.width || y >= pc.height) return;
     precise float value = fma(pc.a, pc.src.v[y * pc.src_pitch + x], pc.b);
+    for (uint r = 1; r < pc.repeat; ++r) value = fma(value, 0.5f, 0.25f);
     pc.dst.v[y * pc.dst_pitch + x] = value;
 }
