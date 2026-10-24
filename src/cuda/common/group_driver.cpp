@@ -1598,7 +1598,8 @@ void group_filter_install(GroupFilterConfig&& config, VSMap* out, VSCore* core, 
     }
     DeviceGuard guard(d->device.index);
     plan_planes(*d);
-    d->cache.configure(d->rolling.rolling_chunk, d->frame_bytes, d->plane_offset, d->cache_size, d->cache_cap, d->budget);
+    d->cache.configure(d->rolling.rolling_chunk, d->frame_bytes, d->plane_offset, d->cache_size, d->cache_cap,
+                       pinned_blocks(d->budget));
     std::vector<std::unique_ptr<Slot>> slots;
     for (int i = 0; i < d->backend.num_streams; ++i) slots.push_back(make_slot(*d));
     for (auto& slot : slots) d->slots.push_back(slot.get());

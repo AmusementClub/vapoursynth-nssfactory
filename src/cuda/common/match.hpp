@@ -8,6 +8,8 @@
 // than the CPU SIMD trees, so near-ties may resolve differently (CPU and GPU are compared by PSNR, not bitwise).
 #pragma once
 
+#include "gpuhost/geometry.hpp"
+
 #include <cuda_runtime.h>
 
 #include <cstdint>
@@ -23,39 +25,9 @@ struct DeviceMatch {
     float dist;
 };
 
-// Reference positions: the CPU raster grid (append_raster_jobs) with the last
-// row/column clamped to (width - block, height - block).
-struct RasterGrid {
-    int nx;
-    int ny;
-    int step;
-    int max_x;
-    int max_y;
-    __host__ __device__ int count() const { return nx * ny; }
-    __host__ __device__ int x(int i) const { const int v = (i % nx) * step; return v < max_x ? v : max_x; }
-    __host__ __device__ int y(int i) const { const int v = (i / nx) * step; return v < max_y ? v : max_y; }
-};
-RasterGrid make_raster_grid(int width, int height, int block, int step);
-
-struct MatchGeometry {
-    int width;
-    int height;
-    int pitch;  // in floats
-    int block;
-    int bm_range;
-    int group;  // clamped to kMaxGroup
-    // Joint multi-channel matching (nss::ssd_nch): distances are the sum over
-    // `channels` planes, channel c of a frame living channel_step floats after
-    // channel c - 1.
-    int channels = 1;
-    long long channel_step = 0;
-    // Exact-size windows (nss::image_match): candidates span
-    // [c - bm_range, c + range_hi] when range_hi >= 0, else the symmetric
-    // [c - bm_range, c + bm_range].
-    int range_hi = -1;
-    __host__ __device__ int lo() const { return bm_range > 0 ? bm_range : 0; }
-    __host__ __device__ int hi() const { return range_hi >= 0 ? range_hi : lo(); }
-};
+using nss::gpuhost::MatchGeometry;
+using nss::gpuhost::RasterGrid;
+using nss::gpuhost::make_raster_grid;
 
 // References [ref_begin, ref_begin + ref_count) of the grid; out holds
 // ref_count * geometry.group matches (group-strided) and counts ref_count
