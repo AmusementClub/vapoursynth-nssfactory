@@ -76,7 +76,8 @@ int main(int argc, char** argv) {
     for (int i = 0; i < 20; ++i) {  // warm up; kernel time from the last
         auto lease = pool.acquire();
         frame(*lease, pipeline, input, output, repeat);
-        kernel_ms = lease->slot.timestamps_ns()[1] / 1e6;
+        const std::vector<double>& times = lease->slot.timestamps_ns();
+        kernel_ms = times.size() == 2 ? times[1] / 1e6 : 0.0;  // none without host query reset
     }
     std::atomic<int> next{0};
     const auto start = std::chrono::steady_clock::now();

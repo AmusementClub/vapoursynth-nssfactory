@@ -14,6 +14,14 @@ add_executable(test_vk_runtime test_vk_runtime.cpp)
 target_link_libraries(test_vk_runtime PRIVATE nss_vk_core)
 add_test(NAME test_vk_runtime COMMAND test_vk_runtime)
 set_tests_properties(test_vk_runtime PROPERTIES LABELS vk SKIP_RETURN_CODE 77)
+# The other queue layouts (D28): one copy queue (downloads deferred until the
+# kernel is done) with staged uploads, and everything on the compute queue.
+add_test(NAME test_vk_runtime_one_copy_queue COMMAND test_vk_runtime)
+add_test(NAME test_vk_runtime_compute_queue COMMAND test_vk_runtime)
+set_tests_properties(test_vk_runtime_one_copy_queue PROPERTIES LABELS vk SKIP_RETURN_CODE 77
+                     ENVIRONMENT "NSS_VK_COPY_QUEUES=1;NSS_VK_REBAR=0")
+set_tests_properties(test_vk_runtime_compute_queue PROPERTIES LABELS vk SKIP_RETURN_CODE 77
+                     ENVIRONMENT "NSS_VK_COPY_QUEUES=0")
 
 # Queue-layout throughput (D28), run by hand on a device; not a test.
 add_executable(bench_vk_queues bench_vk_queues.cpp)
