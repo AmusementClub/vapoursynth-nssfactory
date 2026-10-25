@@ -103,7 +103,10 @@ public:
     // which the cache does not drop meanwhile; the request that computed the
     // chunk holds the store alone (the cache may drop it: the caller accounts
     // for that store, e.g. through the staging it computed the chunk with).
-    // A request must not wait on other requests while it holds a hit.
+    // While a request holds a hit it may only wait for what requests that
+    // hold no chunk release (e.g. a permit that is held only to copy a frame
+    // out): the request that computes the next chunk waits for the hits on
+    // the chunk it drops.
     class Chunk {
     public:
         Chunk() = default;
@@ -170,9 +173,8 @@ public:
         cache_.push_front(Entry{computed, 0});
         // Over size: the oldest chunk no hit is reading goes (the cache never
         // holds more than its size, and no chunk it drops lives on in a
-        // reader). While every older chunk is being read, wait for a reader:
-        // readers wait on nothing while they hold a chunk. Chunks other
-        // computing requests hold alone may go.
+        // reader). While every older chunk is being read, wait for a reader
+        // (see Chunk). Chunks other computing requests hold alone may go.
         while (static_cast<int>(cache_.size()) > size_) {
             auto victim = cache_.end();
             for (auto it = std::next(cache_.begin()); it != cache_.end(); ++it) {

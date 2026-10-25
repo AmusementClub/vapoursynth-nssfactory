@@ -148,13 +148,16 @@ struct Driver : GroupFilterConfig {
     bool basic_out[3]{true, true, true};    // two_stage: the first stage filters channel c of a unit
     std::unique_ptr<SlotPool<Slot>> pool;
     std::unique_ptr<SlotPool<Staging>> staging;
-    // Rolling: a permit per staging set, taken before a request looks for its
-    // chunk and held until its frame is copied out, so that the output frames
-    // stay within what the plan counts per staging set. A request that
-    // computes its chunk keeps the staging set until then too: the plan
-    // counts a chunk store per set, and the cache may drop the chunk while the
-    // request copies its frame out of it (it never drops one that a request
-    // reads as a hit; such a request waits on nothing while it holds it).
+    // Rolling: a permit per staging set, taken once a request holds its chunk
+    // and kept until its frame is copied out, so that the output frames stay
+    // within what the plan counts per staging set. The cache never drops a
+    // chunk that a request holds as a hit (such a request then waits only for
+    // a permit, and a permit holder only copies its frame out). A request that
+    // computes its chunk holds no permit meanwhile and keeps its staging set
+    // until its frame is out: the plan counts a chunk store per set, and the
+    // cache may drop that chunk in the meantime. (A permit taken before the
+    // chunk let the cache drop a chunk the requests for its other frames were
+    // about to read: they computed it again, rolling ran at half speed.)
     struct OutputPermit {};
     std::unique_ptr<SlotPool<OutputPermit>> outputs;
     // Spatial and legacy frames: direct DMA to and from page-locked VS frame
@@ -1661,11 +1664,11 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
 
     const int start = n / d->rolling.rolling_chunk * d->rolling.rolling_chunk;
     const int count = std::min(d->rolling.rolling_chunk, nframes - start);
-    // The permit before the chunk, and the staging set of a chunk this request computes until its frame is
-    // out: see Driver::outputs.
-    auto permit = d->outputs->acquire();
+    // The chunk, then the permit for the output frame (see Driver::outputs); a chunk this request computes
+    // keeps its staging set until the frame is out.
     std::optional<SlotPool<Staging>::Lease> staging;
     auto chunk = rolling_chunk(d, staging, start, count, ctx, vsapi);
+    auto permit = d->outputs->acquire();
     nss::ResourceScope resource_scope(d->budget);
     nss::FrameScope frames(vsapi);
     const VSFrame* src = frames.getFrameFilter(n, d->node, ctx);

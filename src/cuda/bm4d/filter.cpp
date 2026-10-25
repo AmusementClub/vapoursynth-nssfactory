@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <cstring>
@@ -89,13 +90,18 @@ struct Bm4dData : nss::Bm4dParams {
     std::vector<std::thread> prefetchers;
     std::atomic<int> prefetching{0};
     static constexpr int kPrefetchers = 2;
-    // Requests that look for their chunk and copy their frame out hold a
-    // permit: each then holds one chunk store besides the cache's (one it
-    // computes in place, or one the cache has dropped meanwhile) and one
-    // output frame, which the memory plan counts.
-    static constexpr int kOutputs = 2;
-    struct OutputPermit {};
-    std::unique_ptr<SlotPool<OutputPermit>> permits;
+    // A request that computes its chunk in place holds a compute permit until
+    // the chunk is in the cache (a store besides the cache's), and a request
+    // holds an output permit, taken once it holds its chunk, until its frame
+    // is copied out (an output frame): the memory plan counts kComputers
+    // stores and kOutputs frames. The cache does not drop a chunk a request
+    // holds (it waits for it): a request holding a chunk waits only for an
+    // output permit, whose holders only copy their frame out. A finished
+    // chunk's requests copy their frames out together: with two output
+    // permits 1080p gray ran 10% slower.
+    static constexpr int kComputers = 2, kOutputs = 8;
+    struct Permit {};
+    std::unique_ptr<SlotPool<Permit>> computers, permits;
 };
 
 void chunk_window(const Bm4dData* d, int n, int* first, int* count, int* v0, int* v1) {
@@ -124,15 +130,26 @@ void finish_chunk(Bm4dData* d, int first, std::shared_ptr<const ChunkStore> stor
         std::lock_guard<std::mutex> guard(d->mu);
         if (store) {
             d->cache.push_front(std::move(store));
-            while (static_cast<int>(d->cache.size()) > Bm4dData::kCacheLimit) {
-                auto& old = d->cache.back();
-                if (old.use_count() == 1) d->spare.push_back(std::const_pointer_cast<ChunkStore>(old));
-                d->cache.pop_back();
-            }
+            d->computing.erase(first);
+        } else {
+            d->computing.erase(first);
         }
-        d->computing.erase(first);
     }
     d->computed.notify_all();
+    // Over the limit: the oldest chunk no request holds goes (see Bm4dData::computers).
+    std::unique_lock<std::mutex> lock(d->mu);
+    while (static_cast<int>(d->cache.size()) > Bm4dData::kCacheLimit) {
+        auto victim = d->cache.end();
+        for (auto it = std::next(d->cache.begin()); it != d->cache.end(); ++it) {
+            if (it->use_count() == 1) victim = it;  // only the cache holds it
+        }
+        if (victim == d->cache.end()) {
+            d->computed.wait_for(lock, std::chrono::milliseconds(1));  // a request lets go
+            continue;
+        }
+        d->spare.push_back(std::const_pointer_cast<ChunkStore>(*victim));
+        d->cache.erase(victim);
+    }
 }
 
 std::shared_ptr<ChunkStore> compute_chunk(Bm4dData* d, int first, int count, int v0, int v1,
@@ -272,7 +289,6 @@ const VSFrame* getFrame(int n, int activation, void* instance, void** frame_data
             --d->prefetching;
         });
     }
-    auto permit = d->permits->acquire();
     std::shared_ptr<const ChunkStore> result;
     {
         std::unique_lock<std::mutex> lock(d->mu);
@@ -290,6 +306,7 @@ const VSFrame* getFrame(int n, int activation, void* instance, void** frame_data
         if (!result) d->computing.insert(first);
     }
     if (!result) {
+        auto compute = d->computers->acquire();  // held until the chunk is in the cache (Finish)
         std::shared_ptr<ChunkStore> store;
         struct Finish {
             Bm4dData* d;
@@ -303,6 +320,7 @@ const VSFrame* getFrame(int n, int activation, void* instance, void** frame_data
         for (const VSFrame* f : frames) frames_owned.freeFrame(f);
         result = store;
     }
+    auto permit = d->permits->acquire();  // for the output frame, until it is returned
     const VSFrame* src = frames_owned.getFrameFilter(n, d->node, ctx);
     VSFrame* dst = frames_owned.newVideoFrame(&d->vi.format, d->vi.width, d->vi.height, src, core);
     frames_owned.freeFrame(src);
@@ -365,13 +383,13 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     const std::size_t plane_bytes = d.max_plane * sizeof(float);
     const int slot_count = d.vi.numFrames > nss::kBm4dChunk ? 2 : 1;
     // Host chunk stores: stores are kept for reuse, so as many as were ever
-    // in use at once: the cache's, the prefetched ones and one per output
+    // in use at once: the cache's, the prefetched ones and one per compute
     // permit (and never more than the clip has chunks), each of a chunk of
-    // the clip's frames at most; the permits' output frames (rows at most
+    // the clip's frames at most; the output permits' frames (rows at most
     // 64-byte aligned) and the slots' pinned staging.
     const int chunk_frames = std::min(nss::kBm4dChunk, d.vi.numFrames);
     const std::size_t store_bytes = d.frame_size * chunk_frames * sizeof(float);
-    const std::size_t stores = std::min<std::size_t>(Bm4dData::kCacheLimit + Bm4dData::kPrefetchers + Bm4dData::kOutputs,
+    const std::size_t stores = std::min<std::size_t>(Bm4dData::kCacheLimit + Bm4dData::kPrefetchers + Bm4dData::kComputers,
                                                      (d.vi.numFrames + nss::kBm4dChunk - 1) / nss::kBm4dChunk);
     std::size_t output_bytes = 0;
     for (int plane = 0; plane < d.vi.format.numPlanes; ++plane) {
@@ -391,9 +409,13 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     {
         DeviceGuard guard(d.device.index);
         d.stream = std::make_unique<Stream>();
-        std::vector<std::unique_ptr<Bm4dData::OutputPermit>> permits;
-        for (int i = 0; i < Bm4dData::kOutputs; ++i) permits.push_back(std::make_unique<Bm4dData::OutputPermit>());
-        d.permits = std::make_unique<SlotPool<Bm4dData::OutputPermit>>(std::move(permits));
+        const auto pool = [](int count) {
+            std::vector<std::unique_ptr<Bm4dData::Permit>> permits;
+            for (int i = 0; i < count; ++i) permits.push_back(std::make_unique<Bm4dData::Permit>());
+            return std::make_unique<SlotPool<Bm4dData::Permit>>(std::move(permits));
+        };
+        d.computers = pool(Bm4dData::kComputers);
+        d.permits = pool(Bm4dData::kOutputs);
         if (max_volume) {
             d.volume = DeviceBuffer(max_volume * sizeof(float), d.budget);
             d.filtered = DeviceBuffer(max_volume * sizeof(float), d.budget);
