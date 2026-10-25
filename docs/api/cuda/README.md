@@ -141,7 +141,7 @@ They pay where those leave the GPU idle, and not where the kernels dominate.
 
 | Filter | Default | Gain over one stream | Peak GPU memory, one stream → default |
 |---|---|---|---|
-| NLM | 2 | 1.23× (YUV420, d = 1); with direct transfers 1.06–1.50× (three: no faster) | 901 → 1328 MiB |
+| NLM | 2 | 1.23× (YUV420, d = 1); with direct transfers 1.06–1.50× (three: no faster) | 529 → 759 MiB (gray, d = 1) |
 | TWSC | 3 | 1.22× (gray; two streams: 1.03×) | 385 → 1084 MiB |
 | NCSR | 2; 3 with direct transfers | 1.10× (YUV420); with direct transfers 1.38–1.52× | 170 → 258 MiB (three: 346 MiB) |
 | BM3D, WNNM | 1; 2 with direct transfers | 0.99× staged; with direct transfers 1.01–1.14× (three streams; two equal them on YUV420) | YUV420 150 / 162 MiB, plus about 68 / 80 MiB per stream |

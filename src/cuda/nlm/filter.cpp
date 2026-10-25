@@ -91,10 +91,99 @@ struct WindowCache {
 struct TileSlot {
     Stream stream;
     std::array<DeviceBuffer, 3> out;
-    // With d = 1 and room for them: the weight maps two frames saved for the
-    // frames behind them, and which frames.
-    std::array<DeviceBuffer, 2> weights;
-    std::array<int, 2> weights_of{-1, -1};
+};
+
+// d = 1 with room for them: weight maps a frame saved for the frame after it
+// (NlmTileArgs::weight_save), shared by the streams so that the frame after
+// it finds them whichever stream it gets. Guarded by WeightCache::mu.
+struct WeightSet {
+    DeviceBuffer maps;      // (2a + 1)^2 planes
+    Event written, read;    // behind the last kernel that saved / loaded them
+    int frame = -1;         // the frame that saved them, -1: none
+    bool busy = false;      // a request is queueing a kernel that saves or loads them
+    bool loaded = false;    // a kernel loaded them since they were saved
+    std::uint64_t used = 0;
+};
+
+struct WeightCache {
+    std::mutex mu;
+    std::vector<std::unique_ptr<WeightSet>> sets;
+    std::uint64_t clock = 0;
+};
+
+// The sets a frame's kernel loads and saves, taken under the cache's lock:
+// the kernel waits on the device for the one that saved what it loads, and
+// for the kernels that last saved or loaded the set it overwrites. Nothing
+// waits on the host, so requests in any order cannot block one another; a
+// frame whose predecessor has not queued its kernel yet computes in full.
+class WeightLease {
+public:
+    WeightLease(WeightCache& cache, int n, cudaStream_t stream) : cache_(cache), stream_(stream) {
+        if (cache.sets.empty()) return;
+        std::lock_guard lock(cache.mu);
+        for (auto& w : cache.sets) {
+            if (n > 0 && w->frame == n - 1 && !w->busy && !w->loaded) load_ = w.get();
+        }
+        // A set that was loaded or holds nothing before the oldest that still waits for its frame.
+        const auto rank = [](const WeightSet* w) { return std::pair(w->frame >= 0 && !w->loaded, w->used); };
+        for (auto& w : cache.sets) {
+            if (w.get() != load_ && !w->busy && (!save_ || rank(w.get()) < rank(save_))) save_ = w.get();
+        }
+        if (load_) {
+            load_->busy = true;
+            NSS_CUDA_CHECK(cudaStreamWaitEvent(stream, load_->written.event, 0));
+        }
+        if (save_) {
+            save_->busy = true;
+            save_->frame = -1;
+            NSS_CUDA_CHECK(cudaStreamWaitEvent(stream, save_->written.event, 0));
+            NSS_CUDA_CHECK(cudaStreamWaitEvent(stream, save_->read.event, 0));
+        }
+    }
+    WeightLease(const WeightLease&) = delete;
+    WeightLease& operator=(const WeightLease&) = delete;
+    // Without queued(), as after an error: the sets are given back holding
+    // nothing, behind whatever was queued on the stream.
+    ~WeightLease() {
+        if (!load_ && !save_) return;
+        std::lock_guard lock(cache_.mu);
+        if (load_) {
+            cudaEventRecord(load_->read.event, stream_);
+            load_->busy = false;
+        }
+        if (save_) {
+            cudaEventRecord(save_->written.event, stream_);
+            save_->busy = false;
+        }
+        cudaGetLastError();
+    }
+    const float* load() const { return load_ ? load_->maps.as<float>() : nullptr; }
+    float* save() const { return save_ ? save_->maps.as<float>() : nullptr; }
+    // After the kernel of frame n is queued: the frame after it may load the
+    // saved set from now on.
+    void queued(int n) {
+        if (!load_ && !save_) return;
+        std::lock_guard lock(cache_.mu);
+        if (load_) {
+            NSS_CUDA_CHECK(cudaEventRecord(load_->read.event, stream_));
+            load_->loaded = true;
+            load_->busy = false;
+        }
+        if (save_) {
+            NSS_CUDA_CHECK(cudaEventRecord(save_->written.event, stream_));
+            save_->frame = n;
+            save_->loaded = false;
+            save_->used = ++cache_.clock;
+            save_->busy = false;
+        }
+        load_ = save_ = nullptr;
+    }
+
+private:
+    WeightCache& cache_;
+    cudaStream_t stream_;
+    WeightSet* load_ = nullptr;
+    WeightSet* save_ = nullptr;
 };
 
 // Where a frame in flight has its result downloaded to.
@@ -117,6 +206,7 @@ struct NlmData : nss::NlmParams {
     std::unique_ptr<SlotPool<TileSlot>> tile_pool;
     std::unique_ptr<SlotPool<TileStage>> tile_stages;
     WindowCache window;
+    WeightCache weights;
     std::unique_ptr<FrameMemory> frame_memory;
 };
 
@@ -456,17 +546,11 @@ void tile_frame(NlmData& d, int n, const Frames& srcf, const Frames& reff, VSFra
         args.width = d.width;
         args.height = h;
         for (int c = 0; c < nc; ++c) args.out[c] = s.out[c].as<float>();
-        int save = -1;
-        if (s.weights[0].get()) {
-            // Read what frame n - 1 saved on this stream, save into the other set.
-            const int load = n > 0 && s.weights_of[0] == n - 1 ? 0 : n > 0 && s.weights_of[1] == n - 1 ? 1 : -1;
-            save = load == 0 ? 1 : 0;
-            args.weight_load = load < 0 ? nullptr : s.weights[load].as<float>();
-            args.weight_save = s.weights[save].as<float>();
-            s.weights_of[save] = -1;
-        }
+        WeightLease weights(d.weights, n, s.stream);
+        args.weight_load = weights.load();
+        args.weight_save = weights.save();
         nlm_tile(args, s.stream);
-        if (save >= 0) s.weights_of[save] = n;
+        weights.queued(n);
         for (int c = 0; c < nc; ++c) {
             const int plane = d.first_plane + c;
             if (direct_out[c]) {
@@ -557,6 +641,7 @@ void VS_CC freeFilter(void* instance, VSCore*, const VSAPI*) {
         d->tile_pool.reset();
         d->tile_stages.reset();
         d->window.frames.clear();
+        d->weights.sets.clear();
         d->frame_memory.reset();
     }
     delete d;
@@ -599,21 +684,23 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     const std::size_t window = static_cast<std::size_t>(2 * d->d + 1);
     std::size_t streams = 0, stages = 0, cached = 0, weight_sets = 0;
     // With d = 1 a frame's forward weight maps are the backward maps of the
-    // frame after it, so every stream keeps two sets of (2a + 1)^2 maps: one
-    // to read, one to write (in order 469 to 560 fps at 1080p; nothing for
-    // other request orders). They are the first thing a limit takes, and
-    // without a limit they may use a quarter of the device.
+    // frame after it: the streams share one set of (2a + 1)^2 maps more than
+    // there are streams (WeightCache; a frame loads the set the frame before
+    // it saved and saves into another), which saves work for frames rendered
+    // in order (1080p gray, two streams: the kernel 1.33 to 1.07 ms). They are
+    // the first thing a limit takes, and without a limit they may use a
+    // quarter of the device.
     const std::size_t span = static_cast<std::size_t>(2 * d->a + 1);
     const auto plan_tiles = [&](std::size_t n) {
         streams = n;
         stages = streams + kTileExtraStages;
         cached = window + stages;
-        weight_sets = d->d == 1 ? 2 : 0;
-        if (streams * weight_sets * span * span * d->plane_bytes > d->device.total_memory / kWeightShare) weight_sets = 0;
+        weight_sets = d->d == 1 ? streams + 1 : 0;
+        if (weight_sets * span * span * d->plane_bytes > d->device.total_memory / kWeightShare) weight_sets = 0;
     };
     auto tile_bytes = [&] {
         return d->plane_bytes * (cached * 2 * regions_per_frame(*d) + streams * d->nc +
-                                 stages * (d->nc + d->vi.format.numPlanes) + streams * weight_sets * span * span);
+                                 stages * (d->nc + d->vi.format.numPlanes) + weight_sets * span * span);
     };
     d->tiles = nlm_tile_supported(d->d, d->a, d->s);
     if (d->tiles) {
@@ -658,20 +745,18 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         for (std::size_t i = 0; i < streams; ++i) {
             slots.push_back(std::make_unique<TileSlot>());
             for (int c = 0; c < d->nc; ++c) slots.back()->out[c] = DeviceBuffer(d->plane_bytes, d->budget);
-            // The maps only save work: a device without room for them (other
-            // filters hold it) runs without, as before they existed.
-            try {
-                for (std::size_t w = 0; w < weight_sets; ++w) {
-                    slots.back()->weights[w] = DeviceBuffer(d->plane_bytes * span * span, d->budget);
-                }
-            } catch (const std::exception&) {
-                for (auto& slot : slots) {
-                    for (DeviceBuffer& set : slot->weights) set.reset();
-                }
-                weight_sets = 0;
-            }
         }
         d->tile_pool = std::make_unique<SlotPool<TileSlot>>(std::move(slots));
+        // The maps only save work: a device without room for them (other
+        // filters hold it) runs without, as before they existed.
+        try {
+            for (std::size_t w = 0; w < weight_sets; ++w) {
+                d->weights.sets.push_back(std::make_unique<WeightSet>());
+                d->weights.sets.back()->maps = DeviceBuffer(d->plane_bytes * span * span, d->budget);
+            }
+        } catch (const std::exception&) {
+            d->weights.sets.clear();
+        }
         std::vector<std::unique_ptr<TileStage>> staged;
         for (std::size_t i = 0; i < stages; ++i) {
             staged.push_back(std::make_unique<TileStage>());
