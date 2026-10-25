@@ -654,12 +654,15 @@ if(VapourSynth_FOUND)
     src/frontend/ncsr_args.cpp
     src/frontend/da3d_args.cpp
     src/frontend/bm4d_args.cpp
+    src/frontend/frame_memory.cpp
   )
   target_include_directories(nss_frontend PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
   )
-  target_link_libraries(nss_frontend PUBLIC VapourSynth::VapourSynth)
+  # CMAKE_DL_LIBS: frame_memory.cpp finds vapoursynth-classic's VSFrameMemory.h
+  # extension with dladdr / dlsym.
+  target_link_libraries(nss_frontend PUBLIC VapourSynth::VapourSynth ${CMAKE_DL_LIBS})
   set_target_properties(nss_frontend PROPERTIES
     POSITION_INDEPENDENT_CODE ON
     CXX_VISIBILITY_PRESET hidden
