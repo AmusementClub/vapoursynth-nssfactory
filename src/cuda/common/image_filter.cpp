@@ -146,6 +146,16 @@ struct ImageData : nss::FullImageParams {
     std::size_t match_scratch = 0;  // bytes per slot (0: the lane kernels match)
     std::unique_ptr<SlotPool<Slot>> pool;
     std::unique_ptr<SlotPool<Staging>> staging;
+    // Rolling: a permit per staging set, taken once a request holds its chunk
+    // and kept until its frame is copied out, so that the output frames stay
+    // within what the plan counts per staging set. The cache never drops a
+    // chunk that a request holds as a hit (such a request then waits only for
+    // a permit, and a permit holder only copies its frame out). A request that
+    // computes its chunk holds no permit meanwhile and keeps its staging set
+    // until its frame is out: the plan counts a chunk store per set, and the
+    // cache may drop that chunk in the meantime.
+    struct OutputPermit {};
+    std::unique_ptr<SlotPool<OutputPermit>> outputs;
     // Rolling (temporal_mode="rolling" with a radius): chunks run on the
     // slots by turn instead of from the pool.
     bool rolling = false;
@@ -900,13 +910,16 @@ private:
 
 // The chunk [start, start + count): its frames are staged before the turn and
 // the result is in the store once the staging's event has passed.
-std::shared_ptr<ChunkStore> compute_chunk(ImageData& d, int start, int count, VSFrameContext* ctx, const VSAPI* api) {
+// `staging` takes the staging set, which the caller keeps until its frame is
+// copied out (see ImageData::outputs).
+std::shared_ptr<ChunkStore> compute_chunk(ImageData& d, std::optional<SlotPool<Staging>::Lease>& staging, int start,
+                                          int count, VSFrameContext* ctx, const VSAPI* api) {
     d.order.wait_for_previous(start, d.roll.rolling_chunk, d.cache);
-    auto staging = [&] {
+    {
         NSS_CUDA_RANGE("image.staging");
-        return d.staging->acquire();
-    }();
-    Staging& g = *staging;
+        staging.emplace(d.staging->acquire());
+    }
+    Staging& g = **staging;
     DeviceGuard guard(d.device.index);
     nss::FrameScope owned(api);
     auto store = d.cache.make_store(start, count);
@@ -1041,10 +1054,11 @@ std::shared_ptr<ChunkStore> compute_chunk(ImageData& d, int start, int count, VS
 const VSFrame* rolling_frame(ImageData& d, int n, VSFrameContext* ctx, VSCore* core, const VSAPI* api) {
     const int start = n / d.roll.rolling_chunk * d.roll.rolling_chunk;
     const int count = std::min(d.roll.rolling_chunk, d.vi.numFrames - start);
-    auto chunk = d.cache.get(start, [&] { return compute_chunk(d, start, count, ctx, api); });
-    // The output frame is planned per staging set: holding one bounds the
-    // frames being copied out (and the stores they read) under the limit.
-    auto lease = d.staging->acquire();
+    // The chunk, then the permit for the output frame (see ImageData::outputs); a chunk this request computes
+    // keeps its staging set until the frame is out.
+    std::optional<SlotPool<Staging>::Lease> staging;
+    auto chunk = d.cache.get(start, [&] { return compute_chunk(d, staging, start, count, ctx, api); });
+    auto permit = d.outputs->acquire();
     nss::ResourceScope scope(d.budget);
     nss::FrameScope owned(api);
     const VSFrame* src = owned.getFrameFilter(n, d.node, ctx);
@@ -1544,6 +1558,11 @@ void allocate(ImageData& d, const MemoryPlan& plan) {
     }
     d.staging = std::make_unique<SlotPool<Staging>>(std::move(sets));
     d.pool = std::make_unique<SlotPool<Slot>>(std::move(slots));
+    if (d.rolling) {
+        std::vector<std::unique_ptr<ImageData::OutputPermit>> permits;
+        for (int i = 0; i < std::max(plan.staging_sets, 1); ++i) permits.push_back(std::make_unique<ImageData::OutputPermit>());
+        d.outputs = std::make_unique<SlotPool<ImageData::OutputPermit>>(std::move(permits));
+    }
 }
 
 void create(const VSMap* in, VSMap* out, VSCore* core, const VSAPI* api, nss::Model model) {

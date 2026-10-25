@@ -62,11 +62,14 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
     nss::FrameScope frames(vsapi);
     const VSFrame* noisy = frames.getFrameFilter(n, d->node, ctx);
     const VSFrame* guide = frames.getFrameFilter(n, d->ref, ctx);
-    VSFrame* dst = frames.newVideoFrame(&d->vi.format, d->vi.width, d->vi.height, noisy, core);
+    VSFrame* dst = nullptr;
     unsigned long long patches = 0, guide_only = 0;
+    // The plan counts an output frame per stream: the slot is held from before
+    // the output frame is made until it is returned (keep() uncharges it).
+    auto slot = d->pool->acquire();
     {
-        auto slot = d->pool->acquire();
         Slot& s = *slot;
+        dst = frames.newVideoFrame(&d->vi.format, d->vi.width, d->vi.height, noisy, core);
         struct Drain {
             const Slot& s;
             ~Drain() { cudaStreamSynchronize(s.stream.get()); }
@@ -209,8 +212,15 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     if (d.joint) d.frame_floats = 3 * d.plane_floats;
     const std::size_t plane_bytes = d.plane_floats * sizeof(float);
     const std::size_t frame_bytes = std::max<std::size_t>(d.frame_floats, 1) * sizeof(float);
-    // device: noisy, guide, out (+ the transformed planes) and work; pinned staging
-    const std::size_t stream_bytes = 3 * frame_bytes + (d.joint ? 6 * plane_bytes : 0) + work + 3 * frame_bytes;
+    // The output frame a stream's request holds (rows at most 64-byte aligned).
+    std::size_t output_bytes = 0;
+    for (int plane = 0; plane < d.vi.format.numPlanes; ++plane) {
+        const std::size_t row = (static_cast<std::size_t>(nss::plane_width(d.vi, plane)) * sizeof(float) + 63) & ~std::size_t{63};
+        output_bytes += row * static_cast<std::size_t>(nss::plane_height(d.vi, plane));
+    }
+    // device: noisy, guide, out (+ the transformed planes) and work; pinned staging; the output frame
+    const std::size_t stream_bytes =
+        3 * frame_bytes + (d.joint ? 6 * plane_bytes : 0) + work + 3 * frame_bytes + output_bytes;
     const std::size_t limit = d.budget ? d.budget->snapshot().limit : SIZE_MAX;
     // Single-channel tiles run two to an SM, and a third frame in flight
     // fills the GPU (gray 1080p sigma 10: 70.7 to 86.2 fps); joint RGB is
