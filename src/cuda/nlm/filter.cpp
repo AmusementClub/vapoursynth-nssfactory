@@ -32,8 +32,10 @@
 #include <array>
 #include <condition_variable>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -258,6 +260,16 @@ float h2_inv_norm(const NlmData& d) {
 }
 
 using Frames = std::vector<const VSFrame*>;
+// The output frame is made once the request holds the stage (tile path) or
+// slot (plane path) that the memory plan counts it in, and that lease is held
+// (by getFrame, through `Held`) until the frame is returned: made before, or
+// held for less, more output frames than the plan counts were charged to
+// memory_limit_mb at once.
+using MakeOutput = std::function<VSFrame*()>;
+struct Held {
+    std::optional<SlotPool<TileStage>::Lease> stage;
+    std::optional<SlotPool<Slot>::Lease> slot;
+};
 
 // Frames in flight beyond one per stream on the tile path: they stage their
 // input and copy their result out while the streams work.
@@ -265,9 +277,11 @@ constexpr std::size_t kTileExtraStages = 2;
 // Saved weight maps take at most 1 / kWeightShare of the device's memory.
 constexpr std::size_t kWeightShare = 4;
 
-void plane_frame(const NlmData& d, const Frames& srcf, const Frames& reff, VSFrame* dst, const VSAPI* vsapi) {
-    auto slot = d.pool->acquire();
-    Slot& s = *slot;
+void plane_frame(const NlmData& d, const Frames& srcf, const Frames& reff, const MakeOutput& make_output,
+                 Held& held, const VSAPI* vsapi) {
+    held.slot.emplace(d.pool->acquire());
+    VSFrame* dst = make_output();
+    Slot& s = **held.slot;
     const int w = d.width, h = d.height, nc = d.nc;
     const std::size_t row_bytes = static_cast<std::size_t>(w) * sizeof(float);
     auto* staging = s.staging.as<std::uint8_t>();
@@ -462,7 +476,8 @@ private:
     std::vector<WindowFrame*> slots_, pinned_, uploads_;
 };
 
-void tile_frame(NlmData& d, int n, const Frames& srcf, const Frames& reff, VSFrame* dst, const VSAPI* vsapi) {
+void tile_frame(NlmData& d, int n, const Frames& srcf, const Frames& reff, const MakeOutput& make_output,
+                Held& held, const VSAPI* vsapi) {
     const int h = d.height, nc = d.nc;
     const std::size_t row_bytes = static_cast<std::size_t>(d.width) * sizeof(float);
     // Stages and streams go to the waiting requests in frame order: windows
@@ -470,7 +485,9 @@ void tile_frame(NlmData& d, int n, const Frames& srcf, const Frames& reff, VSFra
     // threads came, the cache dropped frames that waiting requests needed:
     // 1080p gray d = 1 on cached input uploaded 1.49 frames a frame), and a
     // frame mostly finds the weight maps of the frame before it.
-    auto stage = d.tile_stages->acquire(n);
+    held.stage.emplace(d.tile_stages->acquire(n));
+    auto& stage = *held.stage;
+    VSFrame* dst = make_output();
     Window window(d.window, n, d.d, d.vi.numFrames);
     const std::vector<WindowFrame*>& uploads = window.uploads();
     // Per upload and staging region: the frame whose plane is uploaded
@@ -614,22 +631,25 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
     }
     const VSFrame* src_center = srcf[d->d];
     VSFrame* dst = nullptr;
-    if (d->channels == nss::ChannelMode::Y && d->vi.format.numPlanes > 1) {
-        const VSFrame* fr[3]{nullptr, src_center, src_center};
-        const int pl[3]{0, 1, 2};
-        dst = frames.newVideoFrame2(&d->vi.format, d->vi.width, d->vi.height, fr, pl, src_center, core);
-    } else if (d->channels == nss::ChannelMode::UV && d->vi.format.numPlanes > 1) {
-        const VSFrame* fr[3]{src_center, nullptr, nullptr};
-        const int pl[3]{0, 1, 2};
-        dst = frames.newVideoFrame2(&d->vi.format, d->vi.width, d->vi.height, fr, pl, src_center, core);
-    } else {
-        dst = frames.newVideoFrame(&d->vi.format, d->vi.width, d->vi.height, src_center, core);
-    }
-
+    const MakeOutput make_output = [&]() -> VSFrame* {
+        if (d->channels == nss::ChannelMode::Y && d->vi.format.numPlanes > 1) {
+            const VSFrame* fr[3]{nullptr, src_center, src_center};
+            const int pl[3]{0, 1, 2};
+            dst = frames.newVideoFrame2(&d->vi.format, d->vi.width, d->vi.height, fr, pl, src_center, core);
+        } else if (d->channels == nss::ChannelMode::UV && d->vi.format.numPlanes > 1) {
+            const VSFrame* fr[3]{src_center, nullptr, nullptr};
+            const int pl[3]{0, 1, 2};
+            dst = frames.newVideoFrame2(&d->vi.format, d->vi.width, d->vi.height, fr, pl, src_center, core);
+        } else {
+            dst = frames.newVideoFrame(&d->vi.format, d->vi.width, d->vi.height, src_center, core);
+        }
+        return dst;
+    };
+    Held held;  // released after keep() below
     if (d->tiles) {
-        tile_frame(*d, n, srcf, reff, dst, vsapi);
+        tile_frame(*d, n, srcf, reff, make_output, held, vsapi);
     } else {
-        plane_frame(*d, srcf, reff, dst, vsapi);
+        plane_frame(*d, srcf, reff, make_output, held, vsapi);
     }
     for (int t = 0; t < ntemp; ++t) {
         frames.freeFrame(srcf[t]);
@@ -682,6 +702,13 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     d->plane_bytes = static_cast<std::size_t>(d->width) * d->height * sizeof(float);
 
     const std::size_t limit = d->budget ? d->budget->snapshot().limit : SIZE_MAX;
+    // The output frame a request holds: every plane of the format, as it is
+    // charged (rows at most 64-byte aligned), whatever the channels filtered.
+    std::size_t output_bytes = 0;
+    for (int plane = 0; plane < d->vi.format.numPlanes; ++plane) {
+        const std::size_t row = (static_cast<std::size_t>(nss::plane_width(d->vi, plane)) * sizeof(float) + 63) & ~std::size_t{63};
+        output_bytes += row * static_cast<std::size_t>(nss::plane_height(d->vi, plane));
+    }
     // Tile path: the cache holds a window at least; by default every frame in
     // flight (two more than there are streams) can have its own new frame and
     // one is spare. A limit takes the frames in flight first, then the spare
@@ -705,7 +732,8 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     };
     auto tile_bytes = [&] {
         return d->plane_bytes * (cached * 2 * regions_per_frame(*d) + streams * d->nc +
-                                 stages * (d->nc + d->vi.format.numPlanes) + weight_sets * span * span);
+                                 stages * d->nc + weight_sets * span * span) +
+               stages * output_bytes;
     };
     d->tiles = nlm_tile_supported(d->d, d->a, d->s);
     if (d->tiles) {
@@ -724,7 +752,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     }
     if (!d->tiles) {
         // Per slot: device planes, pinned staging and the leased output frame.
-        const std::size_t need = slot_bytes(*d) + d->plane_bytes * d->vi.format.numPlanes;
+        const std::size_t need = slot_bytes(*d) + output_bytes;
         if (!d->backend.streams_explicit) {
             d->backend.num_streams = static_cast<int>(std::clamp<std::size_t>(limit / need, 1, kDefaultStreams));
         }

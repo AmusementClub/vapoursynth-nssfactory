@@ -126,7 +126,7 @@ defaults, ranges and error messages, under the `nss_cuda` name) plus these:
 |---|---|---|---|
 | `device_id` | 0 | device index | The GPU the instance runs on. `core.nss_cuda.Backend(device_id)` reports whether it is supported. |
 | `num_streams` | per filter, see [default streams](#default-streams) | [1, 16] | Frames (or temporal chunks) in flight on the GPU at once. Each stream adds its own buffers. |
-| `memory_limit_mb` | none | > 0 | Caps the instance's GPU and pinned host memory; the work is batched to fit, the output does not change, and a limit too small for the streams is an error when the filter is created. Without it the filter takes what it needs. |
+| `memory_limit_mb` | none | > 0 | Caps the instance's GPU memory, pinned host memory and the host memory it allocates for frames (output frames, temporal chunk stores); the work is batched to fit, the output does not change, and a limit too small for the clip is an error when the filter is created, never while frames are rendered. Without it the filter takes what it needs. |
 
 Input conventions (`sigma`, `rclip`, `bm_range`, frame properties) are those
 of the [CPU plugin](../README.md#conventions).

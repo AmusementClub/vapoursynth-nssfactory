@@ -60,7 +60,7 @@ struct Bm4dData : nss::Bm4dParams {
     struct Slot {
         std::mutex mu;  // held by the chunk using the slot
         std::unique_ptr<Stream> stream;  // uploads and downloads
-        DeviceBuffer frames;   // kVolumeFrames planes of max_plane floats
+        DeviceBuffer frames;   // kVolumeFrames planes of max_plane floats (the clip's frames if fewer)
         DeviceBuffer in_ptrs;
         PinnedBuffer staging;  // one plane
     };
@@ -68,7 +68,7 @@ struct Bm4dData : nss::Bm4dParams {
     std::mutex device_mu;
     std::unique_ptr<Stream> stream;  // tiles
     DeviceBuffer volume, filtered, work;
-    DeviceBuffer outputs;  // kBm4dChunk planes
+    DeviceBuffer outputs;  // kBm4dChunk planes (the clip's frames if fewer)
     std::unique_ptr<FrameMemory> frame_memory;  // direct DMA (vapoursynth-classic)
     DeviceBuffer out_ptrs;
     // chunk cache
@@ -88,6 +88,14 @@ struct Bm4dData : nss::Bm4dParams {
     std::mutex prefetch_mu;  // guards prefetchers
     std::vector<std::thread> prefetchers;
     std::atomic<int> prefetching{0};
+    static constexpr int kPrefetchers = 2;
+    // Requests that look for their chunk and copy their frame out hold a
+    // permit: each then holds one chunk store besides the cache's (one it
+    // computes in place, or one the cache has dropped meanwhile) and one
+    // output frame, which the memory plan counts.
+    static constexpr int kOutputs = 2;
+    struct OutputPermit {};
+    std::unique_ptr<SlotPool<OutputPermit>> permits;
 };
 
 void chunk_window(const Bm4dData* d, int n, int* first, int* count, int* v0, int* v1) {
@@ -142,7 +150,7 @@ std::shared_ptr<ChunkStore> compute_chunk(Bm4dData* d, int first, int count, int
     store->first = first;
     store->count = count;
     if (store->data.size() < d->frame_size * static_cast<std::size_t>(count))
-        store->data.resize(d->frame_size * static_cast<std::size_t>(nss::kBm4dChunk));
+        store->data.resize(d->frame_size * static_cast<std::size_t>(std::min(nss::kBm4dChunk, d->vi.numFrames)));
     const int depth = v1 - v0;
     Bm4dData::Slot& sl = d->slots[(first / nss::kBm4dChunk) & 1];
     std::lock_guard<std::mutex> slot_lock(sl.mu);
@@ -243,7 +251,7 @@ const VSFrame* getFrame(int n, int activation, void* instance, void** frame_data
     DeviceGuard guard(d->device.index);
     nss::ResourceScope resource_scope(d->budget);
     nss::FrameScope frames_owned(vsapi);
-    if (lookahead && d->prefetching.load() < 2 && claim_chunk(d, nfirst)) {
+    if (lookahead && d->prefetching.load() < Bm4dData::kPrefetchers && claim_chunk(d, nfirst)) {
         // the next chunk, on a thread of its own (before this frame waits for
         // its own chunk); its frames were asked for above
         std::vector<const VSFrame*> next;
@@ -264,6 +272,7 @@ const VSFrame* getFrame(int n, int activation, void* instance, void** frame_data
             --d->prefetching;
         });
     }
+    auto permit = d->permits->acquire();
     std::shared_ptr<const ChunkStore> result;
     {
         std::unique_lock<std::mutex> lock(d->mu);
@@ -355,7 +364,26 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     }
     const std::size_t plane_bytes = d.max_plane * sizeof(float);
     const int slot_count = d.vi.numFrames > nss::kBm4dChunk ? 2 : 1;
-    const std::size_t need = (slot_count * kVolumeFrames + nss::kBm4dChunk) * plane_bytes + 2 * max_volume * sizeof(float) + work;
+    // Host chunk stores: stores are kept for reuse, so as many as were ever
+    // in use at once: the cache's, the prefetched ones and one per output
+    // permit (and never more than the clip has chunks), each of a chunk of
+    // the clip's frames at most; the permits' output frames (rows at most
+    // 64-byte aligned) and the slots' pinned staging.
+    const int chunk_frames = std::min(nss::kBm4dChunk, d.vi.numFrames);
+    const std::size_t store_bytes = d.frame_size * chunk_frames * sizeof(float);
+    const std::size_t stores = std::min<std::size_t>(Bm4dData::kCacheLimit + Bm4dData::kPrefetchers + Bm4dData::kOutputs,
+                                                     (d.vi.numFrames + nss::kBm4dChunk - 1) / nss::kBm4dChunk);
+    std::size_t output_bytes = 0;
+    for (int plane = 0; plane < d.vi.format.numPlanes; ++plane) {
+        const std::size_t row = (static_cast<std::size_t>(nss::plane_width(d.vi, plane)) * sizeof(float) + 63) & ~std::size_t{63};
+        output_bytes += row * static_cast<std::size_t>(nss::plane_height(d.vi, plane));
+    }
+    const std::size_t host = stores * store_bytes +
+                             Bm4dData::kOutputs * output_bytes + slot_count * plane_bytes;
+    // A clip shorter than a volume or a chunk holds only its frames.
+    const int volume_frames = std::min(kVolumeFrames, d.vi.numFrames), output_frames = std::min(nss::kBm4dChunk, d.vi.numFrames);
+    const std::size_t need = (slot_count * volume_frames + output_frames) * plane_bytes + 2 * max_volume * sizeof(float) +
+                             work + host;
     const std::size_t limit = d.budget ? d.budget->snapshot().limit : SIZE_MAX;
     if (limit < need)
         throw std::invalid_argument("nss_cuda.BM4D: memory_limit_mb is too small for this clip: it needs at least " +
@@ -363,23 +391,26 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     {
         DeviceGuard guard(d.device.index);
         d.stream = std::make_unique<Stream>();
+        std::vector<std::unique_ptr<Bm4dData::OutputPermit>> permits;
+        for (int i = 0; i < Bm4dData::kOutputs; ++i) permits.push_back(std::make_unique<Bm4dData::OutputPermit>());
+        d.permits = std::make_unique<SlotPool<Bm4dData::OutputPermit>>(std::move(permits));
         if (max_volume) {
             d.volume = DeviceBuffer(max_volume * sizeof(float), d.budget);
             d.filtered = DeviceBuffer(max_volume * sizeof(float), d.budget);
             d.work = DeviceBuffer(work, d.budget);
-            d.outputs = DeviceBuffer(nss::kBm4dChunk * plane_bytes, d.budget);
-            std::vector<float*> out_ptrs(nss::kBm4dChunk);
-            for (int f = 0; f < nss::kBm4dChunk; ++f) out_ptrs[f] = d.outputs.as<float>() + static_cast<std::size_t>(f) * d.max_plane;
-            d.out_ptrs = DeviceBuffer(nss::kBm4dChunk * sizeof(float*), d.budget);
-            NSS_CUDA_CHECK(cudaMemcpy(d.out_ptrs.get(), out_ptrs.data(), nss::kBm4dChunk * sizeof(float*), cudaMemcpyHostToDevice));
+            d.outputs = DeviceBuffer(output_frames * plane_bytes, d.budget);
+            std::vector<float*> out_ptrs(output_frames);
+            for (int f = 0; f < output_frames; ++f) out_ptrs[f] = d.outputs.as<float>() + static_cast<std::size_t>(f) * d.max_plane;
+            d.out_ptrs = DeviceBuffer(output_frames * sizeof(float*), d.budget);
+            NSS_CUDA_CHECK(cudaMemcpy(d.out_ptrs.get(), out_ptrs.data(), output_frames * sizeof(float*), cudaMemcpyHostToDevice));
             for (int i = 0; i < slot_count; ++i) {
                 Bm4dData::Slot& sl = d.slots[i];
                 sl.stream = std::make_unique<Stream>();
-                sl.frames = DeviceBuffer(kVolumeFrames * plane_bytes, d.budget);
-                std::vector<const float*> in_ptrs(kVolumeFrames);
-                for (int z = 0; z < kVolumeFrames; ++z) in_ptrs[z] = sl.frames.as<float>() + static_cast<std::size_t>(z) * d.max_plane;
-                sl.in_ptrs = DeviceBuffer(kVolumeFrames * sizeof(float*), d.budget);
-                NSS_CUDA_CHECK(cudaMemcpy(sl.in_ptrs.get(), in_ptrs.data(), kVolumeFrames * sizeof(float*), cudaMemcpyHostToDevice));
+                sl.frames = DeviceBuffer(volume_frames * plane_bytes, d.budget);
+                std::vector<const float*> in_ptrs(volume_frames);
+                for (int z = 0; z < volume_frames; ++z) in_ptrs[z] = sl.frames.as<float>() + static_cast<std::size_t>(z) * d.max_plane;
+                sl.in_ptrs = DeviceBuffer(volume_frames * sizeof(float*), d.budget);
+                NSS_CUDA_CHECK(cudaMemcpy(sl.in_ptrs.get(), in_ptrs.data(), volume_frames * sizeof(float*), cudaMemcpyHostToDevice));
                 sl.staging = PinnedBuffer(plane_bytes, d.budget);
             }
             std::vector<float> tables(bm4d_table_floats());

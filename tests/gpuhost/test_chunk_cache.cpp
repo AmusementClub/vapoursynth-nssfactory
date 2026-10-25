@@ -8,6 +8,7 @@
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <optional>
 #include <thread>
 #include <vector>
 
@@ -82,6 +83,43 @@ int main() {
     }
     for (std::thread& thread : threads) thread.join();
     expect(once == 1, "one computation under concurrent requests");
+
+    // A chunk read as a hit is not dropped meanwhile; one a computing request
+    // holds alone may be. Many requests computing at once into a cache of one
+    // chunk, each holding its result, finish (they once waited on each other).
+    {
+        Cache one;
+        one.configure(1, 8, {0, 0, 0}, 1, 1, [](std::size_t bytes) { return Block(bytes); });
+        int made = 0;
+        const auto make = [&](int start) { ++made; return one.make_store(start, 1); };
+        { auto first = one.get(0, [&] { return make(0); }); }
+        {
+            std::optional<Cache::Chunk> hit(one.get(0, [&] { return make(0); }));  // a reader of 0
+            std::thread other([&] { auto c = one.get(1, [&] { return make(1); }); });
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            expect(made == 2, "the second chunk is computed while the first is read");
+            expect((*hit)->start == 0, "the hit keeps its chunk");
+            hit.reset();  // `other` waits to drop 0 until the hit lets go
+            other.join();
+        }
+        {
+            auto again = one.get(1, [&] { return make(1); });
+            expect(made == 2, "the second chunk was cached once the hit let go");
+        }
+        std::vector<std::thread> many;
+        std::atomic<int> done{0};
+        for (int t = 0; t < 8; ++t) {
+            many.emplace_back([&, t] {
+                for (int i = 0; i < 20; ++i) {
+                    auto c = one.get(100 + t * 20 + i, [&, t, i] { return one.make_store(100 + t * 20 + i, 1); });
+                    std::this_thread::sleep_for(std::chrono::microseconds(200));
+                }
+                ++done;
+            });
+        }
+        for (std::thread& thread : many) thread.join();
+        expect(done == 8, "concurrent computing requests into a cache of one finish");
+    }
 
     // Raster grid: last row/column clamped to (width - block, height - block).
     const auto grid = nss::gpuhost::make_raster_grid(21, 10, 8, 4);

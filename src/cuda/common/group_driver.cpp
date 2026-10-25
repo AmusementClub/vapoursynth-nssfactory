@@ -23,6 +23,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -147,6 +148,15 @@ struct Driver : GroupFilterConfig {
     bool basic_out[3]{true, true, true};    // two_stage: the first stage filters channel c of a unit
     std::unique_ptr<SlotPool<Slot>> pool;
     std::unique_ptr<SlotPool<Staging>> staging;
+    // Rolling: a permit per staging set, taken before a request looks for its
+    // chunk and held until its frame is copied out, so that the output frames
+    // stay within what the plan counts per staging set. A request that
+    // computes its chunk keeps the staging set until then too: the plan
+    // counts a chunk store per set, and the cache may drop the chunk while the
+    // request copies its frame out of it (it never drops one that a request
+    // reads as a hit; such a request waits on nothing while it holds it).
+    struct OutputPermit {};
+    std::unique_ptr<SlotPool<OutputPermit>> outputs;
     // Spatial and legacy frames: direct DMA to and from page-locked VS frame
     // planes where the host allows it (vapoursynth-classic VSFrameMemory.h).
     std::unique_ptr<FrameMemory> frame_memory;
@@ -1505,13 +1515,16 @@ void queue_plane(Driver& d, RollTurn& turn, int plane, int start, int count, Chu
 // Rolling: compute the chunk [start, start + count). The frames it reads are
 // staged before a slot is taken and the results are copied out after it has
 // been given back, as for a spatial frame.
-std::shared_ptr<ChunkStore> compute_chunk(Driver* d, int start, int count, VSFrameContext* ctx, const VSAPI* vsapi) {
+// `staging` takes the staging set, which the caller keeps until its frame is
+// copied out (see Driver::outputs).
+std::shared_ptr<ChunkStore> compute_chunk(Driver* d, std::optional<SlotPool<Staging>::Lease>& staging, int start,
+                                          int count, VSFrameContext* ctx, const VSAPI* vsapi) {
     d->order.wait_for_previous(start, d->rolling.rolling_chunk, d->cache);
-    auto staging = [&] {
+    {
         NSS_CUDA_RANGE("group.staging");
-        return d->staging->acquire();
-    }();
-    Staging& g = *staging;
+        staging.emplace(d->staging->acquire());
+    }
+    Staging& g = **staging;
     DeviceGuard guard(d->device.index);
     const bool w = guide_clip(*d);
     nss::FrameScope frames(vsapi);
@@ -1614,9 +1627,9 @@ std::shared_ptr<ChunkStore> compute_chunk(Driver* d, int start, int count, VSFra
     return store;
 }
 
-std::shared_ptr<const ChunkStore> rolling_chunk(Driver* d, int start, int count, VSFrameContext* ctx,
-                                                const VSAPI* vsapi) {
-    return d->cache.get(start, [&] { return compute_chunk(d, start, count, ctx, vsapi); });
+ChunkCache::Chunk rolling_chunk(Driver* d, std::optional<SlotPool<Staging>::Lease>& staging, int start, int count,
+                               VSFrameContext* ctx, const VSAPI* vsapi) {
+    return d->cache.get(start, [&] { return compute_chunk(d, staging, start, count, ctx, vsapi); });
 }
 
 const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameContext* ctx, VSCore* core,
@@ -1648,10 +1661,11 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
 
     const int start = n / d->rolling.rolling_chunk * d->rolling.rolling_chunk;
     const int count = std::min(d->rolling.rolling_chunk, nframes - start);
-    auto chunk = rolling_chunk(d, start, count, ctx, vsapi);
-    // The output frame is planned per staging set: holding one bounds the
-    // frames being copied out (and the stores they read) under the limit.
-    auto lease = d->staging->acquire();
+    // The permit before the chunk, and the staging set of a chunk this request computes until its frame is
+    // out: see Driver::outputs.
+    auto permit = d->outputs->acquire();
+    std::optional<SlotPool<Staging>::Lease> staging;
+    auto chunk = rolling_chunk(d, staging, start, count, ctx, vsapi);
     nss::ResourceScope resource_scope(d->budget);
     nss::FrameScope frames(vsapi);
     const VSFrame* src = frames.getFrameFilter(n, d->node, ctx);
@@ -1742,6 +1756,11 @@ void group_filter_install(GroupFilterConfig&& config, VSMap* out, VSCore* core, 
         std::vector<std::unique_ptr<Staging>> sets;
         for (int i = 0; i < d->staging_sets; ++i) sets.push_back(make_staging(*d));
         d->staging = std::make_unique<SlotPool<Staging>>(std::move(sets));
+    }
+    if (d->mode == GroupMode::Rolling) {
+        std::vector<std::unique_ptr<Driver::OutputPermit>> permits;
+        for (int i = 0; i < std::max(d->staging_sets, 1); ++i) permits.push_back(std::make_unique<Driver::OutputPermit>());
+        d->outputs = std::make_unique<SlotPool<Driver::OutputPermit>>(std::move(permits));
     }
 
     const auto pattern = d->mode == GroupMode::Spatial ? rpStrictSpatial : rpGeneral;

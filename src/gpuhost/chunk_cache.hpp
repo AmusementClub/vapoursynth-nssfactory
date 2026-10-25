@@ -20,6 +20,7 @@
 #include <memory>
 #include <mutex>
 #include <set>
+#include <utility>
 #include <vector>
 
 namespace nss::gpuhost {
@@ -93,17 +94,49 @@ public:
         return store;
     }
 
+    struct Entry {
+        std::shared_ptr<const Store> store;
+        int readers = 0;  // requests holding it as a hit (Chunk)
+    };
+
+    // A request's hold on a chunk. A hit is a reader of the cache's entry,
+    // which the cache does not drop meanwhile; the request that computed the
+    // chunk holds the store alone (the cache may drop it: the caller accounts
+    // for that store, e.g. through the staging it computed the chunk with).
+    // A request must not wait on other requests while it holds a hit.
+    class Chunk {
+    public:
+        Chunk() = default;
+        Chunk(const Chunk&) = delete;
+        Chunk& operator=(const Chunk&) = delete;
+        Chunk(Chunk&& other) noexcept
+            : store_(std::move(other.store_)), cache_(std::exchange(other.cache_, nullptr)), entry_(other.entry_) {}
+        ~Chunk() {
+            if (cache_) cache_->release(entry_);
+        }
+        const Store* operator->() const noexcept { return store_.get(); }
+        const Store& operator*() const noexcept { return *store_; }
+
+    private:
+        friend class ChunkCache;
+        Chunk(std::shared_ptr<const Store> store, ChunkCache* cache, typename std::list<Entry>::iterator entry)
+            : store_(std::move(store)), cache_(cache), entry_(entry) {}
+        std::shared_ptr<const Store> store_;
+        ChunkCache* cache_ = nullptr;  // set for a hit
+        typename std::list<Entry>::iterator entry_{};
+    };
+
     // The chunk starting at `start`: from the cache, from the thread already
     // computing it, or from compute() (which returns a shared_ptr<Store>).
     template <class Compute>
-    std::shared_ptr<const Store> get(int start, Compute&& compute) {
+    Chunk get(int start, Compute&& compute) {
         std::unique_lock lock(mu_);
         for (;;) {
             for (auto it = cache_.begin(); it != cache_.end(); ++it) {
-                if ((*it)->start == start) {
-                    auto hit = *it;
+                if (it->store->start == start) {
                     cache_.splice(cache_.begin(), cache_, it);
-                    return hit;
+                    ++it->readers;
+                    return Chunk(it->store, this, it);
                 }
             }
             if (!computing_.count(start)) break;
@@ -134,14 +167,27 @@ public:
         }
         lock.lock();
         computing_.erase(start);
-        cache_.push_front(computed);
+        cache_.push_front(Entry{computed, 0});
+        // Over size: the oldest chunk no hit is reading goes (the cache never
+        // holds more than its size, and no chunk it drops lives on in a
+        // reader). While every older chunk is being read, wait for a reader:
+        // readers wait on nothing while they hold a chunk. Chunks other
+        // computing requests hold alone may go.
         while (static_cast<int>(cache_.size()) > size_) {
-            dropped_.push_back(cache_.back()->start);
-            cache_.pop_back();
+            auto victim = cache_.end();
+            for (auto it = std::next(cache_.begin()); it != cache_.end(); ++it) {
+                if (it->readers == 0) victim = it;
+            }
+            if (victim == cache_.end()) {
+                cv_.wait(lock);  // a reader lets go (release)
+                continue;
+            }
+            dropped_.push_back(victim->store->start);
+            cache_.erase(victim);
         }
         while (dropped_.size() > static_cast<std::size_t>(std::max(8, 2 * cap_))) dropped_.pop_front();
         cv_.notify_all();
-        return computed;
+        return Chunk(std::move(computed), nullptr, {});
     }
 
     // A thread is computing the chunk starting at `start`.
@@ -167,8 +213,16 @@ private:
     int dropped_hits_ = 0;
     std::mutex mu_;
     std::condition_variable cv_;
-    std::list<std::shared_ptr<const Store>> cache_;
+    std::list<Entry> cache_;
     std::set<int> computing_;
+
+    void release(typename std::list<Entry>::iterator entry) {
+        {
+            std::lock_guard lock(mu_);
+            --entry->readers;
+        }
+        cv_.notify_all();
+    }
 };
 
 // Rolling chunks carry on from the chunk planned before them on a stream,
