@@ -71,8 +71,9 @@ struct TilePush {
     float h2_inv_norm, wref;
     std::uint32_t frame_floats, ref_offset;
     std::uint32_t slots[5];
+    VkDeviceAddress weight_save, weight_load;
 };
-static_assert(sizeof(TilePush) == 72, "matches the push block of shaders/nlm/tile.comp");
+static_assert(sizeof(TilePush) == 88, "matches the push block of shaders/nlm/tile.comp");
 
 struct HsumPush {
     VkDeviceAddress frames, hsum;
@@ -126,6 +127,97 @@ struct TileSlot {
     void settle() noexcept { slot.settle(); }
 };
 
+// d = 1 with room for them: weight maps a frame saved for the frame after it
+// (tile.comp weight_save), shared by the slots so that the frame after it
+// finds them whichever slot it gets (nss_cuda's WeightCache). Guarded by
+// WeightCache::mu.
+struct WeightSet {
+    Buffer maps;  // (2a + 1)^2 planes
+    // The compute stages of the last frames that saved and loaded them.
+    std::pair<VkSemaphore, std::uint64_t> written{VK_NULL_HANDLE, 0}, read{VK_NULL_HANDLE, 0};
+    int frame = -1;       // the frame that saved them, -1: none
+    bool busy = false;    // a request is recording a dispatch that saves or loads them
+    bool loaded = false;  // a dispatch loaded them since they were saved
+    std::uint64_t used = 0;
+};
+
+struct WeightCache {
+    std::mutex mu;
+    std::vector<std::unique_ptr<WeightSet>> sets;
+    std::uint64_t clock = 0;
+};
+
+// The sets a frame's dispatch loads and saves, taken under the cache's lock:
+// its compute stage waits for the frame that saved what it loads, and for the
+// frames that last saved or loaded the set it overwrites. Nothing waits on
+// the host, so requests in any order cannot block one another; a frame whose
+// predecessor has not submitted yet computes in full.
+class WeightLease {
+public:
+    WeightLease(WeightCache& cache, int n, Slot& slot) : cache_(cache) {
+        if (cache.sets.empty()) return;
+        std::lock_guard lock(cache.mu);
+        for (auto& w : cache.sets) {
+            if (n > 0 && w->frame == n - 1 && !w->busy && !w->loaded) load_ = w.get();
+        }
+        // A set that was loaded or holds nothing before the oldest that still waits for its frame.
+        const auto rank = [](const WeightSet* w) { return std::pair(w->frame >= 0 && !w->loaded, w->used); };
+        for (auto& w : cache.sets) {
+            if (w.get() != load_ && !w->busy && (!save_ || rank(w.get()) < rank(save_))) save_ = w.get();
+        }
+        const auto wait = [&](const std::pair<VkSemaphore, std::uint64_t>& stage) {
+            if (stage.first) slot.wait_for(Slot::Compute, stage.first, stage.second);
+        };
+        if (load_) {
+            load_->busy = true;
+            wait(load_->written);
+        }
+        if (save_) {
+            save_->busy = true;
+            save_->frame = -1;
+            wait(save_->written);
+            wait(save_->read);
+        }
+    }
+    WeightLease(const WeightLease&) = delete;
+    WeightLease& operator=(const WeightLease&) = delete;
+    // Without submitted(), as after an error: the sets are given back holding
+    // nothing (a frame that was not submitted wrote nothing).
+    ~WeightLease() {
+        if (!load_ && !save_) return;
+        std::lock_guard lock(cache_.mu);
+        if (load_) load_->busy = false;
+        if (save_) save_->busy = false;
+    }
+    VkDeviceAddress load() const noexcept { return load_ ? load_->maps.address() : 0; }
+    VkDeviceAddress save() const noexcept { return save_ ? save_->maps.address() : 0; }
+    // After the slot submitted frame n: the frame after it may load the saved
+    // set from now on.
+    void submitted(int n, const Slot& slot) {
+        if (!load_ && !save_) return;
+        const auto compute = slot.done(Slot::Compute);
+        std::lock_guard lock(cache_.mu);
+        if (load_) {
+            load_->read = compute;
+            load_->loaded = true;
+            load_->busy = false;
+        }
+        if (save_) {
+            save_->written = compute;
+            save_->frame = n;
+            save_->loaded = false;
+            save_->used = ++cache_.clock;
+            save_->busy = false;
+        }
+        load_ = save_ = nullptr;
+    }
+
+private:
+    WeightCache& cache_;
+    WeightSet* load_ = nullptr;
+    WeightSet* save_ = nullptr;
+};
+
 // Plane path: the slot's centre, backward and forward frames (regions 0-2),
 // the row sums of the two pairs, the sums and the output.
 struct PlaneSlot {
@@ -158,6 +250,7 @@ struct NlmData : nss::NlmParams {
     Pipeline tile;
     std::unique_ptr<SlotPool<TileSlot>> tile_pool;
     WindowCache window;
+    WeightCache weights;
     // Plane path.
     Pipeline hsum, accumulate, reset, finish;
     std::unique_ptr<SlotPool<PlaneSlot>> pool;
@@ -420,12 +513,16 @@ void tile_frame(NlmData& d, int n, const Frames& srcf, const Frames& reff, const
     for (int t = 0; t < 2 * d.d + 1; ++t) {
         push.slots[t / 4] |= static_cast<std::uint32_t>(window.slot(t).region) << (8 * (t % 4));
     }
+    WeightLease weights(d.weights, n, slot);
+    push.weight_save = weights.save();
+    push.weight_load = weights.load();
     slot.begin_label(Slot::Compute, "nlm.tile");
     d.tile.dispatch(slot.commands(Slot::Compute), &push, static_cast<std::uint32_t>((d.width + kTileWidth - 1) / kTileWidth),
                     static_cast<std::uint32_t>((d.height + kTileHeight - 1) / kTileHeight));
     slot.end_label(Slot::Compute);
     lease->out.record_download(slot.commands(Slot::Download));
     slot.submit();
+    weights.submitted(n, slot);
     // Staged frames are ready once this request's upload stage is.
     if (staged) {
         const auto uploaded = slot.done(Slot::Upload);
@@ -535,14 +632,19 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     const std::size_t streams = static_cast<std::size_t>(d->backend.num_streams);
     const std::size_t window = static_cast<std::size_t>(2 * d->d + 1);
     std::size_t slots = streams + kTileExtraSlots, cached = 0;
-    // nss_cuda keeps weight maps for d = 1 (a frame's forward maps are the
-    // backward maps of the next): 1.78 to 1.0 ms a 1080p frame there. Here
-    // the kernel took 1820 us with them and 1796 us without (RTX 5080,
-    // 2026-10-24), for (slots + 1) * (2a + 1)^2 planes (830 MiB at 1080p):
-    // not kept.
+    // With d = 1 a frame's forward weight maps are the backward maps of the
+    // frame after it: the slots share one set of (2a + 1)^2 maps more than
+    // there are streams (WeightCache; 1080p gray: the kernel 1.79 to 1.13 ms,
+    // every frame rendered in order reusing, with one or two streams). They
+    // are the first thing a limit takes, and without a limit they may use a
+    // quarter of the device (nss_cuda).
+    const std::size_t span = static_cast<std::size_t>(2 * d->a + 1);
+    std::size_t weight_sets = d->d == 1 ? streams + 1 : 0;
+    if (weight_sets * span * span * d->plane_bytes > d->device->caps().device_local_bytes / 4) weight_sets = 0;
     auto tile_bytes = [&] {
         return frame_bytes * cached * (staged ? 2 : 1) +
-               d->plane_bytes * slots * (2 * static_cast<std::size_t>(d->nc) + d->vi.format.numPlanes);
+               d->plane_bytes * slots * (2 * static_cast<std::size_t>(d->nc) + d->vi.format.numPlanes) +
+               d->plane_bytes * weight_sets * span * span;
     };
     const long long shared_maps = tile_floats(d->a, d->s);
     const long long shared_all = shared_maps + window_floats(d->a, d->s, d->nc);
@@ -554,6 +656,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
                frame_bytes / sizeof(float) * (window + slots + 1) < (1ull << 32);
     if (d->tiles) {
         cached = window + slots;
+        if (tile_bytes() > limit) weight_sets = 0;
         while (tile_bytes() > limit && slots > streams) cached = window + --slots;
         while (tile_bytes() > limit && cached > window) --cached;
         d->tiles = tile_bytes() <= limit;
@@ -593,6 +696,15 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
             leases.push_back(std::make_unique<TileSlot>(d->device, row_bytes, d->height * d->nc, d->budget));
         }
         d->tile_pool = std::make_unique<SlotPool<TileSlot>>(std::move(leases));
+        // The maps only save work: a device without room for them runs without.
+        try {
+            for (std::size_t w = 0; w < weight_sets; ++w) {
+                d->weights.sets.push_back(std::make_unique<WeightSet>());
+                d->weights.sets.back()->maps = Buffer(d->device, d->plane_bytes * span * span, Memory::Device, d->budget);
+            }
+        } catch (const std::exception&) {
+            d->weights.sets.clear();
+        }
     } else {
         const std::vector<std::uint32_t> spec = constants(*d);
         d->hsum = Pipeline(d->device, {"nlm_plane_hsum", sizeof(HsumPush), 0, spec});
