@@ -1153,6 +1153,8 @@ private:
 // state's sums (a unit's channels one after the other, 2R+1 ring cells each,
 // the first stage's too), the frames staged at base + i * step, and the
 // device pointer arrays of the current center's window.
+using RollDirect = std::array<const VSFrame*, 6>;
+
 struct PlaneRun {
     Driver& d;
     Slot& s;
@@ -1168,6 +1170,10 @@ struct PlaneRun {
     FixedTarget fixed, basic;
     std::size_t staged = 0;
     std::vector<const float*> sp, rp;
+    // Per upload: the frames whose planes are uploaded directly (page-locked;
+    // index clip * channels + c), null where staged.
+    const std::vector<RollDirect>& direct;
+    const VSAPI* vsapi;
 
     // A slice is zero before its frame's first center: every one when the
     // chunk starts afresh, and again once its frame is finished.
@@ -1221,13 +1227,18 @@ struct PlaneRun {
             if (staged >= turn.uploads.size() || turn.uploads[staged] != fn) {
                 throw std::logic_error(prefix(d) + "rolling plan and device state disagree");
             }
-            for (int c = 0; c < channels; ++c) {
-                upload_staged(base + (staged * clips * channels + c) * step, row_bytes, p.height,
-                              r.src_frames[fn % ring].as<float>() + c * p.floats, row_bytes, s.stream);
-                if (clips == 2) {
-                    upload_staged(base + ((staged * clips + 1) * channels + c) * step, row_bytes, p.height,
-                                  r.ref_frames[fn % nt].as<float>() + c * p.floats, row_bytes, s.stream);
+            const auto put = [&](int clip, int c, float* device) {
+                if (const VSFrame* f = direct[staged][static_cast<std::size_t>(clip * channels + c)]) {
+                    upload_direct(vsapi->getReadPtr(f, plane + c), vsapi->getStride(f, plane + c), row_bytes, p.height,
+                                  device, row_bytes, s.stream);
+                } else {
+                    upload_staged(base + ((staged * clips + clip) * channels + c) * step, row_bytes, p.height, device,
+                                  row_bytes, s.stream);
                 }
+            };
+            for (int c = 0; c < channels; ++c) {
+                put(0, c, r.src_frames[fn % ring].as<float>() + c * p.floats);
+                if (clips == 2) put(1, c, r.ref_frames[fn % nt].as<float>() + c * p.floats);
             }
             ++staged;
             r.resident[fn % ring] = fn;
@@ -1364,7 +1375,8 @@ struct PlaneRun {
 // finish and download into the store. `event` is recorded behind the last
 // download.
 void queue_plane(Driver& d, RollTurn& turn, int plane, int start, int count, ChunkStore& store,
-                 const std::uint8_t* base, std::size_t step, cudaEvent_t event) {
+                 const std::uint8_t* base, std::size_t step, cudaEvent_t event, const std::vector<RollDirect>& direct,
+                 const VSAPI* vsapi) {
     const GroupPlane& p = d.planes[plane];
     const GroupPlane& b = d.basic[plane];
     const std::size_t row_bytes = static_cast<std::size_t>(p.width) * sizeof(float);
@@ -1399,7 +1411,7 @@ void queue_plane(Driver& d, RollTurn& turn, int plane, int start, int count, Chu
     PlaneRun run{d, s, r, turn, p, b, store, base, step, row_bytes, ring_floats, basic_floats,
                  plane, start, radius, nframes, nt, channels, ring, clips,
                  acc_num, acc_den, basic_acc_num, basic_acc_den, fixed, basic, 0,
-                 std::vector<const float*>(nt), std::vector<const float*>(nt)};
+                 std::vector<const float*>(nt), std::vector<const float*>(nt), direct, vsapi};
     if (!turn.carry) {
         std::fill(r.resident.begin(), r.resident.end(), -1);
         for (int cell = 0; cell < nt; ++cell) {
@@ -1474,6 +1486,10 @@ std::shared_ptr<ChunkStore> compute_chunk(Driver* d, int start, int count, VSFra
             }
         }
         if (first == 0) d->order.planned(start, d->rolling.rolling_chunk);
+        // Planes page-locked for direct DMA are uploaded from their frames,
+        // which are held until the planes' events have passed.
+        std::vector<std::vector<RollDirect>> direct(step);
+        std::vector<const VSFrame*> held;
         {
             NSS_CUDA_RANGE("group.stage_in");
             for (std::size_t j = 0; j < step; ++j) {
@@ -1483,23 +1499,29 @@ std::shared_ptr<ChunkStore> compute_chunk(Driver* d, int start, int count, VSFra
                 std::uint8_t* base = g.roll_base[plane];
                 const std::size_t region = g.roll_step[plane];
                 const RollTurn& turn = *turns[j];
+                direct[j].assign(turn.uploads.size(), RollDirect{});
+                const std::size_t channels = static_cast<std::size_t>(d->channels);
+                const auto stage = [&](std::size_t i, int clip, const VSFrame* f) {
+                    bool used = false;
+                    for (std::size_t c = 0; c < channels; ++c) {
+                        if (d->frame_memory->pinned(f, plane + static_cast<int>(c))) {
+                            direct[j][i][clip * channels + c] = f;
+                            used = true;
+                        } else {
+                            stage_plane(vsapi->getReadPtr(f, plane + c), vsapi->getStride(f, plane + c), row_bytes,
+                                        p.height, base + ((i * clips + clip) * channels + c) * region);
+                        }
+                    }
+                    if (used) {
+                        held.push_back(f);
+                    } else {
+                        frames.freeFrame(f);
+                    }
+                };
                 for (std::size_t i = 0; i < turn.uploads.size(); ++i) {
                     const int fn = turn.uploads[i];
-                    const std::size_t channels = static_cast<std::size_t>(d->channels);
-                    const VSFrame* f = frames.getFrameFilter(fn, d->node, ctx);
-                    for (std::size_t c = 0; c < channels; ++c) {
-                        stage_plane(vsapi->getReadPtr(f, plane + c), vsapi->getStride(f, plane + c), row_bytes, p.height,
-                                    base + (i * clips * channels + c) * region);
-                    }
-                    frames.freeFrame(f);
-                    if (w) {
-                        const VSFrame* rf = frames.getFrameFilter(fn, d->guide, ctx);
-                        for (std::size_t c = 0; c < channels; ++c) {
-                            stage_plane(vsapi->getReadPtr(rf, plane + c), vsapi->getStride(rf, plane + c), row_bytes,
-                                        p.height, base + ((i * clips + 1) * channels + c) * region);
-                        }
-                        frames.freeFrame(rf);
-                    }
+                    stage(i, 0, frames.getFrameFilter(fn, d->node, ctx));
+                    if (w) stage(i, 1, frames.getFrameFilter(fn, d->guide, ctx));
                 }
             }
         }
@@ -1508,7 +1530,7 @@ std::shared_ptr<ChunkStore> compute_chunk(Driver* d, int start, int count, VSFra
         for (std::size_t j = 0; j < step; ++j) {
             const int plane = active[first + j];
             queue_plane(*d, *turns[j], plane, start, count, *store, g.roll_base[plane], g.roll_step[plane],
-                        g.plane_done[plane]);
+                        g.plane_done[plane], direct[j], vsapi);
             pending.streams.push_back(turns[j]->slot->stream);
         }
         // The store holds these planes once their events have passed; the
@@ -1516,6 +1538,7 @@ std::shared_ptr<ChunkStore> compute_chunk(Driver* d, int start, int count, VSFra
         NSS_CUDA_RANGE("group.wait");
         for (std::size_t j = 0; j < step; ++j) NSS_CUDA_CHECK(cudaEventSynchronize(g.plane_done[active[first + j]]));
         pending.streams.clear();
+        for (const VSFrame* f : held) frames.freeFrame(f);
     }
     return store;
 }

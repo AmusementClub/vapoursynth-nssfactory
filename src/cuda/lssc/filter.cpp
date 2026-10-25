@@ -7,6 +7,7 @@
 #include "cuda/lssc/kernels.hpp"
 #include "cuda/runtime/context.hpp"
 #include "cuda/runtime/frame_io.hpp"
+#include "cuda/runtime/frame_memory.hpp"
 #include "cuda/runtime/memory.hpp"
 #include "cuda/runtime/nvtx.hpp"
 #include "cuda/runtime/stream_pool.hpp"
@@ -116,6 +117,8 @@ struct LsscData : nss::LsscParams {
     std::vector<float> dct;  // min(kAtoms, m) orthonormal 2D DCT atoms, low frequencies first
     std::unique_ptr<SlotPool<Slot>> pool;
     std::unique_ptr<SlotPool<Staging>> staging;
+    // Direct DMA to and from page-locked VS frame planes (vapoursynth-classic).
+    std::unique_ptr<FrameMemory> frame_memory;
 };
 
 // nss fill_dct_atoms: unit impulses through the orthonormal inverse 2D DCT,
@@ -241,14 +244,23 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
         return g.bytes.as<std::uint8_t>() + static_cast<std::size_t>(r) * d->plane_floats * sizeof(float);
     };
     const auto row_bytes = [&](int plane) { return static_cast<std::size_t>(d->planes[plane].width) * sizeof(float); };
+    // Planes page-locked for direct DMA skip their staging copy in
+    // (direct_in) or out (direct_out); src and dst are held until the copies
+    // have finished.
+    bool direct_in[3]{}, direct_out[3]{};
     for (int plane = 0, r = 0; plane < d->vi.format.numPlanes; ++plane) {
         const PlaneShape& p = d->planes[plane];
         if (d->sigma[plane] == 0.f) {
             vsh::bitblt(vsapi->getWritePtr(dst, plane), vsapi->getStride(dst, plane), vsapi->getReadPtr(src, plane),
                         vsapi->getStride(src, plane), row_bytes(plane), p.height);
-        } else if (whole) {
-            stage_plane(vsapi->getReadPtr(src, plane), vsapi->getStride(src, plane), row_bytes(plane), p.height, region(r++));
+            continue;
         }
+        direct_in[plane] = d->frame_memory->pinned(src, plane);
+        direct_out[plane] = d->frame_memory->pinned(dst, plane);
+        if (whole && !direct_in[plane]) {
+            stage_plane(vsapi->getReadPtr(src, plane), vsapi->getStride(src, plane), row_bytes(plane), p.height, region(r));
+        }
+        r += whole;
     }
     {
         auto slot = d->pool->acquire();
@@ -270,25 +282,38 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
             if (d->sigma[plane] == 0.f) continue;
             const PlaneShape& p = d->planes[plane];
             std::uint8_t* staged = region(whole ? r++ : 0);
-            if (!whole) {
+            if (!whole && !direct_in[plane]) {
                 stage_plane(vsapi->getReadPtr(src, plane), vsapi->getStride(src, plane), row_bytes(plane), p.height, staged);
             }
             const int b = s.turn;
             s.turn = (s.turn + 1) % d->depth;
             NSS_CUDA_CHECK(cudaStreamWaitEvent(s.load, s.coded[b], 0));
-            upload_staged(staged, row_bytes(plane), p.height, s.input[b].get(), row_bytes(plane), s.load);
+            if (direct_in[plane]) {
+                upload_direct(vsapi->getReadPtr(src, plane), vsapi->getStride(src, plane), row_bytes(plane), p.height,
+                              s.input[b].get(), row_bytes(plane), s.load);
+            } else {
+                upload_staged(staged, row_bytes(plane), p.height, s.input[b].get(), row_bytes(plane), s.load);
+            }
             NSS_CUDA_CHECK(cudaEventRecord(s.uploaded[b], s.load));
             denoise_plane(*d, s, plane, d->sigma[plane] / 255.f, b);
             // The staged upload has been consumed by now (stream order), so
             // the same region takes the result.
+            cudaStream_t out_stream = whole ? s.copy.get() : s.stream.get();
+            if (whole) NSS_CUDA_CHECK(cudaStreamWaitEvent(s.copy, s.coded[b], 0));
+            if (direct_out[plane]) {
+                download_direct(s.out.get(), row_bytes(plane), row_bytes(plane), p.height, vsapi->getWritePtr(dst, plane),
+                                vsapi->getStride(dst, plane), out_stream);
+            } else {
+                begin_download(s.out.get(), row_bytes(plane), row_bytes(plane), p.height, staged, out_stream);
+            }
             if (whole) {
-                NSS_CUDA_CHECK(cudaStreamWaitEvent(s.copy, s.coded[b], 0));
-                begin_download(s.out.get(), row_bytes(plane), row_bytes(plane), p.height, staged, s.copy);
                 NSS_CUDA_CHECK(cudaEventRecord(s.downloaded, s.copy));
             } else {
-                begin_download(s.out.get(), row_bytes(plane), row_bytes(plane), p.height, staged, s.stream);
                 s.stream.synchronize();
-                finish_download(staged, row_bytes(plane), p.height, vsapi->getWritePtr(dst, plane), vsapi->getStride(dst, plane));
+                if (!direct_out[plane]) {
+                    finish_download(staged, row_bytes(plane), p.height, vsapi->getWritePtr(dst, plane),
+                                    vsapi->getStride(dst, plane));
+                }
             }
         }
         if (whole) NSS_CUDA_CHECK(cudaEventRecord(g.done, s.copy));
@@ -298,7 +323,9 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
         NSS_CUDA_CHECK(cudaEventSynchronize(g.done));
         for (int plane = 0, r = 0; plane < d->vi.format.numPlanes; ++plane) {
             if (d->sigma[plane] == 0.f) continue;
-            finish_download(region(r++), row_bytes(plane), d->planes[plane].height, vsapi->getWritePtr(dst, plane),
+            std::uint8_t* staged = region(r++);
+            if (direct_out[plane]) continue;  // the DMA wrote it
+            finish_download(staged, row_bytes(plane), d->planes[plane].height, vsapi->getWritePtr(dst, plane),
                             vsapi->getStride(dst, plane));
         }
     }
@@ -312,6 +339,7 @@ void VS_CC freeFilter(void* instance, VSCore*, const VSAPI*) {
         DeviceGuard guard(d->device.index);
         d->pool.reset();
         d->staging.reset();
+        d->frame_memory.reset();
     }
     delete d;
 }
@@ -368,6 +396,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     d.backend = parse_backend_args(vsapi, in, "LSSC");
     d.device = acquire_device(d.backend.device_id, "LSSC", core, vsapi);
     d.budget = nss::current_budget();
+    d.frame_memory = std::make_unique<FrameMemory>(core, vsapi);
     d.dct = dct_atoms(d.block_size);
     std::size_t frame_bytes = 0;
     for (int plane = 0; plane < d.vi.format.numPlanes; ++plane) {
