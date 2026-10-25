@@ -154,6 +154,7 @@ add_library(nss_vk_core STATIC
   runtime/context.cpp
   runtime/device.cpp
   runtime/error.cpp
+  runtime/frame_memory.cpp
   runtime/instance.cpp
   runtime/memory.cpp
   runtime/pipeline.cpp

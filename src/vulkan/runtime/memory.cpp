@@ -163,6 +163,17 @@ DownloadPlane::DownloadPlane(std::shared_ptr<Device> device, std::size_t pitch, 
 void DownloadPlane::record_download(VkCommandBuffer commands) const {
     const VkBufferCopy region{0, 0, pitch_ * static_cast<std::size_t>(rows_)};
     device_->vk().vkCmdCopyBuffer(commands, device_buffer_.get(), readback_.get(), 1, &region);
+    record_host_barrier(commands);
+}
+
+void DownloadPlane::record_download(VkCommandBuffer commands, int first, int rows, VkBuffer target,
+                                    VkDeviceSize target_offset) const {
+    const VkDeviceSize offset = pitch_ * static_cast<std::size_t>(first);
+    const VkBufferCopy region{offset, target ? target_offset : offset, pitch_ * static_cast<std::size_t>(rows)};
+    device_->vk().vkCmdCopyBuffer(commands, device_buffer_.get(), target ? target : readback_.get(), 1, &region);
+}
+
+void DownloadPlane::record_host_barrier(VkCommandBuffer commands) const {
     // The host reads after the slot's wait: the copy's writes must reach the
     // host domain (the semaphore signal alone only makes them available to
     // the device).
@@ -217,6 +228,20 @@ void PlaneStore::record_upload(VkCommandBuffer commands, int region) const {
     const VkDeviceSize at = region_bytes_ * static_cast<std::size_t>(region);
     const VkBufferCopy copy{at, at, region_bytes_};
     device_->vk().vkCmdCopyBuffer(commands, staging_.get(), device_buffer_.get(), 1, &copy);
+}
+
+void PlaneStore::record_upload(VkCommandBuffer commands, int region, std::size_t offset, std::size_t bytes) const {
+    if (!staging_) return;
+    const VkDeviceSize at = region_bytes_ * static_cast<std::size_t>(region) + offset;
+    const VkBufferCopy copy{at, at, bytes};
+    device_->vk().vkCmdCopyBuffer(commands, staging_.get(), device_buffer_.get(), 1, &copy);
+}
+
+void PlaneStore::record_upload(VkCommandBuffer commands, int region, std::size_t offset, std::size_t bytes,
+                               VkBuffer source, VkDeviceSize source_offset) const {
+    const VkDeviceSize at = region_bytes_ * static_cast<std::size_t>(region) + offset;
+    const VkBufferCopy copy{source_offset, at, bytes};
+    device_->vk().vkCmdCopyBuffer(commands, source, device_buffer_.get(), 1, &copy);
 }
 
 }  // namespace nss_vk

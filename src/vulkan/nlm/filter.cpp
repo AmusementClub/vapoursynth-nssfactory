@@ -10,11 +10,17 @@
 // upload on the device. The plane path (a window, a patch or a memory limit
 // the tile path cannot take; shaders/nlm/plane.comp) keeps only the centre
 // frame and the current backward/forward pair resident.
+//
+// On vapoursynth-classic (VSFrameMemory.h) the copy queues read the planes of
+// imported frames and write the output into the frame itself (FrameMemory);
+// other planes are written into BAR memory or staging by the host, and read
+// back through the readback buffer, as before.
 #include "frontend/nlm_args.hpp"
 #include "frontend/ownership.hpp"
 #include "frontend/temporal.hpp"
 #include "frontend/validate.hpp"
 #include "vulkan/runtime/context.hpp"
+#include "vulkan/runtime/frame_memory.hpp"
 #include "vulkan/runtime/memory.hpp"
 #include "vulkan/runtime/pipeline.hpp"
 #include "vulkan/runtime/slot.hpp"
@@ -108,6 +114,14 @@ struct WindowFrame {
     // The upload stage that copies it to the device (null with BAR memory).
     VkSemaphore ready = VK_NULL_HANDLE;
     std::uint64_t ready_value = 0;
+    // The stages that last used the region, one per slot timeline (the upload
+    // that wrote it, the compute stages that read it): an upload stage that
+    // copies another frame into the region waits for them on the device. The
+    // host has waited for them already (a region is reused only once no
+    // request pins it), but only a device-side dependency orders the copies
+    // of different slots into one region (synchronization validation:
+    // write-after-write on the store, with staging or imported frames).
+    std::vector<std::pair<VkSemaphore, std::uint64_t>> uses;
 };
 
 struct WindowCache {
@@ -254,6 +268,8 @@ struct NlmData : nss::NlmParams {
     // Plane path.
     Pipeline hsum, accumulate, reset, finish;
     std::unique_ptr<SlotPool<PlaneSlot>> pool;
+    // Last: destroyed first, so that its imports go before the device can.
+    std::unique_ptr<FrameMemory> frame_memory;
 };
 
 // Planes per frame: the averaged ones, then (with rclip) the reference ones.
@@ -272,25 +288,73 @@ float h2_inv_norm(const NlmData& d) {
 
 using Frames = std::vector<const VSFrame*>;
 
-// Writes frame t of the window (averaged planes, then reference planes) into
-// region `region` of `store`.
+// A plane the upload stage copies into a store region: from an imported frame
+// (`source`), else from the store's staging mirror.
+struct PlaneUpload {
+    int region = 0;
+    std::size_t offset = 0;
+    HostPlane source;
+};
+
+// Frame t of the window (averaged planes, then reference planes) into region
+// `region` of `store`: the host writes the planes that are not imported, and
+// `uploads` gets the copies the upload stage makes. The frames are held until
+// the slot's wait.
 void write_frame(const NlmData& d, PlaneStore& store, int region, const Frames& srcf, const Frames& reff, int t,
-                 const VSAPI* vsapi) {
+                 const VSAPI* vsapi, std::vector<PlaneUpload>& uploads) {
     const std::size_t row_bytes = static_cast<std::size_t>(d.width) * sizeof(float);
+    const auto write = [&](const VSFrame* frame, int plane, int index) {
+        const std::size_t offset = d.plane_bytes * static_cast<std::size_t>(index);
+        const std::uint8_t* data = vsapi->getReadPtr(frame, plane);
+        const std::ptrdiff_t stride = vsapi->getStride(frame, plane);
+        if (const HostPlane source = d.frame_memory->pinned(frame, plane, data, stride, row_bytes)) {
+            uploads.push_back({region, offset, source});
+            return;
+        }
+        store.write(region, offset, data, stride, row_bytes, d.height, row_bytes);
+        if (store.needs_copy()) uploads.push_back({region, offset, {}});
+    };
     for (int c = 0; c < d.nc; ++c) {
-        const int plane = d.first_plane + c;
-        store.write(region, d.plane_bytes * static_cast<std::size_t>(c), vsapi->getReadPtr(srcf[t], plane),
-                    vsapi->getStride(srcf[t], plane), row_bytes, d.height, row_bytes);
-        if (d.rclip) {
-            store.write(region, d.plane_bytes * static_cast<std::size_t>(d.nc + c), vsapi->getReadPtr(reff[t], plane),
-                        vsapi->getStride(reff[t], plane), row_bytes, d.height, row_bytes);
+        write(srcf[t], d.first_plane + c, c);
+        if (d.rclip) write(reff[t], d.first_plane + c, d.nc + c);
+    }
+}
+
+void record_uploads(const NlmData& d, const PlaneStore& store, const std::vector<PlaneUpload>& uploads,
+                    VkCommandBuffer commands) {
+    for (const PlaneUpload& u : uploads) {
+        if (u.source) {
+            store.record_upload(commands, u.region, u.offset, d.plane_bytes, u.source.buffer, u.source.offset);
+        } else {
+            store.record_upload(commands, u.region, u.offset, d.plane_bytes);
         }
     }
 }
 
-void read_result(const NlmData& d, const DownloadPlane& out, VSFrame* dst, const VSAPI* vsapi) {
+// The output planes the download stage copies into the frame itself (empty:
+// through the readback buffer). Takes the write pointers.
+using DirectOut = std::array<HostPlane, 3>;
+DirectOut direct_out(const NlmData& d, VSFrame* dst, const VSAPI* vsapi) {
+    const std::size_t row_bytes = static_cast<std::size_t>(d.width) * sizeof(float);
+    DirectOut direct{};
+    for (int c = 0; c < d.nc; ++c) {
+        const int plane = d.first_plane + c;
+        direct[c] = d.frame_memory->pinned(dst, plane, vsapi->getWritePtr(dst, plane), vsapi->getStride(dst, plane),
+                                           row_bytes);
+    }
+    return direct;
+}
+
+void record_result(const NlmData& d, const DownloadPlane& out, const DirectOut& direct, VkCommandBuffer commands) {
+    for (int c = 0; c < d.nc; ++c) out.record_download(commands, c * d.height, d.height, direct[c].buffer, direct[c].offset);
+    out.record_host_barrier(commands);
+}
+
+// After the slot's wait: the planes the copies did not write.
+void read_result(const NlmData& d, const DownloadPlane& out, const DirectOut& direct, VSFrame* dst, const VSAPI* vsapi) {
     const std::size_t row_bytes = static_cast<std::size_t>(d.width) * sizeof(float);
     for (int c = 0; c < d.nc; ++c) {
+        if (direct[c]) continue;
         const int plane = d.first_plane + c;
         out.read(vsapi->getWritePtr(dst, plane), vsapi->getStride(dst, plane), row_bytes, c * d.height, d.height);
     }
@@ -305,6 +369,7 @@ void plane_frame(NlmData& d, const Frames& srcf, const Frames& reff, const MakeO
                  const VSAPI* vsapi) {
     auto lease = d.pool->acquire();
     VSFrame* dst = make_output();
+    const DirectOut direct = direct_out(d, dst, vsapi);
     PlaneSlot& p = *lease;
     Slot& slot = p.slot;
     const int w = d.width, h = d.height;
@@ -315,8 +380,9 @@ void plane_frame(NlmData& d, const Frames& srcf, const Frames& reff, const MakeO
     const int span = 2 * d.a + 1;
     const VkDeviceAddress frames = p.frames.address();
     auto upload = [&](int region, int t) {
-        write_frame(d, p.frames, region, srcf, reff, t, vsapi);
-        if (p.frames.needs_copy()) p.frames.record_upload(slot.commands(Slot::Upload), region);
+        std::vector<PlaneUpload> uploads;
+        write_frame(d, p.frames, region, srcf, reff, t, vsapi, uploads);
+        if (!uploads.empty()) record_uploads(d, p.frames, uploads, slot.commands(Slot::Upload));
     };
     upload(0, d.d);
     {
@@ -353,12 +419,12 @@ void plane_frame(NlmData& d, const Frames& srcf, const Frames& reff, const MakeO
         if (i == 0) {
             const FinishPush push{frames, p.sums.address(), p.out.address(), center, count, d.wref};
             d.finish.dispatch(commands, &push, (count + 255) / 256);
-            p.out.record_download(slot.commands(Slot::Download));
+            record_result(d, p.out, direct, slot.commands(Slot::Download));
         }
         slot.submit();
         slot.wait();
     }
-    read_result(d, p.out, dst, vsapi);
+    read_result(d, p.out, direct, dst, vsapi);
 }
 
 // The window of one request on the tile path: pins its frames in the cache
@@ -456,9 +522,33 @@ public:
                 f->queued = true;
                 f->ready = ready;
                 f->ready_value = value;
+                // The upload waited for the region's earlier uses (or the
+                // host wrote it after they were done).
+                f->uses.clear();
+                if (ready) f->uses.emplace_back(ready, value);
             }
         }
         cache_.changed.notify_all();
+    }
+    // Before the uploads are recorded: the stages that last used their regions.
+    std::vector<std::pair<VkSemaphore, std::uint64_t>> previous_uses() const {
+        std::lock_guard lock(cache_.mu);
+        std::vector<std::pair<VkSemaphore, std::uint64_t>> uses;
+        for (const WindowFrame* f : uploads_) uses.insert(uses.end(), f->uses.begin(), f->uses.end());
+        return uses;
+    }
+    // After the submission: its compute stage read every frame of the window.
+    void read_by(std::pair<VkSemaphore, std::uint64_t> compute) {
+        if (!compute.first) return;
+        std::lock_guard lock(cache_.mu);
+        for (WindowFrame* f : pinned_) {
+            auto use = std::find_if(f->uses.begin(), f->uses.end(), [&](const auto& u) { return u.first == compute.first; });
+            if (use == f->uses.end()) {
+                f->uses.push_back(compute);
+            } else {
+                use->second = std::max(use->second, compute.second);
+            }
+        }
     }
 
 private:
@@ -477,21 +567,26 @@ void tile_frame(NlmData& d, int n, const Frames& srcf, const Frames& reff, const
     // requests upload: a request holding a slot there could wait forever for
     // an uploader that waits for a slot (as nss_cuda, which waits before it
     // takes a stream).
+    std::vector<PlaneUpload> uploads;
     for (WindowFrame* f : window.uploads()) {
         int t = 0;
         while (&window.slot(t) != f) ++t;
-        write_frame(d, store, f->region, srcf, reff, t, vsapi);
+        write_frame(d, store, f->region, srcf, reff, t, vsapi, uploads);
     }
-    // With BAR memory the frames are on the device once written: the requests
-    // that share them need not wait for this one's slot and submission.
-    const bool staged = store.needs_copy();
+    // With BAR memory the frames the host wrote are on the device: the
+    // requests that share them need not wait for this one's slot and
+    // submission. Copies (staging, imported frames) are ready once this
+    // request's upload stage is.
+    const bool staged = !uploads.empty();
     if (!staged) window.mark_queued(VK_NULL_HANDLE, 0);
     window.wait_queued();
     auto lease = d.tile_pool->acquire();
     VSFrame* dst = make_output();
+    const DirectOut direct = direct_out(d, dst, vsapi);
     Slot& slot = lease->slot;
     if (staged) {
-        for (WindowFrame* f : window.uploads()) store.record_upload(slot.commands(Slot::Upload), f->region);
+        for (const auto& [semaphore, value] : window.previous_uses()) slot.wait_for(Slot::Upload, semaphore, value);
+        record_uploads(d, store, uploads, slot.commands(Slot::Upload));
     }
     // Frames other requests upload: wait for their upload stages on the device.
     for (WindowFrame* f : window.pinned()) {
@@ -520,16 +615,16 @@ void tile_frame(NlmData& d, int n, const Frames& srcf, const Frames& reff, const
     d.tile.dispatch(slot.commands(Slot::Compute), &push, static_cast<std::uint32_t>((d.width + kTileWidth - 1) / kTileWidth),
                     static_cast<std::uint32_t>((d.height + kTileHeight - 1) / kTileHeight));
     slot.end_label(Slot::Compute);
-    lease->out.record_download(slot.commands(Slot::Download));
+    record_result(d, lease->out, direct, slot.commands(Slot::Download));
     slot.submit();
     weights.submitted(n, slot);
-    // Staged frames are ready once this request's upload stage is.
     if (staged) {
         const auto uploaded = slot.done(Slot::Upload);
         window.mark_queued(uploaded.first, uploaded.second);
     }
+    window.read_by(slot.done(Slot::Compute));
     slot.wait();
-    read_result(d, lease->out, dst, vsapi);
+    read_result(d, lease->out, direct, dst, vsapi);
 }
 
 const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameContext* ctx, VSCore* core,
@@ -606,6 +701,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     d->backend = parse_backend_args(vsapi, in, "NLM");
     d->device = acquire_device(d->backend.device_id, "NLM", core, vsapi);
     d->budget = nss::current_budget();
+    d->frame_memory = std::make_unique<FrameMemory>(d->device, core, vsapi);
 
     const bool uv = d->channels == nss::ChannelMode::UV;
     d->width = uv ? d->vi.width >> d->vi.format.subSamplingW : d->vi.width;

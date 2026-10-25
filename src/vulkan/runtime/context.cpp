@@ -227,6 +227,11 @@ void Device::create(int index) {
             memory_budget = true;
             extensions.push_back(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
         }
+        // Imports of VapourSynth frame memory (D28 as amended 2026-10-25).
+        if (std::strcmp(e.extensionName, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME) == 0 && caps_.import_alignment > 0) {
+            host_import_ = true;
+            extensions.push_back(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
+        }
     }
 
     // D22 requirements; synchronization2 is core in 1.3.
