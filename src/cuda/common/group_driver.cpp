@@ -25,6 +25,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace nss_cuda {
@@ -39,6 +40,17 @@ constexpr std::size_t kBatchBytes = 128u << 20;
 // Frames (spatial, legacy) or chunks (rolling) staged at once (see plan_planes).
 constexpr std::size_t kFramesInFlight = 3;
 constexpr std::size_t kChunksPerStream = 3;
+
+struct Event {
+    cudaEvent_t event = nullptr;
+    Event() { NSS_CUDA_CHECK(cudaEventCreateWithFlags(&event, cudaEventDisableTiming)); }
+    Event(Event&& other) noexcept : event(std::exchange(other.event, nullptr)) {}
+    Event(const Event&) = delete;
+    Event& operator=(const Event&) = delete;
+    ~Event() {
+        if (event) cudaEventDestroy(event);
+    }
+};
 
 // What a rolling slot keeps of one plane between chunks, so that the chunk
 // after the one it ran last only does the new work: the window frames stay
@@ -56,6 +68,12 @@ struct RollState {
     // first stage runs 2R centers ahead), otherwise 2R+1.
     DeviceBuffer basic_acc, basic_num, basic_den;
     std::vector<int> resident;          // frame in each source buffer (the chunk at turn owns it)
+    // Uploads run on the slot's upload stream, apart from the kernels: an
+    // upload into a buffer waits for the last kernel that read the frame it
+    // replaces (read[i], recorded behind every reader), and the kernels that
+    // read the buffer wait for its upload (uploaded[i]). The guide clip's
+    // buffers likewise (ref_read, ref_uploaded) when it has one.
+    std::vector<Event> read, uploaded, ref_read, ref_uploaded;
     // Guarded by Driver::roll_mu. Chunks take a ticket when they are planned
     // and run in ticket order, so a plan can rely on the chunks before it.
     int plane = -1;
@@ -68,6 +86,12 @@ struct RollState {
 
 struct Slot {
     Stream stream;
+    // Rolling: the source frames go up on `up`, a chunk's finished frames
+    // come down together on `down` (out_free behind them, which the next
+    // chunk waits for before it finishes a frame into `out`); `computed`
+    // marks the end of a chunk's kernels for the download.
+    Stream up, down;
+    Event out_free, computed;
     bool in_use = false;  // rolling: guarded by Driver::roll_mu
     std::vector<RollState> roll;
     // Window frames: 2R+1, 1 when spatial (rolling keeps its own in `roll`).
@@ -225,7 +249,11 @@ std::size_t slot_batch_bytes(const Driver& d) {
 // Frames a rolling chunk reads on each side of itself, and the buffers of a
 // state's source ring. The first of two stages reaches 2R further.
 int roll_reach(const Driver& d) { return (d.two_stage ? 4 : 2) * d.radius; }
-int src_ring(const Driver& d) { return d.two_stage ? 4 * d.radius + 1 : d.ntemp; }
+// The source buffers of a rolling state: the frames the centers read at once
+// (with two stages the first runs 2R centers ahead) and one more, so that a
+// frame's upload runs while the center before it computes (the buffer it
+// replaces is read by no later center).
+int src_ring(const Driver& d) { return (d.two_stage ? 4 * d.radius + 1 : d.ntemp) + 1; }
 
 // Pinned bytes of one rolling staging set: every active plane's uploads at
 // its own size, or one plane's at the largest size for planes that take turns.
@@ -599,10 +627,16 @@ std::unique_ptr<Slot> make_slot(const Driver& d) {
             for (int t = 0; t < src_ring(d); ++t) {
                 r.src_frames.emplace_back(bytes, d.budget);
                 r.src_ptrs.push_back(r.src_frames.back().as<float>());
+                r.read.emplace_back();
+                r.uploaded.emplace_back();
             }
             for (int t = 0; t < d.ntemp && w; ++t) {
                 r.ref_frames.emplace_back(bytes, d.budget);
                 r.ref_ptrs.push_back(r.ref_frames.back().as<float>());
+                if (guide_clip(d)) {
+                    r.ref_read.emplace_back();
+                    r.ref_uploaded.emplace_back();
+                }
             }
             if (needs.ordered) r.acc = DeviceBuffer(bytes * 2 * d.ntemp, d.budget);
             if (needs.fused) {
@@ -1174,6 +1208,7 @@ struct PlaneRun {
     // index clip * channels + c), null where staged.
     const std::vector<RollDirect>& direct;
     const VSAPI* vsapi;
+    bool out_free = false;  // the downloads of the chunk before have released s.out
 
     // A slice is zero before its frame's first center: every one when the
     // chunk starts afresh, and again once its frame is finished.
@@ -1209,6 +1244,9 @@ struct PlaneRun {
             const int fn = temporal_slot_frame(center, t, radius, nframes);
             sp[t] = r.src_ptrs[fn % ring];
             if (estimates) rp[t] = r.ref_ptrs[fn % nt];
+            // The window's uploads (ones that ran long ago cost nothing to wait for).
+            NSS_CUDA_CHECK(cudaStreamWaitEvent(s.stream, r.uploaded[fn % ring].event, 0));
+            if (clips == 2) NSS_CUDA_CHECK(cudaStreamWaitEvent(s.stream, r.ref_uploaded[fn % nt].event, 0));
         }
         // Pageable sources: staged before cudaMemcpyAsync returns, and
         // stream-ordered after the previous center's kernels.
@@ -1217,6 +1255,14 @@ struct PlaneRun {
         if (estimates) {
             NSS_CUDA_CHECK(cudaMemcpyAsync(s.ref_ptrs.get(), rp.data(), nt * sizeof(float*), cudaMemcpyHostToDevice,
                                            s.stream));
+        }
+    }
+    // Behind the kernels of `center`: its window's buffers were last read here.
+    void mark_read(int center) {
+        for (int t = 0; t < nt; ++t) {
+            const int fn = temporal_slot_frame(center, t, radius, nframes);
+            NSS_CUDA_CHECK(cudaEventRecord(r.read[fn % ring].event, s.stream));
+            if (clips == 2) NSS_CUDA_CHECK(cudaEventRecord(r.ref_read[fn % nt].event, s.stream));
         }
     }
     // The window frames of `center` the device does not hold, in the plan's order.
@@ -1230,16 +1276,21 @@ struct PlaneRun {
             const auto put = [&](int clip, int c, float* device) {
                 if (const VSFrame* f = direct[staged][static_cast<std::size_t>(clip * channels + c)]) {
                     upload_direct(vsapi->getReadPtr(f, plane + c), vsapi->getStride(f, plane + c), row_bytes, p.height,
-                                  device, row_bytes, s.stream);
+                                  device, row_bytes, s.up);
                 } else {
                     upload_staged(base + ((staged * clips + clip) * channels + c) * step, row_bytes, p.height, device,
-                                  row_bytes, s.stream);
+                                  row_bytes, s.up);
                 }
             };
+            // On the upload stream, once the frames these buffers held are read for the last time.
+            NSS_CUDA_CHECK(cudaStreamWaitEvent(s.up, r.read[fn % ring].event, 0));
+            if (clips == 2) NSS_CUDA_CHECK(cudaStreamWaitEvent(s.up, r.ref_read[fn % nt].event, 0));
             for (int c = 0; c < channels; ++c) {
                 put(0, c, r.src_frames[fn % ring].as<float>() + c * p.floats);
                 if (clips == 2) put(1, c, r.ref_frames[fn % nt].as<float>() + c * p.floats);
             }
+            NSS_CUDA_CHECK(cudaEventRecord(r.uploaded[fn % ring].event, s.up));
+            if (clips == 2) NSS_CUDA_CHECK(cudaEventRecord(r.ref_uploaded[fn % nt].event, s.up));
             ++staged;
             r.resident[fn % ring] = fn;
         }
@@ -1263,6 +1314,7 @@ struct PlaneRun {
                                  s.den.as<float>() + slice, p.floats, s.stream);
             }
         }
+        mark_read(center);
     }
     void basic_frame(int frame) {
         for (int c = 0; c < channels; ++c) {
@@ -1282,6 +1334,7 @@ struct PlaneRun {
             }
         }
         clear_basic(frame % nt);  // the cell is the next frame's from here on
+        NSS_CUDA_CHECK(cudaEventRecord(r.read[frame % ring].event, s.stream));
     }
     void center(int center, int next) {
         if (!d.two_stage) upload(center);
@@ -1304,6 +1357,7 @@ struct PlaneRun {
                                  p.floats, s.stream);
             }
         }
+        mark_read(center);
     }
     // Every round of a center but the last, as the legacy output does it
     // for its center alone: the round's sums cover the window's frames
@@ -1345,6 +1399,12 @@ struct PlaneRun {
         return estimates;
     }
     void output(int frame) {
+        if (d.roll_batch_out && !out_free) {
+            // The chunk before on this slot downloads s.out on the download
+            // stream while this chunk's first centers run.
+            NSS_CUDA_CHECK(cudaStreamWaitEvent(s.stream, s.out_free.event, 0));
+            out_free = true;
+        }
         for (int c = 0; c < channels; ++c) {
             if (!d.channel_out[c]) continue;
             // The chunk's frames wait in s.out and are downloaded together at
@@ -1366,6 +1426,7 @@ struct PlaneRun {
             }
         }
         clear_sums(frame % nt);  // the slice is a later frame's from here on
+        NSS_CUDA_CHECK(cudaEventRecord(r.read[frame % ring].event, s.stream));
     }
 };
 
@@ -1387,12 +1448,13 @@ void queue_plane(Driver& d, RollTurn& turn, int plane, int start, int count, Chu
     Slot& s = *turn.slot;
     RollState& r = *turn.state;
     struct Drain {
-        cudaStream_t stream;
+        const Slot& s;
         bool armed = true;
         ~Drain() {
-            if (armed) cudaStreamSynchronize(stream);
+            if (!armed) return;
+            for (cudaStream_t stream : {s.up.get(), s.stream.get(), s.down.get()}) cudaStreamSynchronize(stream);
         }
-    } drain{s.stream};
+    } drain{s};
     // Every buffer of the state holds the unit's channels one after the
     // other: a frame's planes, and 2R+1 ring cells per channel of the sums
     // (the first stage's too).
@@ -1420,14 +1482,22 @@ void queue_plane(Driver& d, RollTurn& turn, int plane, int start, int count, Chu
         }
     }
     walk_chunk(d, start, count, turn.carry, run);
-    for (int i = 0; i < count && d.roll_batch_out; ++i) {
-        for (int c = 0; c < channels; ++c) {
-            if (!d.channel_out[c]) continue;
-            begin_download(s.out.as<float>() + (static_cast<std::size_t>(i) * channels + c) * p.floats, row_bytes, row_bytes,
-                           p.height, store.plane(i, plane + c), s.stream);
+    if (d.roll_batch_out) {
+        // The finished frames come down while the next chunk's centers run.
+        NSS_CUDA_CHECK(cudaEventRecord(s.computed.event, s.stream));
+        NSS_CUDA_CHECK(cudaStreamWaitEvent(s.down, s.computed.event, 0));
+        for (int i = 0; i < count; ++i) {
+            for (int c = 0; c < channels; ++c) {
+                if (!d.channel_out[c]) continue;
+                begin_download(s.out.as<float>() + (static_cast<std::size_t>(i) * channels + c) * p.floats, row_bytes,
+                               row_bytes, p.height, store.plane(i, plane + c), s.down);
+            }
         }
+        NSS_CUDA_CHECK(cudaEventRecord(s.out_free.event, s.down));
+        NSS_CUDA_CHECK(cudaEventRecord(event, s.down));
+    } else {
+        NSS_CUDA_CHECK(cudaEventRecord(event, s.stream));
     }
-    NSS_CUDA_CHECK(cudaEventRecord(event, s.stream));
     drain.armed = false;
     turn.leave();
 }
@@ -1526,12 +1596,13 @@ std::shared_ptr<ChunkStore> compute_chunk(Driver* d, int start, int count, VSFra
             }
         }
         // A slot is held only while a plane's work is queued (see frame_output).
-        pending.streams.reserve(step);
+        pending.streams.reserve(3 * step);
         for (std::size_t j = 0; j < step; ++j) {
             const int plane = active[first + j];
             queue_plane(*d, *turns[j], plane, start, count, *store, g.roll_base[plane], g.roll_step[plane],
                         g.plane_done[plane], direct[j], vsapi);
-            pending.streams.push_back(turns[j]->slot->stream);
+            for (cudaStream_t stream : {turns[j]->slot->up.get(), turns[j]->slot->stream.get(), turns[j]->slot->down.get()})
+                pending.streams.push_back(stream);
         }
         // The store holds these planes once their events have passed; the
         // staging is free for the next planes then.
