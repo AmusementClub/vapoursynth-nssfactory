@@ -117,7 +117,9 @@ DeviceCaps query_caps(VkPhysicalDevice device) {
     // are classified unsupported by their version alone.
     const bool v13 = basic.apiVersion >= kRequiredApiVersion;
 
-    VkPhysicalDeviceDriverProperties driver{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+    VkPhysicalDeviceExternalMemoryHostPropertiesEXT host{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT};
+    VkPhysicalDeviceDriverProperties driver{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES,
+                                            caps.external_memory_host ? &host : nullptr};
     VkPhysicalDeviceVulkan11Properties p11{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES, &driver};
     VkPhysicalDeviceVulkan13Properties p13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES, &p11};
     VkPhysicalDeviceProperties2 properties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &p13};
@@ -131,10 +133,12 @@ DeviceCaps query_caps(VkPhysicalDevice device) {
     caps.vendor_id = p.vendorID;
     caps.type = p.deviceType;
     caps.shared_memory = p.limits.maxComputeSharedMemorySize;
+    caps.max_allocations = p.limits.maxMemoryAllocationCount;
     caps.max_workgroup_invocations =
         std::min(p.limits.maxComputeWorkGroupInvocations, p.limits.maxComputeWorkGroupSize[0]);
     if (v13) {
         caps.driver_name = driver.driverName;
+        if (caps.external_memory_host) caps.import_alignment = host.minImportedHostPointerAlignment;
         caps.driver_info = driver.driverInfo;
         caps.subgroup_size = p11.subgroupSize;
         caps.subgroup_in_compute = (p11.subgroupSupportedStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0;

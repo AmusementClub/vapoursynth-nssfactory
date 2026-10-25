@@ -217,9 +217,9 @@ frames directly, without the pinned staging copies.
   staging): with one stream BM3D 1.46–1.65×, WNNM gray 1.63×, NCSR
   1.17–1.19×, MCWNNM RGB 1.13×; with `num_streams=3`, 1.53–1.67× across the
   four. NLM at its default two streams: gray 1.73×, YUV420 1.47×, RGB 1.67×,
-  gray `d=0` 1.79× (two runs each), ahead of `nss_vk.NLM` on the same core by
-  1.23–1.49×. Rolling `radius=1` (two runs, output hashed): BM3D gray 1.20×,
-  YUV420 1.11×, WNNM gray 1.21×; NCSR, MCWNNM, LSSC, DA3D, BM4D, NLH and TWSC
+  gray `d=0` 1.79× (two runs each). `nss_vk.NLM` (not shipped yet) uses the
+  same extension and runs at 0.87–1.03× of `nss_cuda.NLM` on that core.
+  Rolling `radius=1` (two runs, output hashed): BM3D gray 1.20×, YUV420 1.11×, WNNM gray 1.21×; NCSR, MCWNNM, LSSC, DA3D, BM4D, NLH and TWSC
   within ±3% (their kernels set the pace). Direct transfers raise the
   [default streams](#default-streams) of BM3D, WNNM, MCWNNM and NCSR. With a small frame cache the lock cap keeps most blocks
   staged, and the gain shrinks.

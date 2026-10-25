@@ -141,6 +141,12 @@ public:
                   const std::shared_ptr<nss::ResourceBudget>& budget = nullptr);
 
     void record_download(VkCommandBuffer commands) const;
+    // Rows [first, first + rows) into `target` at `target_offset` (a frame
+    // plane imported by FrameMemory), or into the readback buffer when
+    // `target` is null; then record_host_barrier() once for the stage.
+    void record_download(VkCommandBuffer commands, int first, int rows, VkBuffer target,
+                         VkDeviceSize target_offset) const;
+    void record_host_barrier(VkCommandBuffer commands) const;
     void read(void* host, std::ptrdiff_t host_stride, std::size_t row_bytes) const;
     // Rows [first, first + rows) only (several planes stacked in one buffer).
     void read(void* host, std::ptrdiff_t host_stride, std::size_t row_bytes, int first, int rows) const;
@@ -174,6 +180,12 @@ public:
                int rows, std::size_t pitch);
     bool needs_copy() const noexcept { return static_cast<bool>(staging_); }
     void record_upload(VkCommandBuffer commands, int region) const;
+    // `bytes` at `offset` of region `region` only: from the staging mirror
+    // (needs_copy()), or from `source` at `source_offset` (a frame plane
+    // imported by FrameMemory, which the host did not write; any store).
+    void record_upload(VkCommandBuffer commands, int region, std::size_t offset, std::size_t bytes) const;
+    void record_upload(VkCommandBuffer commands, int region, std::size_t offset, std::size_t bytes, VkBuffer source,
+                       VkDeviceSize source_offset) const;
     VkDeviceAddress address() const noexcept { return device_buffer_.address(); }
     std::size_t region_bytes() const noexcept { return region_bytes_; }
     int regions() const noexcept { return regions_; }

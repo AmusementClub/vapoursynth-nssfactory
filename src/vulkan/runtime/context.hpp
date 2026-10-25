@@ -90,6 +90,9 @@ public:
     // Uploads write device-local, host-visible memory when it is resizable BAR
     // (more than the legacy 256 MiB window) and NSS_VK_REBAR is not 0.
     bool rebar() const noexcept { return rebar_; }
+    // VK_EXT_external_memory_host is enabled: VapourSynth frame memory can be
+    // imported (frame_memory.hpp; vapoursynth-classic only).
+    bool host_import() const noexcept { return host_import_; }
     float timestamp_period_ns() const noexcept { return timestamp_period_; }
     bool debug_labels() const noexcept { return debug_labels_; }
 
@@ -122,6 +125,7 @@ private:
     std::vector<std::uint32_t> families_;
     std::unique_ptr<std::mutex[]> queue_mutexes_;
     bool rebar_ = false;
+    bool host_import_ = false;
     bool defer_downloads_ = false;
     float timestamp_period_ = 1.0f;
     bool debug_labels_ = false;
