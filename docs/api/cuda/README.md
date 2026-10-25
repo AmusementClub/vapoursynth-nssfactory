@@ -181,6 +181,9 @@ GPU. NLM is temporal through `d`; LSSC has no temporal mode.
 - Rolling output agrees with the legacy intermediate reduced by `VAggregate`
   (bit for bit for NLH and TWSC, to rounding for the others) and needs more
   GPU memory than legacy output.
+- BM3D, WNNM, MCWNNM and NCSR copy a chunk's frames to and from the GPU while
+  its kernels run (one more source frame per plane stays on the GPU for that:
+  about 8 MiB at 1080p gray).
 
 ### Driver and GPU support
 
