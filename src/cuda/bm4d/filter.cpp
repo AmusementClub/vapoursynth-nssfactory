@@ -27,6 +27,7 @@
 #include <list>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -76,8 +77,22 @@ struct Bm4dData : nss::Bm4dParams {
     static constexpr int kCacheLimit = 2;
     std::mutex mu;
     std::condition_variable computed;
-    std::set<int> computing;
-    std::list<std::shared_ptr<const ChunkStore>> cache;
+    std::set<int> computing;  // claimed: being computed or about to be
+    // Chunks that hold their slot (compute_chunk past the slot's lock). A
+    // chunk runs its tiles once no smaller chunk of these is left: one that is
+    // only claimed may still wait for a compute permit or for the slot the
+    // waiting chunk holds, so waiting for it could wait forever.
+    std::set<int> running;
+    // A finished chunk and the requests reading it as a hit. The cache drops
+    // only chunks no hit reads: a hit waits only for an output permit, whose
+    // holders only copy their frame out. The request that computed a chunk
+    // holds it outside the cache (its compute permit counts that store), so
+    // requests publishing their chunks never wait for each other.
+    struct Entry {
+        std::shared_ptr<const ChunkStore> store;
+        int readers = 0;
+    };
+    std::list<Entry> cache;
     // Stores of chunks dropped from the cache, reused: a 1080p chunk is 265 MB,
     // and a new one is zeroed and faulted in (about 300 ms).
     std::vector<std::shared_ptr<ChunkStore>> spare;
@@ -85,20 +100,24 @@ struct Bm4dData : nss::Bm4dParams {
     // chunk's frames (while that chunk is neither cached nor claimed) and
     // computes it on a thread of its own: its frames are decoded and uploaded
     // while this chunk runs its tiles, and its tiles follow in chunk order.
-    // At most two prefetch threads at a time.
+    // At most two prefetch threads at a time (a request reserves one in
+    // `prefetching` before it claims the chunk). A finished thread is joined
+    // when the next one starts: a long clip starts one per chunk.
+    struct Prefetcher {
+        std::thread thread;
+        std::shared_ptr<std::atomic<bool>> done;
+    };
     std::mutex prefetch_mu;  // guards prefetchers
-    std::vector<std::thread> prefetchers;
+    std::vector<Prefetcher> prefetchers;
     std::atomic<int> prefetching{0};
     static constexpr int kPrefetchers = 2;
     // A request that computes its chunk in place holds a compute permit until
-    // the chunk is in the cache (a store besides the cache's), and a request
-    // holds an output permit, taken once it holds its chunk, until its frame
-    // is copied out (an output frame): the memory plan counts kComputers
-    // stores and kOutputs frames. The cache does not drop a chunk a request
-    // holds (it waits for it): a request holding a chunk waits only for an
-    // output permit, whose holders only copy their frame out. A finished
-    // chunk's requests copy their frames out together: with two output
-    // permits 1080p gray ran 10% slower.
+    // its frame is copied out (its store, which may leave the cache before
+    // then), and a request holds an output permit, taken once it holds its
+    // chunk, until its frame is copied out (an output frame): the memory plan
+    // counts kComputers stores and kOutputs frames. A finished chunk's
+    // requests copy their frames out together: with two output permits 1080p
+    // gray ran 10% slower.
     static constexpr int kComputers = 2, kOutputs = 8;
     struct Permit {};
     std::unique_ptr<SlotPool<Permit>> computers, permits;
@@ -113,7 +132,7 @@ void chunk_window(const Bm4dData* d, int n, int* first, int* count, int* v0, int
 
 bool chunk_known(const Bm4dData* d, int first) {  // cached or being computed; d->mu held
     for (const auto& c : d->cache)
-        if (c->first == first) return true;
+        if (c.store->first == first) return true;
     return d->computing.count(first) != 0;
 }
 
@@ -128,26 +147,24 @@ bool claim_chunk(Bm4dData* d, int first) {
 void finish_chunk(Bm4dData* d, int first, std::shared_ptr<const ChunkStore> store) {
     {
         std::lock_guard<std::mutex> guard(d->mu);
-        if (store) {
-            d->cache.push_front(std::move(store));
-            d->computing.erase(first);
-        } else {
-            d->computing.erase(first);
-        }
+        if (store) d->cache.push_front(Bm4dData::Entry{std::move(store), 0});
+        d->computing.erase(first);
     }
     d->computed.notify_all();
-    // Over the limit: the oldest chunk no request holds goes (see Bm4dData::computers).
+    // Over the limit: the oldest chunk no hit reads goes (see Bm4dData::Entry).
     std::unique_lock<std::mutex> lock(d->mu);
     while (static_cast<int>(d->cache.size()) > Bm4dData::kCacheLimit) {
         auto victim = d->cache.end();
         for (auto it = std::next(d->cache.begin()); it != d->cache.end(); ++it) {
-            if (it->use_count() == 1) victim = it;  // only the cache holds it
+            if (it->readers == 0) victim = it;
         }
         if (victim == d->cache.end()) {
-            d->computed.wait_for(lock, std::chrono::milliseconds(1));  // a request lets go
+            d->computed.wait_for(lock, std::chrono::milliseconds(1));  // a hit lets go
             continue;
         }
-        d->spare.push_back(std::const_pointer_cast<ChunkStore>(*victim));
+        // Its store is reused once nothing else holds it; the request that
+        // computed it may still be copying its frame out.
+        if (victim->store.use_count() == 1) d->spare.push_back(std::const_pointer_cast<ChunkStore>(victim->store));
         d->cache.erase(victim);
     }
 }
@@ -171,6 +188,21 @@ std::shared_ptr<ChunkStore> compute_chunk(Bm4dData* d, int first, int count, int
     const int depth = v1 - v0;
     Bm4dData::Slot& sl = d->slots[(first / nss::kBm4dChunk) & 1];
     std::lock_guard<std::mutex> slot_lock(sl.mu);
+    struct Running {
+        Bm4dData* d;
+        int first;
+        Running(Bm4dData* d, int first) : d(d), first(first) {
+            std::lock_guard<std::mutex> lock(d->mu);
+            d->running.insert(first);
+        }
+        ~Running() {
+            {
+                std::lock_guard<std::mutex> lock(d->mu);
+                d->running.erase(first);
+            }
+            d->computed.notify_all();
+        }
+    } running{d, first};
     cudaStream_t io = *sl.stream;
     auto* staging = sl.staging.as<std::uint8_t>();
     for (int plane = 0; plane < d->vi.format.numPlanes; ++plane) {
@@ -204,9 +236,10 @@ std::shared_ptr<ChunkStore> compute_chunk(Bm4dData* d, int first, int count, int
         }
         {
             // the tiles run in chunk order: a prefetched chunk's upload
-            // overlaps the earlier chunk, its tiles wait for it
+            // overlaps the earlier chunk, its tiles wait for it (a running
+            // one: see Bm4dData::running)
             std::unique_lock<std::mutex> order(d->mu);
-            d->computed.wait(order, [&] { return *d->computing.begin() >= first; });
+            d->computed.wait(order, [&] { return *d->running.begin() >= first; });
         }
         {
             std::lock_guard<std::mutex> lock(d->device_mu);  // the shared work and output buffers
@@ -268,35 +301,87 @@ const VSFrame* getFrame(int n, int activation, void* instance, void** frame_data
     DeviceGuard guard(d->device.index);
     nss::ResourceScope resource_scope(d->budget);
     nss::FrameScope frames_owned(vsapi);
-    if (lookahead && d->prefetching.load() < Bm4dData::kPrefetchers && claim_chunk(d, nfirst)) {
+    bool prefetch = false;
+    if (lookahead) {  // a prefetch thread is reserved before the chunk is claimed: the plan counts kPrefetchers stores
+        int busy = d->prefetching.load();
+        while (busy < Bm4dData::kPrefetchers && !d->prefetching.compare_exchange_weak(busy, busy + 1)) {
+        }
+        prefetch = busy < Bm4dData::kPrefetchers;
+        if (prefetch && !claim_chunk(d, nfirst)) {
+            --d->prefetching;
+            prefetch = false;
+        }
+    }
+    if (prefetch) {
         // the next chunk, on a thread of its own (before this frame waits for
         // its own chunk); its frames were asked for above
         std::vector<const VSFrame*> next;
         for (int i = nv0; i < nv1; ++i) next.push_back(vsapi->getFrameFilter(i, d->node, ctx));
-        std::lock_guard<std::mutex> launch(d->prefetch_mu);
-        ++d->prefetching;
-        d->prefetchers.emplace_back([d, nfirst, ncount, nv0, nv1, next, vsapi]() {
-            std::shared_ptr<ChunkStore> store;
+        bool started = false;
+        {
+            std::lock_guard<std::mutex> launch(d->prefetch_mu);
+            std::erase_if(d->prefetchers, [](Bm4dData::Prefetcher& p) {
+                if (!p.done->load()) return false;
+                p.thread.join();  // it has finished its work and is returning
+                return true;
+            });
             try {
-                DeviceGuard guard(d->device.index);
-                nss::ResourceScope scope(d->budget);
-                store = compute_chunk(d, nfirst, ncount, nv0, nv1, next, vsapi);
+                d->prefetchers.reserve(d->prefetchers.size() + 1);  // the push_back below cannot throw
+                auto done = std::make_shared<std::atomic<bool>>(false);
+                std::thread thread([d, nfirst, ncount, nv0, nv1, next, vsapi, done]() {
+                    std::shared_ptr<ChunkStore> store;
+                    try {
+                        DeviceGuard guard(d->device.index);
+                        nss::ResourceScope scope(d->budget);
+                        store = compute_chunk(d, nfirst, ncount, nv0, nv1, next, vsapi);
+                    } catch (...) {
+                        store.reset();  // asked for again, the chunk is computed in place and reports the error
+                    }
+                    for (const VSFrame* f : next) vsapi->freeFrame(f);
+                    finish_chunk(d, nfirst, std::move(store));
+                    --d->prefetching;
+                    done->store(true);
+                });
+                d->prefetchers.push_back(Bm4dData::Prefetcher{std::move(thread), std::move(done)});
+                started = true;
             } catch (...) {
-                store.reset();  // asked for again, the chunk is computed in place and reports the error
             }
+        }
+        if (!started) {  // no thread: the claim goes back, and the chunk is computed in place when asked for
             for (const VSFrame* f : next) vsapi->freeFrame(f);
-            finish_chunk(d, nfirst, std::move(store));
+            finish_chunk(d, nfirst, nullptr);
             --d->prefetching;
-        });
+        }
     }
+    // Declared before the chunk: given back once the request no longer holds
+    // it, so that the store stays counted (a permit's, or the cache's for a
+    // hit) for as long as it lives.
+    std::optional<SlotPool<Bm4dData::Permit>::Lease> compute;
+    // A hit reads its entry until the frame is out; the cache keeps it meanwhile.
+    struct Hit {
+        Bm4dData* d;
+        std::list<Bm4dData::Entry>::iterator entry;
+        bool held = false;
+        ~Hit() {
+            if (!held) return;
+            {
+                std::lock_guard<std::mutex> lock(d->mu);
+                --entry->readers;
+            }
+            d->computed.notify_all();
+        }
+    } hit{d, {}};
     std::shared_ptr<const ChunkStore> result;
     {
         std::unique_lock<std::mutex> lock(d->mu);
         for (;;) {
             for (auto it = d->cache.begin(); it != d->cache.end(); ++it) {
-                if ((*it)->first == first) {
-                    result = *it;
+                if (it->store->first == first) {
+                    result = it->store;
+                    ++it->readers;
                     d->cache.splice(d->cache.begin(), d->cache, it);
+                    hit.entry = it;
+                    hit.held = true;
                     break;
                 }
             }
@@ -306,7 +391,7 @@ const VSFrame* getFrame(int n, int activation, void* instance, void** frame_data
         if (!result) d->computing.insert(first);
     }
     if (!result) {
-        auto compute = d->computers->acquire();  // held until the chunk is in the cache (Finish)
+        compute.emplace(d->computers->acquire());  // see Bm4dData::computers
         std::shared_ptr<ChunkStore> store;
         struct Finish {
             Bm4dData* d;
@@ -335,8 +420,8 @@ const VSFrame* getFrame(int n, int activation, void* instance, void** frame_data
 
 void VS_CC freeFilter(void* instance, VSCore*, const VSAPI*) {
     auto* d = static_cast<Bm4dData*>(instance);
-    for (auto& t : d->prefetchers)
-        if (t.joinable()) t.join();
+    for (auto& p : d->prefetchers)
+        if (p.thread.joinable()) p.thread.join();
     {
         DeviceGuard guard(d->device.index);
         d->stream.reset();
