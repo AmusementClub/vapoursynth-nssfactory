@@ -1,0 +1,190 @@
+// SPDX-License-Identifier: GPL-2.0-only
+// BM3D, block kernel: one workgroup per group for every shape the warp kernel
+// (group_warp.comp) does not serve, as nss_cuda's group_shape_kernel<B, G>.
+// The cube lives in shared memory when it (and the Wiener reference cube) fit
+// in kCubeSharedBytes, otherwise in the scratch buffer; the workgroup has as
+// many invocations as a transform pass has lines (at most 256). Sums over the
+// workgroup are a shared-memory tree with a fixed pairing (deterministic).
+//
+// Defines: B, G, WIENER (bm3d/common.glsl).
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_shader_atomic_int64 : require
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_GOOGLE_include_directive : require
+
+#include "bm3d/common.glsl"
+
+// Macros, not const ints: IN_SHARED below is a preprocessor test (where a
+// const int reads as 0).
+#define AREA (B * B)
+#define CUBE (G * AREA)
+const int LINES = G * B > AREA ? G * B : AREA;
+const int THREADS = LINES >= 256 ? 256 : (LINES + 31) / 32 * 32;
+layout(local_size_x = THREADS) in;
+
+// nss_cuda's kCubeSharedBytes: larger cubes stay in device memory.
+#define CUBE_FLOATS (CUBE * (WIENER + 1))
+#define IN_SHARED (CUBE_FLOATS * 4 <= 24 * 1024)
+#if !defined(B) || !defined(G) || !defined(WIENER)
+#error B, G and WIENER must be defined
+#endif
+#if IN_SHARED
+shared float s_cube[CUBE_FLOATS];
+#define CUBE_AT(i) s_cube[(i)]
+#define REF_AT(i) s_cube[CUBE + (i)]
+// Between the passes over the cube: its writes before the reads of other invocations.
+#define CUBE_BARRIER() barrier()
+#else
+// The group's cube, then its reference cube, at r * CUBE_FLOATS of scratch.
+// barrier() orders shared memory only: device memory needs its own barrier.
+layout(buffer_reference, std430, buffer_reference_align = 4) coherent buffer CubeCells { float v[]; };
+uint64_t cube_base() {
+    return pc.scratch + uint64_t(gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x) * uint64_t(CUBE_FLOATS) * 4ul;
+}
+#define CUBE_AT(i) CubeCells(cube_base()).v[(i)]
+#define REF_AT(i) CubeCells(cube_base()).v[CUBE + (i)]
+#define CUBE_BARRIER() \
+    memoryBarrierBuffer(); \
+    barrier()
+#endif
+// The reduction trees run over the power of two at or above THREADS, the
+// entries beyond the workgroup zero.
+const int TREE = THREADS <= 32 ? 32 : THREADS <= 64 ? 64 : THREADS <= 128 ? 128 : 256;
+shared float s_fsum[TREE];
+shared int s_isum[TREE];
+
+float total_f(float value) {
+    const int tid = int(gl_LocalInvocationID.x);
+    s_fsum[tid] = value;
+    if (tid + THREADS < TREE) s_fsum[tid + THREADS] = 0.0f;
+    barrier();
+    [[unroll]] for (int s = TREE / 2; s > 0; s >>= 1) {
+        if (tid < s) s_fsum[tid] += s_fsum[tid + s];
+        barrier();
+    }
+    const float total = s_fsum[0];
+    barrier();
+    return total;
+}
+
+int total_i(int value) {
+    const int tid = int(gl_LocalInvocationID.x);
+    s_isum[tid] = value;
+    if (tid + THREADS < TREE) s_isum[tid + THREADS] = 0;
+    barrier();
+    [[unroll]] for (int s = TREE / 2; s > 0; s >>= 1) {
+        if (tid < s) s_isum[tid] += s_isum[tid + s];
+        barrier();
+    }
+    const int total = s_isum[0];
+    barrier();
+    return total;
+}
+
+// The 3-D transform of the cube (ref: the reference cube): rows, columns, then
+// the group axis forward; the reverse order inverse.
+void transform(bool ref, bool inverse) {
+    const int tid = int(gl_LocalInvocationID.x);
+    const int base = ref ? CUBE : 0;
+    if (inverse && G > 1) {
+        for (int f = tid; f < AREA; f += THREADS) {
+            float v[G];
+            [[unroll]] for (int k = 0; k < G; ++k) v[k] = ref ? REF_AT(f + k * AREA) : CUBE_AT(f + k * AREA);
+            DCT_LINE(G)(v, true);
+            [[unroll]] for (int k = 0; k < G; ++k) CUBE_AT(base + f + k * AREA) = v[k];
+        }
+        CUBE_BARRIER();
+    }
+    if (B > 1) {
+        for (int i = tid; i < G * B; i += THREADS) {
+            float v[B];
+            [[unroll]] for (int k = 0; k < B; ++k) v[k] = CUBE_AT(base + i * B + k);
+            DCT_LINE(B)(v, inverse);
+            [[unroll]] for (int k = 0; k < B; ++k) CUBE_AT(base + i * B + k) = v[k];
+        }
+        CUBE_BARRIER();
+        for (int i = tid; i < G * B; i += THREADS) {
+            const int at = base + (i / B) * AREA + i % B;
+            float v[B];
+            [[unroll]] for (int k = 0; k < B; ++k) v[k] = CUBE_AT(at + k * B);
+            DCT_LINE(B)(v, inverse);
+            [[unroll]] for (int k = 0; k < B; ++k) CUBE_AT(at + k * B) = v[k];
+        }
+        CUBE_BARRIER();
+    }
+    if (!inverse && G > 1) {
+        for (int f = tid; f < AREA; f += THREADS) {
+            float v[G];
+            [[unroll]] for (int k = 0; k < G; ++k) v[k] = CUBE_AT(base + f + k * AREA);
+            DCT_LINE(G)(v, false);
+            [[unroll]] for (int k = 0; k < G; ++k) CUBE_AT(base + f + k * AREA) = v[k];
+        }
+        CUBE_BARRIER();
+    }
+}
+
+void main() {
+    const int r = int(gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x);
+    if (r >= pc.batch) return;  // uniform over the workgroup
+    const int tid = int(gl_LocalInvocationID.x);
+    const int first = r * G;
+    const int kk = min(Counts(pc.counts).c[r], G);
+    for (int i = tid; i < CUBE; i += THREADS) {
+        const int g = i / AREA, p = i % AREA;
+        float v = 0.0f, rv = 0.0f;
+        if (g < kk) {
+            const Match m = Matches(pc.matches).m[first + g];
+            const int at = (m.y + p / B) * pc.pitch + m.x + p % B;
+            v = Plane(plane_base(pc.src, m.t)).v[at];
+#if WIENER
+            rv = Plane(plane_base(pc.ref, m.t)).v[at];
+#endif
+        }
+        CUBE_AT(i) = v;
+#if WIENER
+        REF_AT(i) = rv;
+#endif
+    }
+    CUBE_BARRIER();
+    transform(false, false);
+#if WIENER
+    transform(true, false);
+    const float sig2 = kScale * kScale * pc.sigma * pc.sigma;
+    precise float w2 = 0.0f;
+    for (int i = tid; i < CUBE; i += THREADS) {
+        float w = 1.0f;
+        if (i != 0) {
+            precise float q = REF_AT(i) * REF_AT(i);
+            w = q / (q + sig2);
+        }
+        CUBE_AT(i) *= w;
+        w2 = fma(w, w, w2);
+    }
+    const float weight = 1.0f / max(total_f(w2), 1e-12f);
+#else
+    const float thr = kScale * kHardLambda * pc.sigma;
+    int kept = 0;
+    for (int i = tid; i < CUBE; i += THREADS) {
+        if (i != 0 && abs(CUBE_AT(i)) < thr) {
+            CUBE_AT(i) = 0.0f;
+        } else {
+            ++kept;
+        }
+    }
+    const float weight = 1.0f / float(max(total_i(kept), 1));
+#endif
+    CUBE_BARRIER();  // the shrunk cube before the inverse transform reads it
+    transform(false, true);
+    for (int i = tid; i < CUBE; i += THREADS) {
+        const int g = i / AREA, p = i % AREA;
+        if (g >= kk) continue;
+        const Match m = Matches(pc.matches).m[first + g];
+        const int slice = fixed_slice(pc.fused, m.t);
+        if (slice < 0) continue;
+        const int64_t at = int64_t(slice) * pc.fused.slice_step + int64_t(m.y + p / B) * pc.fused.pitch + m.x + p % B;
+        fixed_add(pc.fused.num, at, weight * (CUBE_AT(i) * kUnscale));
+        if (p == 0) fixed_add(pc.fused.den, at, weight);
+    }
+}

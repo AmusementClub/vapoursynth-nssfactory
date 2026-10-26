@@ -64,11 +64,16 @@ def main():
     parser.add_argument("--cpu-only", default="")
     parser.add_argument("--default-temporal", choices=("legacy", "rolling"), default="legacy")
     parser.add_argument("--rolling-cache", choices=("fixed", "adaptive"), default="fixed")
+    # Filters whose spatial output a backend has and whose temporal output is
+    # still to come: a call the golden accepts with radius > 0 may fail with
+    # "radius > 0 is not available yet"; every other case is checked.
+    parser.add_argument("--pending-temporal", default="")
     args = parser.parse_args()
     ns = args.namespace
     backend_args = [a for a in args.backend_args.split(",") if a]
     expect_missing = {f for f in args.expect_missing.split(",") if f}
     cpu_only = {f for f in args.cpu_only.split(",") if f}
+    pending_temporal = {f for f in args.pending_temporal.split(",") if f}
     if args.write and ns != "nss":
         raise SystemExit("--write only regenerates the CPU golden")
 
@@ -211,10 +216,13 @@ def main():
         for key in sorted(set(golden["functions"]) | set(shared)):
             if golden["functions"].get(key) != shared.get(key):
                 problems.append(f"signature {key}: {golden['functions'].get(key)!r} -> {shared.get(key)!r}")
-    def same(expected, actual):
+    def same(expected, actual, key=""):
         # Errors that name only the plugin ("nss: ...") come from code shared by
         # the backends; a backend may report them under either name.
         if expected == actual:
+            return True
+        if (key.split("|")[0] in pending_temporal and "ok" in (expected or {})
+                and "radius > 0 is not available yet" in (actual or {}).get("error", "")):
             return True
         error = (expected or {}).get("error", "")
         return ns != "nss" and error.startswith("nss: ") and actual == {"error": ns + error[3:]}
@@ -222,7 +230,7 @@ def main():
     if args.default_temporal == "rolling":
         clip = clips["GRAYS"]
         for name in sorted(shared):
-            if name in skipped or "temporal_mode:" not in functions[name]:
+            if name in skipped or name in pending_temporal or "temporal_mode:" not in functions[name]:
                 continue
             try:
                 node = getattr(plugin, name)(core.std.BlankClip(clip, format=vs.RGBS) if name == "MCWNNM" else clip, radius=1)
@@ -237,7 +245,9 @@ def main():
         both = "use only one of rolling_cache_limit and rolling_cache_chunks"
         for key in sorted(cases):
             if both in (golden["cases"].get(key) or {}).get("error", ""):
-                if "ok" not in cases[key]:
+                pending = (key.split("|")[0] in pending_temporal
+                           and "radius > 0 is not available yet" in cases[key].get("error", ""))
+                if "ok" not in cases[key] and not pending:
                     problems.append(f"{key}: adaptive cache arguments rejected: {cases[key]}")
                 cases[key] = golden["cases"][key]  # checked above; not a difference
     # Checked without a device too: the cache arguments fail in the frontend
@@ -250,7 +260,7 @@ def main():
             if "rolling_cache_limit must be at least rolling_cache_chunks" not in str(error):
                 problems.append(f"rolling_cache_limit below rolling_cache_chunks: {error}")
     for key in sorted(set(golden["cases"]) | set(cases)):
-        if not same(golden["cases"].get(key), cases.get(key)):
+        if not same(golden["cases"].get(key), cases.get(key), key):
             problems.append(f"{key}: {golden['cases'].get(key)} -> {cases.get(key)}")
     for line in problems[:40]:
         print(line)

@@ -187,6 +187,7 @@ public:
     void record_upload(VkCommandBuffer commands, int region, std::size_t offset, std::size_t bytes, VkBuffer source,
                        VkDeviceSize source_offset) const;
     VkDeviceAddress address() const noexcept { return device_buffer_.address(); }
+    VkBuffer buffer() const noexcept { return device_buffer_.get(); }
     std::size_t region_bytes() const noexcept { return region_bytes_; }
     int regions() const noexcept { return regions_; }
 

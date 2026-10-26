@@ -1,0 +1,139 @@
+// SPDX-License-Identifier: GPL-2.0-only
+// BM3D, warp kernel: the shapes whose cube fits registers, as nss_cuda's
+// group_warp_kernel<B, G, Wiener, true>. One 32-invocation workgroup (a warp)
+// filters 32 / B groups: lane l serves group l / B with sub-lane j = l % B and
+// holds G * B samples v[p * B + r] (patch p, row r, column j). The transforms
+// along r and p run in registers; the one along the columns runs after a
+// B x B transposition across the group's lanes through shared memory. Sums
+// over a group's lanes are a butterfly (common/warp.glsl, segments of B).
+//
+// Defines: B, G, WIENER (bm3d/common.glsl), WARP_EMULATED.
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_shader_atomic_int64 : require
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_GOOGLE_include_directive : require
+
+#define WARP_L B
+#define WARP_WARPS 1
+#include "common/warp.glsl"
+#include "bm3d/common.glsl"
+
+layout(local_size_x = 32) in;
+
+const int KLANE = G * B;
+const int PER_WARP = 32 / B;
+const int STRIDE = 33;  // one more than the warp: conflict-free both ways
+shared float s_buffer[B * STRIDE];
+#if WIENER
+// The gains from the reference cube, parked while the registers transform the noisy cube.
+shared float s_gains[32 * KLANE];
+#endif
+
+float v[KLANE];
+
+// For every p, transposes the B x B matrix whose columns are the lanes of a
+// group: v[p * B + i] of sub-lane j <-> v[p * B + j] of sub-lane i.
+void transpose_lanes(int lane) {
+    const int sub = lane % B, base = lane - sub;
+    [[unroll]] for (int p = 0; p < G; ++p) {
+        [[unroll]] for (int i = 0; i < B; ++i) s_buffer[i * STRIDE + lane] = v[p * B + i];
+        barrier();
+        [[unroll]] for (int i = 0; i < B; ++i) v[p * B + i] = s_buffer[sub * STRIDE + base + i];
+        barrier();
+    }
+}
+
+void line_b(int p, bool inverse) {
+    float t[B];
+    [[unroll]] for (int k = 0; k < B; ++k) t[k] = v[p * B + k];
+    DCT_LINE(B)(t, inverse);
+    [[unroll]] for (int k = 0; k < B; ++k) v[p * B + k] = t[k];
+}
+
+void line_g(int row, bool inverse) {
+    float t[G];
+    [[unroll]] for (int k = 0; k < G; ++k) t[k] = v[k * B + row];
+    DCT_LINE(G)(t, inverse);
+    [[unroll]] for (int k = 0; k < G; ++k) v[k * B + row] = t[k];
+}
+
+// Loads the lane's column of the group's patches (zero beyond the group's
+// count) and applies the forward transform. Afterwards the lane is the row
+// frequency and the index within a patch the column frequency: the DC
+// coefficient is v[0] of sub-lane 0.
+void forward_lanes(uint64_t table, int first, int kk, int lane) {
+    const int sub = lane % B;
+    [[unroll]] for (int p = 0; p < G; ++p) {
+        const Match m = Matches(pc.matches).m[first + (p < kk ? p : 0)];
+        const uint64_t plane = plane_base(table, m.t);
+        const int at = m.y * pc.pitch + m.x + sub;
+        [[unroll]] for (int row = 0; row < B; ++row) v[p * B + row] = p < kk ? Plane(plane).v[at + row * pc.pitch] : 0.0f;
+    }
+    [[unroll]] for (int p = 0; p < G; ++p) line_b(p, false);    // down the lane's column
+    [[unroll]] for (int row = 0; row < B; ++row) line_g(row, false);  // group axis
+    transpose_lanes(lane);
+    [[unroll]] for (int p = 0; p < G; ++p) line_b(p, false);    // along the row the lane now holds
+}
+
+// Sum over the B lanes of a group (written out: a shift-stepped loop does not
+// unroll in the SPIR-V).
+float group_total_f(float value) {
+    if (B > 1) value += w_xor_f(value, 1);
+    if (B > 2) value += w_xor_f(value, 2);
+    if (B > 4) value += w_xor_f(value, 4);
+    if (B > 8) value += w_xor_f(value, 8);
+    if (B > 16) value += w_xor_f(value, 16);
+    return value;
+}
+
+void main() {
+    const int lane = int(gl_LocalInvocationIndex), sub = lane % B;
+    const int r = w_workgroup() * PER_WARP + lane / B;
+    const bool live = r < pc.batch;
+    const int rr = live ? r : pc.batch - 1;  // idle lanes mirror the last group and add nothing
+    const int first = rr * G;
+    const int kk = min(Counts(pc.counts).c[rr], G);
+    float weight;
+#if WIENER
+    forward_lanes(pc.ref, first, kk, lane);
+    const float sig2 = kScale * kScale * pc.sigma * pc.sigma;
+    precise float w2 = 0.0f;
+    [[unroll]] for (int i = 0; i < KLANE; ++i) {
+        precise float q = v[i] * v[i];
+        const float w = (i == 0 && sub == 0) ? 1.0f : q / (q + sig2);
+        s_gains[lane * KLANE + i] = w;
+        w2 = fma(w, w, w2);
+    }
+    weight = 1.0f / max(group_total_f(w2), 1e-12f);
+    forward_lanes(pc.src, first, kk, lane);
+    [[unroll]] for (int i = 0; i < KLANE; ++i) v[i] *= s_gains[lane * KLANE + i];
+#else
+    forward_lanes(pc.src, first, kk, lane);
+    const float thr = kScale * kHardLambda * pc.sigma;
+    float kept = 0.0f;  // counts below 2^24: exact as a float, and summed by the float butterfly
+    [[unroll]] for (int i = 0; i < KLANE; ++i) {
+        const bool keep = (i == 0 && sub == 0) || !(abs(v[i]) < thr);
+        v[i] = keep ? v[i] : 0.0f;
+        kept += keep ? 1.0f : 0.0f;
+    }
+    weight = 1.0f / max(group_total_f(kept), 1.0f);
+#endif
+    [[unroll]] for (int p = 0; p < G; ++p) line_b(p, true);
+    transpose_lanes(lane);
+    [[unroll]] for (int row = 0; row < B; ++row) line_g(row, true);
+    [[unroll]] for (int p = 0; p < G; ++p) line_b(p, true);
+    if (!live) return;
+    [[unroll]] for (int p = 0; p < G; ++p) {
+        if (p >= kk) continue;
+        const Match m = Matches(pc.matches).m[first + p];
+        const int slice = fixed_slice(pc.fused, m.t);
+        if (slice < 0) continue;
+        const int64_t at = int64_t(slice) * pc.fused.slice_step + int64_t(m.y) * pc.fused.pitch + m.x + sub;
+        [[unroll]] for (int row = 0; row < B; ++row) {
+            fixed_add(pc.fused.num, at + int64_t(row) * pc.fused.pitch, weight * (v[p * B + row] * kUnscale));
+        }
+        if (sub == 0) fixed_add(pc.fused.den, at, weight);
+    }
+}
