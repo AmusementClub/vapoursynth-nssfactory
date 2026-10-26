@@ -115,6 +115,7 @@ struct LsscData : nss::LsscParams {
     int depth = 1;     // buffer sets per slot: 1 to kMaxDepth
     int code_slots = 1;  // coding warps (their u rows in each slot)
     std::vector<float> dct;  // min(kAtoms, m) orthonormal 2D DCT atoms, low frequencies first
+    DeviceBuffer dct_device; // the same on the device, the source of every dictionary's first atoms
     std::unique_ptr<SlotPool<Slot>> pool;
     std::unique_ptr<SlotPool<Staging>> staging;
     // Direct DMA to and from page-locked VS frame planes (vapoursynth-classic).
@@ -192,16 +193,12 @@ void denoise_plane(const LsscData& d, Slot& s, int plane, float sigma, int b) {
         NSS_CUDA_RANGE("lssc.dictionary");
         // DCT atoms first, the rest from LCG-sampled patches.
         const int dct = std::min(w.atoms, w.m);
-        NSS_CUDA_CHECK(cudaMemcpyAsync(w.dict, d.dct.data(), static_cast<std::size_t>(dct) * w.m * sizeof(float),
-                                       cudaMemcpyHostToDevice, side));
-        std::vector<int> sources(std::max(1, w.atoms - dct));
-        unsigned state = kSeed;
-        for (int a = dct; a < w.atoms; ++a) {
-            state = state * 1664525u + 1013904223u;
-            sources[a - dct] = static_cast<int>(state % static_cast<unsigned>(w.np));
-        }
-        NSS_CUDA_CHECK(cudaMemcpyAsync(s.sources[b].get(), sources.data(), sources.size() * sizeof(int),
-                                       cudaMemcpyHostToDevice, side));
+        // From device memory: no host buffer whose lifetime the copies depend
+        // on (a pageable source is neither promised to be captured when
+        // cudaMemcpyAsync returns nor to leave the call asynchronous).
+        NSS_CUDA_CHECK(cudaMemcpyAsync(w.dict, d.dct_device.get(), static_cast<std::size_t>(dct) * w.m * sizeof(float),
+                                       cudaMemcpyDeviceToDevice, side));
+        lssc_lcg_sources(s.sources[b].as<int>(), dct, w.atoms, w.np, kSeed, side);
         lssc_patch_atoms(w, s.sources[b].as<int>(), dct, side);
         if (w.np >= 2) lssc_ksvd(w, side);
         lssc_prepare(w, side);
@@ -420,7 +417,10 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     const int pm = d.block_size * d.block_size, plane_atoms = std::min(kAtoms, std::max(d.max_np, 1));
     const std::size_t base_bytes = 4 * plane_bytes + lssc_work_bytes(pm, d.max_np) +
                                    static_cast<std::size_t>(d.max_np) * OrderedAggregator::kBytesPerPatch + (1u << 16);
-    const std::size_t limit = d.budget ? d.budget->snapshot().limit : SIZE_MAX;
+    // The DCT atoms are one device copy beside the streams.
+    const std::size_t dct_bytes = std::max<std::size_t>(d.dct.size(), 1) * sizeof(float);
+    const std::size_t total = d.budget ? d.budget->snapshot().limit : SIZE_MAX;
+    const std::size_t limit = total == SIZE_MAX ? SIZE_MAX : total > dct_bytes ? total - dct_bytes : 0;
     // Coding warps: one per 32 patches up to the resident ones, halved while
     // a stream would not fit the limit (the output does not change).
     if (d.max_np > 0) {
@@ -465,6 +465,12 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     const std::size_t sets = streams + std::min(std::max(streams, in_flight) - streams, room / full_set);
     {
         DeviceGuard guard(d.device.index);
+        // Synchronous from pageable memory: returns once the source is staged
+        // (CUDA Runtime API, "API synchronization behavior").
+        d.dct_device = DeviceBuffer(dct_bytes, d.budget);
+        if (!d.dct.empty()) {
+            NSS_CUDA_CHECK(cudaMemcpy(d.dct_device.get(), d.dct.data(), d.dct.size() * sizeof(float), cudaMemcpyHostToDevice));
+        }
         std::vector<std::unique_ptr<Slot>> slots;
         std::vector<std::unique_ptr<Staging>> staging;
         if (d.max_np > 0) {

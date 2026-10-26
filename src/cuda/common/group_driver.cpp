@@ -8,6 +8,7 @@
 #include "cuda/runtime/frame_memory.hpp"
 #include "cuda/runtime/memory.hpp"
 #include "cuda/runtime/nvtx.hpp"
+#include "cuda/runtime/pointer_table.hpp"
 #include "cuda/runtime/stream_pool.hpp"
 #include "frontend/contribution.hpp"
 #include "frontend/ownership.hpp"
@@ -1261,14 +1262,14 @@ struct PlaneRun {
             NSS_CUDA_CHECK(cudaStreamWaitEvent(s.stream, r.uploaded[fn % ring].event, 0));
             if (clips == 2) NSS_CUDA_CHECK(cudaStreamWaitEvent(s.stream, r.ref_uploaded[fn % nt].event, 0));
         }
-        // Pageable sources: staged before cudaMemcpyAsync returns, and
-        // stream-ordered after the previous center's kernels.
-        NSS_CUDA_CHECK(cudaMemcpyAsync(s.src_ptrs.get(), sp.data(), nt * sizeof(float*), cudaMemcpyHostToDevice,
-                                       s.stream));
-        if (estimates) {
-            NSS_CUDA_CHECK(cudaMemcpyAsync(s.ref_ptrs.get(), rp.data(), nt * sizeof(float*), cudaMemcpyHostToDevice,
-                                           s.stream));
-        }
+        // Stream-ordered after the previous center's kernels; the values
+        // travel as kernel arguments (runtime/pointer_table.hpp).
+        const auto table = [&](const DeviceBuffer& target, const std::vector<const float*>& values) {
+            std::vector<const void*> v(values.begin(), values.begin() + nt);
+            write_pointer_table(target.get(), v.data(), nt, s.stream);
+        };
+        table(s.src_ptrs, sp);
+        if (estimates) table(s.ref_ptrs, rp);
     }
     // Behind the kernels of `center`: its window's buffers were last read here.
     void mark_read(int center) {

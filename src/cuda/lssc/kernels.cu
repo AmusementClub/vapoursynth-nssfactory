@@ -37,6 +37,15 @@ __global__ void pack_kernel(LsscWork w) {
     w.patches[id] = w.plane[static_cast<long long>(w.grid.y(j) + i / w.block) * w.width + w.grid.x(j) + i % w.block];
 }
 
+// One thread: the LCG is a sequence (at most kAtoms steps).
+__global__ void lcg_sources_kernel(int* sources, int first, int atoms, unsigned np, unsigned seed) {
+    unsigned state = seed;
+    for (int a = first; a < atoms; ++a) {
+        state = state * 1664525u + 1013904223u;
+        sources[a - first] = static_cast<int>(state % np);
+    }
+}
+
 __global__ void patch_atoms_kernel(LsscWork w, const int* sources, int first) {
     const int a = blockIdx.x * blockDim.x + threadIdx.x;
     if (a >= w.atoms) return;
@@ -847,6 +856,12 @@ std::size_t lssc_work_bytes(int m, int np) {
 
 void lssc_pack(const LsscWork& w, cudaStream_t stream) {
     pack_kernel<<<blocks_for(static_cast<long long>(w.np) * w.m), kThreads, 0, stream>>>(w);
+    NSS_CUDA_CHECK_LAUNCH();
+}
+
+void lssc_lcg_sources(int* sources, int first, int atoms, int np, unsigned seed, cudaStream_t stream) {
+    if (first >= atoms || np <= 0) return;
+    lcg_sources_kernel<<<1, 1, 0, stream>>>(sources, first, atoms, static_cast<unsigned>(np), seed);
     NSS_CUDA_CHECK_LAUNCH();
 }
 

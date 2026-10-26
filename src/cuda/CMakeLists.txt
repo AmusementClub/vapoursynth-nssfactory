@@ -83,6 +83,7 @@ set(NSS_CUDA_IEEE_SOURCES
   ncsr/kernels.cu
   nlh/kernels.cu
   nlm/kernels.cu
+  runtime/pointer_table.cu
   runtime/probe.cu
   twsc/kernels.cu
   wnnm/kernels.cu

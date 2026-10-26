@@ -27,6 +27,7 @@
 #include "cuda/runtime/frame_io.hpp"
 #include "cuda/runtime/frame_memory.hpp"
 #include "cuda/runtime/memory.hpp"
+#include "cuda/runtime/pointer_table.hpp"
 #include "cuda/runtime/nvtx.hpp"
 #include "cuda/runtime/stream_pool.hpp"
 #include "frontend/contribution.hpp"
@@ -242,11 +243,12 @@ int geometry_group(const ImageData& d, int first, std::array<bool, 3>& used, std
     return nch;
 }
 
-// Device pointer array from host pointers (pageable source: staged before
-// cudaMemcpyAsync returns, stream-ordered after earlier kernels).
+// Device pointer array from host pointers, stream-ordered after earlier
+// kernels (runtime/pointer_table.hpp: the values travel as kernel arguments).
 template <class T>
 void set_pointers(const DeviceBuffer& buffer, const std::vector<T*>& host, cudaStream_t stream) {
-    NSS_CUDA_CHECK(cudaMemcpyAsync(buffer.get(), host.data(), host.size() * sizeof(T*), cudaMemcpyHostToDevice, stream));
+    std::vector<const void*> values(host.begin(), host.end());
+    write_pointer_table(buffer.get(), values.data(), static_cast<int>(values.size()), stream);
 }
 
 // Matching planes of the window for a geometry: the luma of `luma_source`
