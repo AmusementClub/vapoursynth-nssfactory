@@ -34,6 +34,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -374,10 +375,15 @@ void read_result(const NlmData& d, const DownloadPlane& out, const DirectOut& di
 // that frames in flight, and their charges, stay within the slots the memory
 // plan counts however many VapourSynth threads ask.
 using MakeOutput = std::function<VSFrame*()>;
+struct Held {
+    std::optional<SlotPool<TileSlot>::Lease> tile;
+    std::optional<SlotPool<PlaneSlot>::Lease> plane;
+};
 
 void plane_frame(NlmData& d, const Frames& srcf, const Frames& reff, const MakeOutput& make_output,
-                 const VSAPI* vsapi) {
-    auto lease = d.pool->acquire();
+                 Held& held, const VSAPI* vsapi) {
+    held.plane.emplace(d.pool->acquire());
+    auto& lease = *held.plane;
     VSFrame* dst = make_output();
     const DirectOut direct = direct_out(d, dst, vsapi);
     PlaneSlot& p = *lease;
@@ -567,10 +573,10 @@ private:
 };
 
 void tile_frame(NlmData& d, int n, const Frames& srcf, const Frames& reff, const MakeOutput& make_output,
-                const VSAPI* vsapi) {
-    // The pins outlive the lease: returning it settles the slot (waits for
-    // submitted work), and only then may other requests reuse the cache
-    // frames this frame reads.
+                Held& held, const VSAPI* vsapi) {
+    // The pins outlive the slot's work: the slot settles (waits for its
+    // submitted work, see Settle below) before they go, and only then may
+    // other requests reuse the cache frames this frame reads.
     Window window(d.window, n, d.d, d.vi.numFrames);
     PlaneStore& store = d.window.store;
     // The host writes need no slot. Neither does waiting for the frames other
@@ -590,7 +596,16 @@ void tile_frame(NlmData& d, int n, const Frames& srcf, const Frames& reff, const
     const bool staged = !uploads.empty();
     if (!staged) window.mark_queued(VK_NULL_HANDLE, 0);
     window.wait_queued();
-    auto lease = d.tile_pool->acquire();
+    held.tile.emplace(d.tile_pool->acquire());
+    auto& lease = *held.tile;
+    // The lease outlives this function (it goes once the output frame is
+    // out), the pins do not: on an error the slot settles (waits for its
+    // submitted work) before the pins go and other requests may overwrite
+    // the cache frames it reads. Done already when the frame finished.
+    struct Settle {
+        Slot& slot;
+        ~Settle() { slot.settle(); }
+    } settle{lease->slot};
     VSFrame* dst = make_output();
     const DirectOut direct = direct_out(d, dst, vsapi);
     Slot& slot = lease->slot;
@@ -674,10 +689,11 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
         }
         return dst;
     };
+    Held held;
     if (d->tiles) {
-        tile_frame(*d, n, srcf, reff, make_output, vsapi);
+        tile_frame(*d, n, srcf, reff, make_output, held, vsapi);
     } else {
-        plane_frame(*d, srcf, reff, make_output, vsapi);
+        plane_frame(*d, srcf, reff, make_output, held, vsapi);
     }
     for (int t = 0; t < ntemp; ++t) {
         frames.freeFrame(srcf[t]);
@@ -731,6 +747,11 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     const bool staged = !d->device->rebar();
 
     const std::size_t limit = d->budget ? d->budget->snapshot().limit : SIZE_MAX;
+    std::size_t output_bytes = 0;
+    for (int plane = 0; plane < d->vi.format.numPlanes; ++plane) {
+        const std::size_t row = (static_cast<std::size_t>(nss::plane_width(d->vi, plane)) * sizeof(float) + 63) & ~std::size_t{63};
+        output_bytes += row * static_cast<std::size_t>(nss::plane_height(d->vi, plane));
+    }
     // Tile path: the cache holds a window at least; by default every frame in
     // flight can have its own new frame and one is spare. A limit takes frames
     // in flight first, then the spare cache frames; below a bare window the
@@ -749,7 +770,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     if (weight_sets * span * span * d->plane_bytes > d->device->caps().device_local_bytes / 4) weight_sets = 0;
     auto tile_bytes = [&] {
         return frame_bytes * cached * (staged ? 2 : 1) +
-               d->plane_bytes * slots * (2 * static_cast<std::size_t>(d->nc) + d->vi.format.numPlanes) +
+               d->plane_bytes * slots * 2 * static_cast<std::size_t>(d->nc) + slots * output_bytes +
                d->plane_bytes * weight_sets * span * span;
     };
     const long long shared_maps = tile_floats(d->a, d->s);
@@ -772,7 +793,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         // readback) and the leased output frame.
         const int regions = d->d > 0 ? 3 : 1;
         const std::size_t need = frame_bytes * regions * (staged ? 2 : 1) +
-                                 d->plane_bytes * (2 + (2 + d->nc) + 2 * d->nc + d->vi.format.numPlanes);
+                                 d->plane_bytes * (2 + (2 + d->nc) + 2 * d->nc) + output_bytes;
         if (!d->backend.streams_explicit) {
             d->backend.num_streams = static_cast<int>(std::clamp<std::size_t>(limit / need, 1, kDefaultStreams));
         }
