@@ -71,6 +71,11 @@ set_tests_properties(test_cuda_temporal_rolling PROPERTIES LABELS cuda SKIP_RETU
 add_test(NAME test_cuda_image_rolling
          COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_cuda_image_rolling.py" --cuda "${NSS_CUDA_PLUGIN}")
 set_tests_properties(test_cuda_image_rolling PROPERTIES LABELS cuda SKIP_RETURN_CODE 77)
+# BM4D requests in any order (seeks, shuffles, repeats; at the smallest limit
+# too): no wait cycle, no limit exceeded, bit for bit the sequential render.
+add_test(NAME test_cuda_bm4d_order
+         COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_cuda_bm4d_order.py" --cuda "${NSS_CUDA_PLUGIN}")
+set_tests_properties(test_cuda_bm4d_order PROPERTIES LABELS cuda SKIP_RETURN_CODE 77 TIMEOUT 1800)
 # BM3D final=1 against the two calls it stands for, bit for bit.
 add_test(NAME test_cuda_bm3d_final
          COMMAND ${Python3_EXECUTABLE} "${PROJECT_SOURCE_DIR}/tests/test_bm3d_final.py"
