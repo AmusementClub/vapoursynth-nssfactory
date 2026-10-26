@@ -253,5 +253,6 @@ two each):
 | **VapourSynth R78** (staging): NLM gray / BM3D gray / BM3D YUV420 `radius=1` / LSSC | 10.80 → 9.22 / 7.99 → 6.56 / 17.05 → 14.63 / 10.71 → 2.91 | −0.1% / −0.2% / −0.2% / −0.4% |
 
 The CPU this frees goes to the rest of the script (decoding, encoding, CPU
-filters). The cost is the sleeping thread's wake-up, at most 0.8% of
-throughput where the GPU waits on that thread.
+filters). The cost is the sleeping thread's wake-up where the GPU waits on
+that thread: up to about 1% in the table, more where a frame is mostly waits
+(NLM's plane path at 720p with `a=1`: −2.5% at a third of the CPU).

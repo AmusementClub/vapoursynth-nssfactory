@@ -47,7 +47,14 @@ def digest(frame):
     return h.hexdigest()
 
 
+def reference(core, clip, kw):
+    """Each frame asked for alone, one after another."""
+    out = core.nss_cuda.BM4D(clip, sigma=8, **kw)
+    return [digest(out.get_frame(n)) for n in range(clip.num_frames)]
+
+
 def render(core, clip, order, kw, label):
+    """The digest of every request of `order`, asked for all at once (repeats included)."""
     out = core.nss_cuda.BM4D(clip, sigma=8, **kw)
     futures = [out.get_frame_async(n) for n in order]
     _, pending = wait(futures, timeout=TIMEOUT)
@@ -55,11 +62,11 @@ def render(core, clip, order, kw, label):
         print(f"cuda bm4d order FAIL: {label}: {len(pending)} of {len(order)} requests still waiting after {TIMEOUT} s")
         sys.stdout.flush()
         os._exit(1)  # the stuck requests would block the core's teardown
-    got = {}
+    got = []
     for n, f in zip(order, futures):
         if f.exception() is not None:
             return None, f"frame {n}: {f.exception()}"
-        got.setdefault(n, digest(f.result()))
+        got.append((n, digest(f.result())))
     return got, None
 
 
@@ -92,19 +99,22 @@ def main():
     cases.append(("gray 64x48 x320 smallest limit", limited, {"memory_limit_mb": smallest_limit(core, limited)}))
     for name, clip, kw in cases:
         n = clip.num_frames
-        ref, error = render(core, clip, list(range(n)), kw, f"{name} sequential")
-        if error:
-            print(f"cuda bm4d order FAIL: {name} sequential: {error}")
+        try:
+            ref = reference(core, clip, kw)
+        except vs.Error as error:
+            print(f"cuda bm4d order FAIL: {name} reference: {error}")
             failures += 1
             continue
         chunk_frames = [c * 32 + 8 for c in range((n + 31) // 32) if c * 32 + 8 < n]
         patterns = [(f"chunk seek {s}", random.Random(s).sample(chunk_frames, len(chunk_frames))) for s in range(8)]
         patterns += [(f"shuffle {s}", random.Random(100 + s).sample(range(n), n)) for s in range(2)]
-        patterns += [(f"repeats {s}", [random.Random(200 + s).randrange(n) for _ in range(3 * n)]) for s in range(4)]
+        for s in range(4):
+            rng = random.Random(200 + s)  # one generator per pattern: random frames, each likely asked for again
+            patterns.append((f"repeats {s}", [rng.randrange(n) for _ in range(3 * n)]))
         patterns.append(("reverse", list(range(n - 1, -1, -1))))
         for pname, order in patterns:
             got, error = render(core, clip, order, kw, f"{name} {pname}")
-            wrong = [] if error else [k for k, v in got.items() if v != ref[k]]
+            wrong = [] if error else sorted({k for k, v in got if v != ref[k]})
             if error or wrong:
                 failures += 1
                 print(f"cuda bm4d order FAIL: {name} {pname}: {error or f'{len(wrong)} frames differ, e.g. {wrong[:4]}'}")
