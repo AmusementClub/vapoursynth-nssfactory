@@ -133,6 +133,18 @@ def main():
     check("yuv420 ref", cpu(yuv420, ref=ref, sigma=[10, 7, 7]), vk(yuv420, ref=ref, sigma=[10, 7, 7]),
           vk(yuv420, ref=ref, sigma=[10, 7, 7]))
 
+    # The driver's batches: a few references at a time (the per-batch buffers
+    # reused, the barriers between batches), a device-memory shape, chroma.
+    import os
+    os.environ["NSS_VK_GROUP_BATCH"] = "7"
+    batched = [("batches gray", gray, dict(sigma=10)),
+               ("batches 32 / 64 ref", gray, dict(sigma=10, block_size=32, group_size=64, bm_range=4, final=1)),
+               ("batches chroma final", yuv444, dict(sigma=10, chroma=1, final=1)),
+               ("batches yuv420", yuv420, dict(sigma=[10, 7, 7]))]
+    for label, clip, kw in batched:
+        check(label, cpu(clip, **kw), vk(clip, **kw), vk(clip, **kw), frames=(0, 1))
+    del os.environ["NSS_VK_GROUP_BATCH"]
+
     # Many threads asking for frames at once, against the same frames one at a time.
     long_clip = make_clip(core, vs.GRAYS, 64, 48, 7, length=24)
     node = vk(long_clip, sigma=10, num_streams=2)

@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <optional>
@@ -29,10 +30,11 @@ constexpr int kMaxGroup = 256;
 // Upper bound on a slot's per-batch group buffers; larger planes run in
 // batches, and the batch also shrinks so that the slots fit memory_limit_mb.
 constexpr std::size_t kBatchBytes = 128u << 20;
-// Frames in flight beyond num_streams (as NLM's tile path): each is a slot of
-// its own, so that the host copies of one frame run while the device works on
-// the others. A memory limit takes them first.
-constexpr std::size_t kExtraSlots = 2;
+// Frames in flight beyond num_streams: each is a slot of its own, so that the
+// host copies of one frame run while the device works on another. One paid
+// (1080p BM3D, RTX 5080, both cores: +32-43%), a second did not (+0.4-5% for
+// +83-209 MiB, 2026-10-26). A memory limit takes it first.
+constexpr std::size_t kExtraSlots = 1;
 // Output frames beyond the slots: a request holds an output permit until its
 // frame is returned and gives its slot back before that (as NLM, #103), so
 // one request can finish while another uses its slot. A memory limit takes it
@@ -45,8 +47,8 @@ struct Unit {
     int channels = 1;
 };
 
-// A frame in flight. Every buffer has the frame's layout: plane p at
-// Driver::plane_offset[p] floats (cells for num / den).
+// A frame in flight. The planes have the frame's layout (plane p at
+// Driver::plane_offset[p] floats); the sums hold one unit at a time.
 struct GroupSlot {
     explicit GroupSlot(std::shared_ptr<Device> device) : slot(std::move(device)) {}
     Slot slot;
@@ -56,7 +58,7 @@ struct GroupSlot {
     // Per unit two device addresses: its source and its guide (window slot 0;
     // a spatial window has one frame).
     Buffer tables;
-    Buffer num, den;  // fixed-point sums
+    Buffer num, den;  // fixed-point sums of the unit being filtered (channel c at c * plane floats)
     Buffer rows;      // fixed_finish scratch, one plane
     Buffer out;       // the finished planes
     Buffer readback;  // what the copies did not write into the frame
@@ -70,6 +72,7 @@ struct Driver : GroupFilterConfig {
     std::array<std::size_t, 3> plane_offset{};  // floats
     std::size_t frame_floats = 0;
     std::size_t plane_floats = 0;  // largest plane
+    int unit_channels = 1;         // largest unit
     std::size_t output_bytes = 0;  // an output VSFrame
     bool channel_out[3]{true, true, true};  // shared_match: channel c is written (else copied)
     bool basic_out[3]{true, true, true};    // two_stage: the first stage filters channel c of a unit
@@ -147,8 +150,8 @@ std::size_t slot_fixed_bytes(const Driver& d) {
     // The plan assumes BAR uploads on a ReBAR device; without one the
     // inputs have a staging mirror.
     const std::size_t inputs = frame_bytes * (guide_clip(d) ? 2 : 1) * (d.device->rebar() ? 1 : 2);
-    return inputs + (d.two_stage ? frame_bytes : 0) + d.frame_floats * 8 * 2 + d.plane_floats * 8 + frame_bytes * 2 +
-           4096;
+    const std::size_t cells = d.plane_floats * static_cast<std::size_t>(d.unit_channels);
+    return inputs + (d.two_stage ? frame_bytes : 0) + cells * 8 * 2 + d.plane_floats * 8 + frame_bytes * 2 + 4096;
 }
 
 // The memory plan: num_streams (unless given), the slots and output permits
@@ -160,7 +163,7 @@ void plan(Driver& d) {
     std::size_t min_batch = 0, full_batch = 0;
     for (const GroupPlane* p : stage_planes(d)) {
         const std::size_t refs = static_cast<std::size_t>(p->grid.count());
-        min_batch = std::max(min_batch, std::min<std::size_t>(refs, 1024) * per_ref_bytes(d, *p));
+        min_batch = std::max(min_batch, std::min(kBatchBytes, std::min<std::size_t>(refs, 1024) * per_ref_bytes(d, *p)));
         full_batch = std::max(full_batch, std::min(kBatchBytes, refs * per_ref_bytes(d, *p)));
     }
     // A slot and the output frame of its request.
@@ -188,9 +191,12 @@ void plan(Driver& d) {
     const std::size_t share =
         limit == SIZE_MAX ? SIZE_MAX : (limit - extra_outputs * d.output_bytes) / d.slots - fixed - d.output_bytes;
     const std::size_t budget = std::min(kBatchBytes, share);
+    // NSS_VK_GROUP_BATCH (tests): at most that many references a batch.
+    const char* cap = std::getenv("NSS_VK_GROUP_BATCH");
+    const std::size_t most = cap && std::atoi(cap) > 0 ? static_cast<std::size_t>(std::atoi(cap)) : SIZE_MAX;
     for (GroupPlane* p : stage_planes(d)) {
         const std::size_t fit = std::max<std::size_t>(1, budget / per_ref_bytes(d, *p));
-        p->batch = static_cast<int>(std::min<std::size_t>(fit, static_cast<std::size_t>(p->grid.count())));
+        p->batch = static_cast<int>(std::min({fit, most, static_cast<std::size_t>(p->grid.count())}));
     }
     for (int round = 0; round < 8 && batch_bytes(d) > budget; ++round) {
         const double scale = static_cast<double>(budget) / static_cast<double>(batch_bytes(d));
@@ -221,8 +227,9 @@ std::unique_ptr<GroupSlot> make_slot(Driver& d) {
     const std::size_t frame_bytes = d.frame_floats * sizeof(float);
     s->inputs = PlaneStore(d.device, frame_bytes, guide_clip(d) ? 2 : 1, d.budget);
     if (d.two_stage) s->estimate = Buffer(d.device, frame_bytes, Memory::Device, d.budget);
-    s->num = Buffer(d.device, d.frame_floats * 8, Memory::Device, d.budget);
-    s->den = Buffer(d.device, d.frame_floats * 8, Memory::Device, d.budget);
+    const std::size_t cells = d.plane_floats * static_cast<std::size_t>(d.unit_channels);
+    s->num = Buffer(d.device, cells * 8, Memory::Device, d.budget);
+    s->den = Buffer(d.device, cells * 8, Memory::Device, d.budget);
     s->rows = Buffer(d.device, d.plane_floats * 8, Memory::Device, d.budget);
     s->out = Buffer(d.device, frame_bytes, Memory::Device, d.budget);
     s->readback = Buffer(d.device, frame_bytes, Memory::Readback, d.budget);
@@ -271,16 +278,16 @@ void run_stage(Driver& d, GroupSlot& s, int unit_index, const GroupPlane& p, VkD
                const bool* write) {
     const Unit& u = d.units[static_cast<std::size_t>(unit_index)];
     VkCommandBuffer commands = s.slot.commands(Slot::Compute);
-    const std::size_t first = d.plane_offset[static_cast<std::size_t>(u.first)];
+    // The sums hold one unit; the clear waits for the previous unit's finish.
     const std::size_t cells = p.floats * static_cast<std::size_t>(u.channels);
-    fixed_clear(*d.device, commands, s.num.get(), first * 8, cells * 8);
-    fixed_clear(*d.device, commands, s.den.get(), first * 8, cells * 8);
+    fixed_clear(*d.device, commands, s.num.get(), 0, cells * 8);
+    fixed_clear(*d.device, commands, s.den.get(), 0, cells * 8);
     MatchGeometry geometry{p.width, p.height, p.width, p.block, p.range, p.group};
     geometry.channels = d.shared_match ? 1 : u.channels;
     geometry.channel_step = static_cast<long long>(p.floats);
     FixedTarget fixed{};
-    fixed.num = s.num.address() + first * 8;
-    fixed.den = s.den.address() + first * 8;
+    fixed.num = s.num.address();
+    fixed.den = s.den.address();
     fixed.pitch = p.width;
     fixed.slice_step = static_cast<std::int64_t>(p.floats);
     fixed.channel_step = static_cast<std::int64_t>(p.floats);
@@ -394,20 +401,21 @@ const VSFrame* frame_output(Driver* d, int n, VSFrameContext* ctx, VSCore* core,
         Slot& slot = s.slot;
         // Uploads: a plane of an imported frame is copied from it, the others
         // are written into BAR memory or staging by the host.
-        VkCommandBuffer upload = slot.commands(Slot::Upload);
         const auto put = [&](const VSFrame* frame, int plane, int region) {
             const std::size_t row_bytes = static_cast<std::size_t>(nss::plane_width(d->vi, plane)) * sizeof(float);
             const int height = nss::plane_height(d->vi, plane);
             const std::size_t offset = d->plane_offset[static_cast<std::size_t>(plane)] * sizeof(float);
             const std::uint8_t* data = vsapi->getReadPtr(frame, plane);
             const std::ptrdiff_t stride = vsapi->getStride(frame, plane);
+            // The upload stage only where there are copies (BAR writes need none).
             if (const HostPlane imported = d->frame_memory->pinned(frame, plane, data, stride, row_bytes)) {
                 slot.retain(frame, vsapi);
-                s.inputs.record_upload(upload, region, offset, row_bytes * height, imported.buffer, imported.offset);
+                s.inputs.record_upload(slot.commands(Slot::Upload), region, offset, row_bytes * height, imported.buffer,
+                                       imported.offset);
                 return;
             }
             s.inputs.write(region, offset, data, stride, row_bytes, height, row_bytes);
-            if (s.inputs.needs_copy()) s.inputs.record_upload(upload, region, offset, row_bytes * height);
+            if (s.inputs.needs_copy()) s.inputs.record_upload(slot.commands(Slot::Upload), region, offset, row_bytes * height);
         };
         for (const int plane : planes) {
             put(src, plane, 0);
@@ -486,6 +494,7 @@ void group_filter_install(GroupFilterConfig&& config, VSMap* out, VSCore* core, 
         }
         d->planes[0].active = any;
         d->units.push_back(Unit{0, d->channels});
+        d->unit_channels = d->channels;
     } else {
         for (int plane = 0; plane < d->vi.format.numPlanes; ++plane) d->units.push_back(Unit{plane, 1});
     }

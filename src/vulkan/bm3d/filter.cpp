@@ -36,11 +36,11 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     const nss::Bm3dParams p = nss::frontend::parse_bm3d(vsapi, in, config.vi, ref_vi, "nss_vk");
     // Every argument error first, as nss.BM3D and nss_cuda.BM3D report them.
     if (rolling) (void)nss::frontend::parse_rolling(vsapi, in, p.radius, "BM3D", "nss_vk", kRollingCache);
+    config.backend = parse_backend_args(vsapi, in, "BM3D");
     if (p.radius > 0) {
         throw std::invalid_argument("nss_vk.BM3D: radius > 0 is not available yet (temporal BM3D is "
                                     "docs/vulkan-plan.md V6)");
     }
-    config.backend = parse_backend_args(vsapi, in, "BM3D");
     config.device = acquire_device(config.backend.device_id, "BM3D", core, vsapi);
     for (int plane = 0; plane < config.vi.format.numPlanes; ++plane) {
         GroupPlane& g = config.planes[plane];

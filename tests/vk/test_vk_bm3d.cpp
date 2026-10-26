@@ -182,21 +182,28 @@ void run_case(const std::shared_ptr<Device>& device, Bm3dKernels& kernels, const
         for (int i = 0; i < n; ++i) matches[static_cast<std::size_t>(r) * c.group + i] = DeviceMatch{m[i].x, m[i].y, 0, m[i].dist};
     }
     const std::vector<float> want = cpu_result(c, src, ref, cpu_matches, sigma);
-    std::vector<float> got[2];
-    for (int emulated = 0; emulated < 2; ++emulated) {
+    // Native, emulated (the same pipeline for the block kernel), and native in
+    // rows of three workgroups.
+    std::vector<float> got[3];
+    for (int pass = 0; pass < 3; ++pass) {
+        const int emulated = pass == 1;
         kernels.force_emulation(emulated != 0);
+        kernels.limit_groups_x(pass == 2 ? 3 : 65535);
         // Batches that do not divide the grid (the warp kernel's idle lanes).
         const char* batch = std::getenv("NSS_VK_TEST_BATCH");
-        got[emulated] = gpu_result(device, kernels, aggregator, c, src, ref, matches, counts, batch ? std::atoi(batch) : 37,
+        got[pass] = gpu_result(device, kernels, aggregator, c, src, ref, matches, counts, batch ? std::atoi(batch) : 37,
                                    sigma);
     }
     kernels.force_emulation(false);
+    kernels.limit_groups_x(65535);
     CHECK(got[0] == got[1], "%s: native and emulated layers differ", label);
+    CHECK(got[0] == got[2], "%s: the dispatch in rows differs", label);
     const double db = psnr(want, got[0]);
     double worst = 0.0;
     for (std::size_t i = 0; i < want.size(); ++i) worst = std::max(worst, std::fabs(static_cast<double>(want[i]) - got[0][i]));
     CHECK(db >= 75.0, "%s: PSNR against the CPU %.1f dB (max abs %.3g)", label, db, worst);
-    std::printf("%-34s PSNR %6.1f dB, max abs %.3g\n", label, db, worst);
+    std::printf("%-34s %-5s PSNR %6.1f dB, max abs %.3g\n", label,
+                Bm3dKernels::warp_kernel(c.block, c.group, c.wiener) ? "warp" : "block", db, worst);
 }
 
 }  // namespace

@@ -54,6 +54,11 @@ public:
     void filter(VkCommandBuffer commands, const Bm3dGroupArgs& args);
     // Tests: the emulated warp layer on any device.
     void force_emulation(bool on) noexcept { force_emulation_ = on; }
+    // Tests: rows of at most `x` workgroups (default 65535), so that small
+    // batches take the multi-row dispatch.
+    void limit_groups_x(std::uint32_t x) noexcept { max_groups_x_ = x; }
+    // Whether the warp kernel (else the block kernel) serves a shape and stage.
+    static bool warp_kernel(int block, int group, bool wiener);
     const Device& device() const noexcept { return *device_; }
 
 private:
@@ -61,6 +66,7 @@ private:
 
     std::shared_ptr<Device> device_;
     bool force_emulation_ = false;
+    std::uint32_t max_groups_x_ = 65535;  // the smallest maxComputeWorkGroupCount Vulkan allows
     std::mutex mutex_;
     std::map<std::string, Pipeline> pipelines_;
 };

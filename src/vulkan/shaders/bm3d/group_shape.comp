@@ -14,6 +14,9 @@
 #extension GL_EXT_control_flow_attributes : require
 #extension GL_GOOGLE_include_directive : require
 
+#if !defined(B) || !defined(G) || !defined(WIENER)
+#error B, G and WIENER must be defined
+#endif
 #include "bm3d/common.glsl"
 
 // Macros, not const ints: IN_SHARED below is a preprocessor test (where a
@@ -27,9 +30,6 @@ layout(local_size_x = THREADS) in;
 // nss_cuda's kCubeSharedBytes: larger cubes stay in device memory.
 #define CUBE_FLOATS (CUBE * (WIENER + 1))
 #define IN_SHARED (CUBE_FLOATS * 4 <= 24 * 1024)
-#if !defined(B) || !defined(G) || !defined(WIENER)
-#error B, G and WIENER must be defined
-#endif
 #if IN_SHARED
 shared float s_cube[CUBE_FLOATS];
 #define CUBE_AT(i) s_cube[(i)]

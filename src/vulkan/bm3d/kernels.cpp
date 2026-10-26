@@ -40,9 +40,9 @@ std::size_t cube_bytes(int block, int group, bool wiener) {
     return static_cast<std::size_t>(group) * block * block * sizeof(float) * (wiener ? 2 : 1);
 }
 
-constexpr std::uint32_t kMaxGroupsX = 65535;
-
 }  // namespace
+
+bool Bm3dKernels::warp_kernel(int block, int group, bool wiener) { return warp_serves(block, group, wiener); }
 
 std::size_t bm3d_scratch_floats(int block, int group, bool wiener) {
     if (warp_serves(block, group, wiener) || cube_bytes(block, group, wiener) <= kCubeSharedBytes) return 0;
@@ -99,7 +99,7 @@ void Bm3dKernels::filter(VkCommandBuffer commands, const Bm3dGroupArgs& a) {
     // Warp kernel: 32 / block groups a workgroup; block kernel: one.
     const std::uint32_t per = warp ? static_cast<std::uint32_t>(32 / a.block) : 1u;
     const std::uint32_t groups = (static_cast<std::uint32_t>(a.batch) + per - 1) / per;
-    const std::uint32_t x = std::min(groups, kMaxGroupsX);
+    const std::uint32_t x = std::min(groups, max_groups_x_);
     p.dispatch(commands, &push, x, (groups + x - 1) / x);
 }
 
