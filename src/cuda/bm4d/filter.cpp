@@ -172,6 +172,15 @@ std::shared_ptr<ChunkStore> compute_chunk(Bm4dData* d, int first, int count, int
     Bm4dData::Slot& sl = d->slots[(first / nss::kBm4dChunk) & 1];
     std::lock_guard<std::mutex> slot_lock(sl.mu);
     cudaStream_t io = *sl.stream;
+    // On an error the uploads must not outlive the frames (direct DMA reads
+    // them) or the slot: the caller frees the frames when this throws.
+    struct Drain {
+        cudaStream_t stream;
+        bool armed = true;
+        ~Drain() {
+            if (armed) cudaStreamSynchronize(stream);
+        }
+    } drain{io};
     auto* staging = sl.staging.as<std::uint8_t>();
     for (int plane = 0; plane < d->vi.format.numPlanes; ++plane) {
         const int pw = nss::plane_width(d->vi, plane), ph = nss::plane_height(d->vi, plane);
@@ -241,6 +250,7 @@ std::shared_ptr<ChunkStore> compute_chunk(Bm4dData* d, int first, int count, int
             }
         }
     }
+    drain.armed = false;
     return store;
 }
 

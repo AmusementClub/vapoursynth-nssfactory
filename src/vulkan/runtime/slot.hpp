@@ -70,6 +70,13 @@ public:
     // (bounded), drops commands that were recorded but not submitted.
     void settle() noexcept;
 
+    // Keeps f referenced until this frame's submitted work is done: the work
+    // reads or writes its memory (frames imported for direct I/O). The
+    // references go once wait() or settle() saw the work finish. After a
+    // failed wait they are leaked with the slot's objects, so that
+    // VapourSynth never reuses memory the device may still access.
+    void retain(const VSFrame* f, const VSAPI* vsapi);
+
 private:
     enum class State { idle, recording, pending, broken };
     struct StageCommands {
@@ -82,6 +89,7 @@ private:
     };
 
     void release() noexcept;
+    void release_frames() noexcept;
     void submit_stage(StageCommands& stage);
     void wait_or_throw();
     VkResult wait_timeline() noexcept;
@@ -99,6 +107,7 @@ private:
     std::uint32_t query_count_ = 0;
     std::vector<int> marked_;  // per query: the stage that wrote it, -1 = none
     std::vector<double> times_;
+    std::vector<std::pair<const VSFrame*, const VSAPI*>> retained_;
 };
 
 // num_streams slots per filter instance; getFrame leases one for the whole

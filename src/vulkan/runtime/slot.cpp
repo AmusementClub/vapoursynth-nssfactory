@@ -49,7 +49,19 @@ Slot::Slot(std::shared_ptr<Device> device, std::uint32_t timestamps) : device_(s
 
 Slot::~Slot() {
     settle();
+    release_frames();  // nothing after a failed wait (see retain)
     release();
+}
+
+void Slot::retain(const VSFrame* f, const VSAPI* vsapi) {
+    retained_.emplace_back(vsapi->addFrameRef(f), vsapi);
+}
+
+void Slot::release_frames() noexcept {
+    // A broken slot's work may still run on a poisoned device: its frames stay.
+    if (state_ == State::broken || device_->poisoned()) return;
+    for (const auto& [frame, vsapi] : retained_) vsapi->freeFrame(frame);
+    retained_.clear();
 }
 
 void Slot::release() noexcept {
@@ -219,6 +231,7 @@ void Slot::wait() {
     }
     reset_commands();
     state_ = State::idle;
+    release_frames();
 }
 
 void Slot::wait_or_throw() {
@@ -245,6 +258,7 @@ void Slot::settle() noexcept {
         marked_.assign(query_count_, -1);
     }
     state_ = State::idle;
+    release_frames();
 }
 
 void Slot::read_timestamps() noexcept {
