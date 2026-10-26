@@ -33,9 +33,10 @@ class Stream {
 public:
     Stream() {
         NSS_CUDA_CHECK(cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking));
-        if (cudaEventCreateWithFlags(&done_, kHostWaitEvent) != cudaSuccess) {
-            cudaStreamDestroy(stream_);
-            NSS_CUDA_CHECK(cudaGetLastError());
+        const cudaError_t error = cudaEventCreateWithFlags(&done_, kHostWaitEvent);
+        if (error != cudaSuccess) {
+            cudaStreamDestroy(stream_);  // the destructor does not run for a constructor that throws
+            NSS_CUDA_CHECK(error);
         }
     }
     Stream(const Stream&) = delete;
