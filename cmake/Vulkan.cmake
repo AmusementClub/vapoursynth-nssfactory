@@ -146,7 +146,7 @@ function(nss_vk_add_shader out_var id source)
     OUTPUT "${raw}"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${dir}"
     COMMAND ${NSS_VK_GLSLANG_COMMAND} -V --target-env vulkan1.3 -S comp
-            "-I${CMAKE_CURRENT_SOURCE_DIR}/shaders" ${defines}
+            "-I${CMAKE_CURRENT_SOURCE_DIR}/shaders" "-I${CMAKE_CURRENT_BINARY_DIR}/shaders_gen" ${defines}
             --depfile "${raw}.d" -o "${raw}" "${src}"
     DEPENDS "${src}" ${NSS_VK_GLSLANG_DEPENDS}
     DEPFILE "${raw}.d"

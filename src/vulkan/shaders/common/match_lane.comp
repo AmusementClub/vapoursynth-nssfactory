@@ -46,6 +46,7 @@ layout(push_constant) uniform Push {
     int nx, step, max_x, max_y;  // raster grid
     int ref_begin, ref_count;
     int t0, radius, ntemp, valid_begin, valid_end, ps_num, ps_range;  // predictive
+    int block, channels;   // match_block.comp's (B and C here)
 } pc;
 
 // Lanes that total one candidate, block columns a lane owns, and candidates

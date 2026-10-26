@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // Device block matching for the patch-group filters (docs/vulkan-plan.md V3):
-// the lane kernels of shaders/common/match_lane.comp, with nss_cuda's
+// the lane kernels of shaders/common/match_lane.comp and, for the searches
+// they do not take, the block fallback of match_block.comp, with nss_cuda's
 // semantics (src/cuda/common/match.hpp: reference first, then (finite,
 // distance, t, y, x); distances summed per lane then across lanes, so near
 // ties may resolve differently from the CPU). Geometry is gpuhost's.
@@ -52,9 +53,13 @@ class Matcher {
 public:
     explicit Matcher(std::shared_ptr<Device> device) : device_(std::move(device)) {}
 
-    // Whether this build has kernels for the search (lane kernels: blocks 1,
-    // 2, 4, 8, 12, 16, 32, one channel, groups up to 33 incl. the reference).
+    // Whether this build has kernels for the search: the lane kernels
+    // (lane_group: blocks 1-16 and 32 for one channel, 1-8 for three, groups
+    // up to 33 incl. the reference), else the block fallback (1 to 3
+    // channels, any block, groups and ps_num up to 256).
     bool supports(const MatchGeometry& g, int ps_num) const;
+    // Whether the lane kernels serve the search (else the block fallback).
+    bool lanes(const MatchGeometry& g, int ps_num) const;
     // Creates the pipeline a search will use (at filter creation).
     void prepare(const MatchGeometry& g, bool predictive, int ps_num);
 
@@ -66,13 +71,16 @@ public:
     void predictive(VkCommandBuffer commands, const MatchGeometry& g, const TemporalWindow& window,
                     const RasterGrid& grid, int ref_begin, int ref_count, VkDeviceAddress matches,
                     VkDeviceAddress counts);
-    // Whether a search of this shape runs on the emulated warp layer here (D23).
+    // Whether a search of this shape runs on the emulated warp layer here (D23;
+    // never the block fallback, which has no subgroup operations).
     bool emulated(const MatchGeometry& g, int ps_num) const;
     // Tests: the emulated layer on any device (it gives the native bits).
     void force_emulation(bool on) noexcept { force_emulation_ = on; }
 
 private:
     const Pipeline& pipeline(const MatchGeometry& g, bool predictive, int ps_num);
+    void dispatch(VkCommandBuffer commands, const MatchGeometry& g, bool predictive, int ps_num, const void* push,
+                  int ref_count);
 
     std::shared_ptr<Device> device_;
     bool force_emulation_ = false;

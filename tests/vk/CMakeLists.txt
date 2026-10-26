@@ -45,6 +45,16 @@ if(TARGET nss_cpu)
   set_tests_properties(test_vk_match PROPERTIES LABELS vk SKIP_RETURN_CODE 77)
 endif()
 
+# DCT lines and fixed-point aggregation against the CPU and host models (V3;
+# needs the CPU tree).
+if(TARGET nss_cpu)
+  add_executable(test_vk_aggregate test_vk_aggregate.cpp)
+  target_link_libraries(test_vk_aggregate PRIVATE nss_vk_core nss_cpu)
+  target_include_directories(test_vk_aggregate PRIVATE "${PROJECT_SOURCE_DIR}/include" "${PROJECT_SOURCE_DIR}/src")
+  add_test(NAME test_vk_aggregate COMMAND test_vk_aggregate)
+  set_tests_properties(test_vk_aggregate PROPERTIES LABELS vk SKIP_RETURN_CODE 77)
+endif()
+
 # Queue-layout throughput (D28), run by hand on a device; not a test.
 add_executable(bench_vk_queues bench_vk_queues.cpp)
 target_link_libraries(bench_vk_queues PRIVATE nss_vk_core)

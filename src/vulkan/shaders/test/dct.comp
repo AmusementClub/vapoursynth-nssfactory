@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: GPL-2.0-only
+// common/dct.glsl test (tests/vk/test_vk_aggregate.cpp): one invocation
+// transforms one line of N contiguous floats with dct_line<N>.
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_GOOGLE_include_directive : require
+
+#include "common/dct.glsl"
+
+layout(local_size_x = 64) in;
+layout(buffer_reference, std430, buffer_reference_align = 4) buffer Lines { float v[]; };
+
+layout(push_constant) uniform Push {
+    uint64_t src;
+    uint64_t dst;
+    int lines;
+    int inverse;
+} pc;
+
+#define NSS_CAT(a, b) a##b
+#define NSS_LINE(n) NSS_CAT(dct_line, n)
+
+void main() {
+    const int line = int(gl_GlobalInvocationID.x);
+    if (line >= pc.lines) return;
+    float v[N];
+    [[unroll]] for (int k = 0; k < N; ++k) v[k] = Lines(pc.src).v[line * N + k];
+    NSS_LINE(N)(v, pc.inverse != 0);
+    [[unroll]] for (int k = 0; k < N; ++k) Lines(pc.dst).v[line * N + k] = v[k];
+}
