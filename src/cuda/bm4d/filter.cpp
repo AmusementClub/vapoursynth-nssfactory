@@ -115,8 +115,9 @@ struct Bm4dData : nss::Bm4dParams {
     // its frame is copied out (its store, which may leave the cache before
     // then), and a request holds an output permit, taken once it holds its
     // chunk, until its frame is copied out (an output frame): the memory plan
-    // counts kComputers stores and kOutputs frames. A finished chunk's requests copy their
-    // frames out together: with two output permits 1080p gray ran 10% slower.
+    // counts kComputers stores and kOutputs frames. A finished chunk's
+    // requests copy their frames out together: with two output permits 1080p
+    // gray ran 10% slower.
     static constexpr int kComputers = 2, kOutputs = 8;
     struct Permit {};
     std::unique_ptr<SlotPool<Permit>> computers, permits;
@@ -316,32 +317,46 @@ const VSFrame* getFrame(int n, int activation, void* instance, void** frame_data
         // its own chunk); its frames were asked for above
         std::vector<const VSFrame*> next;
         for (int i = nv0; i < nv1; ++i) next.push_back(vsapi->getFrameFilter(i, d->node, ctx));
-        std::lock_guard<std::mutex> launch(d->prefetch_mu);
-        std::erase_if(d->prefetchers, [](Bm4dData::Prefetcher& p) {
-            if (!p.done->load()) return false;
-            p.thread.join();  // it has finished its work and is returning
-            return true;
-        });
-        auto done = std::make_shared<std::atomic<bool>>(false);
-        std::thread thread([d, nfirst, ncount, nv0, nv1, next, vsapi, done]() {
-            std::shared_ptr<ChunkStore> store;
+        bool started = false;
+        {
+            std::lock_guard<std::mutex> launch(d->prefetch_mu);
+            std::erase_if(d->prefetchers, [](Bm4dData::Prefetcher& p) {
+                if (!p.done->load()) return false;
+                p.thread.join();  // it has finished its work and is returning
+                return true;
+            });
             try {
-                DeviceGuard guard(d->device.index);
-                nss::ResourceScope scope(d->budget);
-                store = compute_chunk(d, nfirst, ncount, nv0, nv1, next, vsapi);
+                d->prefetchers.reserve(d->prefetchers.size() + 1);  // the push_back below cannot throw
+                auto done = std::make_shared<std::atomic<bool>>(false);
+                std::thread thread([d, nfirst, ncount, nv0, nv1, next, vsapi, done]() {
+                    std::shared_ptr<ChunkStore> store;
+                    try {
+                        DeviceGuard guard(d->device.index);
+                        nss::ResourceScope scope(d->budget);
+                        store = compute_chunk(d, nfirst, ncount, nv0, nv1, next, vsapi);
+                    } catch (...) {
+                        store.reset();  // asked for again, the chunk is computed in place and reports the error
+                    }
+                    for (const VSFrame* f : next) vsapi->freeFrame(f);
+                    finish_chunk(d, nfirst, std::move(store));
+                    --d->prefetching;
+                    done->store(true);
+                });
+                d->prefetchers.push_back(Bm4dData::Prefetcher{std::move(thread), std::move(done)});
+                started = true;
             } catch (...) {
-                store.reset();  // asked for again, the chunk is computed in place and reports the error
             }
+        }
+        if (!started) {  // no thread: the claim goes back, and the chunk is computed in place when asked for
             for (const VSFrame* f : next) vsapi->freeFrame(f);
-            finish_chunk(d, nfirst, std::move(store));
+            finish_chunk(d, nfirst, nullptr);
             --d->prefetching;
-            done->store(true);
-        });
-        d->prefetchers.push_back(Bm4dData::Prefetcher{std::move(thread), std::move(done)});
+        }
     }
-    // Declared before the chunk: given back once the request no longer holds it.
+    // Declared before the chunk: given back once the request no longer holds
+    // it, so that the store stays counted (a permit's, or the cache's for a
+    // hit) for as long as it lives.
     std::optional<SlotPool<Bm4dData::Permit>::Lease> compute;
-    std::shared_ptr<const ChunkStore> result;
     // A hit reads its entry until the frame is out; the cache keeps it meanwhile.
     struct Hit {
         Bm4dData* d;
@@ -356,6 +371,7 @@ const VSFrame* getFrame(int n, int activation, void* instance, void** frame_data
             d->computed.notify_all();
         }
     } hit{d, {}};
+    std::shared_ptr<const ChunkStore> result;
     {
         std::unique_lock<std::mutex> lock(d->mu);
         for (;;) {
