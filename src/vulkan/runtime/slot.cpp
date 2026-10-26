@@ -54,6 +54,7 @@ Slot::~Slot() {
 }
 
 void Slot::retain(const VSFrame* f, const VSAPI* vsapi) {
+    retained_.reserve(retained_.size() + 1);  // may throw: before the reference is taken
     retained_.emplace_back(vsapi->addFrameRef(f), vsapi);
 }
 
@@ -249,6 +250,10 @@ void Slot::wait_or_throw() {
 
 void Slot::settle() noexcept {
     if (state_ == State::broken) return;
+    if (state_ == State::idle && query_count_ == 0) {  // wait() has reset the commands
+        release_frames();
+        return;
+    }
     if (state_ == State::pending && wait_timeline() != VK_SUCCESS) {
         fail();
         return;

@@ -13,15 +13,29 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <new>
 #include <stdexcept>
 #include <string>
+
+// The next C++ allocation fails when set (retain() under memory pressure).
+static bool fail_next_allocation = false;
+void* operator new(std::size_t bytes) {
+    if (fail_next_allocation) {
+        fail_next_allocation = false;
+        throw std::bad_alloc();
+    }
+    if (void* p = std::malloc(bytes ? bytes : 1)) return p;
+    throw std::bad_alloc();
+}
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t) noexcept { std::free(p); }
 
 namespace {
 
 using namespace nss_vk;
 
 int failures = 0;
-int freed = 0;
+int added = 0, freed = 0;
 
 void expect(bool condition, const std::string& what) {
     if (!condition) {
@@ -30,7 +44,10 @@ void expect(bool condition, const std::string& what) {
     }
 }
 
-const VSFrame* VS_CC add_ref(const VSFrame* f) noexcept { return f; }
+const VSFrame* VS_CC add_ref(const VSFrame* f) noexcept {
+    ++added;
+    return f;
+}
 void VS_CC free_frame(const VSFrame*) noexcept { ++freed; }
 
 void record_fill(Slot& slot, const Buffer& buffer, Slot::Stage stage) {
@@ -60,6 +77,21 @@ int main() {
     api.freeFrame = free_frame;
     const auto* frame = reinterpret_cast<const VSFrame*>(&api);  // any pointer: the fake API never reads it
     Buffer target(device, 4096, Memory::Device);
+
+    {
+        Slot slot(device);
+        bool threw = false;
+        fail_next_allocation = true;  // the slot's first retain allocates its list
+        try {
+            slot.retain(frame, &api);
+        } catch (const std::bad_alloc&) {
+            threw = true;
+        }
+        fail_next_allocation = false;
+        expect(threw && added == freed, "a retain that cannot store its reference takes none (added " +
+                                            std::to_string(added) + ", freed " + std::to_string(freed) + ")");
+    }
+    added = freed = 0;
 
     {
         Slot slot(device);

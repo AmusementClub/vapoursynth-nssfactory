@@ -59,6 +59,12 @@ constexpr int kTileFixedS = 8;
 // frame in flight is a Slot of its own (command buffers, timeline, readback):
 // the tile path has num_streams + 2 slots, the plane path num_streams.
 constexpr std::size_t kTileExtraSlots = 2;
+// Output frames beyond the slots: a request holds an output permit until its
+// frame is returned, and gives its slot back before that (holding the slot
+// until then cost RGB 1080p d=1 3.5% with three slots), so one request can
+// finish while another uses its slot. A memory limit takes it first (one
+// permit per slot still works, without the overlap).
+constexpr std::size_t kExtraOutputs = 1;
 
 constexpr int map_pitch(int floats) { return (floats + 3) & ~3; }
 // Shared floats of a tile: distance map, row sums, weights (nss_cuda tile_floats).
@@ -269,6 +275,11 @@ struct NlmData : nss::NlmParams {
     // Plane path.
     Pipeline hsum, accumulate, reset, finish;
     std::unique_ptr<SlotPool<PlaneSlot>> pool;
+    // Output frames in flight (slots + kExtraOutputs, see Held).
+    struct OutputPermit {
+        void settle() noexcept {}
+    };
+    std::unique_ptr<SlotPool<OutputPermit>> outputs;
     // Last: destroyed first, so that its imports go before the device can.
     std::unique_ptr<FrameMemory> frame_memory;
 };
@@ -371,19 +382,22 @@ void read_result(const NlmData& d, const DownloadPlane& out, const DirectOut& di
     }
 }
 
-// The output frame is made once the request holds its slot (make_output), so
-// that frames in flight, and their charges, stay within the slots the memory
-// plan counts however many VapourSynth threads ask.
+// The output frame is made once the request holds its slot and an output
+// permit (make_output). The permit is held until getFrame() has handed the
+// frame back (FrameScope::keep uncharges it), so that output frames, and their
+// charges, stay within what the memory plan counts however many VapourSynth
+// threads ask; the slot goes back when its work is done. The permit is taken
+// after the slot: a request holding a slot waits only for permits of requests
+// that are handing their frame back.
 using MakeOutput = std::function<VSFrame*()>;
 struct Held {
-    std::optional<SlotPool<TileSlot>::Lease> tile;
-    std::optional<SlotPool<PlaneSlot>::Lease> plane;
+    std::optional<SlotPool<NlmData::OutputPermit>::Lease> output;
 };
 
 void plane_frame(NlmData& d, const Frames& srcf, const Frames& reff, const MakeOutput& make_output,
                  Held& held, const VSAPI* vsapi) {
-    held.plane.emplace(d.pool->acquire());
-    auto& lease = *held.plane;
+    auto lease = d.pool->acquire();
+    held.output.emplace(d.outputs->acquire());
     VSFrame* dst = make_output();
     const DirectOut direct = direct_out(d, dst, vsapi);
     PlaneSlot& p = *lease;
@@ -574,9 +588,9 @@ private:
 
 void tile_frame(NlmData& d, int n, const Frames& srcf, const Frames& reff, const MakeOutput& make_output,
                 Held& held, const VSAPI* vsapi) {
-    // The pins outlive the slot's work: the slot settles (waits for its
-    // submitted work, see Settle below) before they go, and only then may
-    // other requests reuse the cache frames this frame reads.
+    // The pins outlive the lease: returning it settles the slot (waits for
+    // submitted work), and only then may other requests reuse the cache
+    // frames this frame reads.
     Window window(d.window, n, d.d, d.vi.numFrames);
     PlaneStore& store = d.window.store;
     // The host writes need no slot. Neither does waiting for the frames other
@@ -596,16 +610,8 @@ void tile_frame(NlmData& d, int n, const Frames& srcf, const Frames& reff, const
     const bool staged = !uploads.empty();
     if (!staged) window.mark_queued(VK_NULL_HANDLE, 0);
     window.wait_queued();
-    held.tile.emplace(d.tile_pool->acquire());
-    auto& lease = *held.tile;
-    // The lease outlives this function (it goes once the output frame is
-    // out), the pins do not: on an error the slot settles (waits for its
-    // submitted work) before the pins go and other requests may overwrite
-    // the cache frames it reads. Done already when the frame finished.
-    struct Settle {
-        Slot& slot;
-        ~Settle() { slot.settle(); }
-    } settle{lease->slot};
+    auto lease = d.tile_pool->acquire();
+    held.output.emplace(d.outputs->acquire());
     VSFrame* dst = make_output();
     const DirectOut direct = direct_out(d, dst, vsapi);
     Slot& slot = lease->slot;
@@ -711,6 +717,12 @@ std::vector<std::uint32_t> constants(const NlmData& d) {
             static_cast<std::uint32_t>(d.nc)};
 }
 
+std::unique_ptr<SlotPool<NlmData::OutputPermit>> output_permits(std::size_t count) {
+    std::vector<std::unique_ptr<NlmData::OutputPermit>> permits;
+    for (std::size_t i = 0; i < count; ++i) permits.push_back(std::make_unique<NlmData::OutputPermit>());
+    return std::make_unique<SlotPool<NlmData::OutputPermit>>(std::move(permits));
+}
+
 void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI* vsapi) {
     // Same validation order and text as nss.NLM.
     auto d = std::make_unique<NlmData>();
@@ -767,10 +779,11 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     // quarter of the device (nss_cuda).
     const std::size_t span = static_cast<std::size_t>(2 * d->a + 1);
     std::size_t weight_sets = d->d == 1 ? streams + 1 : 0;
+    std::size_t extra_outputs = kExtraOutputs;
     if (weight_sets * span * span * d->plane_bytes > d->device->caps().device_local_bytes / 4) weight_sets = 0;
     auto tile_bytes = [&] {
         return frame_bytes * cached * (staged ? 2 : 1) +
-               d->plane_bytes * slots * 2 * static_cast<std::size_t>(d->nc) + slots * output_bytes +
+               d->plane_bytes * slots * 2 * static_cast<std::size_t>(d->nc) + (slots + extra_outputs) * output_bytes +
                d->plane_bytes * weight_sets * span * span;
     };
     const long long shared_maps = tile_floats(d->a, d->s);
@@ -783,6 +796,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
                frame_bytes / sizeof(float) * (window + slots + 1) < (1ull << 32);
     if (d->tiles) {
         cached = window + slots;
+        if (tile_bytes() > limit) extra_outputs = 0;
         if (tile_bytes() > limit) weight_sets = 0;
         while (tile_bytes() > limit && slots > streams) cached = window + --slots;
         while (tile_bytes() > limit && cached > window) --cached;
@@ -790,18 +804,22 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     }
     if (!d->tiles) {
         // Per slot: three frames (with staging), row sums, sums, output (with
-        // readback) and the leased output frame.
+        // readback) and an output frame; kExtraOutputs output frames besides
+        // where they fit.
         const int regions = d->d > 0 ? 3 : 1;
+        extra_outputs = kExtraOutputs;  // whatever the tile path's plan gave up
         const std::size_t need = frame_bytes * regions * (staged ? 2 : 1) +
                                  d->plane_bytes * (2 + (2 + d->nc) + 2 * d->nc) + output_bytes;
         if (!d->backend.streams_explicit) {
             d->backend.num_streams = static_cast<int>(std::clamp<std::size_t>(limit / need, 1, kDefaultStreams));
         }
+        const std::size_t streams_need = need * static_cast<std::size_t>(d->backend.num_streams);
         if (limit / static_cast<std::size_t>(d->backend.num_streams) < need) {
             throw std::invalid_argument("nss_vk.NLM: memory_limit_mb is too small for this clip: each of the " +
                                         std::to_string(d->backend.num_streams) + " stream(s) needs at least " +
                                         std::to_string((need >> 20) + 1) + " MiB");
         }
+        if (limit - streams_need < kExtraOutputs * output_bytes) extra_outputs = 0;
     }
 
     if (d->tiles) {
@@ -823,6 +841,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
             leases.push_back(std::make_unique<TileSlot>(d->device, row_bytes, d->height * d->nc, d->budget));
         }
         d->tile_pool = std::make_unique<SlotPool<TileSlot>>(std::move(leases));
+        d->outputs = output_permits(slots + extra_outputs);
         // The maps only save work: a device without room for them runs without.
         try {
             for (std::size_t w = 0; w < weight_sets; ++w) {
@@ -844,6 +863,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
                                                          d->nc, d->height, d->budget));
         }
         d->pool = std::make_unique<SlotPool<PlaneSlot>>(std::move(leases));
+        d->outputs = output_permits(static_cast<std::size_t>(d->backend.num_streams) + extra_outputs);
     }
     d->device->save_pipeline_cache();
 
