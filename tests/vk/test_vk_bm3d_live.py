@@ -53,6 +53,10 @@ def frame_planes(node, n=0):
 
 
 def psnr(a, b):
+    # Non-finite planes fail outright: NaN compares false against the floor
+    # and min(worst, nan) keeps worst.
+    if not all(np.all(np.isfinite(x)) and np.all(np.isfinite(y)) for x, y in zip(a, b)):
+        return float("-inf")
     mse = sum(float(np.sum((x - y) ** 2)) for x, y in zip(a, b)) / sum(x.size for x in a)
     return float("inf") if mse == 0 else 10 * np.log10(1 / mse)
 
