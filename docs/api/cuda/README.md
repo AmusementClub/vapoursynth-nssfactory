@@ -227,3 +227,31 @@ frames directly, without the pinned staging copies.
   `NSS_CUDA_DIRECT_IO_MAX_MB` sets the lock cap in MiB, and
   `NSS_CUDA_DIRECT_IO_STATS` prints counts when a core's last instance is freed.
 - Upstream VapourSynth has no such extension: there nothing changes.
+
+### Host waits
+
+A VapourSynth thread that waits for its frame on the GPU sleeps until the GPU
+is done, instead of spinning: every event the host waits for is created with
+`cudaEventBlockingSync`, and stream waits go through such an event. Without
+it `cudaEventSynchronize` spins in the driver whatever the context's
+scheduling flags, so a few threads stayed at 100% CPU for nothing. Events
+that only order streams on the GPU stay without the flag, because recording a
+blocking event costs more.
+
+CPU time per frame, master `c161be3` against this behaviour (1080p, RTX
+5080, a decoder-like source whose own work is in both columns, 30 s runs,
+two each):
+
+| Filter (vapoursynth-classic, direct transfers) | CPU ms/frame | fps |
+|---|---|---|
+| NLM gray `d=0` / RGB `d=1` | 5.10 → 1.85 / 15.75 → 5.55 | −0.2% / −0.6% |
+| BM3D gray / YUV420 `radius=1` / gray `radius=1` legacy | 4.11 → 1.75 / 11.30 → 6.56 / 9.49 → 1.37 | −0.8% / −0.1% / −0.4% |
+| WNNM gray / `radius=1` | 4.12 → 1.75 / 8.19 → 5.44 | −0.7% / −0.2% |
+| NCSR gray / MCWNNM RGB / MCWNNM RGB `radius=1` | 3.74 → 1.13 / 13.94 → 4.57 / 24.30 → 11.01 | −0.7% / −0.2% / 0% |
+| LSSC / DA3D | 10.31 → 1.01 / 68.4 → 1.44 | +0.6% / 0% |
+| TWSC / NLH / BM4D | 17.63 → 17.05 / 33.6 → 21.4 / 46.9 → 33.7 | −0.2% / +0.2% / −0.5% |
+| **VapourSynth R78** (staging): NLM gray / BM3D gray / BM3D YUV420 `radius=1` / LSSC | 10.80 → 9.22 / 7.99 → 6.56 / 17.05 → 14.63 / 10.71 → 2.91 | −0.1% / −0.2% / −0.2% / −0.4% |
+
+The CPU this frees goes to the rest of the script (decoding, encoding, CPU
+filters). The cost is the sleeping thread's wake-up, at most 0.8% of
+throughput where the GPU waits on that thread.

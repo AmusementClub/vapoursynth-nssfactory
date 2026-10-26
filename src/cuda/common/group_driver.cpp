@@ -44,7 +44,7 @@ constexpr std::size_t kChunksPerStream = 3;
 
 struct Event {
     cudaEvent_t event = nullptr;
-    Event() { NSS_CUDA_CHECK(cudaEventCreateWithFlags(&event, cudaEventDisableTiming)); }
+    Event() { NSS_CUDA_CHECK(cudaEventCreateWithFlags(&event, kStreamEvent)); }
     Event(Event&& other) noexcept : event(std::exchange(other.event, nullptr)) {}
     Event(const Event&) = delete;
     Event& operator=(const Event&) = delete;
@@ -579,13 +579,13 @@ std::unique_ptr<Staging> make_staging(const Driver& d) {
     auto staging = std::make_unique<Staging>();
     const std::size_t plane_bytes = d.plane_floats * sizeof(float);
     staging->bytes = PinnedBuffer(d.staging_bytes, d.budget);
-    NSS_CUDA_CHECK(cudaEventCreateWithFlags(&staging->done, cudaEventDisableTiming));
+    NSS_CUDA_CHECK(cudaEventCreateWithFlags(&staging->done, kHostWaitEvent));
     if (d.mode == GroupMode::Rolling) {
         std::uint8_t* at = staging->bytes.as<std::uint8_t>();
         for (int plane = 0; plane < 3; ++plane) {
             const GroupPlane& p = d.planes[plane];
             if (!p.active) continue;
-            NSS_CUDA_CHECK(cudaEventCreateWithFlags(&staging->plane_done[plane], cudaEventDisableTiming));
+            NSS_CUDA_CHECK(cudaEventCreateWithFlags(&staging->plane_done[plane], kHostWaitEvent));
             staging->roll_base[plane] = at;
             staging->roll_step[plane] = (d.roll_together ? p.floats : d.plane_floats) * sizeof(float);
             if (d.roll_together) at += staging->roll_step[plane] * chunk_uploads(d) * d.channels;

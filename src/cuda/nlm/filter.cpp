@@ -61,7 +61,7 @@ struct Slot {
 
 struct Event {
     cudaEvent_t event = nullptr;
-    Event() { NSS_CUDA_CHECK(cudaEventCreateWithFlags(&event, cudaEventDisableTiming)); }
+    explicit Event(unsigned flags = kStreamEvent) { NSS_CUDA_CHECK(cudaEventCreateWithFlags(&event, flags)); }
     Event(const Event&) = delete;
     Event& operator=(const Event&) = delete;
     ~Event() {
@@ -191,7 +191,7 @@ private:
 // Where a frame in flight has its result downloaded to.
 struct TileStage {
     PinnedBuffer bytes;  // nc planes
-    Event done;          // behind the last download
+    Event done{kHostWaitEvent};  // behind the last download; the request waits for it
 };
 
 struct NlmData : nss::NlmParams {

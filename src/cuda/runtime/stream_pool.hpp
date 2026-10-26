@@ -16,20 +16,47 @@
 
 namespace nss_cuda {
 
+// Flags of an event a host thread waits for (cudaEventSynchronize): the
+// thread sleeps until it is signalled. Without cudaEventBlockingSync it spins
+// in the driver, whatever the context's scheduling flags (which belong to the
+// process's primary context, shared with other plugins): the spinning threads
+// cost up to 48x the CPU per frame at the same speed
+// (docs/api/cuda/README.md#host-waits).
+inline constexpr unsigned kHostWaitEvent = cudaEventDisableTiming | cudaEventBlockingSync;
+// Flags of an event only streams wait for (cudaStreamWaitEvent). Recording a
+// blocking event costs more and stalls at times (rolling BM3D YUV420:
+// cudaEventRecord mean 1.0 -> 49.5 us, p99 3.7 -> 703 us, 1.4% fewer fps), so
+// these stay without it.
+inline constexpr unsigned kStreamEvent = cudaEventDisableTiming;
+
 class Stream {
 public:
-    Stream() { NSS_CUDA_CHECK(cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking)); }
+    Stream() {
+        NSS_CUDA_CHECK(cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking));
+        const cudaError_t error = cudaEventCreateWithFlags(&done_, kHostWaitEvent);
+        if (error != cudaSuccess) {
+            cudaStreamDestroy(stream_);  // the destructor does not run for a constructor that throws
+            NSS_CUDA_CHECK(error);
+        }
+    }
     Stream(const Stream&) = delete;
     Stream& operator=(const Stream&) = delete;
     ~Stream() {
+        if (done_) cudaEventDestroy(done_);
         if (stream_) cudaStreamDestroy(stream_);
     }
     cudaStream_t get() const noexcept { return stream_; }
     operator cudaStream_t() const noexcept { return stream_; }
-    void synchronize() const { NSS_CUDA_CHECK(cudaStreamSynchronize(stream_)); }
+    // Waits for the work queued so far, sleeping (cudaStreamSynchronize
+    // would spin: see kHostWaitEvent). One thread uses a stream at a time.
+    void synchronize() const {
+        NSS_CUDA_CHECK(cudaEventRecord(done_, stream_));
+        NSS_CUDA_CHECK(cudaEventSynchronize(done_));
+    }
 
 private:
     cudaStream_t stream_ = nullptr;
+    cudaEvent_t done_ = nullptr;
 };
 
 // Slot owns whatever a frame needs (stream, arena, staging); built at creation.
