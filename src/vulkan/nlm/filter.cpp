@@ -564,9 +564,9 @@ private:
 
 void tile_frame(NlmData& d, int n, const Frames& srcf, const Frames& reff, const MakeOutput& make_output,
                 Held& held, const VSAPI* vsapi) {
-    // The pins outlive the lease: returning it settles the slot (waits for
-    // submitted work), and only then may other requests reuse the cache
-    // frames this frame reads.
+    // The pins outlive the slot's work: the slot settles (waits for its
+    // submitted work, see Settle below) before they go, and only then may
+    // other requests reuse the cache frames this frame reads.
     Window window(d.window, n, d.d, d.vi.numFrames);
     PlaneStore& store = d.window.store;
     // The host writes need no slot. Neither does waiting for the frames other
@@ -588,6 +588,14 @@ void tile_frame(NlmData& d, int n, const Frames& srcf, const Frames& reff, const
     window.wait_queued();
     held.tile.emplace(d.tile_pool->acquire());
     auto& lease = *held.tile;
+    // The lease outlives this function (it goes once the output frame is
+    // out), the pins do not: on an error the slot settles (waits for its
+    // submitted work) before the pins go and other requests may overwrite
+    // the cache frames it reads. Done already when the frame finished.
+    struct Settle {
+        Slot& slot;
+        ~Settle() { slot.settle(); }
+    } settle{lease->slot};
     VSFrame* dst = make_output();
     const DirectOut direct = direct_out(d, dst, vsapi);
     Slot& slot = lease->slot;
