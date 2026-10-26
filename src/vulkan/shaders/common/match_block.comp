@@ -1,0 +1,317 @@
+// SPDX-License-Identifier: GPL-2.0-only
+// Block matching, block fallback: one workgroup per reference for the
+// searches the lane kernels (match_lane.comp) do not take: groups beyond 33,
+// two channels, joint blocks beyond 8, and the larger blocks. The GLSL port of
+// nss_cuda's spatial_match_kernel and predictive_match_kernel<K>
+// (src/cuda/common/match.cu) with the bitonic top-K of topk.cuh: candidates
+// stream through a shared buffer of N keys whose front holds the current
+// best, each chunk is sorted in with the rest. Keys are (sortable distance,
+// t) and (y, x): the CPU matcher order (finite first, distance, t, y, x), so
+// the result does not depend on scheduling. Distances are block_ssd's
+// row-major fma chain per channel, the channels added in order (as CUDA's
+// group_ssd). No subgroup operations: it runs the same on every device.
+//
+// Defines: K (64 or 256: bounds the group and ps_num), PREDICTIVE (0 spatial,
+// 1 the predictive temporal search).
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+
+const int THREADS = 128;
+const int N = 1024;  // nss_cuda's kTemporalSort
+layout(local_size_x = THREADS) in;
+
+struct Match {
+    int x;
+    int y;
+    int t;
+    float dist;
+};
+layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer Plane { float v[]; };
+layout(buffer_reference, std430, buffer_reference_align = 8) readonly buffer Table { uint64_t p[]; };
+layout(buffer_reference, std430, buffer_reference_align = 16) writeonly buffer Matches { Match m[]; };
+layout(buffer_reference, std430, buffer_reference_align = 4) writeonly buffer Counts { int c[]; };
+
+// The push block of match_lane.comp.
+layout(push_constant) uniform Push {
+    uint64_t source;   // spatial: the plane; predictive: a table of ntemp plane addresses
+    uint64_t matches;  // ref_count * group entries, group-strided
+    uint64_t counts;   // ref_count
+    int64_t channel_step;  // floats from channel c to c + 1 of a frame
+    int width, height, pitch, group;
+    int lo, hi;            // window [c - lo, c + hi]
+    int nx, step, max_x, max_y;  // raster grid
+    int ref_begin, ref_count;
+    int t0, radius, ntemp, valid_begin, valid_end, ps_num, ps_range;  // predictive
+    int block, channels;
+} pc;
+
+const uint64_t SENTINEL = 0xffffffffffffffffUL;
+
+shared uint64_t s_hi[N];  // sortable distance << 32 | t
+shared uint64_t s_lo[N];  // y << 32 | x
+shared int s_valid;
+#if PREDICTIVE
+shared uint64_t g_hi[2 * K];
+shared uint64_t g_lo[2 * K];
+shared ivec2 s_seeds[K];
+shared ivec2 s_centers[K];
+shared int s_global;
+shared int s_centers_n;
+#endif
+
+// CPU match_less: non-finite distances after every finite one, among
+// themselves by position; +0 and -0 equal (topk.cuh's sortable_distance).
+uint sortable_distance(float d) {
+    uint bits = floatBitsToUint(d);
+    if ((bits & 0x7f800000u) == 0x7f800000u) return 0xfffffffeu;
+    if (d == 0.0f) bits = 0u;
+    return (bits & 0x80000000u) != 0u ? ~bits : (bits | 0x80000000u);
+}
+
+float key_distance(uint64_t hi) {
+    const uint s = uint(hi >> 32);
+    if (s == 0xfffffffeu) return uintBitsToFloat(0x7f800000u);  // non-finite sorts as +inf
+    return uintBitsToFloat((s & 0x80000000u) != 0u ? (s & 0x7fffffffu) : ~s);
+}
+
+bool key_less(uint64_t ahi, uint64_t alo, uint64_t bhi, uint64_t blo) {
+    return ahi < bhi || (ahi == bhi && alo < blo);
+}
+
+// Floats from channel 0 to channel ch of a frame, as an address offset.
+uint64_t channel_offset(int ch) { return uint64_t(int64_t(ch) * pc.channel_step * 4l); }
+
+// Row-major sum of squared differences of the blocks at a and b (float
+// indices of their top-left pixels).
+float block_ssd(uint64_t pa, int a, uint64_t pb, int b) {
+    precise float sum = 0.0f;
+    for (int r = 0; r < pc.block; ++r) {
+        for (int c = 0; c < pc.block; ++c) {
+            precise float d = Plane(pa).v[a + r * pc.pitch + c] - Plane(pb).v[b + r * pc.pitch + c];
+            sum = fma(d, d, sum);
+        }
+    }
+    return sum;
+}
+
+// Sum over channels of the per-channel distances (nss::ssd_nch).
+float group_ssd(uint64_t pa, int a, uint64_t pb, int b) {
+    precise float sum = block_ssd(pa, a, pb, b);
+    for (int ch = 1; ch < pc.channels; ++ch) sum += block_ssd(pa + channel_offset(ch), a, pb + channel_offset(ch), b);
+    return sum;
+}
+
+int pow2_at_least(int v) {
+    int p = 1;
+    while (p < v) p <<= 1;
+    return p;
+}
+
+// Ascending bitonic sort of the first n (a power of two) keys of s or g.
+#define NSS_BITONIC(HI, LO, n)                                                      \
+    for (int k = 2; k <= (n); k <<= 1) {                                            \
+        for (int j = k >> 1; j > 0; j >>= 1) {                                      \
+            for (int pair = int(gl_LocalInvocationID.x); pair < (n) / 2; pair += THREADS) { \
+                const int i = ((pair & ~(j - 1)) << 1) | (pair & (j - 1));          \
+                const int partner = i + j;                                          \
+                const bool ascending = (i & k) == 0;                                \
+                const uint64_t ahi = HI[i], alo = LO[i], bhi = HI[partner], blo = LO[partner]; \
+                if (key_less(bhi, blo, ahi, alo) == ascending) {                    \
+                    HI[i] = bhi;                                                    \
+                    LO[i] = blo;                                                    \
+                    HI[partner] = ahi;                                              \
+                    LO[partner] = alo;                                              \
+                }                                                                   \
+            }                                                                       \
+            barrier();                                                              \
+        }                                                                           \
+    }
+
+// Streaming top-K over s (topk.cuh's BlockTopK): the result occupies the
+// front, pow2_at_least(k) slots, and each chunk of candidates is written
+// behind it before tk_merge. Afterwards s[0, filled) holds the selected keys
+// in ascending order.
+int tk_k, tk_front, tk_chunk, tk_filled;
+
+void tk_init(int wanted) {
+    tk_k = wanted;
+    tk_front = pow2_at_least(max(wanted, 1));
+    tk_chunk = N - tk_front;
+    tk_filled = 0;
+    for (int i = int(gl_LocalInvocationID.x); i < N; i += THREADS) {
+        s_hi[i] = SENTINEL;
+        s_lo[i] = SENTINEL;
+    }
+    barrier();
+}
+
+void tk_merge() {
+    NSS_BITONIC(s_hi, s_lo, N)
+    if (gl_LocalInvocationID.x == 0) {
+        int valid = 0;
+        while (valid < tk_k && (s_hi[valid] != SENTINEL || s_lo[valid] != SENTINEL)) ++valid;
+        s_valid = valid;
+    }
+    barrier();
+    tk_filled = s_valid;
+    for (int i = int(gl_LocalInvocationID.x) + tk_k; i < N; i += THREADS) {
+        s_hi[i] = SENTINEL;
+        s_lo[i] = SENTINEL;
+    }
+    barrier();
+}
+
+void set_candidate(int i, float dist, int t, int y, int x, bool use) {
+    s_hi[tk_front + i] = use ? (uint64_t(sortable_distance(dist)) << 32 | uint64_t(uint(t))) : SENTINEL;
+    s_lo[tk_front + i] = use ? (uint64_t(uint(y)) << 32 | uint64_t(uint(x))) : SENTINEL;
+}
+
+// The window [c - lo, c + hi] of plane `pb` clamped to the plane, around
+// (cx, cy) whose block is at `anchor` of `pa`, into the top-K; the reference
+// position itself never enters.
+void scan_spatial(uint64_t pa, int anchor, uint64_t pb, int cx, int cy, int t) {
+    const int left = max(cx - pc.lo, 0), top = max(cy - pc.lo, 0);
+    const int right = min(cx + pc.hi, pc.width - pc.block), bottom = min(cy + pc.hi, pc.height - pc.block);
+    const int ww = right - left + 1;
+    const int total = ww * (bottom - top + 1);
+    for (int start = 0; start < total; start += tk_chunk) {
+        for (int i = int(gl_LocalInvocationID.x); i < tk_chunk; i += THREADS) {
+            const int idx = start + i;
+            const int x = left + idx % ww, y = top + idx / ww;
+            const bool use = idx < total && (x != cx || y != cy);
+            const float d = use ? group_ssd(pa, anchor, pb, y * pc.pitch + x) : 0.0f;
+            set_candidate(i, d, t, y, x, use);
+        }
+        barrier();
+        tk_merge();
+    }
+}
+
+Match key_match(uint64_t hi, uint64_t lo) {
+    return Match(int(uint(lo)), int(uint(lo >> 32)), int(uint(hi)), key_distance(hi));
+}
+
+void main() {
+    const int ref = int(gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x);
+    if (ref >= pc.ref_count) return;  // uniform over the workgroup
+    const int tid = int(gl_LocalInvocationID.x);
+    const int gi = pc.ref_begin + ref;
+    const int cx = min((gi % pc.nx) * pc.step, pc.max_x);
+    const int cy = min((gi / pc.nx) * pc.step, pc.max_y);
+    const int dst = ref * pc.group;
+    const int wanted = min(pc.group, K);
+    int n = 0;
+#if PREDICTIVE
+    const int t0 = pc.t0;
+    if (wanted > 1) {
+        const uint64_t anchor_plane = Table(pc.source).p[t0];
+        const int anchor = cy * pc.pitch + cx;
+        tk_init(wanted - 1);
+        scan_spatial(anchor_plane, anchor, anchor_plane, cx, cy, t0);
+        const int spatial = tk_filled;
+        n = spatial;
+        if (pc.radius > 0 && pc.ntemp > 1) {
+            // Seeds: the reference itself followed by the best spatial matches.
+            const int seed_count = min(min(1 + spatial, pc.ps_num), K);
+            for (int i = tid; i < 2 * K; i += THREADS) {
+                g_hi[i] = i < spatial ? s_hi[i] : SENTINEL;
+                g_lo[i] = i < spatial ? s_lo[i] : SENTINEL;
+            }
+            for (int i = tid; i < seed_count; i += THREADS) {
+                s_seeds[i] = i == 0 ? ivec2(cx, cy) : ivec2(int(uint(s_lo[i - 1])), int(uint(s_lo[i - 1] >> 32)));
+            }
+            if (tid == 0) s_global = spatial;
+            barrier();
+            const int first = max(0, pc.valid_begin);
+            const int last = pc.valid_end < 0 ? pc.ntemp : min(pc.ntemp, pc.valid_end);
+            const int local_k = min(min(pc.ps_num, pc.group), K);
+            const int pr = pc.ps_range;
+            const int max_x = pc.width - pc.block, max_y = pc.height - pc.block;
+            for (int sign = -1; sign <= 1; sign += 2) {
+                for (int i = tid; i < seed_count; i += THREADS) s_centers[i] = s_seeds[i];
+                if (tid == 0) s_centers_n = seed_count;
+                barrier();
+                for (int dt = 1; dt <= pc.radius; ++dt) {
+                    const int t = t0 + sign * dt;
+                    if (t < first || t >= last) break;
+                    const int nc = s_centers_n;
+                    int ymin = pc.height, ymax = -1, xmin = pc.width, xmax = -1;
+                    for (int i = 0; i < nc; ++i) {
+                        const ivec2 c = s_centers[i];
+                        ymin = min(ymin, max(0, c.y - pr));
+                        ymax = max(ymax, min(max_y, c.y + pr));
+                        xmin = min(xmin, max(0, c.x - pr));
+                        xmax = max(xmax, min(max_x, c.x + pr));
+                    }
+                    const uint64_t plane = Table(pc.source).p[t];
+                    tk_init(local_k);
+                    if (ymax >= ymin && xmax >= xmin) {
+                        const int bw = xmax - xmin + 1;
+                        const int total = bw * (ymax - ymin + 1);
+                        for (int start = 0; start < total; start += tk_chunk) {
+                            for (int i = tid; i < tk_chunk; i += THREADS) {
+                                const int idx = start + i;
+                                const int x = xmin + idx % bw, y = ymin + idx / bw;
+                                bool inside = false;
+                                if (idx < total) {
+                                    for (int c = 0; c < nc && !inside; ++c) {
+                                        inside = abs(y - s_centers[c].y) <= pr && abs(x - s_centers[c].x) <= pr;
+                                    }
+                                }
+                                const float d = inside ? group_ssd(anchor_plane, anchor, plane, y * pc.pitch + x) : 0.0f;
+                                set_candidate(i, d, t, y, x, inside);
+                            }
+                            barrier();
+                            tk_merge();
+                        }
+                    }
+                    const int local = tk_filled;
+                    // Global merge: the current global list (< K) and this layer's best (<= K).
+                    const int gc = s_global;
+                    for (int i = tid; i < 2 * K; i += THREADS) {
+                        if (i >= gc && i < K) {
+                            g_hi[i] = SENTINEL;
+                            g_lo[i] = SENTINEL;
+                        }
+                        if (i >= K) {
+                            g_hi[i] = i - K < local ? s_hi[i - K] : SENTINEL;
+                            g_lo[i] = i - K < local ? s_lo[i - K] : SENTINEL;
+                        }
+                    }
+                    barrier();
+                    NSS_BITONIC(g_hi, g_lo, 2 * K)
+                    if (tid == 0) {
+                        int valid = 0;
+                        while (valid < wanted - 1 && (g_hi[valid] != SENTINEL || g_lo[valid] != SENTINEL)) ++valid;
+                        s_global = valid;
+                        s_centers_n = local;
+                    }
+                    for (int i = tid; i < local; i += THREADS) {
+                        s_centers[i] = ivec2(int(uint(s_lo[i])), int(uint(s_lo[i] >> 32)));
+                    }
+                    barrier();
+                    if (local == 0) break;
+                }
+            }
+            n = s_global;
+            for (int i = tid; i < n; i += THREADS) Matches(pc.matches).m[dst + 1 + i] = key_match(g_hi[i], g_lo[i]);
+        } else {
+            for (int i = tid; i < n; i += THREADS) Matches(pc.matches).m[dst + 1 + i] = key_match(s_hi[i], s_lo[i]);
+        }
+    }
+#else
+    const int t0 = 0;
+    if (wanted > 1) {
+        const int anchor = cy * pc.pitch + cx;
+        tk_init(wanted - 1);
+        scan_spatial(pc.source, anchor, pc.source, cx, cy, 0);
+        n = tk_filled;
+        for (int i = tid; i < n; i += THREADS) Matches(pc.matches).m[dst + 1 + i] = key_match(s_hi[i], s_lo[i]);
+    }
+#endif
+    if (tid == 0) {
+        Matches(pc.matches).m[dst] = Match(cx, cy, t0, 0.0f);
+        Counts(pc.counts).c[ref] = 1 + n;
+    }
+}

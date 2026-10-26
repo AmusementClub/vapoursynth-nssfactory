@@ -1,0 +1,42 @@
+// SPDX-License-Identifier: GPL-2.0-only
+// common/fixed.glsl test (tests/vk/test_vk_aggregate.cpp): one invocation
+// adds one pixel of one weighted patch, as a fused group kernel does.
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_shader_atomic_int64 : require
+#extension GL_GOOGLE_include_directive : require
+
+#include "common/fixed.glsl"
+
+layout(local_size_x = 64) in;
+
+struct Patch {
+    int x;
+    int y;
+    int t;  // window slot
+    float weight;
+};
+layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer Patches { Patch p[]; };
+layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer Values { float v[]; };
+
+layout(push_constant) uniform Push {
+    FixedTarget target;
+    uint64_t patches;
+    uint64_t values;  // npatch * block * block, patch-major, row-major inside a patch
+    int npatch;
+    int block;
+} pc;
+
+void main() {
+    const int area = pc.block * pc.block;
+    const int i = int(gl_GlobalInvocationID.x);
+    if (i >= pc.npatch * area) return;
+    const Patch p = Patches(pc.patches).p[i / area];
+    const int pixel = i % area, r = pixel / pc.block, c = pixel % pc.block;
+    const int64_t corner = fixed_patch_cell(pc.target, p.t, p.y, p.x);
+    if (corner < 0) return;
+    const int64_t at = corner + int64_t(r) * pc.target.pitch + c;
+    fixed_add(pc.target.num, at, p.weight * Values(pc.values).v[i]);
+    if (pixel == 0) fixed_add(pc.target.den, at, p.weight);
+}

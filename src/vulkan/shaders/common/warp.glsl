@@ -43,6 +43,10 @@
 #define WARP_EMULATED 0
 #endif
 
+// Linear index of the workgroup: dispatches wider than 65535 workgroups (the
+// smallest maxComputeWorkGroupCount Vulkan allows) are split into rows.
+int w_workgroup() { return int(gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x); }
+
 #if WARP_EMULATED
 
 #ifndef WARP_WARPS
@@ -52,7 +56,7 @@ shared uvec2 w_xch[WARP_WARPS * 32];
 
 int w_index() { return int(gl_LocalInvocationIndex); }
 // Global index of this invocation's segment, and its lane in the segment.
-int w_segment() { return int(gl_WorkGroupID.x) * (WARP_WARPS * 32 / WARP_L) + w_index() / WARP_L; }
+int w_segment() { return w_workgroup() * (WARP_WARPS * 32 / WARP_L) + w_index() / WARP_L; }
 int w_sub() { return w_index() % WARP_L; }
 int w_segment_base() { return w_index() & ~(WARP_L - 1); }
 
@@ -86,7 +90,7 @@ uint w_ballot(bool p) {
 
 int w_lane() { return int(gl_SubgroupInvocationID); }
 int w_segment() {
-    return (int(gl_WorkGroupID.x) * int(gl_NumSubgroups) + int(gl_SubgroupID)) * (int(gl_SubgroupSize) / WARP_L) +
+    return (w_workgroup() * int(gl_NumSubgroups) + int(gl_SubgroupID)) * (int(gl_SubgroupSize) / WARP_L) +
            w_lane() / WARP_L;
 }
 int w_sub() { return w_lane() % WARP_L; }

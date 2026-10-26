@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
-// Vulkan block matching (vulkan/common/match.hpp, the lane kernels) against
-// the CPU matcher contract (nss::spatial_match / nss::predictive_match), as
+// Vulkan block matching (vulkan/common/match.hpp: the lane kernels and the
+// block fallback) against the CPU matcher contract (nss::spatial_match,
+// nss::predictive_match, and nss::image_match for joint channels and
+// exact-size windows), as
 // test_cuda_match: positions must agree, a disagreement is accepted only as a
 // near tie (the backends sum SSDs in different orders), and on a
 // piecewise-constant image with exact ties the order must match exactly. The
@@ -92,13 +94,17 @@ struct Run {
 };
 
 // Runs one search on both warp layers (native where the device has the
-// lanes) and checks that they agree bit for bit; returns the native result.
+// lanes), and once more in rows of three workgroups (the dispatch split of
+// searches wider than 65535 workgroups), and checks that they agree bit for
+// bit; returns the native result.
 template <class Record>
 Run run_both(const std::shared_ptr<Device>& device, Matcher& matcher, const MatchGeometry& g, int ps_num, int refs,
              Record&& record, const char* label) {
     std::vector<Run> runs;
-    for (int emulated = 0; emulated < 2; ++emulated) {
-        matcher.force_emulation(emulated != 0);
+    for (int pass = 0; pass < 3; ++pass) {
+        const bool emulated = pass == 1;
+        matcher.force_emulation(emulated);
+        matcher.limit_groups_x(pass == 2 ? 3 : 65535);
         if (!emulated && matcher.emulated(g, ps_num)) continue;  // no native layer for these lanes here
         DownloadPlane out(device, static_cast<std::size_t>(refs) * g.group * sizeof(DeviceMatch), 1);
         DownloadPlane counts(device, static_cast<std::size_t>(refs) * sizeof(int), 1);
@@ -114,11 +120,12 @@ Run run_both(const std::shared_ptr<Device>& device, Matcher& matcher, const Matc
         runs.push_back(std::move(run));
     }
     matcher.force_emulation(false);
-    if (runs.size() == 2) {
-        CHECK(std::memcmp(runs[0].matches.data(), runs[1].matches.data(), runs[0].matches.size() * sizeof(DeviceMatch)) ==
+    matcher.limit_groups_x(65535);
+    for (std::size_t i = 1; i < runs.size(); ++i) {
+        CHECK(std::memcmp(runs[0].matches.data(), runs[i].matches.data(), runs[0].matches.size() * sizeof(DeviceMatch)) ==
                       0 &&
-                  runs[0].counts == runs[1].counts,
-              "%s: native and emulated layers differ", label);
+                  runs[0].counts == runs[i].counts,
+              "%s: %s differs", label, i + 1 == runs.size() ? "the dispatch in rows" : "the emulated layer");
     }
     return std::move(runs[0]);
 }
@@ -137,7 +144,7 @@ void spatial_case(const std::shared_ptr<Device>& device, Matcher& matcher, int w
     std::snprintf(label, sizeof label, "spatial %dx%d b%d g%d s%d r%d%s%s%s", width, height, block, group, step, range,
                   flat ? " flat" : "", pad ? " padded" : "", split ? " split" : "");
     if (!matcher.supports(g, 0)) {
-        std::printf("skip %s (no lane kernel)\n", label);
+        CHECK(false, "%s: not supported", label);
         return;
     }
     const int before = failures;
@@ -197,7 +204,7 @@ void temporal_case(const std::shared_ptr<Device>& device, Matcher& matcher, int 
     std::snprintf(label, sizeof label, "temporal %dx%d b%d g%d s%d r%d R%d c%d/%d p%d%s", width, height, block, group,
                   step, range, radius, center, frame_count, cfg.ps_num, flat ? " flat" : "");
     if (!matcher.supports(g, cfg.ps_num)) {
-        std::printf("skip %s (no lane kernel)\n", label);
+        CHECK(false, "%s: not supported", label);
         return;
     }
     const int before = failures;
@@ -216,6 +223,81 @@ void temporal_case(const std::shared_ptr<Device>& device, Matcher& matcher, int 
                                             grid.y(ref), radius, cfg, cpu);
         compare_group(cpu, n, run.matches.data() + static_cast<std::size_t>(ref) * group, run.counts[ref], flat, stats,
                       label, ref);
+    }
+    if (failures != before) std::printf("%s: %d failures\n", label, failures - before);
+}
+
+// nss::image_match: `nch` channels summed, the exact-size window
+// [c - window / 2, c + window - window / 2 - 1], groups up to 256, and the
+// predictive search over `frames` frames from reference frame t0 (as
+// test_cuda_match's image_case).
+void image_case(const std::shared_ptr<Device>& device, Matcher& matcher, int width, int height, int block, int group,
+                int step, int window, int nch, int frames, int t0, int radius, int ps_num, bool flat, Stats& stats) {
+    const std::size_t plane_floats = static_cast<std::size_t>(width) * height;
+    std::vector<std::vector<float>> host(frames);  // per frame: nch stacked planes
+    std::vector<std::unique_ptr<UploadPlane>> d_frames;
+    std::vector<const float*> guides;
+    std::vector<VkDeviceAddress> addresses;
+    for (int t = 0; t < frames; ++t) {
+        for (int c = 0; c < nch; ++c) {
+            const auto plane = make_plane(width, height, 17u * t + 5u * c + 1u, flat);
+            host[t].insert(host[t].end(), plane.begin(), plane.end());
+        }
+        d_frames.push_back(std::make_unique<UploadPlane>(device, host[t].size() * sizeof(float), 1));
+        d_frames.back()->write(host[t].data(), 0, host[t].size() * sizeof(float));
+        addresses.push_back(d_frames.back()->address());
+    }
+    for (int t = 0; t < frames; ++t) {
+        for (int c = 0; c < nch; ++c) guides.push_back(host[t].data() + c * plane_floats);
+    }
+    UploadPlane table(device, addresses.size() * sizeof(VkDeviceAddress), 1);
+    table.write(addresses.data(), 0, addresses.size() * sizeof(VkDeviceAddress));
+
+    const RasterGrid grid = make_raster_grid(width, height, block, step);
+    MatchGeometry g{width, height, width, block, window / 2, group};
+    g.range_hi = window - window / 2 - 1;
+    g.channels = nch;
+    g.channel_step = static_cast<long long>(plane_floats);
+    const bool temporal = radius > 0 && frames > 1;
+    const int search_ps = temporal ? ps_num : 0;
+    char label[128];
+    std::snprintf(label, sizeof label, "image %dx%d b%d g%d s%d w%d ch%d f%d t%d R%d p%d%s %s", width, height, block,
+                  group, step, window, nch, frames, t0, radius, ps_num, flat ? " flat" : "",
+                  matcher.lanes(g, search_ps) ? "lanes" : "block");
+    if (!matcher.supports(g, search_ps)) {
+        CHECK(false, "%s: not supported", label);
+        return;
+    }
+    const int before = failures;
+    Run run = run_both(device, matcher, g, search_ps, grid.count(),
+                       [&](Slot& slot, VkDeviceAddress out, VkDeviceAddress counts) {
+                           for (auto& f : d_frames) {
+                               if (f->needs_copy()) f->record_upload(slot.commands(Slot::Upload));
+                           }
+                           if (table.needs_copy()) table.record_upload(slot.commands(Slot::Upload));
+                           if (temporal) {
+                               const TemporalWindow w{table.address(), frames, t0, radius, 0, frames, ps_num, 4};
+                               matcher.predictive(slot.commands(Slot::Compute), g, w, grid, 0, grid.count(), out, counts);
+                           } else {
+                               matcher.spatial(slot.commands(Slot::Compute), addresses[static_cast<std::size_t>(t0)], g,
+                                               grid, 0, grid.count(), out, counts);
+                           }
+                       },
+                       label);
+    const nss::ImageSearch search{block, step, group, window, radius, ps_num, 4};
+    std::vector<nss::Match> cpu(256);
+    for (int ref = 0; ref < grid.count(); ++ref) {
+        const int n = nss::image_match(guides.data(), frames, nch, width, height, t0, grid.x(ref), grid.y(ref), search,
+                                       cpu.data());
+        DeviceMatch* gpu = run.matches.data() + static_cast<std::size_t>(ref) * group;
+        // The spatial kernels report slot 0; the CPU reports the sequence index.
+        if (!temporal) {
+            for (int i = 0; i < run.counts[ref]; ++i) {
+                CHECK(gpu[i].t == 0, "%s ref %d entry %d: spatial slot %d", label, ref, i, gpu[i].t);
+                gpu[i].t = t0;
+            }
+        }
+        compare_group(cpu.data(), n, gpu, run.counts[ref], flat, stats, label, ref);
     }
     if (failures != before) std::printf("%s: %d failures\n", label, failures - before);
 }
@@ -244,11 +326,18 @@ int main(int argc, char** argv) {
     Matcher matcher(device);
     Stats stats;
     for (const bool flat : {false, true}) {
-        for (const int block : {1, 2, 4, 8, 12, 16}) {
+        for (const int block : {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}) {
             for (const int group : {2, 8, 16, 32}) {
                 spatial_case(device, matcher, 97, 83, block, group, std::min(block, 3), 7, flat, stats);
             }
         }
+        // The block fallback: groups beyond the lanes (BM3D's 64), one top-K
+        // chunk exceeded (window 81 x 81), and block 32 with group 64.
+        spatial_case(device, matcher, 97, 83, 8, 64, 3, 7, flat, stats);
+        spatial_case(device, matcher, 97, 83, 4, 48, 5, 9, flat, stats);
+        spatial_case(device, matcher, 80, 72, 8, 64, 4, 40, flat, stats);
+        spatial_case(device, matcher, 97, 83, 32, 64, 9, 7, flat, stats);
+        spatial_case(device, matcher, 97, 83, 8, 1, 4, 7, flat, stats);  // group 1: the reference alone
         spatial_case(device, matcher, 64, 61, 8, 16, 8, 12, flat, stats);
         spatial_case(device, matcher, 97, 83, 12, 33, 5, 9, flat, stats);
         spatial_case(device, matcher, 97, 83, 32, 8, 9, 7, flat, stats);
@@ -268,7 +357,41 @@ int main(int argc, char** argv) {
         temporal_case(device, matcher, 71, 66, 4, 32, 6, 5, 1, 1, 3, flat, stats, 32);
         spatial_case(device, matcher, 97, 83, 8, 16, 3, 7, flat, stats, 13, true);
         spatial_case(device, matcher, 97, 83, 16, 32, 3, 7, flat, stats, 5, true);
+        spatial_case(device, matcher, 97, 83, 8, 64, 3, 7, flat, stats, 13, true);  // block fallback, padded, split
+        // Block fallback, predictive: group 64, and ps_num beyond the lanes.
+        temporal_case(device, matcher, 71, 66, 8, 64, 4, 7, 1, 1, 3, flat, stats, 4);
+        temporal_case(device, matcher, 71, 66, 8, 64, 5, 7, 2, 0, 9, flat, stats, 8);
+        temporal_case(device, matcher, 71, 66, 4, 64, 6, 5, 1, 1, 3, flat, stats, 40);
     }
+    for (const bool flat : {false, true}) {
+        for (const int nch : {1, 2, 3}) {
+            image_case(device, matcher, 61, 57, 8, 8, 5, 15, nch, 1, 0, 0, 2, flat, stats);   // MCWNNM-like joint groups
+            image_case(device, matcher, 72, 64, 8, 16, 6, 40, nch, 1, 0, 0, 2, flat, stats);  // NLH window (asymmetric)
+        }
+        // Joint lane kernels: blocks below 8 and every lane count; joint
+        // blocks beyond 8 and large groups on the block fallback.
+        image_case(device, matcher, 61, 57, 4, 8, 5, 15, 3, 1, 0, 0, 2, flat, stats);
+        image_case(device, matcher, 61, 57, 2, 16, 3, 11, 3, 1, 0, 0, 2, flat, stats);
+        image_case(device, matcher, 61, 57, 1, 32, 3, 9, 3, 1, 0, 0, 2, flat, stats);
+        image_case(device, matcher, 61, 57, 7, 32, 6, 21, 3, 1, 0, 0, 2, flat, stats);
+        image_case(device, matcher, 61, 57, 12, 16, 6, 15, 3, 1, 0, 0, 2, flat, stats);
+        image_case(device, matcher, 61, 57, 16, 8, 6, 15, 3, 1, 0, 0, 2, flat, stats);
+        image_case(device, matcher, 72, 64, 8, 90, 7, 60, 1, 1, 0, 0, 2, flat, stats);    // TWSC default group
+        image_case(device, matcher, 72, 64, 4, 256, 9, 33, 2, 1, 0, 0, 2, flat, stats);   // group limit
+        image_case(device, matcher, 40, 36, 16, 64, 8, 129, 1, 1, 0, 0, 2, flat, stats);  // window larger than the plane
+    }
+    // Predictive (ties across frames are ordered differently, so only the
+    // noisy planes): lanes for one and three channels, the block fallback for
+    // two channels, groups beyond 33 and the 256-entry kernel.
+    image_case(device, matcher, 64, 56, 8, 16, 6, 40, 1, 3, 1, 1, 2, false, stats);
+    image_case(device, matcher, 64, 56, 8, 16, 6, 21, 3, 5, 0, 2, 3, false, stats);
+    image_case(device, matcher, 64, 56, 4, 8, 6, 15, 3, 5, 2, 2, 4, false, stats);
+    image_case(device, matcher, 64, 56, 8, 32, 6, 15, 3, 3, 1, 1, 6, false, stats);
+    image_case(device, matcher, 64, 56, 8, 16, 6, 21, 2, 5, 0, 2, 3, false, stats);
+    image_case(device, matcher, 64, 56, 8, 16, 6, 21, 1, 5, 4, 2, 3, false, stats);
+    image_case(device, matcher, 64, 56, 8, 64, 8, 21, 2, 3, 1, 1, 20, false, stats);
+    image_case(device, matcher, 64, 56, 4, 200, 8, 25, 1, 3, 2, 1, 100, false, stats);
+    image_case(device, matcher, 64, 56, 12, 16, 7, 15, 3, 3, 1, 1, 4, false, stats);
     std::printf("vk match: %ld references, %ld entries, %ld near-tie flips, %d failures\n", stats.refs, stats.entries,
                 stats.flips, failures);
     return failures ? EXIT_FAILURE : EXIT_SUCCESS;

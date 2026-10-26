@@ -1,0 +1,46 @@
+// SPDX-License-Identifier: GPL-2.0-only
+// The finish of fixed-point aggregation (vulkan/common/aggregate.hpp,
+// common/fixed.glsl), as nss_cuda's fixed_rows_kernel / fixed_finish_kernel:
+// out = den > 1e-12 ? num / den : src for one slice, where den of a pixel is
+// the sum of the den cells of the block x block patch corners that cover it.
+// KERNEL 0 (rows): rows[y][x] = the den cells of row y from x - block + 1 to x.
+// KERNEL 1 (finish): the rows from y - block + 1 to y, then the quotient.
+// Integer sums, so both are exact; the quotient follows Vulkan's division
+// precision (2.5 ULP, D26).
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+
+layout(local_size_x = 32, local_size_y = 8) in;
+
+layout(buffer_reference, std430, buffer_reference_align = 8) readonly buffer Cells { uint64_t c[]; };
+layout(buffer_reference, std430, buffer_reference_align = 8) writeonly buffer OutCells { uint64_t c[]; };
+layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer Plane { float v[]; };
+layout(buffer_reference, std430, buffer_reference_align = 4) writeonly buffer OutPlane { float v[]; };
+
+layout(push_constant) uniform Push {
+    uint64_t num;   // the slice's num cells
+    uint64_t den;   // the slice's den cells (patch corners)
+    uint64_t rows;  // scratch: width x height cells (pitch)
+    uint64_t src;   // plane taken where nothing was added
+    uint64_t dst;
+    int block, width, height, pitch;  // pitch: cells and floats per row
+} pc;
+
+void main() {
+    const int x = int(gl_GlobalInvocationID.x), y = int(gl_GlobalInvocationID.y);
+    if (x >= pc.width || y >= pc.height) return;
+    const int i = y * pc.pitch + x;
+#if KERNEL == 0
+    uint64_t sum = 0ul;
+    for (int j = 0; j < pc.block && j <= x; ++j) sum += Cells(pc.den).c[i - j];
+    OutCells(pc.rows).c[i] = sum;
+#else
+    uint64_t weight = 0ul;
+    for (int k = 0; k < pc.block && k <= y; ++k) weight += Cells(pc.rows).c[i - k * pc.pitch];
+    const float unit = 1.0f / 4294967296.0f;  // 1 / kFixedScale
+    const float num = float(int64_t(Cells(pc.num).c[i])) * unit;
+    const float den = float(int64_t(weight)) * unit;
+    OutPlane(pc.dst).v[i] = den > 1e-12f ? num / den : Plane(pc.src).v[i];
+#endif
+}
