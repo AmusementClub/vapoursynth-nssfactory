@@ -55,6 +55,15 @@ if(TARGET nss_cpu)
   set_tests_properties(test_vk_aggregate PROPERTIES LABELS vk SKIP_RETURN_CODE 77)
 endif()
 
+# BM3D group kernels against the CPU's group filter (V5; needs the CPU tree).
+if(TARGET nss_cpu)
+  add_executable(test_vk_bm3d test_vk_bm3d.cpp)
+  target_link_libraries(test_vk_bm3d PRIVATE nss_vk_core nss_cpu)
+  target_include_directories(test_vk_bm3d PRIVATE "${PROJECT_SOURCE_DIR}/include" "${PROJECT_SOURCE_DIR}/src")
+  add_test(NAME test_vk_bm3d COMMAND test_vk_bm3d)
+  set_tests_properties(test_vk_bm3d PROPERTIES LABELS vk SKIP_RETURN_CODE 77)
+endif()
+
 # Queue-layout throughput (D28), run by hand on a device; not a test.
 add_executable(bench_vk_queues bench_vk_queues.cpp)
 target_link_libraries(bench_vk_queues PRIVATE nss_vk_core)
@@ -71,17 +80,18 @@ add_test(NAME test_vk_backend
 # D21 parity against the CPU golden. Filters still pending in
 # docs/vulkan-plan.md are expected to be missing; each phase removes the
 # filters it delivers. VAggregate is the CPU's alone (D21).
-set(NSS_VK_PENDING_FILTERS "BM3D,WNNM,MCWNNM,NCSR,NLH,TWSC,LSSC,DA3D,BM4D")
+set(NSS_VK_PENDING_FILTERS "WNNM,MCWNNM,NCSR,NLH,TWSC,LSSC,DA3D,BM4D")
 add_test(NAME test_vk_plugin_interface
          COMMAND ${Python3_EXECUTABLE} "${PROJECT_SOURCE_DIR}/tests/test_plugin_interface.py"
                  --plugin "${NSS_VK_PLUGIN}" --namespace nss_vk
                  --backend-args device_id,num_streams --expect-missing "${NSS_VK_PENDING_FILTERS}"
                  --cpu-only VAggregate
-                 --default-temporal rolling --rolling-cache adaptive)
+                 --default-temporal rolling --rolling-cache adaptive
+                 --pending-temporal BM3D)
 set_tests_properties(test_vk_backend test_vk_plugin_interface PROPERTIES LABELS vk SKIP_RETURN_CODE 77)
 # Filters against the CPU plugin (needs the CPU tree).
 if(TARGET nss)
-  foreach(filter nlm)
+  foreach(filter nlm bm3d)
     add_test(NAME test_vk_${filter}_live
              COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_vk_${filter}_live.py"
                      --cpu "$<TARGET_FILE:nss>" --vk "${NSS_VK_PLUGIN}")

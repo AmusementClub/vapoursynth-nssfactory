@@ -128,6 +128,44 @@ foreach(_nss_k 64 256)
   nss_vk_add_shader(NSS_VK_SPIRV_SOURCES match_block_k${_nss_k}_p common/match_block.comp
                     DEFINES K=${_nss_k} PREDICTIVE=1)
 endforeach()
+# BM3D group kernels (V5, shaders/bm3d): the warp kernel for the shapes
+# nss_cuda's warp_serves admits (hard threshold h, Wiener w; native n and
+# emulated e), the block kernel for every other shape of the BM3D blocks and
+# groups. LIGHT: spirv-opt -O's global value numbering after the unrolling
+# needs up to 25 GB on these (cmake/Vulkan.cmake).
+set(_nss_bm3d_warp 402 404 408 416 432 802 804 808 816 1602 1604 1608 1616)
+set(_nss_bm3d_warp_hard 464 832 1632)
+foreach(_nss_b 1 2 4 8 12 16 32)
+  foreach(_nss_g 1 2 4 8 16 32 64)
+    math(EXPR _nss_shape "${_nss_b} * 100 + ${_nss_g}")
+    foreach(_nss_w 0 1)
+      if(_nss_w)
+        set(_nss_stage w)
+      else()
+        set(_nss_stage h)
+      endif()
+      set(_nss_warp OFF)
+      if(_nss_shape IN_LIST _nss_bm3d_warp OR (_nss_shape IN_LIST _nss_bm3d_warp_hard AND NOT _nss_w))
+        set(_nss_warp ON)
+      endif()
+      if(_nss_warp)
+        foreach(_nss_emu 0 1)
+          if(_nss_emu)
+            set(_nss_layer e)
+          else()
+            set(_nss_layer n)
+          endif()
+          nss_vk_add_shader(NSS_VK_SPIRV_SOURCES bm3d_warp_b${_nss_b}_g${_nss_g}_${_nss_stage}_${_nss_layer}
+                            bm3d/group_warp.comp LIGHT
+                            DEFINES B=${_nss_b} G=${_nss_g} WIENER=${_nss_w} WARP_EMULATED=${_nss_emu})
+        endforeach()
+      else()
+        nss_vk_add_shader(NSS_VK_SPIRV_SOURCES bm3d_shape_b${_nss_b}_g${_nss_g}_${_nss_stage} bm3d/group_shape.comp
+                          LIGHT DEFINES B=${_nss_b} G=${_nss_g} WIENER=${_nss_w})
+      endif()
+    endforeach()
+  endforeach()
+endforeach()
 # Fixed-point aggregation finish (common/aggregate.comp): rows, then finish.
 nss_vk_add_shader(NSS_VK_SPIRV_SOURCES aggregate_fixed_rows common/aggregate.comp DEFINES KERNEL=0)
 nss_vk_add_shader(NSS_VK_SPIRV_SOURCES aggregate_fixed_finish common/aggregate.comp DEFINES KERNEL=1)
@@ -219,6 +257,7 @@ set_target_properties(nss_vk_shaders PROPERTIES
 
 # nss_vk_core: host runtime + embedded shaders, static so tests/vk can link it.
 add_library(nss_vk_core STATIC
+  bm3d/kernels.cpp
   common/aggregate.cpp
   common/match.cpp
   runtime/context.cpp
@@ -251,6 +290,8 @@ endif()
 
 add_library(nss_vk SHARED
   plugin.cpp
+  bm3d/filter.cpp
+  common/group_driver.cpp
   nlm/filter.cpp
 )
 set_target_properties(nss_vk PROPERTIES

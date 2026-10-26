@@ -6,6 +6,7 @@
 // on first use and kept for the life of the process.
 #pragma once
 
+#include "nss/params/temporal.hpp"
 #include "vulkan/runtime/device.hpp"
 #include "vulkan/runtime/vk.hpp"
 
@@ -24,6 +25,10 @@ namespace nss_vk {
 // Appended to every shared k<Filter>Signature (D21).
 inline constexpr const char* kBackendSignature = "device_id:int:opt;num_streams:int:opt;";
 inline constexpr int kDefaultStreams = 1;
+// temporal_mode and the rolling cache when not given, as nss_cuda (D21: one
+// interface golden for both GPU namespaces).
+inline constexpr nss::TemporalMode kDefaultTemporalMode = nss::TemporalMode::Rolling;
+inline constexpr nss::RollingCache kRollingCache = nss::RollingCache::Adaptive;
 // memory_limit_mb when the argument is not given: 0, no limit (as nss_cuda).
 inline constexpr int kDefaultMemoryLimitMb = 0;
 inline constexpr int kMaxStreams = 16;

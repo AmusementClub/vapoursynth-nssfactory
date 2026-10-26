@@ -64,11 +64,16 @@ def main():
     parser.add_argument("--cpu-only", default="")
     parser.add_argument("--default-temporal", choices=("legacy", "rolling"), default="legacy")
     parser.add_argument("--rolling-cache", choices=("fixed", "adaptive"), default="fixed")
+    # Filters whose spatial output a backend has and whose temporal output is
+    # still to come: a call the golden accepts with radius > 0 may fail with
+    # "radius > 0 is not available yet"; every other case is checked.
+    parser.add_argument("--pending-temporal", default="")
     args = parser.parse_args()
     ns = args.namespace
     backend_args = [a for a in args.backend_args.split(",") if a]
     expect_missing = {f for f in args.expect_missing.split(",") if f}
     cpu_only = {f for f in args.cpu_only.split(",") if f}
+    pending_temporal = {f for f in args.pending_temporal.split(",") if f}
     if args.write and ns != "nss":
         raise SystemExit("--write only regenerates the CPU golden")
 
@@ -128,19 +133,27 @@ def main():
             return dict(error=str(error))
 
     cases = {}
+    # The radius each case asks for: a --pending-temporal filter may fail as
+    # unavailable only where it is positive.
+    radius_of = {}
+
+    def probe(key, name, clip, kwargs):
+        radius = kwargs.get("radius", 0)
+        radius_of[key] = radius if isinstance(radius, int) and not isinstance(radius, bool) else 0
+        cases[key] = outcome(name, clip, kwargs)
     for name in sorted(shared):
         if name in ("Version", "Backend") or name in skipped:
             continue
         for fmt, clip in clips.items():
-            cases[f"{name}|{fmt}|defaults"] = outcome(name, clip, {})
+            probe(f"{name}|{fmt}|defaults", name, clip, {})
             for arg, kind, is_array, optional in parse_signature(shared[name]):
                 if arg in SKIP_ARGS or kind in ("vnode", "anode", "vframe", "func"):
                     continue
                 probes = INT_PROBES if kind == "int" else FLOAT_PROBES if kind == "float" else DATA_PROBES
                 for value in probes:
-                    cases[f"{name}|{fmt}|{arg}={value!r}"] = outcome(name, clip, {arg: value})
+                    probe(f"{name}|{fmt}|{arg}={value!r}", name, clip, {arg: value})
                 if is_array and kind in ("int", "float"):
-                    cases[f"{name}|{fmt}|{arg}=pair"] = outcome(name, clip, {arg: [probes[4], probes[3]]})
+                    probe(f"{name}|{fmt}|{arg}=pair", name, clip, {arg: [probes[4], probes[3]]})
 
     # Combined probes for paths a single argument cannot reach.
     combos = {
@@ -174,16 +187,16 @@ def main():
             continue
         for fmt, clip in clips.items():
             for kwargs in ({}, dict(sigma=3)):
-                cases[f"{name}|{fmt}|rclip-self:{sorted(kwargs.items())}"] = outcome(name, clip, dict(kwargs, rclip=clip))
+                probe(f"{name}|{fmt}|rclip-self:{sorted(kwargs.items())}", name, clip, dict(kwargs, rclip=clip))
             other = core.std.BlankClip(clip, width=clip.width - 8)
-            cases[f"{name}|{fmt}|rclip-mismatch"] = outcome(name, clip, dict(rclip=other))
+            probe(f"{name}|{fmt}|rclip-mismatch", name, clip, dict(rclip=other))
     for name, variants in combos.items():
         if name in skipped:
             continue
         for fmt, clip in clips.items():
             for kwargs in variants:
                 key = ",".join(f"{k}={v!r}" for k, v in sorted(kwargs.items()))
-                cases[f"{name}|{fmt}|combo:{key}"] = outcome(name, clip, kwargs)
+                probe(f"{name}|{fmt}|combo:{key}", name, clip, kwargs)
 
     record = dict(schema="nssfactory.plugin_interface.v1", functions=functions, cases=cases)
     if args.write:
@@ -211,10 +224,19 @@ def main():
         for key in sorted(set(golden["functions"]) | set(shared)):
             if golden["functions"].get(key) != shared.get(key):
                 problems.append(f"signature {key}: {golden['functions'].get(key)!r} -> {shared.get(key)!r}")
-    def same(expected, actual):
+    def pending(key, expected, actual):
+        # The golden accepts a call with radius > 0 that a --pending-temporal
+        # filter rejects as not available yet.
+        return (key.split("|")[0] in pending_temporal and radius_of.get(key, 0) > 0
+                and "ok" in (expected or {})
+                and "radius > 0 is not available yet" in (actual or {}).get("error", ""))
+
+    def same(expected, actual, key=""):
         # Errors that name only the plugin ("nss: ...") come from code shared by
         # the backends; a backend may report them under either name.
         if expected == actual:
+            return True
+        if pending(key, expected, actual):
             return True
         error = (expected or {}).get("error", "")
         return ns != "nss" and error.startswith("nss: ") and actual == {"error": ns + error[3:]}
@@ -222,7 +244,7 @@ def main():
     if args.default_temporal == "rolling":
         clip = clips["GRAYS"]
         for name in sorted(shared):
-            if name in skipped or "temporal_mode:" not in functions[name]:
+            if name in skipped or name in pending_temporal or "temporal_mode:" not in functions[name]:
                 continue
             try:
                 node = getattr(plugin, name)(core.std.BlankClip(clip, format=vs.RGBS) if name == "MCWNNM" else clip, radius=1)
@@ -237,7 +259,8 @@ def main():
         both = "use only one of rolling_cache_limit and rolling_cache_chunks"
         for key in sorted(cases):
             if both in (golden["cases"].get(key) or {}).get("error", ""):
-                if "ok" not in cases[key]:
+                # An adaptive backend must accept the call (the CPU's error does not apply).
+                if "ok" not in cases[key] and not pending(key, {"ok": None}, cases[key]):
                     problems.append(f"{key}: adaptive cache arguments rejected: {cases[key]}")
                 cases[key] = golden["cases"][key]  # checked above; not a difference
     # Checked without a device too: the cache arguments fail in the frontend
@@ -250,7 +273,7 @@ def main():
             if "rolling_cache_limit must be at least rolling_cache_chunks" not in str(error):
                 problems.append(f"rolling_cache_limit below rolling_cache_chunks: {error}")
     for key in sorted(set(golden["cases"]) | set(cases)):
-        if not same(golden["cases"].get(key), cases.get(key)):
+        if not same(golden["cases"].get(key), cases.get(key), key):
             problems.append(f"{key}: {golden['cases'].get(key)} -> {cases.get(key)}")
     for line in problems[:40]:
         print(line)

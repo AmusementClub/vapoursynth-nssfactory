@@ -117,13 +117,41 @@ else()
 endif()
 message(STATUS "NSSFactory Vulkan: headers/volk ${NSS_VK_SDK_TAG}, VMA ${NSS_VK_VMA_TAG}, shader tools: ${NSS_VK_SHADER_TOOLS}")
 
-# nss_vk_add_shader(<list-var> <id> <source.comp> [DEFINES NAME=VALUE ...])
+# The passes of spirv-opt --loop-unroll -O (SPIRV-Tools vulkan-sdk-1.4.363.0;
+# a system spirv-opt may differ) with -O's first redundancy-elimination, the
+# one after loop-unroll, block-local: on large
+# unrolled kernels (BM3D's warp kernel, 128-512 samples a lane) the global
+# value numbering there took 6.7-25 GB and most of the time (the dev host's
+# -j32 build ran out of memory); the local pass takes 0.15-1.4 GB.
+set_property(GLOBAL APPEND PROPERTY JOB_POOLS nss_vk_light=8)
+set(NSS_VK_SPIRV_OPT_LIGHT
+  --loop-unroll --wrap-opkill --eliminate-dead-branches --merge-return --inline-entry-points-exhaustive --eliminate-dead-functions
+  --eliminate-dead-code-aggressive --private-to-local --eliminate-local-single-block --eliminate-local-single-store
+  --eliminate-dead-code-aggressive --scalar-replacement=0 --convert-local-access-chains --eliminate-local-single-block
+  --eliminate-local-single-store --eliminate-dead-code-aggressive --ssa-rewrite --eliminate-dead-code-aggressive --ccp
+  --eliminate-dead-code-aggressive --loop-unroll --eliminate-dead-branches --local-redundancy-elimination
+  --combine-access-chains --simplify-instructions --scalar-replacement=0 --convert-local-access-chains
+  --eliminate-local-single-block --eliminate-local-single-store --eliminate-dead-code-aggressive --ssa-rewrite
+  --eliminate-dead-code-aggressive --vector-dce --eliminate-dead-inserts --eliminate-dead-branches
+  --simplify-instructions --if-conversion --copy-propagate-arrays --reduce-load-size --eliminate-dead-code-aggressive
+  --merge-blocks --redundancy-elimination --eliminate-dead-branches --merge-blocks --simplify-instructions)
+
+# nss_vk_add_shader(<list-var> <id> <source.comp> [LIGHT] [DEFINES NAME=VALUE ...])
 # One SPIR-V variant: glslang (GLSL 4.60 -> SPIR-V 1.6) -> spirv-opt
-# --loop-unroll -O (D24 as amended 2026-10-24) -> spirv-val -> a generated
-# .cpp holding the words. Appends the .cpp to <list-var> and the id to
-# NSS_VK_SHADER_IDS / the source to NSS_VK_SHADER_SOURCES (parent scope).
+# --loop-unroll -O (D24 as amended 2026-10-24; LIGHT: the same passes with
+# NSS_VK_SPIRV_OPT_LIGHT's local first redundancy elimination) -> spirv-val ->
+# a generated .cpp holding the words. Appends the .cpp to <list-var> and the
+# id to NSS_VK_SHADER_IDS / the source to NSS_VK_SHADER_SOURCES (parent scope).
 function(nss_vk_add_shader out_var id source)
-  cmake_parse_arguments(PARSE_ARGV 3 arg "" "" "DEFINES")
+  cmake_parse_arguments(PARSE_ARGV 3 arg "LIGHT" "" "DEFINES")
+  set(pool "")
+  if(arg_LIGHT)
+    set(passes ${NSS_VK_SPIRV_OPT_LIGHT})
+    # Up to 1.4 GB each: at most 8 at once (Ninja), whatever -j says.
+    set(pool JOB_POOL nss_vk_light)
+  else()
+    set(passes --loop-unroll -O)
+  endif()
   if(NOT id MATCHES "^[a-z][a-z0-9_]*$")
     message(FATAL_ERROR "Shader id '${id}' must be lower_snake_case")
   endif()
@@ -154,11 +182,12 @@ function(nss_vk_add_shader out_var id source)
     VERBATIM)
   add_custom_command(
     OUTPUT "${spv}" "${cpp}"
-    COMMAND ${NSS_VK_SPIRV_OPT_COMMAND} --target-env=vulkan1.3 --loop-unroll -O "${raw}" -o "${spv}"
+    COMMAND ${NSS_VK_SPIRV_OPT_COMMAND} --target-env=vulkan1.3 ${passes} "${raw}" -o "${spv}"
     COMMAND ${NSS_VK_SPIRV_VAL_COMMAND} --target-env vulkan1.3 "${spv}"
     COMMAND ${CMAKE_COMMAND} -DNSS_VK_ID=${id} "-DNSS_VK_SPV=${spv}" "-DNSS_VK_CPP=${cpp}"
             -P "${PROJECT_SOURCE_DIR}/cmake/VulkanEmbed.cmake"
     DEPENDS "${raw}" "${PROJECT_SOURCE_DIR}/cmake/VulkanEmbed.cmake" ${NSS_VK_SPIRV_TOOLS_DEPENDS}
+    ${pool}
     COMMENT "spirv-opt ${id}"
     VERBATIM)
   set(${out_var} ${${out_var}} "${cpp}" PARENT_SCOPE)

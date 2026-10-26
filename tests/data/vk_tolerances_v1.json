@@ -4,6 +4,9 @@
   "deterministic": true
  },
  "filters": {
+  "BM3D": {
+   "min_psnr": 60.0
+  },
   "NLM": {
    "min_psnr": 60.0
   }
