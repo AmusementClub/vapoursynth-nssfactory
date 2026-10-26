@@ -43,7 +43,7 @@ constexpr std::size_t frames_in_flight(int denoised) { return denoised == 1 ? 3 
 
 class Event {
 public:
-    Event() { NSS_CUDA_CHECK(cudaEventCreateWithFlags(&event_, cudaEventDisableTiming)); }
+    Event() { NSS_CUDA_CHECK(cudaEventCreateWithFlags(&event_, kStreamEvent)); }
     Event(const Event&) = delete;
     Event& operator=(const Event&) = delete;
     ~Event() {
@@ -475,7 +475,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         for (std::size_t i = 0; i < sets; ++i) {
             auto set = std::make_unique<Staging>();
             if (d.max_np > 0) set->bytes = PinnedBuffer(static_cast<std::size_t>(d.regions) * plane_bytes, d.budget);
-            NSS_CUDA_CHECK(cudaEventCreateWithFlags(&set->done, cudaEventDisableTiming));
+            NSS_CUDA_CHECK(cudaEventCreateWithFlags(&set->done, kHostWaitEvent));
             staging.push_back(std::move(set));
         }
         d.pool = std::make_unique<SlotPool<Slot>>(std::move(slots));

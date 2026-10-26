@@ -1553,7 +1553,7 @@ void allocate(ImageData& d, const MemoryPlan& plan) {
     for (int i = 0; i < plan.staging_sets; ++i) {
         auto set = std::make_unique<Staging>();
         set->bytes = PinnedBuffer(static_cast<std::size_t>(plan.staging_regions) * d.plane_floats * sizeof(float), d.budget);
-        NSS_CUDA_CHECK(cudaEventCreateWithFlags(&set->done, cudaEventDisableTiming));
+        NSS_CUDA_CHECK(cudaEventCreateWithFlags(&set->done, kHostWaitEvent));
         sets.push_back(std::move(set));
     }
     d.staging = std::make_unique<SlotPool<Staging>>(std::move(sets));
