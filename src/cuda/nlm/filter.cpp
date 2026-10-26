@@ -282,6 +282,15 @@ void plane_frame(const NlmData& d, const Frames& srcf, const Frames& reff, const
     held.slot.emplace(d.pool->acquire());
     VSFrame* dst = make_output();
     Slot& s = **held.slot;
+    // On an error the queued copies must not outlive the frames (direct
+    // DMA reads and writes them), the staging and the slot (as tile_frame).
+    struct Drain {
+        cudaStream_t stream;
+        bool armed = true;
+        ~Drain() {
+            if (armed) cudaStreamSynchronize(stream);
+        }
+    } drain{s.stream};
     const int w = d.width, h = d.height, nc = d.nc;
     const std::size_t row_bytes = static_cast<std::size_t>(w) * sizeof(float);
     auto* staging = s.staging.as<std::uint8_t>();
@@ -368,6 +377,7 @@ void plane_frame(const NlmData& d, const Frames& srcf, const Frames& reff, const
         }
     }
     s.stream.synchronize();
+    drain.armed = false;
     for (int c = 0; c < nc; ++c) {
         if (direct_out[c]) continue;  // the DMA wrote it
         const int plane = d.first_plane + c;

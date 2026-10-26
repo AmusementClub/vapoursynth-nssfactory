@@ -23,6 +23,13 @@ set_tests_properties(test_vk_runtime_one_copy_queue PROPERTIES LABELS vk SKIP_RE
 set_tests_properties(test_vk_runtime_compute_queue PROPERTIES LABELS vk SKIP_RETURN_CODE 77
                      ENVIRONMENT "NSS_VK_COPY_QUEUES=0")
 
+# Frames retained by a slot (direct I/O) across completed, unsubmitted and
+# failed waits; CPU (lavapipe) device only, skip 77 otherwise.
+add_executable(test_vk_slot_frames test_vk_slot_frames.cpp)
+target_link_libraries(test_vk_slot_frames PRIVATE nss_vk_core)
+add_test(NAME test_vk_slot_frames COMMAND test_vk_slot_frames)
+set_tests_properties(test_vk_slot_frames PROPERTIES LABELS vk SKIP_RETURN_CODE 77)
+
 # D23 warp layer, native against emulated against the host (V3).
 add_executable(test_vk_warp test_vk_warp.cpp)
 target_link_libraries(test_vk_warp PRIVATE nss_vk_core)

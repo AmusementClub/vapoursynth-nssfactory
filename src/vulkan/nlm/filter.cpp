@@ -294,6 +294,7 @@ struct PlaneUpload {
     int region = 0;
     std::size_t offset = 0;
     HostPlane source;
+    const VSFrame* frame = nullptr;  // the imported frame
 };
 
 // Frame t of the window (averaged planes, then reference planes) into region
@@ -308,7 +309,7 @@ void write_frame(const NlmData& d, PlaneStore& store, int region, const Frames& 
         const std::uint8_t* data = vsapi->getReadPtr(frame, plane);
         const std::ptrdiff_t stride = vsapi->getStride(frame, plane);
         if (const HostPlane source = d.frame_memory->pinned(frame, plane, data, stride, row_bytes)) {
-            uploads.push_back({region, offset, source});
+            uploads.push_back({region, offset, source, frame});
             return;
         }
         store.write(region, offset, data, stride, row_bytes, d.height, row_bytes);
@@ -320,10 +321,13 @@ void write_frame(const NlmData& d, PlaneStore& store, int region, const Frames& 
     }
 }
 
-void record_uploads(const NlmData& d, const PlaneStore& store, const std::vector<PlaneUpload>& uploads,
-                    VkCommandBuffer commands) {
+// The copies of the upload stage; the slot keeps the imported frames until they are done.
+void record_uploads(const NlmData& d, const PlaneStore& store, const std::vector<PlaneUpload>& uploads, Slot& slot,
+                    const VSAPI* vsapi) {
+    VkCommandBuffer commands = slot.commands(Slot::Upload);
     for (const PlaneUpload& u : uploads) {
         if (u.source) {
+            slot.retain(u.frame, vsapi);
             store.record_upload(commands, u.region, u.offset, d.plane_bytes, u.source.buffer, u.source.offset);
         } else {
             store.record_upload(commands, u.region, u.offset, d.plane_bytes);
@@ -345,7 +349,13 @@ DirectOut direct_out(const NlmData& d, VSFrame* dst, const VSAPI* vsapi) {
     return direct;
 }
 
-void record_result(const NlmData& d, const DownloadPlane& out, const DirectOut& direct, VkCommandBuffer commands) {
+// The download stage's copies; the slot keeps the output frame until they are done when they write it.
+void record_result(const NlmData& d, const DownloadPlane& out, const DirectOut& direct, VSFrame* dst, Slot& slot,
+                   const VSAPI* vsapi) {
+    VkCommandBuffer commands = slot.commands(Slot::Download);
+    if (std::any_of(direct.begin(), direct.end(), [](const HostPlane& p) { return static_cast<bool>(p); })) {
+        slot.retain(dst, vsapi);
+    }
     for (int c = 0; c < d.nc; ++c) out.record_download(commands, c * d.height, d.height, direct[c].buffer, direct[c].offset);
     out.record_host_barrier(commands);
 }
@@ -382,7 +392,7 @@ void plane_frame(NlmData& d, const Frames& srcf, const Frames& reff, const MakeO
     auto upload = [&](int region, int t) {
         std::vector<PlaneUpload> uploads;
         write_frame(d, p.frames, region, srcf, reff, t, vsapi, uploads);
-        if (!uploads.empty()) record_uploads(d, p.frames, uploads, slot.commands(Slot::Upload));
+        if (!uploads.empty()) record_uploads(d, p.frames, uploads, slot, vsapi);
     };
     upload(0, d.d);
     {
@@ -419,7 +429,7 @@ void plane_frame(NlmData& d, const Frames& srcf, const Frames& reff, const MakeO
         if (i == 0) {
             const FinishPush push{frames, p.sums.address(), p.out.address(), center, count, d.wref};
             d.finish.dispatch(commands, &push, (count + 255) / 256);
-            record_result(d, p.out, direct, slot.commands(Slot::Download));
+            record_result(d, p.out, direct, dst, slot, vsapi);
         }
         slot.submit();
         slot.wait();
@@ -586,7 +596,7 @@ void tile_frame(NlmData& d, int n, const Frames& srcf, const Frames& reff, const
     Slot& slot = lease->slot;
     if (staged) {
         for (const auto& [semaphore, value] : window.previous_uses()) slot.wait_for(Slot::Upload, semaphore, value);
-        record_uploads(d, store, uploads, slot.commands(Slot::Upload));
+        record_uploads(d, store, uploads, slot, vsapi);
     }
     // Frames other requests upload: wait for their upload stages on the device.
     for (WindowFrame* f : window.pinned()) {
@@ -615,7 +625,7 @@ void tile_frame(NlmData& d, int n, const Frames& srcf, const Frames& reff, const
     d.tile.dispatch(slot.commands(Slot::Compute), &push, static_cast<std::uint32_t>((d.width + kTileWidth - 1) / kTileWidth),
                     static_cast<std::uint32_t>((d.height + kTileHeight - 1) / kTileHeight));
     slot.end_label(Slot::Compute);
-    record_result(d, lease->out, direct, slot.commands(Slot::Download));
+    record_result(d, lease->out, direct, dst, slot, vsapi);
     slot.submit();
     weights.submitted(n, slot);
     if (staged) {
