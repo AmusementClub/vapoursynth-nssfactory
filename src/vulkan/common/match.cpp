@@ -26,10 +26,6 @@ static_assert(sizeof(Push) == 120, "matches the push blocks of shaders/common/ma
 constexpr int kBlockMaxK = 256;
 int block_k(const MatchGeometry& g, int ps_num) { return g.group <= 64 && ps_num <= 64 ? 64 : kBlockMaxK; }
 
-// Workgroups of the block fallback: one per reference, in rows of at most
-// 65535 (the smallest maxComputeWorkGroupCount Vulkan allows).
-constexpr int kMaxGroupsX = 65535;
-
 }  // namespace
 
 int lane_group(const MatchGeometry& g, int ps_num) {
@@ -110,14 +106,15 @@ Push push_of(const MatchGeometry& g, const RasterGrid& grid, int ref_begin, int 
 
 void Matcher::dispatch(VkCommandBuffer commands, const MatchGeometry& g, bool predictive, int ps_num, const void* push,
                        int ref_count) {
-    const Pipeline& p = pipeline(g, predictive, ps_num);
-    if (lanes(g, ps_num)) {
-        const int per_group = kLaneWarps * (32 / lane_group(g, ps_num));
-        p.dispatch(commands, push, static_cast<std::uint32_t>((ref_count + per_group - 1) / per_group));
-    } else {
-        const int x = std::min(ref_count, kMaxGroupsX);
-        p.dispatch(commands, push, static_cast<std::uint32_t>(x), static_cast<std::uint32_t>((ref_count + x - 1) / x));
+    if (static_cast<long long>(ref_count) * g.group >= (1LL << 31)) {
+        throw std::logic_error("nss_vk: match batch beyond 32-bit indices");
     }
+    const Pipeline& p = pipeline(g, predictive, ps_num);
+    // Lanes: 32 / L references a warp, four warps a workgroup. Block: one a workgroup.
+    const int per_group = lanes(g, ps_num) ? kLaneWarps * (32 / lane_group(g, ps_num)) : 1;
+    const int groups = (ref_count + per_group - 1) / per_group;
+    const int x = std::min(groups, max_groups_x_);
+    p.dispatch(commands, push, static_cast<std::uint32_t>(x), static_cast<std::uint32_t>((groups + x - 1) / x));
 }
 
 void Matcher::spatial(VkCommandBuffer commands, VkDeviceAddress plane, const MatchGeometry& g, const RasterGrid& grid,

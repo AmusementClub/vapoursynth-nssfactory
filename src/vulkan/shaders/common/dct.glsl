@@ -8,9 +8,13 @@
 // - N = 12, 16, 32, 64: the FFTW genfft codelets the CPU compiles through
 //   Highway (orthonormal), converted to GLSL at configure time
 //   (shaders_gen/common/dct_codelet_*.glsl, src/vulkan/CMakeLists.txt).
-// Every intermediate is precise and every fused step an explicit fma() (D26),
-// so a driver that fuses fma (NVIDIA) gives the CPU's bits; Mesa splits fma
-// even then (the last bit may differ).
+// Every intermediate is precise and every fused step an explicit fma() (D26):
+// on a driver that fuses fma (NVIDIA) the result is the arithmetic the CPU
+// source writes (tests/vk/test_vk_aggregate.cpp checks it bit for bit against
+// a host model of it). That is not a promise of the CPU's or CUDA's bits: the
+// CPU's 8-point file is built with -ffast-math and nss_cuda with fmad, either
+// of which may fuse the one multiply-subtract of dct8_inverse (tk). Mesa splits
+// fma even under precise (the last bit may differ).
 //
 // dct_line<N>(v, inverse) transforms the N values of v in place; the caller
 // gathers a line (any stride) into v and scatters it back.

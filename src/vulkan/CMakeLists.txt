@@ -21,14 +21,27 @@ endforeach()
 # DCT codelets (V3) for shaders/common/dct.glsl: the FFTW genfft files the CPU
 # compiles through Highway (src/cpu/bm/dct_codelet_*_is8.hpp, written by
 # tools/gen_dct_codelets.sh; nss_cuda keeps copies) turned into GLSL here, so
-# that the three backends run the same arithmetic. Element k of a line is
-# index 8 * k of the generated code (its input stride) and index k here.
+# that the three backends run the same arithmetic. These are generated data
+# read at configure time, not CPU code the Vulkan tree includes (the guard
+# above). Element k of a line is index 8 * k of the generated code (its input
+# and output stride, checked) and index k here.
 foreach(_nss_dir fwd inv)
   foreach(_nss_n 12 16 32 64)
     set(_nss_src "${PROJECT_SOURCE_DIR}/src/cpu/bm/dct_codelet_${_nss_dir}_n${_nss_n}_is8.hpp")
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_nss_src}")
     file(READ "${_nss_src}" _nss_text)
-    string(REPLACE "template <class D>\n" "" _nss_text "${_nss_text}")
+    if(NOT _nss_text MATCHES "-with-istride 8 -with-ostride 8 ")
+      message(FATAL_ERROR "DCT codelet ${_nss_src}: not generated with strides 8, cannot convert it to GLSL")
+    endif()
+    string(REGEX MATCHALL "&\\([IO]\\[[0-9]+\\]\\)" _nss_refs "${_nss_text}")
+    foreach(_nss_ref IN LISTS _nss_refs)
+      string(REGEX REPLACE "[^0-9]" "" _nss_index "${_nss_ref}")
+      math(EXPR _nss_rest "${_nss_index} % 8")
+      if(NOT _nss_rest EQUAL 0)
+        message(FATAL_ERROR "DCT codelet ${_nss_src}: index ${_nss_index} is not a multiple of the stride 8")
+      endif()
+    endforeach()
+    string(REGEX REPLACE "template <class D>\r?\n" "" _nss_text "${_nss_text}")
     string(REGEX REPLACE "static HWY_INLINE void (nss_dct[0-9]+_[a-z]+_is8)\\(D d, const R \\* I, R \\* O\\)"
            "void \\1(float I[${_nss_n}], precise out float O[${_nss_n}])" _nss_text "${_nss_text}")
     string(REGEX REPLACE "&\\(([IO])\\[([0-9]+)\\]\\)" "\\1[\\2 / 8]" _nss_text "${_nss_text}")

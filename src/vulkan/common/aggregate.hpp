@@ -35,8 +35,9 @@ struct FixedTarget {
 };
 static_assert(sizeof(FixedTarget) == 64, "matches shaders/common/fixed.glsl");
 
-// Zeroes `bytes` of `buffer` from `offset` (transfer fill) and makes that
-// visible to the compute work recorded after it.
+// Zeroes `bytes` of `buffer` from `offset` (transfer fill), after the compute
+// work recorded before it in `commands` and visible to the compute work
+// recorded after it.
 void fixed_clear(const Device& device, VkCommandBuffer commands, VkBuffer buffer, VkDeviceSize offset,
                  VkDeviceSize bytes);
 

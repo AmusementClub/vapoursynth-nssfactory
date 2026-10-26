@@ -2,8 +2,10 @@
 // Vulkan V3 primitives of the patch-group filters:
 // - DCT lines (shaders/common/dct.glsl) of every length against the CPU's
 //   nss::dct_lines (orthonormal; tolerance) and against a host model of the
-//   same arithmetic (the genfft codelets with std::fma, and the 2 / 4-point
-//   products): bit for bit on NVIDIA, which fuses fma; Mesa splits it (D26).
+//   arithmetic the CPU source writes (the genfft codelets with std::fma, the
+//   2 / 4-point products, the 8-point butterflies of Dct8Butterfly in
+//   src/cpu/bm/dct8.cpp): bit for bit on NVIDIA, which fuses fma; Mesa splits
+//   it (D26).
 //   Forward then inverse returns the input.
 // - Fixed-point aggregation (common/fixed.glsl, common/aggregate.hpp): the
 //   cells equal the host's exact integer sums, also into a ring of slices
@@ -27,6 +29,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <random>
 #include <string>
 #include <vector>
@@ -90,9 +93,73 @@ int failures = 0;
         }                                          \
     } while (0)
 
-// The host model of dct_line<n> where it is the CPU's arithmetic (n = 2, 4
-// and the codelets); false for the others.
+// src/cpu/bm/dct8.cpp's Dct8Butterfly, one line, with std::fma for MulAdd /
+// NegMulAdd (4x the orthonormal transform).
+void host_dct8(const float* b, float* o, bool inverse) {
+    const float k414 = 0.414213562373095048801688724209698078569671875f;
+    const float k1847 = 1.847759065022573512256366378793576573644833252f;
+    const float k198 = 0.198912367379658006911597622644676228597850501f;
+    const float k1961 = 1.961570560806460898252364472268478073947867462f;
+    const float k1414 = 1.414213562373095048801688724209698078569671875f;
+    const float k668 = 0.668178637919298919997757686523080761552472251f;
+    const float k1662 = 1.662939224605090474157576755235811513477121624f;
+    const float k707 = 0.707106781186547524400844362104849039284835938f;
+    const auto mad = [](float a, float x, float c) { return std::fma(a, x, c); };
+    const auto nmad = [](float a, float x, float c) { return std::fma(-a, x, c); };
+    if (!inverse) {
+        const float t1 = b[0], t2 = b[7], t3 = t1 - t2, tj = t1 + t2;
+        const float tc = b[4], td = b[3], te = tc - td, tk = tc + td;
+        const float t4 = b[2], t5 = b[5], t6 = t4 - t5;
+        const float t7 = b[1], t8 = b[6], t9 = t7 - t8;
+        const float ta = t6 + t9, tn = t7 + t8, tf = t6 - t9, tm = t4 + t5;
+        const float tb = nmad(k707, ta, t3), tg = nmad(k707, tf, te);
+        o[3] = k1662 * mad(k668, tg, tb);
+        o[5] = -(k1662 * nmad(k668, tb, tg));
+        const float tp = tj + tk, tq = tm + tn;
+        o[4] = k1414 * (tp - tq);
+        o[0] = k1414 * (tp + tq);
+        const float th = mad(k707, ta, t3), ti = mad(k707, tf, te);
+        o[1] = k1961 * nmad(k198, ti, th);
+        o[7] = k1961 * mad(k198, th, ti);
+        const float tl = tj - tk, to = tm - tn;
+        o[2] = k1847 * nmad(k414, to, tl);
+        o[6] = k1847 * mad(k414, tl, to);
+    } else {
+        const float t1 = k1414 * b[0], t2 = b[4];
+        const float t3 = mad(k1414, t2, t1), tj = nmad(k1414, t2, t1);
+        const float t4 = b[2], t5 = b[6];
+        const float t6 = mad(k414, t5, t4);
+        volatile float product = k414 * t4;  // Sub(Mul(...), t5): not fused by the host compiler either
+        const float tk = product - t5;
+        const float t8 = b[1], td = b[7], t9 = b[5], ta = b[3];
+        const float tb = t9 + ta, te = ta - t9;
+        const float tc = mad(k707, tb, t8), tn = nmad(k707, te, td);
+        const float tf = mad(k707, te, td), tm = nmad(k707, tb, t8);
+        const float t7 = mad(k1847, t6, t3), tg = mad(k198, tf, tc);
+        o[7] = nmad(k1961, tg, t7);
+        o[0] = mad(k1961, tg, t7);
+        const float tp = nmad(k1847, tk, tj), tq = mad(k668, tm, tn);
+        o[5] = nmad(k1662, tq, tp);
+        o[2] = mad(k1662, tq, tp);
+        const float th = nmad(k1847, t6, t3), ti = nmad(k198, tc, tf);
+        o[3] = nmad(k1961, ti, th);
+        o[4] = mad(k1961, ti, th);
+        const float tl = mad(k1847, tk, tj), to = nmad(k668, tn, tm);
+        o[6] = nmad(k1662, to, tl);
+        o[1] = mad(k1662, to, tl);
+    }
+}
+
+// The host model of dct_line<n>: the arithmetic the CPU source writes.
 bool host_line(int n, const float* in, float* out, bool inverse) {
+    if (n == 1) {
+        out[0] = in[0];
+        return true;
+    }
+    if (n == 8) {
+        host_dct8(in, out, inverse);
+        return true;
+    }
     if (n == 2 || n == 4) {
         const float r = 0.707106781186547524400844362104849039284835938f;
         const float a = 0.653281482438188263928322f, b = 0.270598050073098492199862f;
@@ -196,9 +263,13 @@ struct Patch {
     float weight;
 };
 
+// common/fixed.glsl's fixed_units: NaN adds nothing, magnitudes saturate at
+// the largest float below 2^31.
 std::uint64_t host_units(float v) {
-    const float scaled = v * nss::gpuhost::kFixedScale;
-    return static_cast<std::uint64_t>(static_cast<std::int64_t>(std::nearbyint(scaled)));
+    if (std::isnan(v)) return 0;
+    const float limit = 2147483520.f;
+    v = std::clamp(v, -limit, limit);
+    return static_cast<std::uint64_t>(static_cast<std::int64_t>(std::nearbyint(v * nss::gpuhost::kFixedScale)));
 }
 
 // npatch weighted block x block patches over `frames` window slots into a
@@ -214,7 +285,12 @@ void fixed_case(const std::shared_ptr<Device>& device, const Aggregator& aggrega
     patches[0].weight = 0.f;  // a zero weight adds zeros
     std::vector<float> values(static_cast<std::size_t>(npatch) * block * block);
     for (float& v : values) v = value(rng);
-    values[1] = std::nanf("");  // a NaN sample adds nothing
+    // Patch 1 (its weight is not zero): a NaN sample adds nothing, infinity
+    // and magnitudes beyond 2^31 saturate.
+    const std::size_t area1 = static_cast<std::size_t>(block) * block;
+    values[area1 + 1 < values.size() ? area1 : 0] = std::nanf("");
+    values[std::min(values.size() - 1, area1 + 1)] = std::numeric_limits<float>::infinity();
+    values[std::min(values.size() - 1, area1 + 2)] = -3.0e9f;
     const int pitch = width + 3;
     const std::size_t slice_cells = static_cast<std::size_t>(pitch) * height;
     const std::size_t cells = slice_cells * ring;
@@ -230,7 +306,7 @@ void fixed_case(const std::shared_ptr<Device>& device, const Aggregator& aggrega
         const std::size_t corner = cell * slice_cells + static_cast<std::size_t>(p.y) * pitch + p.x;
         for (int k = 0; k < area; ++k) {
             const float v = p.weight * values[static_cast<std::size_t>(i) * area + k];
-            num[corner + static_cast<std::size_t>(k / block) * pitch + k % block] += std::isnan(v) ? 0 : host_units(v);
+            num[corner + static_cast<std::size_t>(k / block) * pitch + k % block] += host_units(v);
         }
         den[corner] += host_units(p.weight);
     }

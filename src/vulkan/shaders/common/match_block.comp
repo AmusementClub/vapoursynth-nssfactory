@@ -16,7 +16,6 @@
 #version 460
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
-#extension GL_EXT_control_flow_attributes : require
 
 const int THREADS = 128;
 const int N = 1024;  // nss_cuda's kTemporalSort

@@ -94,13 +94,17 @@ struct Run {
 };
 
 // Runs one search on both warp layers (native where the device has the
-// lanes) and checks that they agree bit for bit; returns the native result.
+// lanes), and once more in rows of three workgroups (the dispatch split of
+// searches wider than 65535 workgroups), and checks that they agree bit for
+// bit; returns the native result.
 template <class Record>
 Run run_both(const std::shared_ptr<Device>& device, Matcher& matcher, const MatchGeometry& g, int ps_num, int refs,
              Record&& record, const char* label) {
     std::vector<Run> runs;
-    for (int emulated = 0; emulated < 2; ++emulated) {
-        matcher.force_emulation(emulated != 0);
+    for (int pass = 0; pass < 3; ++pass) {
+        const bool emulated = pass == 1;
+        matcher.force_emulation(emulated);
+        matcher.limit_groups_x(pass == 2 ? 3 : 65535);
         if (!emulated && matcher.emulated(g, ps_num)) continue;  // no native layer for these lanes here
         DownloadPlane out(device, static_cast<std::size_t>(refs) * g.group * sizeof(DeviceMatch), 1);
         DownloadPlane counts(device, static_cast<std::size_t>(refs) * sizeof(int), 1);
@@ -116,11 +120,12 @@ Run run_both(const std::shared_ptr<Device>& device, Matcher& matcher, const Matc
         runs.push_back(std::move(run));
     }
     matcher.force_emulation(false);
-    if (runs.size() == 2) {
-        CHECK(std::memcmp(runs[0].matches.data(), runs[1].matches.data(), runs[0].matches.size() * sizeof(DeviceMatch)) ==
+    matcher.limit_groups_x(65535);
+    for (std::size_t i = 1; i < runs.size(); ++i) {
+        CHECK(std::memcmp(runs[0].matches.data(), runs[i].matches.data(), runs[0].matches.size() * sizeof(DeviceMatch)) ==
                       0 &&
-                  runs[0].counts == runs[1].counts,
-              "%s: native and emulated layers differ", label);
+                  runs[0].counts == runs[i].counts,
+              "%s: %s differs", label, i + 1 == runs.size() ? "the dispatch in rows" : "the emulated layer");
     }
     return std::move(runs[0]);
 }
@@ -287,7 +292,10 @@ void image_case(const std::shared_ptr<Device>& device, Matcher& matcher, int wid
         DeviceMatch* gpu = run.matches.data() + static_cast<std::size_t>(ref) * group;
         // The spatial kernels report slot 0; the CPU reports the sequence index.
         if (!temporal) {
-            for (int i = 0; i < run.counts[ref]; ++i) gpu[i].t = t0;
+            for (int i = 0; i < run.counts[ref]; ++i) {
+                CHECK(gpu[i].t == 0, "%s ref %d entry %d: spatial slot %d", label, ref, i, gpu[i].t);
+                gpu[i].t = t0;
+            }
         }
         compare_group(cpu.data(), n, gpu, run.counts[ref], flat, stats, label, ref);
     }
@@ -329,6 +337,7 @@ int main(int argc, char** argv) {
         spatial_case(device, matcher, 97, 83, 4, 48, 5, 9, flat, stats);
         spatial_case(device, matcher, 80, 72, 8, 64, 4, 40, flat, stats);
         spatial_case(device, matcher, 97, 83, 32, 64, 9, 7, flat, stats);
+        spatial_case(device, matcher, 97, 83, 8, 1, 4, 7, flat, stats);  // group 1: the reference alone
         spatial_case(device, matcher, 64, 61, 8, 16, 8, 12, flat, stats);
         spatial_case(device, matcher, 97, 83, 12, 33, 5, 9, flat, stats);
         spatial_case(device, matcher, 97, 83, 32, 8, 9, 7, flat, stats);

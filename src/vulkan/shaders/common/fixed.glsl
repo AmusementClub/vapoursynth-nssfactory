@@ -6,8 +6,8 @@
 // commutative, so the 64-bit atomics give the same sums in any order. num
 // takes weight * value at every pixel of a patch, den the weight once, at the
 // patch's top-left pixel (aggregate.comp's finish sums the block x block
-// cells that cover a pixel). A NaN sample adds nothing; values are clamped to
-// the int64 range (both far outside video ranges, and deterministic).
+// cells that cover a pixel). A NaN sample adds nothing and values saturate
+// below 2^31 (both far outside video ranges, and deterministic).
 //
 // The including shader enables GL_EXT_buffer_reference,
 // GL_EXT_shader_explicit_arithmetic_types_int64 and GL_EXT_shader_atomic_int64.
@@ -48,12 +48,18 @@ int64_t fixed_patch_cell(FixedTarget f, int t, int y, int x) {
     return int64_t(slice) * f.slice_step + int64_t(y) * f.pitch + x;
 }
 
-// value in units of 2^-32, rounded to nearest even (__float2ll_rn).
+// value in units of 2^-32, rounded to nearest even (__float2ll_rn below
+// 2^31 in magnitude; beyond, saturated at the largest float below 2^31). NaN
+// and infinity are told apart by their bits: without SignedZeroInfNanPreserve
+// a driver may assume that no float is NaN or infinite and fold isnan() and
+// clamp() on them away.
 uint64_t fixed_units(float value) {
-    const float scaled = value * kFixedScale;  // exact: a power of two
-    if (isnan(scaled)) return 0ul;
-    const float limit = uintBitsToFloat(0x5effffffu);  // the largest float below 2^63
-    return uint64_t(int64_t(roundEven(clamp(scaled, -limit, limit))));
+    const uint bits = floatBitsToUint(value);
+    const uint magnitude = bits & 0x7fffffffu;
+    if (magnitude > 0x7f800000u) return 0ul;  // NaN adds nothing
+    const float limit = uintBitsToFloat(0x4effffffu);  // the largest float below 2^31
+    const float v = magnitude == 0x7f800000u ? ((bits >> 31) != 0u ? -limit : limit) : clamp(value, -limit, limit);
+    return uint64_t(int64_t(roundEven(v * kFixedScale)));  // exact scale: a power of two
 }
 
 void fixed_add(uint64_t cells, int64_t at, float value) {
