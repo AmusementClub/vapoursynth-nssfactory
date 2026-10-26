@@ -72,8 +72,8 @@ public:
 
     // Keeps f referenced until this frame's submitted work is done: the work
     // reads or writes its memory (frames imported for direct I/O). The
-    // references go once wait() or settle() saw the work finish. After a
-    // failed wait they are leaked with the slot's objects, so that
+    // references go once wait() or settle() saw the work finish. After this
+    // slot's wait failed they are leaked with its objects, so that
     // VapourSynth never reuses memory the device may still access.
     void retain(const VSFrame* f, const VSAPI* vsapi);
 

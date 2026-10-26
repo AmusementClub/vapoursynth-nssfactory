@@ -58,8 +58,10 @@ void Slot::retain(const VSFrame* f, const VSAPI* vsapi) {
 }
 
 void Slot::release_frames() noexcept {
-    // A broken slot's work may still run on a poisoned device: its frames stay.
-    if (state_ == State::broken || device_->poisoned()) return;
+    // A broken slot's work may still run: its frames stay. The device is then
+    // poisoned, but another slot's work that its wait saw finish is done, so
+    // that slot's frames go (later frames would leak them all otherwise).
+    if (state_ == State::broken) return;
     for (const auto& [frame, vsapi] : retained_) vsapi->freeFrame(frame);
     retained_.clear();
 }

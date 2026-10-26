@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // Slot::retain: the frames a frame's work reads or writes (direct I/O) are
 // let go once the work is known done (a completed wait, or commands that were
-// never submitted), and leaked after a failed wait, so that VapourSynth does
+// never submitted), and leaked after the slot's own wait failed, so that VapourSynth does
 // not reuse memory the device may still copy from or into. A gate semaphore
 // holds back valid work past a 200 ms wait bound; nothing faults. Runs on a CPU
 // (lavapipe) device only: the failed wait poisons the device. Exits 77
@@ -114,6 +114,16 @@ int main() {
     wait.pValues = &done.second;
     expect(device->vk().vkWaitSemaphores(device->handle(), &wait, 5'000'000'000ull) == VK_SUCCESS,
            "the gated work finishes once the gate opens");
+    {
+        // The device is poisoned now; a slot whose own wait sees its work
+        // finish still lets its frame go (else every later frame would leak).
+        Slot slot(device);
+        slot.retain(frame, &api);
+        record_fill(slot, target, Slot::Upload);
+        slot.submit();
+        slot.wait();
+        expect(freed == 3, "on a poisoned device a completed wait still lets the frame go (freed " + std::to_string(freed) + ")");
+    }
     if (failures) return EXIT_FAILURE;
     std::printf("vk slot frames OK\n");
     return EXIT_SUCCESS;
