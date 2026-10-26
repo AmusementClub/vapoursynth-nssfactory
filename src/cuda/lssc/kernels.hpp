@@ -65,6 +65,10 @@ std::size_t lssc_work_bytes(int m, int np);
 void lssc_pack(const LsscWork& w, cudaStream_t stream);
 // Atoms [first, atoms) from the patches sources[a - first] (device ints),
 // then every atom normalized.
+// sources[a - first] for atoms a in [first, atoms): the patch an LCG from
+// `seed` picks (state = state * 1664525 + 1013904223, then state % np), the
+// sequence the CPU model draws.
+void lssc_lcg_sources(int* sources, int first, int atoms, int np, unsigned seed, cudaStream_t stream);
 void lssc_patch_atoms(const LsscWork& w, const int* sources, int first, cudaStream_t stream);
 void lssc_ksvd(const LsscWork& w, cudaStream_t stream);
 // transpose, gram and inv_norm from dict.
