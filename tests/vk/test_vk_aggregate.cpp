@@ -227,11 +227,16 @@ void dct_case(const std::shared_ptr<Device>& device, int n, bool exact_device) {
         // The CPU's orthonormal transform of the same lines.
         std::vector<float> cpu = in;
         if (n > 1) nss::dct_lines(cpu.data(), n, n, 1, kLines, inverse);
+        // Non-finite outputs are failures of their own: std::max(worst, NaN) keeps worst.
         double worst = 0.0;
-        long same = 0, modelled = 0;
+        long same = 0, modelled = 0, nonfinite = 0;
         for (int l = 0; l < kLines; ++l) {
             const float* g = gpu.data() + static_cast<std::size_t>(l) * n;
             for (int k = 0; k < n; ++k) {
+                if (!std::isfinite(g[k])) {
+                    ++nonfinite;
+                    continue;
+                }
                 worst = std::max(worst, std::fabs(static_cast<double>(g[k]) / scale - cpu[static_cast<std::size_t>(l) * n + k]));
             }
             float model[64];
@@ -240,6 +245,7 @@ void dct_case(const std::shared_ptr<Device>& device, int n, bool exact_device) {
                 same += std::memcmp(model, g, sizeof(float) * n) == 0;
             }
         }
+        CHECK(nonfinite == 0, "dct n%d %s: %ld non-finite outputs", n, inverse ? "inverse" : "forward", nonfinite);
         CHECK(worst < 2e-5 * std::sqrt(static_cast<double>(n)), "dct n%d %s: max |vk / %g - cpu| %.3g", n,
               inverse ? "inverse" : "forward", scale, worst);
         if (exact_device) {
@@ -252,9 +258,15 @@ void dct_case(const std::shared_ptr<Device>& device, int n, bool exact_device) {
     // Round trip.
     const std::vector<float> back = run_lines(device, n, run_lines(device, n, in, false), true);
     double worst = 0.0;
+    long nonfinite = 0;
     for (std::size_t i = 0; i < in.size(); ++i) {
+        if (!std::isfinite(back[i])) {
+            ++nonfinite;
+            continue;
+        }
         worst = std::max(worst, std::fabs(static_cast<double>(back[i]) / (scale * scale) - in[i]));
     }
+    CHECK(nonfinite == 0, "dct n%d round trip: %ld non-finite outputs", n, nonfinite);
     CHECK(worst < 4e-6 * std::sqrt(static_cast<double>(n)), "dct n%d round trip: max error %.3g", n, worst);
 }
 
@@ -396,6 +408,7 @@ void fixed_case(const std::shared_ptr<Device>& device, const Aggregator& aggrega
     CHECK(runs[0][0] == runs[1][0] && runs[0][1] == runs[1][1], "%s: two runs differ", label);
     // Finish: the den of a pixel is the sum of the corners that cover it.
     double worst = 0.0;
+    long nonfinite = 0;
     for (int s = 0; s < ring; ++s) {
         for (int y = 0; y < height; ++y) {
             for (int x = 0; x < width; ++x) {
@@ -409,10 +422,15 @@ void fixed_case(const std::shared_ptr<Device>& device, const Aggregator& aggrega
                 const float d_ = static_cast<float>(static_cast<std::int64_t>(w)) * unit;
                 const float want = d_ > 1e-12f ? n_ / d_ : 0.5f;
                 const float got = finished[s * slice_cells + static_cast<std::size_t>(y) * pitch + x];
+                if (!std::isfinite(got) || !std::isfinite(want)) {
+                    ++nonfinite;
+                    continue;
+                }
                 worst = std::max(worst, static_cast<double>(std::fabs(got - want)) / std::max(1e-3f, std::fabs(want)));
             }
         }
     }
+    CHECK(nonfinite == 0, "%s: %ld non-finite finish outputs", label, nonfinite);
     CHECK(worst < 4e-7, "%s: finish relative error %.3g", label, worst);
     std::printf("%s: cells exact, finish max rel %.3g\n", label, worst);
 }
