@@ -311,16 +311,31 @@ constexpr long long window_floats(int tw, int th, int a, int s, int channels) {
 // of their windows in shared memory. With KEEP it saves and loads weight maps
 // (NlmTileArgs::weight_save, weight_load); without, the kernel is the one
 // that knows nothing of them.
-// Two blocks per SM. CUDA 12 (the release toolkit, 12.9) gives the instances 70 to 96 registers without
-// a bound, one 512-thread block per SM (415 against 565 fps at the 1080p defaults); 13.x picks 64 itself,
-// and the bound there changes its code (0.90 at the defaults), so it is given to CUDA 12 only.
+// Two blocks per SM (__launch_bounds__(threads, 2)) where a 512-thread block
+// would otherwise get more than 64 registers and the SM one block. CUDA 12
+// gives every instance 70 to 96 registers without a bound (415 against 565 fps
+// at the 1080p defaults with it). CUDA 13.3 gives most 48 or 64 but some 66 to
+// 127 (cuobjdump --dump-resource-usage, 2026-10-28): those take the bound, by
+// their template arguments below, and the others none, because there the bound
+// changes code that already fits two blocks for the worse (gray d=1 at 1080p:
+// 1.00 against 1.25 ms of kernel time), and a bound of one block lets nvcc take
+// up to 128 registers. Kernel time at 1080p, RTX 5080: gray d=0 0.47 -> 0.38 ms,
+// RGB d=1 2.40 -> 2.02 ms, the others unchanged or faster; output unchanged.
+// Re-check the register counts when the toolkit changes.
+template <int S, bool IMG, bool KEEP>
+constexpr bool tile_two_blocks() {
 #if defined(__CUDACC_VER_MAJOR__) && __CUDACC_VER_MAJOR__ < 13
-#define NSS_NLM_TILE_BOUNDS(threads) __launch_bounds__(threads, 2)
+    return true;
 #else
-#define NSS_NLM_TILE_BOUNDS(threads)
+    // Windows: 72 to 127 registers, with weight maps 64 (72 for the generic S).
+    // Without: weight maps 66 to 96 (64 at S = 0); neither, 72 to 76 at S >= 5.
+    if (IMG) return !KEEP || S < 0;
+    return KEEP ? S != 0 : S >= 5;
 #endif
+}
+
 template <int TW, int TH, int PIX, int S, bool IMG, bool KEEP>
-__global__ void NSS_NLM_TILE_BOUNDS(TW * TH / PIX) tile_kernel(NlmTileArgs a) {
+__device__ __forceinline__ void tile_body(const NlmTileArgs& a) {
     constexpr int NT = TW * TH / PIX;
     extern __shared__ __align__(16) float shared[];
     const int tid = threadIdx.x;
@@ -446,6 +461,23 @@ __global__ void NSS_NLM_TILE_BOUNDS(TW * TH / PIX) tile_kernel(NlmTileArgs a) {
     }
 }
 
+template <int TW, int TH, int PIX, int S, bool IMG, bool KEEP>
+__global__ void tile_kernel(NlmTileArgs a) {
+    tile_body<TW, TH, PIX, S, IMG, KEEP>(a);
+}
+template <int TW, int TH, int PIX, int S, bool IMG, bool KEEP>
+__global__ void __launch_bounds__(TW * TH / PIX, 2) tile_kernel_two(NlmTileArgs a) {
+    tile_body<TW, TH, PIX, S, IMG, KEEP>(a);
+}
+template <int TW, int TH, int PIX, int S, bool IMG, bool KEEP>
+void launch_tile(dim3 grid, unsigned threads, std::size_t shared, const NlmTileArgs& args, cudaStream_t stream) {
+    if constexpr (tile_two_blocks<S, IMG, KEEP>()) {
+        tile_kernel_two<TW, TH, PIX, S, IMG, KEEP><<<grid, threads, shared, stream>>>(args);
+    } else {
+        tile_kernel<TW, TH, PIX, S, IMG, KEEP><<<grid, threads, shared, stream>>>(args);
+    }
+}
+
 // 512 threads with two pixels each: with the defaults at 1080p 408 fps reading
 // the frames and 481 with their windows in shared memory, where 1024 threads
 // with one pixel gave 380 and 400, 256 threads with four pixels 423, and
@@ -468,13 +500,13 @@ void launch_shape_s(const NlmTileArgs& args, cudaStream_t stream) {
     const unsigned threads = TW * TH / PIX;
     const bool keep = args.weight_save || args.weight_load;
     if (windows && keep) {
-        tile_kernel<TW, TH, PIX, S, true, true><<<grid, threads, shared, stream>>>(args);
+        launch_tile<TW, TH, PIX, S, true, true>(grid, threads, shared, args, stream);
     } else if (windows) {
-        tile_kernel<TW, TH, PIX, S, true, false><<<grid, threads, shared, stream>>>(args);
+        launch_tile<TW, TH, PIX, S, true, false>(grid, threads, shared, args, stream);
     } else if (keep) {
-        tile_kernel<TW, TH, PIX, S, false, true><<<grid, threads, shared, stream>>>(args);
+        launch_tile<TW, TH, PIX, S, false, true>(grid, threads, shared, args, stream);
     } else {
-        tile_kernel<TW, TH, PIX, S, false, false><<<grid, threads, shared, stream>>>(args);
+        launch_tile<TW, TH, PIX, S, false, false>(grid, threads, shared, args, stream);
     }
 }
 
