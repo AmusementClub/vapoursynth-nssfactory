@@ -111,11 +111,11 @@ template <int N, class Model>
 __device__ __forceinline__ void gram_block(const GramGroupArgs& a, const Model& model) {
     constexpr int kGroups = 32 / N;
     __shared__ float g_all[kGroups][N * N], v_all[kGroups][N * N], cs_all[kGroups][N + 2], weight_all[kGroups];
-    __shared__ int flag;
+    [[maybe_unused]] __shared__ int flag;  // block_jacobi's (not NCSR's divide and conquer)
     const int slot = threadIdx.x / N, lane = threadIdx.x % N;
     float* const g = g_all[slot];
     float* const v = v_all[slot];
-    float* const cs = cs_all[slot];
+    [[maybe_unused]] float* const cs = cs_all[slot];
     float& weight = weight_all[slot];
     const bool live = static_cast<int>(blockIdx.x) * kGroups + slot < a.batch;
     const int r = live ? blockIdx.x * kGroups + slot : a.batch - 1;
@@ -164,7 +164,6 @@ __device__ __forceinline__ void gram_block(const GramGroupArgs& a, const Model& 
     for (int k = 0; k < N; ++k) g[lane * N + k] = acc[k];
     __syncthreads();
     if constexpr (N == 32 && GramDivide<Model>::value) {
-        (void)cs, (void)flag;  // block_jacobi's workspace (the other branch)
         // Householder tridiagonalization and divide and conquer (one group
         // a block of 32; eig_bench.cu: 0.14 against 0.47 ms per 1000
         // matrices). The reflectors take v until the vectors, rows of g, are

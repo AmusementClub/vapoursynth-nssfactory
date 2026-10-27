@@ -17,23 +17,16 @@ FetchContent_Declare(
   GIT_REPOSITORY https://github.com/google/highway.git
   GIT_TAG ${NSS_HIGHWAY_GIT_TAG}
   GIT_SHALLOW TRUE
+  # Highway sets policy CMP0111 to OLD for its GTest imports, which this
+  # build does not make (HWY_ENABLE_TESTS OFF), and CMake reports the OLD
+  # policy as deprecated at every configure: the line is commented out
+  # (cmake/highway_patch.cmake; build scripts only, the library is as tagged).
+  PATCH_COMMAND ${CMAKE_COMMAND} -DFILE=<SOURCE_DIR>/CMakeLists.txt -P ${CMAKE_CURRENT_LIST_DIR}/highway_patch.cmake
 )
 set(HWY_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
 set(HWY_ENABLE_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(HWY_ENABLE_CONTRIB OFF CACHE BOOL "" FORCE)
-# Highway's own CMakeLists sets policy CMP0111 to OLD, which CMake reports as
-# deprecated at every configure; that is upstream's to change, not a
-# deprecation in this project (scoped to Highway's directory).
-if(DEFINED CMAKE_WARN_DEPRECATED)
-  set(_nss_saved_warn_deprecated "${CMAKE_WARN_DEPRECATED}")
-endif()
-set(CMAKE_WARN_DEPRECATED OFF)
 FetchContent_MakeAvailable(highway)
-if(DEFINED _nss_saved_warn_deprecated)
-  set(CMAKE_WARN_DEPRECATED "${_nss_saved_warn_deprecated}")
-else()
-  unset(CMAKE_WARN_DEPRECATED)
-endif()
 
 # Keep the bundled diagnostic helper aligned with the project dispatch mask.
 # The hwy library itself remains target-agnostic; business TUs receive the

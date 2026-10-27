@@ -21,6 +21,13 @@ if(NOT NSS_BUILD_CPU AND NOT NSS_ENABLE_CUDA AND NOT NSS_ENABLE_VULKAN)
   message(FATAL_ERROR "Nothing to build: enable NSS_BUILD_CPU, NSS_ENABLE_CUDA and/or NSS_ENABLE_VULKAN")
 endif()
 
+# The Windows CRT marks getenv, fopen, sscanf, strncpy... deprecated in favour
+# of its _s variants. The project (and the pinned third-party tools) use them
+# as the C standard defines them: no warnings for that, in every tree.
+if(WIN32)
+  add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -180,13 +187,6 @@ endif()
 if(NSS_HWY_TARGET_MODE MATCHES "^avx" AND
    NOT NSS_HWY_X86)
   message(FATAL_ERROR "NSS_HWY_TARGET_MODE=${NSS_HWY_TARGET_MODE} requires an x86 processor")
-endif()
-
-# The Windows CRT marks getenv, fopen, sscanf, strncpy... deprecated in favour
-# of its _s variants. The project (and the pinned third-party tools) use them
-# as the C standard defines them: no warnings for that.
-if(WIN32)
-  add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
 endif()
 
 include(cmake/Highway.cmake)
