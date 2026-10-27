@@ -111,11 +111,11 @@ template <int N, class Model>
 __device__ __forceinline__ void gram_block(const GramGroupArgs& a, const Model& model) {
     constexpr int kGroups = 32 / N;
     __shared__ float g_all[kGroups][N * N], v_all[kGroups][N * N], cs_all[kGroups][N + 2], weight_all[kGroups];
-    __shared__ int flag;
+    [[maybe_unused]] __shared__ int flag;  // block_jacobi's (not NCSR's divide and conquer)
     const int slot = threadIdx.x / N, lane = threadIdx.x % N;
     float* const g = g_all[slot];
     float* const v = v_all[slot];
-    float* const cs = cs_all[slot];
+    [[maybe_unused]] float* const cs = cs_all[slot];
     float& weight = weight_all[slot];
     const bool live = static_cast<int>(blockIdx.x) * kGroups + slot < a.batch;
     const int r = live ? blockIdx.x * kGroups + slot : a.batch - 1;

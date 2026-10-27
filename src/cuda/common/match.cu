@@ -1368,6 +1368,7 @@ __global__ void __launch_bounds__(128, 4) tensor_match_kernel(const float* plane
         const int jlo = part ? split : 0, jhi = part ? nref : split;
         const int yr = ref_y(jlo);
         const int xmin = ref_x(jlo), xmax = ref_x(jhi - 1);
+#if __CUDA_ARCH__ >= 800  // the mma below is sm_80+ code; older builds trap there
         const int xg = ref_x(min(max(gq, jlo), jhi - 1));
         unsigned b[4][2];
         const unsigned* bcol = tp.pairs + static_cast<long long>(yr) * tp.pitch + kTensorPad + xg + 2 * tq;
@@ -1376,6 +1377,7 @@ __global__ void __launch_bounds__(128, 4) tensor_match_kernel(const float* plane
             b[ks][0] = bcol[(2 * ks) * tp.pitch];
             b[ks][1] = bcol[(2 * ks + 1) * tp.pitch];
         }
+#endif
         float nr[2], er[2];
         int xr[2];
         bool act[2];

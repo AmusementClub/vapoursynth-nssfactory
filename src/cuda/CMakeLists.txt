@@ -44,6 +44,16 @@ if(NSS_CUDA_ARCHITECTURES STREQUAL "default")
 else()
   set(NSS_CUDA_ARCH_LIST ${NSS_CUDA_ARCHITECTURES})
 endif()
+# nvcc compiles a source's architectures in parallel (--threads; 0 = one per
+# CPU). With five targets a source is bound by the slowest, and the build by
+# its largest sources (bm3d/kernels.cu: 384 s -> 121 s on four cores,
+# 2026-10-27; SASS and PTX identical, about 0.8 GB of memory per target).
+# No effect on a single-architecture build.
+set(NSS_CUDA_NVCC_THREADS "0" CACHE STRING "nvcc --threads for libnss_cuda's sources (0 = one per CPU, 1 = serial)")
+if(NOT NSS_CUDA_NVCC_THREADS MATCHES "^[0-9]+$")
+  message(FATAL_ERROR "NSS_CUDA_NVCC_THREADS must be a non-negative integer, got '${NSS_CUDA_NVCC_THREADS}'")
+endif()
+set(NSS_CUDA_THREADS_OPTION "$<$<COMPILE_LANGUAGE:CUDA>:SHELL:--threads ${NSS_CUDA_NVCC_THREADS}>")
 # Split into cubin and PTX sets for the runtime support classification.
 set(NSS_CUDA_CUBIN_ARCHS "")
 set(NSS_CUDA_PTX_ARCHS "")
@@ -167,6 +177,7 @@ if(NSS_CUDA_MATHDX)
     CXX_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN ON
   )
+  target_compile_options(nss_cuda_solverdx PRIVATE "${NSS_CUDA_THREADS_OPTION}")
   target_include_directories(nss_cuda_solverdx PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/.." "${NSS_CUDA_MATHDX}/include" "${NSS_CUDA_MATHDX}/external/cutlass/include")
   target_compile_definitions(nss_cuda_solverdx PRIVATE NSS_CUDA_SOLVERDX=1)
@@ -190,6 +201,7 @@ set_target_properties(nss_cuda_core PROPERTIES
   VISIBILITY_INLINES_HIDDEN ON
 )
 target_include_directories(nss_cuda_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")
+target_compile_options(nss_cuda_core PRIVATE "${NSS_CUDA_THREADS_OPTION}")
 # Only the (host-compiled) classifier needs the list; nvcc would split a
 # comma-separated -D value into several macros.
 set_source_files_properties(runtime/device.cpp PROPERTIES COMPILE_DEFINITIONS

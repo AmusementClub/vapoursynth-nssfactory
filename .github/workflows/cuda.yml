@@ -43,6 +43,17 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
+permissions:
+  contents: read
+  actions: write  # to delete superseded caches
+
+# Compiler caches as in linux.yml / vulkan.yml: every run reads master's,
+# only runs on master write one (and the prune job drops the older ones).
+# nvcc goes through ccache too: a pull request that leaves a kernel source
+# alone takes its objects from master's cache (each .cu is minutes of nvcc).
+env:
+  CCACHE_MAXSIZE: 2G
+
 jobs:
   linux:
     name: linux-cuda-${{ matrix.cuda }}
@@ -61,23 +72,38 @@ jobs:
       - name: packages
         run: |
           apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git python3 python3-venv ca-certificates
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git python3 python3-venv ca-certificates ccache zstd
           python3 -m venv /opt/venv
+          # No pip cache in the container (its home is not root's: pip would warn and disable it).
+          export PIP_NO_CACHE_DIR=1
           /opt/venv/bin/pip install cmake ninja
           # Headers only: the plugin is loaded by the host and never links libvapoursynth.
           git clone --depth 1 --branch R80 https://github.com/vapoursynth/vapoursynth /opt/vapoursynth
           # Python 3.12+ images can also load the plugin to exercise the no-GPU path.
           if python3 -c 'import sys; sys.exit(sys.version_info < (3, 12))'; then /opt/venv/bin/pip install vapoursynth; fi
       - uses: actions/checkout@v4
+      # After the checkout, which empties a workspace that is not a repository.
+      # In a container job github.workspace names the host's path: the cache
+      # directory is relative, and CCACHE_DIR comes from the container's
+      # GITHUB_WORKSPACE.
+      - uses: actions/cache/restore@v4
+        with:
+          path: .ccache
+          key: cuda-ccache-linux-master-${{ github.sha }}
+          restore-keys: cuda-ccache-linux-master-
       - name: configure
         run: |
-          export PATH=/opt/venv/bin:$PATH
+          echo "CCACHE_DIR=$GITHUB_WORKSPACE/.ccache" >> "$GITHUB_ENV"
+          export CCACHE_DIR=$GITHUB_WORKSPACE/.ccache PATH=/opt/venv/bin:$PATH
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache \
             -DNSS_ENABLE_CUDA=ON -DNSS_BUILD_CPU=${{ matrix.cpu }} \
             -DVapourSynth_INCLUDE_DIR=/opt/vapoursynth/include \
             -DPython3_EXECUTABLE=/opt/venv/bin/python
       - name: build
         run: /opt/venv/bin/cmake --build build -j
+      - name: ccache stats
+        run: ccache --show-stats
       - name: fat binary contents
         run: |
           cuobjdump --list-elf --list-ptx build/src/cuda/libnss_cuda.so | tee fatbin.txt
@@ -85,34 +111,86 @@ jobs:
           grep -q "\.sm_75\.ptx" fatbin.txt || { echo "missing compute_75 PTX"; exit 1; }
       - name: cuda tests (skip without a GPU)
         run: /opt/venv/bin/ctest --test-dir build -L cuda --output-on-failure
+      - name: save the compiler cache (master only)
+        if: github.ref == 'refs/heads/master'
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: cuda-ccache-linux-master-${{ github.sha }}
 
   windows:
     name: windows-cuda-13.3-msvc
     # Pinned to VS 2022, which CUDA 13.3 supports; windows-latest ships VS 2026.
     runs-on: windows-2022
+    env:
+      CCACHE_DIR: ${{ github.workspace }}\.ccache
+      # The toolkit lives at a path without spaces, the same in every run:
+      # under Program Files CMake calls nvcc by its 8.3 short name, which
+      # depends on what else is installed there (NVIDIA~2 after the
+      # installer, NVIDIA~1 after a cache restore), and every nvcc object
+      # then missed ccache (its include paths and preprocessed text differ).
+      CUDA_ROOT: C:\cuda\v13.3
     steps:
       - uses: actions/checkout@v4
+      # The installed toolkit is cached: the installer took 7 to 13 minutes a
+      # run (most of it the Visual Studio integration, which Ninja builds do
+      # not use). The key names the version and the packages (bump the suffix
+      # to rebuild it); only master writes it.
+      - name: restore the CUDA toolkit
+        id: toolkit
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.CUDA_ROOT }}
+          key: cuda-toolkit-windows-13.3.0-nvcc-crt-nvvm-cudart-cuobjdump-nvtx-v2
       - uses: Jimver/cuda-toolkit@v0.2.36
+        if: steps.toolkit.outputs.cache-hit != 'true'
         with:
           cuda: "13.3.0"
           method: network
           # CUDA 13 ships the crt headers and NVVM as packages of their own.
-          sub-packages: '["nvcc", "crt", "nvvm", "cudart", "cuobjdump", "nvtx", "visual_studio_integration"]'
+          sub-packages: '["nvcc", "crt", "nvvm", "cudart", "cuobjdump", "nvtx"]'
+      - name: the toolkit at its fixed path
+        if: steps.toolkit.outputs.cache-hit != 'true'
+        run: |
+          robocopy "$env:CUDA_PATH" "$env:CUDA_ROOT" /E /NFL /NDL /NJH /NJS /NP
+          if ($LASTEXITCODE -ge 8) { exit 1 }
+          exit 0
+      - name: use the toolkit at its fixed path
+        run: |
+          "CUDA_PATH=$env:CUDA_ROOT" >> $env:GITHUB_ENV
+          "CUDA_PATH_V13_3=$env:CUDA_ROOT" >> $env:GITHUB_ENV
+          "CUDACXX=$env:CUDA_ROOT\bin\nvcc.exe" >> $env:GITHUB_ENV
+          "$env:CUDA_ROOT\bin" >> $env:GITHUB_PATH
+      - name: save the CUDA toolkit (master only)
+        if: steps.toolkit.outputs.cache-hit != 'true' && github.ref == 'refs/heads/master'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.CUDA_ROOT }}
+          key: cuda-toolkit-windows-13.3.0-nvcc-crt-nvvm-cudart-cuobjdump-nvtx-v2
+      - uses: actions/cache/restore@v4
+        with:
+          path: .ccache
+          key: cuda-ccache-windows-master-${{ github.sha }}
+          restore-keys: cuda-ccache-windows-master-
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
       - name: packages
         run: |
+          choco install ccache --no-progress
           pip install vapoursynth ninja
+          (Get-Command nvcc).Source
           nvcc --version
           cl 2>&1 | Select-Object -First 1
       - name: configure
         run: |
           $vsInclude = python -c "import vapoursynth, pathlib; print(pathlib.Path(vapoursynth.__file__).parent / 'include')"
           $pythonExe = (Get-Command python).Source
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=cl -DNSS_ENABLE_CUDA=ON -DNSS_BUILD_CPU=OFF -DVapourSynth_INCLUDE_DIR="$vsInclude" -DPython3_EXECUTABLE="$pythonExe"
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=cl -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache -DNSS_ENABLE_CUDA=ON -DNSS_BUILD_CPU=OFF -DVapourSynth_INCLUDE_DIR="$vsInclude" -DPython3_EXECUTABLE="$pythonExe"
       - name: build
         run: cmake --build build -j
+      - name: ccache stats
+        run: ccache --show-stats
       - name: plugin DLL
         run: |
           $dll = Get-ChildItem -Recurse build -Filter libnss_cuda.dll | Select-Object -First 1
@@ -120,3 +198,25 @@ jobs:
           cuobjdump --list-elf --list-ptx $dll.FullName
       - name: cuda tests (skip without a GPU)
         run: ctest --test-dir build -L cuda --output-on-failure
+      - name: save the compiler cache (master only)
+        if: github.ref == 'refs/heads/master'
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: cuda-ccache-windows-master-${{ github.sha }}
+
+  # Master's compiler caches of earlier commits (the container lane has no gh).
+  prune:
+    if: github.ref == 'refs/heads/master'
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: drop master's older compiler caches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for prefix in cuda-ccache-linux-master- cuda-ccache-windows-master-; do
+            gh cache list --repo "$GITHUB_REPOSITORY" --key "$prefix" --limit 100 --json id,key \
+              --jq ".[] | select(.key != \"${prefix}${GITHUB_SHA}\") | .id" |
+              while read -r id; do gh cache delete "$id" --repo "$GITHUB_REPOSITORY" || true; done
+          done

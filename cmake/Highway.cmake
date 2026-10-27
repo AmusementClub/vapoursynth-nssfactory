@@ -17,6 +17,11 @@ FetchContent_Declare(
   GIT_REPOSITORY https://github.com/google/highway.git
   GIT_TAG ${NSS_HIGHWAY_GIT_TAG}
   GIT_SHALLOW TRUE
+  # Highway sets policy CMP0111 to OLD for its GTest imports, which this
+  # build does not make (HWY_ENABLE_TESTS OFF), and CMake reports the OLD
+  # policy as deprecated at every configure: the line is commented out
+  # (cmake/highway_patch.cmake; build scripts only, the library is as tagged).
+  PATCH_COMMAND ${CMAKE_COMMAND} -DFILE=<SOURCE_DIR>/CMakeLists.txt -P ${CMAKE_CURRENT_LIST_DIR}/highway_patch.cmake
 )
 set(HWY_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
 set(HWY_ENABLE_EXAMPLES OFF CACHE BOOL "" FORCE)
