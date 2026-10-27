@@ -32,6 +32,18 @@ the same search, at 1080p gray: about 1.25x spatial, and 2.7x / 3.3x at
 `radius=1` / `2` when frames are rendered in order. With `chroma=1` at YUV444:
 243 fps against its 200.
 
+With `block_size=8` and `block_step=4` the spatial search shares work between
+references (the square matcher of Davy & Ehret, *GPU acceleration of NL-means,
+BM3D and VBM3D*, JRTIP 2021): at step 4 an 8 x 8 block is four 4 x 4 quarters,
+each the corner of a neighbouring reference, so every quarter distance is
+computed once. Same matches up to near ties (distances differ in the last
+bits), same quality. 1080p gray against the per-reference search: 1.40x with
+`final=1, block_step=4, group_size=8, bm_range=10`, 1.26x at `block_step=4,
+group_size=16`, 1.57x at `final=1, block_step=4, group_size=32,
+group_size_basic=16, bm_range=19`, 1.42x on RGB, 1.17x with `chroma=1`. Windows
+of radius 1-2 with groups of 8 or more keep the per-reference search, radii of
+40 or more the tensor-core one; spatial only (`radius=0`).
+
 ## Closer to the papers
 
 The defaults are fast settings. Settings closer to the paper, with their quality and cost. Measured on one 1080p RGB frame (an anime credits frame with its own film grain) with Gaussian noise added, against the frame without it; the noisy input is 24.97 dB at sigma 15 and 20.98 dB at sigma 25. One image: take these as starting points, not tuned presets. σ is the standard deviation of the noise in 8-bit units; speed at 1080p on an RTX 5080 (the second row's on the test frame).

@@ -98,6 +98,10 @@ struct GroupFilterConfig {
     // patch records and weights. Unlike joint groups this is one round per
     // plane, so rolling output and fused aggregation remain available.
     bool shared_match = false;
+    // Spatial matching by the square matcher where it applies (block 8, step
+    // 4; spatial_match_square_takes): BM3D. Its distances differ from the
+    // lane kernels' in the last bits, so the other filters keep those.
+    bool square_match = false;
     // Two stages in one node (BM3D final): the source is first filtered with
     // `basic` and no guide, and that estimate stays on the device as the
     // guide of the second stage, `planes`. The node takes no guide clip then.

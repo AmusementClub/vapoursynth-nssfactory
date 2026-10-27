@@ -98,6 +98,43 @@ void spatial_case(int width, int height, int block, int group, int step, int ran
     }
 }
 
+// The square matcher (block 8, step 4) against the CPU, in `batches` uneven
+// batches that do not start on grid rows.
+void square_case(int width, int height, int group, int range, int batches, bool flat, Stats& stats) {
+    const auto plane = make_plane(width, height, 13u + group + range, flat);
+    nss_cuda::DeviceBuffer d_plane(plane.size() * sizeof(float));
+    NSS_CUDA_CHECK(cudaMemcpy(d_plane.get(), plane.data(), plane.size() * sizeof(float), cudaMemcpyHostToDevice));
+    const auto grid = nss_cuda::make_raster_grid(width, height, 8, 4);
+    const int n = grid.count();
+    nss_cuda::DeviceBuffer d_out(static_cast<std::size_t>(n) * group * sizeof(nss_cuda::DeviceMatch));
+    nss_cuda::DeviceBuffer d_counts(static_cast<std::size_t>(n) * sizeof(int));
+    NSS_CUDA_CHECK(cudaMemset(d_counts.get(), 0, d_counts.bytes()));
+    const nss_cuda::MatchGeometry g{width, height, width, 8, range, group};
+    CHECK(nss_cuda::spatial_match_square_takes(g, grid), "square %dx%d g%d not taken", width, height, group);
+    for (int b = 0; b < batches; ++b) {
+        const int begin = static_cast<int>(static_cast<long long>(n) * b * b / (batches * batches));
+        const int end = static_cast<int>(static_cast<long long>(n) * (b + 1) * (b + 1) / (batches * batches));
+        nss_cuda::spatial_match_square(d_plane.as<float>(), g, grid, begin, end - begin,
+                                       d_out.as<nss_cuda::DeviceMatch>() + static_cast<std::size_t>(begin) * group,
+                                       d_counts.as<int>() + begin, nullptr);
+    }
+    std::vector<nss_cuda::DeviceMatch> out(static_cast<std::size_t>(n) * group);
+    std::vector<int> counts(n);
+    NSS_CUDA_CHECK(cudaMemcpy(out.data(), d_out.get(), d_out.bytes(), cudaMemcpyDeviceToHost));
+    NSS_CUDA_CHECK(cudaMemcpy(counts.data(), d_counts.get(), d_counts.bytes(), cudaMemcpyDeviceToHost));
+    char label[96];
+    std::snprintf(label, sizeof label, "square %dx%d g%d r%d batches %d%s", width, height, group, range, batches,
+                  flat ? " flat" : "");
+    for (int ref = 0; ref < n; ++ref) {
+        CHECK(counts[ref] >= 1, "%s ref %d: no result", label, ref);
+        nss::Match cpu[nss_cuda::kMaxGroup];
+        const int m = nss::spatial_match(plane.data(), width, width, height, grid.x(ref), grid.y(ref), 8, range,
+                                         group, cpu);
+        compare_group(cpu, m, out.data() + static_cast<std::size_t>(ref) * group, counts[ref], flat, stats, label,
+                      ref);
+    }
+}
+
 void temporal_case(int width, int height, int block, int group, int step, int range, int radius, int center,
                    int frame_count, bool flat, Stats& stats) {
     const int ntemp = 2 * radius + 1;
@@ -351,6 +388,22 @@ int main() {
         temporal_case(71, 66, 16, 8, 6, 7, 1, 1, 3, flat, stats);
         temporal_case(71, 66, 16, 16, 6, 7, 2, 2, 5, flat, stats);
         temporal_case(71, 66, 4, 8, 5, 7, 2, 0, 9, flat, stats);
+    }
+    // Square matcher: regular grids (max_x, max_y multiples of 4), a clamped
+    // last column, row or both, a single reference, windows wider than the
+    // plane, every group it takes, uneven batches.
+    for (const bool flat : {false, true}) {
+        for (const int group : {2, 3, 4, 8, 16, 32}) {
+            square_case(100, 76, group, 7, 3, flat, stats);   // regular
+            square_case(97, 83, group, 9, 4, flat, stats);    // both clamped
+            square_case(101, 76, group, 10, 2, flat, stats);  // column clamped
+            square_case(100, 79, group, 10, 2, flat, stats);  // row clamped
+        }
+        square_case(8, 8, 8, 9, 1, flat, stats);
+        square_case(10, 9, 8, 9, 1, flat, stats);
+        square_case(40, 36, 16, 40, 2, flat, stats);
+        square_case(268, 140, 32, 19, 5, flat, stats);  // several blocks each way
+        square_case(331, 203, 16, 12, 7, flat, stats);
     }
     // Tensor-core matcher: windows of side 33 to 129 (symmetric and exact-size), every step, groups 2 to 16.
     for (const int kind : {0, 1}) {

@@ -48,6 +48,20 @@ std::size_t spatial_match_scratch_bytes(int width, int height);
 // `stream`; again whenever the plane changes.
 void spatial_match_prepare(const float* plane, const MatchGeometry& geometry, void* scratch, cudaStream_t stream);
 
+// The square matcher (match_square.cu; Davy & Ehret 2021, section 4.1.4):
+// block 8 at step 4, one channel, groups 2 to 32, symmetric windows. Quarter
+// distances are shared by the four references that contain them, so the
+// distances differ from the lane kernels' in the last bits (near ties may
+// resolve differently); keys and order are the same. Returns false (and does
+// nothing) for a geometry spatial_match_square_takes rejects. Against the
+// tensor-core matcher it wins up to a window radius of 30 (1.15-1.9x) and
+// ties at 40: callers leave radii of kSquareTensorRadius and more to it where
+// it applies.
+inline constexpr int kSquareTensorRadius = 40;
+bool spatial_match_square_takes(const MatchGeometry& geometry, const RasterGrid& grid);
+bool spatial_match_square(const float* plane, const MatchGeometry& geometry, const RasterGrid& grid, int ref_begin,
+                          int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream);
+
 struct TemporalWindow {
     const float* const* frames;  // device array of ntemp device plane pointers (same pitch)
     int ntemp;
