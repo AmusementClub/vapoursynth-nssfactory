@@ -238,22 +238,37 @@ def temporal(core, vk, cpu, floor, quick):
                 failures.append(f"rolling cache {label}: frame {n} differs after jumping between chunks")
                 break
 
-    # Many threads and streams, frames asked for at once, against the serial pass.
+    # Many threads and streams, frames asked for at once, against the serial
+    # pass: chunks overlap on a slot's two lanes (uploads and downloads beside
+    # the other lane's kernels) for every reach and ring the driver has.
+    hop444 = make_clip(core, vs.YUV444PS, 48, 40, 13, length=14)
+    concurrent = [
+        ("rolling", hop, dict(radius=1, rolling_chunk=3)),
+        ("legacy", hop, dict(radius=1, temporal_mode="legacy")),
+        ("rolling r2", hop, dict(radius=2, rolling_chunk=2)),
+        ("rolling chunk 1", hop, dict(radius=1, rolling_chunk=1)),
+        ("rolling final=1", hop, dict(radius=1, final=1, rolling_chunk=2)),
+        ("rolling ref", hop, dict(radius=1, ref=core.std.BoxBlur(hop), rolling_chunk=2)),
+        ("rolling chroma", hop444, dict(radius=1, chroma=1, rolling_chunk=2)),
+        ("rolling yuv444 planes", hop444, dict(radius=1, sigma=[10, 6, 0], rolling_chunk=3)),
+    ]
     for streams in (1, 3):
-        for label, kw in (("rolling", dict(temporal_mode="rolling", rolling_chunk=3)),
-                          ("legacy", dict(temporal_mode="legacy"))):
-            node = vk(hop, sigma=10, radius=1, bm_range=4, num_streams=streams, **kw)
-            serial = [frame_planes(node, n) for n in range(hop.num_frames)]
+        for label, clip, extra in concurrent:
+            kw = dict(dict(sigma=10, bm_range=4, num_streams=streams), **extra)
+            if streams == 3 and label not in ("rolling", "legacy", "rolling r2"):
+                continue
+            node = vk(clip, **kw)
+            serial = [frame_planes(node, n) for n in range(clip.num_frames)]
             core.num_threads = 8
-            parallel = vk(hop, sigma=10, radius=1, bm_range=4, num_streams=streams, **kw)
-            futures = [parallel.get_frame_async(n) for n in range(hop.num_frames)]
+            parallel = vk(clip, **kw)
+            futures = [parallel.get_frame_async(n) for n in range(clip.num_frames)]
             for n, future in enumerate(futures):
                 f = future.result()
                 got = [np.array(f[p], dtype=np.float64) for p in range(f.format.num_planes)]
                 if not same(got, serial[n]):
                     failures.append(f"8 threads {label} {streams} stream(s) frame {n}: differs from the serial render")
             core.num_threads = 4
-            cases += hop.num_frames
+            cases += clip.num_frames
 
     # A limit changes the layout (shared state, per-frame copies, fewer
     # staging sets), never the output: the smallest limits that create.
@@ -264,14 +279,31 @@ def temporal(core, vk, cpu, floor, quick):
         free = [frame_planes(vk(wide, sigma=10, **kw), n) for n in (0, 3)]
         tried = 0
         for mb in (8, 12, 16, 20, 24, 28, 32, 40, 48, 56, 64, 80, 96, 128):
+            # Only creation may refuse a limit: an error while frames render
+            # (the budget exceeded after the plan accepted it) is a failure.
             try:
                 node = vk(wide, sigma=10, memory_limit_mb=mb, **kw)
-                tight = [frame_planes(node, n) for n in (0, 3)]
             except vs.Error as error:
                 if "memory_limit_mb" not in str(error):
                     failures.append(f"limit {label} {mb} MiB: unexpected error {error}")
                 continue
             tried += 1
+            try:
+                # All frames at once from 8 threads: the most the plan allows in flight.
+                core.num_threads = 8
+                futures = [node.get_frame_async(n) for n in range(wide.num_frames)]
+                rendered = [future.result() for future in futures]
+            except vs.Error as error:
+                failures.append(f"limit {label} {mb} MiB: render failed: {error}")
+                continue
+            finally:
+                core.num_threads = 4
+            peak = max(f.props["_NSSResourcePeak"] for f in rendered)
+            if peak > mb << 20:
+                failures.append(f"limit {label} {mb} MiB: peak {peak} bytes over the limit")
+            tight = [[np.array(rendered[n][q], dtype=np.float64) for q in range(rendered[n].format.num_planes)]
+                     for n in (0, 3)]
+            del rendered, futures
             if any(not same(x, y) for x, y in zip(free, tight)):
                 failures.append(f"limit {label}: output at memory_limit_mb={mb} differs from the unlimited output")
             if tried == 3:

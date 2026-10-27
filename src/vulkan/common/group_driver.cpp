@@ -1063,7 +1063,9 @@ struct RollTurn {
     void fail_after_leave() {
         {
             std::lock_guard lock(d.roll_mu);
-            state->failed_chain = chain;
+            // Failures may arrive out of ticket order here: never let an older
+            // chain's failure clear the mark of a newer one.
+            if (state->failed_chain == ~0ull || state->failed_chain < chain) state->failed_chain = chain;
             if (state->chain == chain) state->next_start = -1;
         }
         d.roll_cv.notify_all();
@@ -1371,6 +1373,9 @@ void queue_units(Driver& d, const std::vector<RollTurn*>& turns, const std::vect
     try {
         lane.slot.wait();
     } catch (...) {
+        // A failure that left the slot pending (a deferred download that
+        // could not be submitted) must not leave the lane unusable.
+        lane.slot.settle();
         for (RollTurn* turn : turns) turn->fail_after_leave();
         RollTurn::free_lane(d, lane);
         throw;
@@ -1389,17 +1394,6 @@ std::shared_ptr<ChunkStore> compute_chunk(Driver* d, std::optional<SlotPool<Roll
     RollStaging& g = **staging;
     nss::FrameScope frames(vsapi);
     auto store = d->cache.make_store(start, count);
-    // Planes the device does not write are the source's.
-    for (int plane = 0; plane < d->vi.format.numPlanes; ++plane) {
-        if (written(*d, plane)) continue;
-        for (int i = 0; i < count; ++i) {
-            const VSFrame* f = frames.getFrameFilter(start + i, d->node, ctx);
-            copy_rows(vsapi->getReadPtr(f, plane), vsapi->getStride(f, plane), store->plane(i, plane),
-                      static_cast<std::ptrdiff_t>(row_bytes(*d, plane)), row_bytes(*d, plane),
-                      nss::plane_height(d->vi, plane));
-            frames.freeFrame(f);
-        }
-    }
     const std::vector<const Unit*> active = active_units(*d);
     // Units with staging and state of their own go together: all staged, then
     // queued (one submission per slot they land on). Otherwise each unit is
@@ -1482,7 +1476,23 @@ std::shared_ptr<ChunkStore> compute_chunk(Driver* d, std::optional<SlotPool<Roll
             queue_units(*d, group, units, *store, g, planes, held, start, count, vsapi);
         }
     }
+    // The device's planes are visible to the host from here on. Planes the
+    // device does not write are the source's: the host writes them only now
+    // (writes before the invalidate would be undefined on memory that is not
+    // coherent) and flushes them, so that no dirty line of this chunk can be
+    // written back over the download of a later chunk that reuses the store.
     store->bytes.invalidate();
+    for (int plane = 0; plane < d->vi.format.numPlanes; ++plane) {
+        if (written(*d, plane)) continue;
+        for (int i = 0; i < count; ++i) {
+            const VSFrame* f = frames.getFrameFilter(start + i, d->node, ctx);
+            copy_rows(vsapi->getReadPtr(f, plane), vsapi->getStride(f, plane), store->plane(i, plane),
+                      static_cast<std::ptrdiff_t>(row_bytes(*d, plane)), row_bytes(*d, plane),
+                      nss::plane_height(d->vi, plane));
+            frames.freeFrame(f);
+        }
+        store->bytes.flush();
+    }
     return store;
 }
 
@@ -1605,6 +1615,30 @@ void group_filter_install(GroupFilterConfig&& config, VSMap* out, VSCore* core, 
         std::vector<std::unique_ptr<RollStaging>> sets;
         for (int i = 0; i < d->staging_sets; ++i) sets.push_back(make_staging(*d));
         d->staging = std::make_unique<SlotPool<RollStaging>>(std::move(sets));
+        // The plan counts exact bytes, but buffers are charged with their
+        // padding (alignment, dedicated rounding), and the chunk stores and
+        // output frames are allocated while frames render. With a limit, how
+        // far the cache may grow is settled again from what the slots and
+        // staging sets are charged now and what a store really costs, so an
+        // overrun is a creation error and never one at render time.
+        const std::size_t limit = d->budget ? d->budget->snapshot().limit : SIZE_MAX;
+        if (limit != SIZE_MAX) {
+            const std::size_t owned = d->budget->snapshot().owned;
+            std::size_t store = 0;
+            {
+                const Buffer probe(d->device, chunk_bytes(*d), Memory::Readback, d->budget);
+                store = d->budget->snapshot().owned - owned;
+            }
+            // Per staging set a store being made and two output frames, and the cache at its starting size.
+            const std::size_t sets_bytes = static_cast<std::size_t>(d->staging_sets) * (store + 2 * d->output_bytes);
+            const std::size_t render = sets_bytes + static_cast<std::size_t>(d->cache_size) * store;
+            if (owned + render > limit) {
+                too_small(*d, d->slots, (owned + render) / d->slots, static_cast<std::size_t>(d->cache_size) * store);
+            }
+            d->cache_cap = static_cast<int>(std::min<std::size_t>(
+                static_cast<std::size_t>(d->cache_cap),
+                static_cast<std::size_t>(d->cache_size) + (limit - owned - render) / store));
+        }
         std::array<std::size_t, 3> offsets{};
         for (int plane = 0; plane < 3; ++plane) offsets[plane] = d->plane_offset[plane] * sizeof(float);
         d->cache.configure(d->rolling.rolling_chunk, frame_bytes(*d), offsets, d->cache_size, d->cache_cap,
