@@ -240,6 +240,11 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         da3d_fill_tables(host.data());
         d.tables = DeviceBuffer(host.size() * sizeof(float), d.budget);
         NSS_CUDA_CHECK(cudaMemcpy(d.tables.get(), host.data(), host.size() * sizeof(float), cudaMemcpyHostToDevice));
+        // A copy from pageable memory may still be in flight when cudaMemcpy
+        // returns (it waits for the staging copy only), and the slots'
+        // non-blocking streams do not wait for the legacy stream: finish it
+        // before any of them reads the buffer (as group_driver.cpp make_slot).
+        NSS_CUDA_CHECK(cudaDeviceSynchronize());
         std::vector<std::unique_ptr<Slot>> slots;
         for (int i = 0; i < d.backend.num_streams; ++i) {
             auto s = std::make_unique<Slot>();

@@ -337,6 +337,7 @@ void VS_CC freeFilter(void* instance, VSCore*, const VSAPI*) {
         d->pool.reset();
         d->staging.reset();
         d->frame_memory.reset();
+        d->dct_device.reset();
     }
     delete d;
 }
@@ -465,11 +466,14 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     const std::size_t sets = streams + std::min(std::max(streams, in_flight) - streams, room / full_set);
     {
         DeviceGuard guard(d.device.index);
-        // Synchronous from pageable memory: returns once the source is staged
-        // (CUDA Runtime API, "API synchronization behavior").
         d.dct_device = DeviceBuffer(dct_bytes, d.budget);
         if (!d.dct.empty()) {
             NSS_CUDA_CHECK(cudaMemcpy(d.dct_device.get(), d.dct.data(), d.dct.size() * sizeof(float), cudaMemcpyHostToDevice));
+            // A copy from pageable memory may still be in flight when cudaMemcpy
+            // returns (it waits for the staging copy only), and the slots'
+            // non-blocking streams do not wait for the legacy stream: finish it
+            // before any of them reads the buffer (as group_driver.cpp make_slot).
+            NSS_CUDA_CHECK(cudaDeviceSynchronize());
         }
         std::vector<std::unique_ptr<Slot>> slots;
         std::vector<std::unique_ptr<Staging>> staging;

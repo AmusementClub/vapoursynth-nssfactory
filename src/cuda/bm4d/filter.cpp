@@ -536,6 +536,11 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
             std::vector<float> tables(bm4d_table_floats());
             bm4d_fill_tables(tables.data());
             bm4d_upload_constants(tables.data());
+            // The pointer arrays and the constants above come from pageable
+            // memory: such a copy may still be in flight when cudaMemcpy or
+            // cudaMemcpyToSymbol returns, and the slots' non-blocking streams
+            // do not wait for the legacy stream (as group_driver.cpp make_slot).
+            NSS_CUDA_CHECK(cudaDeviceSynchronize());
         }
     }
     VSFilterDependency deps[1]{{d.node, rpGeneral}};
