@@ -5,7 +5,8 @@
 // aggregate their own output add weight * value at every pixel of a patch to
 // num and the weight once, at the patch's top-left pixel, to den
 // (shaders/common/fixed.glsl): int64 cells of value * 2^32 whose sums do not
-// depend on the order of the atomics. fixed_finish divides one slice.
+// depend on the order of the atomics. fixed_finish divides one slice;
+// fixed_slices turns it into the legacy output's float num / den.
 #pragma once
 
 #include "vulkan/runtime/context.hpp"
@@ -52,11 +53,20 @@ public:
     // its two kernels; the caller orders what writes num / den before it.
     void fixed_finish(VkCommandBuffer commands, VkDeviceAddress num, VkDeviceAddress den, int pitch, int block,
                       VkDeviceAddress src, int width, int height, VkDeviceAddress rows, VkDeviceAddress out) const;
+    // The legacy output's float slices of one slice's cells: num / 2^32 at
+    // `out` and the covering den cells / 2^32 height * pitch floats after it
+    // (the fat frame's num and den rows of the slice). As fixed_finish.
+    void fixed_slices(VkCommandBuffer commands, VkDeviceAddress num, VkDeviceAddress den, int pitch, int block,
+                      int width, int height, VkDeviceAddress rows, VkDeviceAddress out) const;
 
 private:
+    void run(VkCommandBuffer commands, const Pipeline& last, VkDeviceAddress num, VkDeviceAddress den, int pitch,
+             int block, VkDeviceAddress src, int width, int height, VkDeviceAddress rows, VkDeviceAddress out) const;
+
     std::shared_ptr<Device> device_;
     Pipeline rows_;
     Pipeline finish_;
+    Pipeline slices_;
 };
 
 }  // namespace nss_vk

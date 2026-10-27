@@ -3,9 +3,16 @@
 
 #include "vulkan/runtime/error.hpp"
 
+#include <cstdint>
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#if defined(__SSE2__) || defined(_M_X64)
+#include <emmintrin.h>
+#define NSS_VK_STREAM_STORES 1
+#else
+#define NSS_VK_STREAM_STORES 0
+#endif
 
 namespace nss_vk {
 
@@ -20,6 +27,42 @@ void copy_rows(const void* src, std::ptrdiff_t src_stride, void* dst, std::ptrdi
     for (int row = 0; row < rows; ++row) {
         std::memcpy(out + row * dst_stride, in + row * src_stride, row_bytes);
     }
+}
+
+void stream_rows(const void* src, std::ptrdiff_t src_stride, void* dst, std::ptrdiff_t dst_stride,
+                 std::size_t row_bytes, int rows) {
+#if NSS_VK_STREAM_STORES
+    const auto row = [](const std::uint8_t* in, std::uint8_t* out, std::size_t bytes) {
+        std::size_t head = (16 - (reinterpret_cast<std::uintptr_t>(out) & 15)) & 15;
+        if (head > bytes) head = bytes;
+        std::memcpy(out, in, head);
+        std::size_t i = head;
+        for (; i + 64 <= bytes; i += 64) {
+            const __m128i a = _mm_loadu_si128(reinterpret_cast<const __m128i*>(in + i));
+            const __m128i b = _mm_loadu_si128(reinterpret_cast<const __m128i*>(in + i + 16));
+            const __m128i c = _mm_loadu_si128(reinterpret_cast<const __m128i*>(in + i + 32));
+            const __m128i d = _mm_loadu_si128(reinterpret_cast<const __m128i*>(in + i + 48));
+            _mm_stream_si128(reinterpret_cast<__m128i*>(out + i), a);
+            _mm_stream_si128(reinterpret_cast<__m128i*>(out + i + 16), b);
+            _mm_stream_si128(reinterpret_cast<__m128i*>(out + i + 32), c);
+            _mm_stream_si128(reinterpret_cast<__m128i*>(out + i + 48), d);
+        }
+        for (; i + 16 <= bytes; i += 16) {
+            _mm_stream_si128(reinterpret_cast<__m128i*>(out + i), _mm_loadu_si128(reinterpret_cast<const __m128i*>(in + i)));
+        }
+        std::memcpy(out + i, in + i, bytes - i);
+    };
+    const auto* in = static_cast<const std::uint8_t*>(src);
+    auto* out = static_cast<std::uint8_t*>(dst);
+    if (src_stride == dst_stride && static_cast<std::size_t>(src_stride) == row_bytes) {
+        row(in, out, row_bytes * static_cast<std::size_t>(rows));
+    } else {
+        for (int r = 0; r < rows; ++r) row(in + r * src_stride, out + r * dst_stride, row_bytes);
+    }
+    _mm_sfence();  // the stores are visible before the frame is handed on
+#else
+    copy_rows(src, src_stride, dst, dst_stride, row_bytes, rows);
+#endif
 }
 
 Buffer::Buffer(std::shared_ptr<Device> device, std::size_t bytes, Memory memory,

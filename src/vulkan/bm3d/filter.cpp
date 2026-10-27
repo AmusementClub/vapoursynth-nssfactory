@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
-// nss_vk.BM3D (docs/vulkan-plan.md V5). Arguments, defaults and errors come
-// from the shared frontend (parse_bm3d with the "nss_vk" prefix); the node is
-// the shared group driver (common/group_driver.hpp) around the BM3D group
-// kernels, as nss_cuda.BM3D. `ref` is the guide clip: it drives matching and
-// supplies the Wiener reference cube. V5 delivers the spatial output; the
-// temporal modes (radius > 0) are V6.
+// nss_vk.BM3D (docs/vulkan-plan.md V5, V6). Arguments, defaults and errors
+// come from the shared frontend (parse_bm3d / parse_temporal_mode /
+// parse_rolling with the "nss_vk" prefix); the node is the shared group
+// driver (common/group_driver.hpp) around the BM3D group kernels, as
+// nss_cuda.BM3D. `ref` is the guide clip: it drives matching and supplies the
+// Wiener reference cube.
 #include "frontend/bm3d_args.hpp"
 #include "frontend/temporal_args.hpp"
 #include "frontend/validate.hpp"
@@ -12,7 +12,6 @@
 #include "vulkan/common/group_driver.hpp"
 
 #include <memory>
-#include <stdexcept>
 #include <string>
 
 namespace nss_vk {
@@ -34,13 +33,17 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     if (err) config.guide = nullptr;
     const VSVideoInfo* ref_vi = config.guide ? vsapi->getVideoInfo(config.guide) : nullptr;
     const nss::Bm3dParams p = nss::frontend::parse_bm3d(vsapi, in, config.vi, ref_vi, "nss_vk");
-    // Every argument error first, as nss.BM3D and nss_cuda.BM3D report them.
-    if (rolling) (void)nss::frontend::parse_rolling(vsapi, in, p.radius, "BM3D", "nss_vk", kRollingCache);
-    config.backend = parse_backend_args(vsapi, in, "BM3D");
-    if (p.radius > 0) {
-        throw std::invalid_argument("nss_vk.BM3D: radius > 0 is not available yet (temporal BM3D is "
-                                    "docs/vulkan-plan.md V6)");
+    if (rolling) config.rolling = nss::frontend::parse_rolling(vsapi, in, p.radius, "BM3D", "nss_vk", kRollingCache);
+    // final: the driver keeps the first stage's estimate on the device for
+    // spatial and rolling output. The legacy intermediate chains two nodes.
+    if (p.final && p.radius > 0 && !rolling) {
+        (void)parse_backend_args(vsapi, in, "BM3D");
+        nss::frontend::bm3d_two_nodes(vsapi, in, out, core, "nss_vk");
+        return;
     }
+    config.radius = p.radius;
+    config.mode = rolling ? GroupMode::Rolling : GroupMode::Legacy;
+    config.backend = parse_backend_args(vsapi, in, "BM3D");
     config.device = acquire_device(config.backend.device_id, "BM3D", core, vsapi);
     for (int plane = 0; plane < config.vi.format.numPlanes; ++plane) {
         GroupPlane& g = config.planes[plane];

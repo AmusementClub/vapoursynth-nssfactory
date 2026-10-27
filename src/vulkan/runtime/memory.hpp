@@ -202,5 +202,10 @@ private:
 // Rows of `row_bytes` between two strided layouts (one memcpy when both are tight).
 void copy_rows(const void* src, std::ptrdiff_t src_stride, void* dst, std::ptrdiff_t dst_stride, std::size_t row_bytes,
                int rows);
+// The same with non-temporal stores where the target has them (x86-64): for
+// rows into a VapourSynth frame that is not in cache (the rolling outputs,
+// as nss_cuda's stream_rows), so the stores do not read every line first.
+void stream_rows(const void* src, std::ptrdiff_t src_stride, void* dst, std::ptrdiff_t dst_stride,
+                 std::size_t row_bytes, int rows);
 
 }  // namespace nss_vk
