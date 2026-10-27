@@ -1,7 +1,7 @@
 # vapoursynth-nssfactory
 
 VapourSynth plugins for the classical non-local self-similarity (NSS)
-denoisers — BM3D, BM4D, NLM, WNNM, MCWNNM, NCSR, LSSC, TWSC and NLH — plus
+denoisers — BM3D, BM4D, NLM, PNLM, WNNM, MCWNNM, NCSR, LSSC, TWSC and NLH — plus
 DA3D, a last step on top of any of them, implemented from their papers, with
 reproducible numerics.
 
@@ -21,6 +21,7 @@ float Gray, YUV or RGB. The project is a work in progress.
 | [BM3D](docs/api/bm3d.md) | Block matching and 3D transform shrinkage; color (CBM3D) and two-stage modes | General use; the fastest |
 | [BM4D](docs/api/bm4d.md) | Block matching and 4D filtering: the clip as a volume of cubes | Held frames, still and slow scenes (heavy on the CPU) |
 | [NLM](docs/api/nlm.md) | Non-local means | Light noise |
+| [PNLM](docs/api/pnlm.md) | Patchwise non-local means (Davy and Ehret's GPU NL-means) | Light noise; edges and line art |
 | [WNNM](docs/api/wnnm.md) | Weighted nuclear norm minimization | Texture and edge retention |
 | [MCWNNM](docs/api/mcwnnm.md) | Multi-channel WNNM | RGB color noise |
 | [NCSR](docs/api/ncsr.md) | Nonlocally centralized sparse representation | Sparse-coding quality at moderate cost |
