@@ -164,6 +164,7 @@ __device__ __forceinline__ void gram_block(const GramGroupArgs& a, const Model& 
     for (int k = 0; k < N; ++k) g[lane * N + k] = acc[k];
     __syncthreads();
     if constexpr (N == 32 && GramDivide<Model>::value) {
+        (void)cs, (void)flag;  // block_jacobi's workspace (the other branch)
         // Householder tridiagonalization and divide and conquer (one group
         // a block of 32; eig_bench.cu: 0.14 against 0.47 ms per 1000
         // matrices). The reflectors take v until the vectors, rows of g, are

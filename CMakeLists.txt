@@ -182,6 +182,13 @@ if(NSS_HWY_TARGET_MODE MATCHES "^avx" AND
   message(FATAL_ERROR "NSS_HWY_TARGET_MODE=${NSS_HWY_TARGET_MODE} requires an x86 processor")
 endif()
 
+# The Windows CRT marks getenv, fopen, sscanf, strncpy... deprecated in favour
+# of its _s variants. The project (and the pinned third-party tools) use them
+# as the C standard defines them: no warnings for that.
+if(WIN32)
+  add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
+endif()
+
 include(cmake/Highway.cmake)
 if(NSS_HWY_TARGET_MODE STREQUAL "portable-test")
   # Highway disables EMU128 on affected compilers (including GCC 13). Fail

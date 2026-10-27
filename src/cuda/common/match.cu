@@ -1439,7 +1439,7 @@ __global__ void __launch_bounds__(128, 4) tensor_match_kernel(const float* plane
                             : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
                             : "r"(a0), "r"(a1), "r"(a2), "r"(a3), "r"(b[ks][0]), "r"(b[ks][1]));
 #else
-                        (void)a0, (void)a1, (void)a2, (void)a3;
+                        (void)a0, (void)a1, (void)a2, (void)a3, (void)b;
                         __trap();
 #endif
                     }

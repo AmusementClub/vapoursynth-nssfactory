@@ -94,11 +94,26 @@ else()
   set(GLSLANG_TESTS OFF CACHE BOOL "" FORCE)
   set(GLSLANG_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
   set(BUILD_EXTERNAL OFF CACHE BOOL "" FORCE)
-  # Third-party build tools keep their own visibility and warnings.
+  # Third-party build tools keep their own visibility, and are built without
+  # warnings: glslang adds -Wall and more itself, and with GCC some of them
+  # fire in its headers (maybe-uninitialized, array-bounds); they are not
+  # this project's to fix. The flags reach their directories, which inherit
+  # this scope's values.
   set(_nss_vk_saved_visibility "${CMAKE_CXX_VISIBILITY_PRESET}")
+  set(_nss_vk_saved_c_flags "${CMAKE_C_FLAGS}")
+  set(_nss_vk_saved_cxx_flags "${CMAKE_CXX_FLAGS}")
   set(CMAKE_CXX_VISIBILITY_PRESET default)
+  if(MSVC AND NOT CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "GNU")
+    string(APPEND CMAKE_C_FLAGS " /w")
+    string(APPEND CMAKE_CXX_FLAGS " /w")
+  else()
+    string(APPEND CMAKE_C_FLAGS " -w")
+    string(APPEND CMAKE_CXX_FLAGS " -w")
+  endif()
   FetchContent_MakeAvailable(nss_spirv_tools nss_glslang)
   set(CMAKE_CXX_VISIBILITY_PRESET "${_nss_vk_saved_visibility}")
+  set(CMAKE_C_FLAGS "${_nss_vk_saved_c_flags}")
+  set(CMAKE_CXX_FLAGS "${_nss_vk_saved_cxx_flags}")
   # Only the three tools the shader build depends on are built; the rest of
   # SPIRV-Tools and glslang (other tools, shared libraries) stays out of `all`.
   set_property(DIRECTORY "${nss_spirv_tools_SOURCE_DIR}" PROPERTY EXCLUDE_FROM_ALL ON)
@@ -108,6 +123,16 @@ else()
       message(FATAL_ERROR "Pinned shader toolchain did not define target ${_nss_tool}")
     endif()
   endforeach()
+  # glslang links its tools with -Wl,--no-undefined for every non-Apple
+  # Clang, which lld-link (Clang targeting the MSVC ABI) ignores with a
+  # warning; it checks undefined symbols by default anyway.
+  if(WIN32)
+    get_target_property(_nss_glslang_link glslang-standalone LINK_OPTIONS)
+    if(_nss_glslang_link)
+      list(REMOVE_ITEM _nss_glslang_link "-Wl,--no-undefined")
+      set_target_properties(glslang-standalone PROPERTIES LINK_OPTIONS "${_nss_glslang_link}")
+    endif()
+  endif()
   set(NSS_VK_GLSLANG_COMMAND "$<TARGET_FILE:glslang-standalone>")
   set(NSS_VK_SPIRV_OPT_COMMAND "$<TARGET_FILE:spirv-opt>")
   set(NSS_VK_SPIRV_VAL_COMMAND "$<TARGET_FILE:spirv-val>")
