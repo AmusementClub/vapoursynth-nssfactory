@@ -169,6 +169,7 @@ endforeach()
 # Fixed-point aggregation finish (common/aggregate.comp): rows, then finish.
 nss_vk_add_shader(NSS_VK_SPIRV_SOURCES aggregate_fixed_rows common/aggregate.comp DEFINES KERNEL=0)
 nss_vk_add_shader(NSS_VK_SPIRV_SOURCES aggregate_fixed_finish common/aggregate.comp DEFINES KERNEL=1)
+nss_vk_add_shader(NSS_VK_SPIRV_SOURCES aggregate_fixed_slices common/aggregate.comp DEFINES KERNEL=2)
 # Primitive tests (tests/vk/test_vk_aggregate.cpp): DCT lines of every length,
 # and fixed-point adds into a ring of slices.
 foreach(_nss_n 1 2 4 8 12 16 32 64)

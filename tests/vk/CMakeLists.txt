@@ -86,8 +86,7 @@ add_test(NAME test_vk_plugin_interface
                  --plugin "${NSS_VK_PLUGIN}" --namespace nss_vk
                  --backend-args device_id,num_streams --expect-missing "${NSS_VK_PENDING_FILTERS}"
                  --cpu-only VAggregate
-                 --default-temporal rolling --rolling-cache adaptive
-                 --pending-temporal BM3D)
+                 --default-temporal rolling --rolling-cache adaptive)
 set_tests_properties(test_vk_backend test_vk_plugin_interface PROPERTIES LABELS vk SKIP_RETURN_CODE 77)
 # Filters against the CPU plugin (needs the CPU tree).
 if(TARGET nss)

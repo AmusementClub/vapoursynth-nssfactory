@@ -5,6 +5,8 @@
 // the sum of the den cells of the block x block patch corners that cover it.
 // KERNEL 0 (rows): rows[y][x] = the den cells of row y from x - block + 1 to x.
 // KERNEL 1 (finish): the rows from y - block + 1 to y, then the quotient.
+// KERNEL 2 (slices): the legacy output's float slices instead, num at dst and
+// den height * pitch floats after it (the fat frame's rows 2k and 2k + 1).
 // Integer sums, so both are exact; the quotient follows Vulkan's division
 // precision (2.5 ULP, D26).
 #version 460
@@ -41,6 +43,11 @@ void main() {
     const float unit = 1.0f / 4294967296.0f;  // 1 / kFixedScale
     const float num = float(int64_t(Cells(pc.num).c[i])) * unit;
     const float den = float(int64_t(weight)) * unit;
+#if KERNEL == 1
     OutPlane(pc.dst).v[i] = den > 1e-12f ? num / den : Plane(pc.src).v[i];
+#else
+    OutPlane(pc.dst).v[i] = num;
+    OutPlane(pc.dst).v[i + pc.height * pc.pitch] = den;
+#endif
 #endif
 }

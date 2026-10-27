@@ -7,19 +7,25 @@
 //   - the memory plan against memory_limit_mb (slots, batches),
 //   - frame I/O: BAR or staged uploads and readback, or direct copies to and
 //     from VapourSynth frames under vapoursynth-classic (FrameMemory),
-//   - matching (common/match.hpp, on the guide when there is one),
-//   - the finish of the sums.
-// V5 runs the spatial output (radius 0), with two stages (BM3D final) and
-// units of three planes matched on the first (CBM3D chroma). Legacy and
-// rolling output (V6), joint units and outer rounds (V7, V8) come later.
+//   - matching (common/match.hpp, spatial or predictive, on the guide when
+//     there is one),
+//   - the three output modes: spatial, the legacy fat intermediate (float
+//     num / den slices from the fixed-point sums) and rolling (V6),
+// with two stages (BM3D final) and units of three planes matched on the
+// first (CBM3D chroma). Joint units and outer rounds (V7, V8) come later.
 //
-// A frame is one submission of its slot: every plane's uploads, then the
-// units one after the other on the compute queue, then every plane's
-// downloads, and one wait.
+// A spatial or legacy frame is one submission of its slot: every plane's
+// uploads, then the units one after the other on the compute queue, then
+// every plane's downloads, and one wait. A rolling chunk is one submission
+// of the slot its turn gives it (the window tables, then per plane its
+// centers with the ring uploads between them, then the chunk's frames into
+// the host chunk store), as nss_cuda's chunks (the same carry, chunk cache
+// and plan order, src/gpuhost).
 #pragma once
 
 #include "frontend/ownership.hpp"
 #include "nss/contracts.hpp"
+#include "nss/params/temporal.hpp"
 #include "vulkan/common/aggregate.hpp"
 #include "vulkan/common/match.hpp"
 #include "vulkan/runtime/context.hpp"
@@ -32,6 +38,8 @@
 #include <string>
 
 namespace nss_vk {
+
+enum class GroupMode { Spatial, Legacy, Rolling };
 
 struct GroupPlane {
     // Filled by the filter:
@@ -49,7 +57,7 @@ struct GroupPlane {
 // One batch of matched groups, recorded into `commands` (compute).
 struct GroupLaunch {
     VkCommandBuffer commands = VK_NULL_HANDLE;
-    VkDeviceAddress src = 0;    // table: window slot t -> source unit
+    VkDeviceAddress src = 0;    // table: window slot t -> source unit (2R+1 entries)
     VkDeviceAddress guide = 0;  // same for the guide (Wiener reference), 0 without one
     int pitch = 0;              // floats (and cells of `fused` per row)
     VkDeviceAddress matches = 0;  // batch * plane->group (group-strided)
@@ -60,7 +68,8 @@ struct GroupLaunch {
     long long channel_step = 0;  // floats from channel c to c + 1 of a unit
     VkDeviceAddress scratch = 0;  // batch * scratch_floats(plane) floats, or 0
     const bool* channel_active = nullptr;  // shared_match: channel c is filtered
-    // The unit's sums: channel c's cells start c * fused.channel_step cells further.
+    // The unit's sums: channel c's cells start c * fused.channel_step cells
+    // further; a match of window slot t goes to the slice fused gives it.
     FixedTarget fused{};
 };
 
@@ -69,6 +78,9 @@ struct GroupFilterConfig {
     nss::Model model = nss::Model::BM3D;
     nss::NodeRef node, guide;  // guide: matching clip (ref / rclip), may be null
     VSVideoInfo vi{};
+    int radius = 0;
+    GroupMode mode = GroupMode::Legacy;  // for radius > 0; radius 0 is always spatial
+    nss::RollingParams rolling{};
     std::shared_ptr<nss::ResourceBudget> budget;
     BackendArgs backend;
     std::shared_ptr<Device> device;
@@ -81,7 +93,8 @@ struct GroupFilterConfig {
     bool shared_match = false;
     // Two stages in one node (BM3D final): the source is first filtered with
     // `basic` and no guide, and that estimate stays on the device as the
-    // guide of the second stage. The node takes no guide clip then.
+    // guide of the second stage. The node takes no guide clip then; spatial
+    // and rolling output only.
     bool two_stage = false;
     GroupPlane basic[3];
     // Extra device floats per reference group (second argument: guide present).

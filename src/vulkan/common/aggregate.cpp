@@ -42,13 +42,16 @@ void fixed_clear(const Device& device, VkCommandBuffer commands, VkBuffer buffer
 Aggregator::Aggregator(std::shared_ptr<Device> device)
     : device_(std::move(device)),
       rows_(device_, {"aggregate_fixed_rows", sizeof(FinishPush), 0, {}}),
-      finish_(device_, {"aggregate_fixed_finish", sizeof(FinishPush), 0, {}}) {}
+      finish_(device_, {"aggregate_fixed_finish", sizeof(FinishPush), 0, {}}),
+      slices_(device_, {"aggregate_fixed_slices", sizeof(FinishPush), 0, {}}) {}
 
-void Aggregator::fixed_finish(VkCommandBuffer commands, VkDeviceAddress num, VkDeviceAddress den, int pitch, int block,
-                              VkDeviceAddress src, int width, int height, VkDeviceAddress rows,
-                              VkDeviceAddress out) const {
+void Aggregator::run(VkCommandBuffer commands, const Pipeline& last, VkDeviceAddress num, VkDeviceAddress den,
+                     int pitch, int block, VkDeviceAddress src, int width, int height, VkDeviceAddress rows,
+                     VkDeviceAddress out) const {
     if (width <= 0 || height <= 0) return;
-    if (static_cast<long long>(pitch) * height >= (1LL << 31)) {
+    // The slices' den rows lie height * pitch floats past num's.
+    const long long planes = &last == &slices_ ? 2 : 1;
+    if (static_cast<long long>(pitch) * height * planes >= (1LL << 31)) {
         throw std::logic_error("nss_vk: fixed_finish plane beyond 32-bit indices");
     }
     const FinishPush push{num, den, rows, src, out, block, width, height, pitch};
@@ -56,7 +59,18 @@ void Aggregator::fixed_finish(VkCommandBuffer commands, VkDeviceAddress num, VkD
     const std::uint32_t gy = static_cast<std::uint32_t>((height + 7) / 8);
     rows_.dispatch(commands, &push, gx, gy);
     compute_barrier(*device_, commands);
-    finish_.dispatch(commands, &push, gx, gy);
+    last.dispatch(commands, &push, gx, gy);
+}
+
+void Aggregator::fixed_finish(VkCommandBuffer commands, VkDeviceAddress num, VkDeviceAddress den, int pitch, int block,
+                              VkDeviceAddress src, int width, int height, VkDeviceAddress rows,
+                              VkDeviceAddress out) const {
+    run(commands, finish_, num, den, pitch, block, src, width, height, rows, out);
+}
+
+void Aggregator::fixed_slices(VkCommandBuffer commands, VkDeviceAddress num, VkDeviceAddress den, int pitch, int block,
+                              int width, int height, VkDeviceAddress rows, VkDeviceAddress out) const {
+    run(commands, slices_, num, den, pitch, block, 0, width, height, rows, out);
 }
 
 }  // namespace nss_vk
