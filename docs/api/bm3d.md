@@ -109,7 +109,10 @@ matching is a large part of the work.
 Dabov, Foi, Katkovnik & Egiazarian, *Image Denoising by Sparse 3D
 Transform-Domain Collaborative Filtering*, IEEE TIP 2007. Two stages (Basic
 hard-threshold, Wiener) with the standard `2.7 * sigma` hard-threshold
-calibration, DCT/block transforms as applicable, and the plugin's deterministic
+calibration, a 2-D DCT on each patch and the orthonormal Haar transform along
+the group (as the paper; model version 3, before that a DCT along the group
+too: Haar measured +0.003 to +0.07 dB on 1080p test frames at sigma 15 to 40
+and costs no time on the GPU), and the plugin's deterministic
 block-matching underneath. The paper's pipeline is followed; the numerics are
 pinned down (fixed reduction orders, deterministic matcher tie-breaking) so the
 same build is reproducible bit-for-bit on a given toolchain.

@@ -18,6 +18,7 @@
 #include <cmath>
 #include <cstring>
 #include <mutex>
+#include <utility>
 
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE "cpu/bm/dct8.cpp"
@@ -572,6 +573,76 @@ static void Dct4PatchCols(float* patch, bool inverse) {
 }
 #endif
 
+// Factor of position j of the in-place orthonormal Haar transform of n
+// samples (n a power of two): every level contributes 1/sqrt(2), so the DC
+// (position 0) has 2^(-L/2), L = log2 n, and the detail of level h = 2^l (at
+// the odd multiples of h) 2^(-(l+1)/2).
+static constexpr float HaarScale(int n, int j) {
+    int e = 0;
+    if (j == 0) {
+        while ((1 << e) < n) ++e;
+    } else {
+        while (((j >> e) & 1) == 0) ++e;
+        ++e;
+    }
+    float f = 1.f;
+    for (int i = 0; i < e / 2; ++i) f *= 0.5f;
+    return e % 2 ? f * 0.70710678118654752f : f;
+}
+
+// The BM3D group-axis transform (noise profile 1, semantic version 3): the
+// orthonormal Haar transform of length-n lines (n a power of two), laid out
+// in place: level h pairs the samples h apart (sum to the lower, difference
+// to the upper), so the DC stays at sample 0 and the detail of level h sits
+// at the odd multiples of h. Lines as DctLines: sample i of line v at
+// base[v * line_stride + i * sample_stride]. The forward transform scales
+// last, the inverse first, so each runs on sums and differences only.
+static void HaarLines(float* base, int n, int line_stride, int sample_stride, int count, bool inverse) {
+    if (n <= 1 || count <= 0) {
+        return;
+    }
+    const auto line = [&](auto load, auto store, auto add, auto sub, auto mul) {
+        if (inverse) {
+            for (int j = 0; j < n; ++j) store(j, mul(load(j), HaarScale(n, j)));
+            for (int h = n / 2; h >= 1; h >>= 1) {
+                for (int i = 0; i < n; i += 2 * h) {
+                    const auto a = load(i), b = load(i + h);
+                    store(i, add(a, b));
+                    store(i + h, sub(a, b));
+                }
+            }
+        } else {
+            for (int h = 1; h < n; h <<= 1) {
+                for (int i = 0; i < n; i += 2 * h) {
+                    const auto a = load(i), b = load(i + h);
+                    store(i, add(a, b));
+                    store(i + h, sub(a, b));
+                }
+            }
+            for (int j = 0; j < n; ++j) store(j, mul(load(j), HaarScale(n, j)));
+        }
+    };
+    int v0 = 0;
+    if (line_stride == 1) {
+        // Neighbouring lines in the lanes.
+        const hn::ScalableTag<float> d;
+        const int L = static_cast<int>(hn::Lanes(d));
+        for (; v0 + L <= count; v0 += L) {
+            float* at = base + v0;
+            line([&](int i) { return hn::LoadU(d, at + i * sample_stride); },
+                 [&](int i, auto x) { hn::StoreU(x, d, at + i * sample_stride); },
+                 [&](auto a, auto b) { return hn::Add(a, b); }, [&](auto a, auto b) { return hn::Sub(a, b); },
+                 [&](auto a, float f) { return hn::Mul(a, hn::Set(d, f)); });
+        }
+    }
+    for (; v0 < count; ++v0) {
+        float* at = base + v0 * line_stride;
+        line([&](int i) { return at[i * sample_stride]; }, [&](int i, float x) { at[i * sample_stride] = x; },
+             [](float a, float b) { return a + b; }, [](float a, float b) { return a - b; },
+             [](float a, float f) { return a * f; });
+    }
+}
+
 // Independent length-n vectors: sample i of line v is at
 // base[v * line_stride + i * sample_stride]. inverse = orthonormal DCT-III.
 static void DctLines(float* base, int n, int line_stride, int sample_stride, int count, bool inverse) {
@@ -952,15 +1023,15 @@ void Bm3dFilterGroup(float* patches, int lda, int group, int k, int block, float
     const int lanes=static_cast<int>(hn::Lanes(td));
     for(int first=0;first<area;first+=16){
         const int count=std::min(16,area-first);
-        DctLines(cube+first,group,1,area,count,false);
-        if(wiener && ref_patches)DctLines(refw+first,group,1,area,count,false);
+        HaarLines(cube+first,group,1,area,count,false);
+        if(wiener && ref_patches)HaarLines(refw+first,group,1,area,count,false);
         for(int g=0;g<group;++g){
             int f=first;
             for(;f+lanes<=first+count;f+=lanes){
                 int i=g*area+f;auto v=hn::LoadU(td,cube+i);
                 if(wiener && ref_patches){
                     auto rv=hn::LoadU(td,refw+i),q=hn::Mul(rv,rv);
-                    auto w=hn::Div(q,hn::Add(q,hn::Set(td,sigma*sigma)));
+                    const auto den=hn::Add(q,hn::Set(td,sigma*sigma));auto w=hn::IfThenElseZero(hn::Gt(den,hn::Zero(td)),hn::Div(q,den));
                     if(i==0)w=hn::IfThenElse(hn::FirstN(td,1),hn::Set(td,1.f),w);
                     hn::StoreU(hn::Mul(v,w),td,cube+i);w2sum+=hn::ReduceSum(td,hn::Mul(w,w));
                 }else{
@@ -970,18 +1041,18 @@ void Bm3dFilterGroup(float* patches, int lda, int group, int k, int block, float
                 }
             }
             for(;f<first+count;++f){int i=g*area+f;
-                if(wiener && ref_patches){float q=refw[i]*refw[i];float w=i?q/(q+sigma*sigma):1.f;cube[i]*=w;w2sum+=w*w;}
+                if(wiener && ref_patches){float q=refw[i]*refw[i];float den=q+sigma*sigma;float w=i?(den>0.f?q/den:0.f):1.f;cube[i]*=w;w2sum+=w*w;}
                 else{bool keep=i==0||std::abs(cube[i])>=kBmHardLambda*sigma;kept+=keep;if(!keep)cube[i]=0.f;}
             }
         }
-        DctLines(cube+first,group,1,area,count,true);
+        HaarLines(cube+first,group,1,area,count,true);
     }
 #else
-    DctLines(cube, group, 1, area, area, false);
+    HaarLines(cube, group, 1, area, area, false);
     int kept = 0;
     float w2sum = 0.f;
     if (wiener && ref_patches) {
-        DctLines(refw, group, 1, area, area, false);
+        HaarLines(refw, group, 1, area, area, false);
         const float sig2 = sigma * sigma;
         const hn::CappedTag<float, 16> dt;
         const int N = static_cast<int>(hn::Lanes(dt));
@@ -995,7 +1066,8 @@ void Bm3dFilterGroup(float* patches, int lda, int group, int k, int block, float
             for (; f + N <= area; f += N) {
                 auto r = hn::LoadU(dt, rr + f);
                 auto r2 = hn::Mul(r, r);
-                auto w = hn::Div(r2, hn::Add(r2, vsig));
+                const auto den = hn::Add(r2, vsig);
+                auto w = hn::IfThenElseZero(hn::Gt(den, hn::Zero(dt)), hn::Div(r2, den));
                 if (i == 0 && f == 0) {
                     w = hn::IfThenElse(hn::FirstN(dt, 1), vone, w);
                 }
@@ -1008,7 +1080,8 @@ void Bm3dFilterGroup(float* patches, int lda, int group, int k, int block, float
                 if (!(f == 0 && i == 0)) {
                     const float r = rr[f];
                     const float r2 = r * r;
-                    w = r2 / (r2 + sig2);
+                    const float den = r2 + sig2;
+                    w = den > 0.f ? r2 / den : 0.f;
                 }
                 row[f] *= w;
                 w2sum += w * w;
@@ -1041,7 +1114,7 @@ void Bm3dFilterGroup(float* patches, int lda, int group, int k, int block, float
             }
         }
     }
-    DctLines(cube, group, 1, area, area, true);
+    HaarLines(cube, group, 1, area, area, true);
 #endif
     dct2(cube, true);
     if (!inplace) {
@@ -1081,7 +1154,7 @@ void Bm3dCacheEpoch() {
 
 #if HWY_MAX_BYTES >= 32
 // FFTW 3.3.9 e10_8 / e01_8, same layout as bm3dcpu: G[g*8+r] is row r of patch g, lanes = x.
-// Unnormalized: 3D roundtrip scales by 4096. Inverse is DCT-III.
+// Unnormalized: 2D roundtrip scales by 256. Inverse is DCT-III.
 template <bool kForward, class DT = D8>
 HWY_INLINE void Dct8Fftw(hn::Vec<DT>* block) {
     const DT d8;
@@ -1203,18 +1276,64 @@ HWY_INLINE void Fftw2dInReg(V8* patch) {
     }
 }
 
+// Orthonormal 8-point Haar along the group, in place on the rows of the
+// eight patches (vector r of patch g at data[8 g + r]); the interleaved layout
+// of HaarLines, with each position's factor applied once.
+HWY_INLINE void Haar8Group(V8* data, bool inverse) {
+    const D8 d8;
+    const auto k1 = hn::Set(d8, HaarScale(8, 1)), k2 = hn::Set(d8, HaarScale(8, 2)),
+               k3 = hn::Set(d8, HaarScale(8, 4)), k0 = hn::Set(d8, HaarScale(8, 0));
+    for (int r = 0; r < 8; ++r) {
+        V8* v = data + r;
+        auto x0 = v[0], x1 = v[8], x2 = v[16], x3 = v[24], x4 = v[32], x5 = v[40], x6 = v[48], x7 = v[56];
+        if (!inverse) {
+            const auto s0 = hn::Add(x0, x1), d0 = hn::Sub(x0, x1);
+            const auto s1 = hn::Add(x2, x3), d1 = hn::Sub(x2, x3);
+            const auto s2 = hn::Add(x4, x5), d2 = hn::Sub(x4, x5);
+            const auto s3 = hn::Add(x6, x7), d3 = hn::Sub(x6, x7);
+            const auto t0 = hn::Add(s0, s1), e0 = hn::Sub(s0, s1);
+            const auto t1 = hn::Add(s2, s3), e1 = hn::Sub(s2, s3);
+            v[0] = hn::Mul(hn::Add(t0, t1), k0);
+            v[32] = hn::Mul(hn::Sub(t0, t1), k3);
+            v[16] = hn::Mul(e0, k2);
+            v[48] = hn::Mul(e1, k2);
+            v[8] = hn::Mul(d0, k1);
+            v[24] = hn::Mul(d1, k1);
+            v[40] = hn::Mul(d2, k1);
+            v[56] = hn::Mul(d3, k1);
+        } else {
+            x0 = hn::Mul(x0, k0), x4 = hn::Mul(x4, k3);
+            x2 = hn::Mul(x2, k2), x6 = hn::Mul(x6, k2);
+            x1 = hn::Mul(x1, k1), x3 = hn::Mul(x3, k1), x5 = hn::Mul(x5, k1), x7 = hn::Mul(x7, k1);
+            const auto t0 = hn::Add(x0, x4), t1 = hn::Sub(x0, x4);
+            const auto s0 = hn::Add(t0, x2), s1 = hn::Sub(t0, x2);
+            const auto s2 = hn::Add(t1, x6), s3 = hn::Sub(t1, x6);
+            v[0] = hn::Add(s0, x1);
+            v[8] = hn::Sub(s0, x1);
+            v[16] = hn::Add(s1, x3);
+            v[24] = hn::Sub(s1, x3);
+            v[32] = hn::Add(s2, x5);
+            v[40] = hn::Sub(s2, x5);
+            v[48] = hn::Add(s3, x7);
+            v[56] = hn::Sub(s3, x7);
+        }
+    }
+}
+
+// The fused 8x8x8 transform: the 2-D codelets (4x orthonormal each way, gain
+// 16) per patch and the orthonormal Haar along the group.
 HWY_INLINE void Fftw3dFwd(V8* data) {
     for (int g = 0; g < 8; ++g) {
         Fftw2dInReg<true>(data + g * 8);
     }
-    TransformPack8<true, 8, 8, 1>(data);
+    Haar8Group(data, false);
 }
 
 HWY_INLINE void Fftw3dInv(V8* data) {
+    Haar8Group(data, true);
     for (int g = 0; g < 8; ++g) {
         Fftw2dInReg<false>(data + g * 8);
     }
-    TransformPack8<false, 8, 8, 1>(data);
 }
 
 HWY_INLINE float HardThreshFftw(V8 G[64], float sigma) {
@@ -1241,7 +1360,8 @@ HWY_INLINE float WienerFftw(V8 G[64], const V8 R[64], float sigma) {
     for (int i = 0; i < 64; ++i) {
         const auto r = R[i];
         const auto r2 = hn::Mul(r, r);
-        auto w = hn::Div(r2, hn::Add(r2, vsig2));
+        const auto den = hn::Add(r2, vsig2);
+        auto w = hn::IfThenElseZero(hn::Gt(den, hn::Zero(d8)), hn::Div(r2, den));
         if (i == 0) {
             w = hn::IfThenElse(hn::FirstN(d8, 1), vone, w);
         }
@@ -1308,11 +1428,11 @@ void Bm3dFilter8(const float* src, int sstride, const Match* matches, int k, flo
     }
     if (all_inside) {
         for (int g = 0; g < kk; ++g) {
-            AccPatch8Inside(num, den, dstride, matches[g].x, matches[g].y, G + g * 8, wgt / 4096.f, wgt);
+            AccPatch8Inside(num, den, dstride, matches[g].x, matches[g].y, G + g * 8, wgt / nss::NoiseProfile::fused8_roundtrip, wgt);
         }
     } else {
         for (int g = 0; g < kk; ++g) {
-            AccPatch8(num, den, dstride, matches[g].x, matches[g].y, width, height, G + g * 8, wgt / 4096.f, wgt);
+            AccPatch8(num, den, dstride, matches[g].x, matches[g].y, width, height, G + g * 8, wgt / nss::NoiseProfile::fused8_roundtrip, wgt);
         }
     }
 #else
@@ -1450,17 +1570,59 @@ HWY_INLINE void FusedRows(DT d, hn::Vec<DT>* p, bool inverse) {
     }
 }
 
+// HaarLines over G vectors v[0], v[stride], ...: loaded once, every level in
+// registers (indices are compile-time constants), stored once.
+template <int G, class DT>
+HWY_INLINE void FusedHaar(DT d, hn::Vec<DT>* v, int stride, bool inverse) {
+    if constexpr (G > 1) {
+        hn::Vec<DT> x[G];
+        const auto each = [&](auto f) {
+            [&]<std::size_t... J>(std::index_sequence<J...>) { (f(std::integral_constant<int, J>{}), ...); }(
+                std::make_index_sequence<G>{});
+        };
+        const auto level = [&](auto hc) {
+            constexpr int H = decltype(hc)::value;
+            [&]<std::size_t... I>(std::index_sequence<I...>) {
+                ((void)[&] {
+                    constexpr int i = static_cast<int>(I) * 2 * H;
+                    const auto a = x[i], b = x[i + H];
+                    x[i] = hn::Add(a, b);
+                    x[i + H] = hn::Sub(a, b);
+                }(), ...);
+            }(std::make_index_sequence<G / (2 * H)>{});
+        };
+        each([&](auto jc) {
+            constexpr int j = decltype(jc)::value;
+            x[j] = inverse ? hn::Mul(v[j * stride], hn::Set(d, HaarScale(G, j))) : v[j * stride];
+        });
+        if (!inverse) {
+            level(std::integral_constant<int, 1>{});
+            if constexpr (G > 2) level(std::integral_constant<int, 2>{});
+            if constexpr (G > 4) level(std::integral_constant<int, 4>{});
+            if constexpr (G > 8) level(std::integral_constant<int, 8>{});
+            if constexpr (G > 16) level(std::integral_constant<int, 16>{});
+            if constexpr (G > 32) level(std::integral_constant<int, 32>{});
+        } else {
+            if constexpr (G > 32) level(std::integral_constant<int, 32>{});
+            if constexpr (G > 16) level(std::integral_constant<int, 16>{});
+            if constexpr (G > 8) level(std::integral_constant<int, 8>{});
+            if constexpr (G > 4) level(std::integral_constant<int, 4>{});
+            if constexpr (G > 2) level(std::integral_constant<int, 2>{});
+            level(std::integral_constant<int, 1>{});
+        }
+        each([&](auto jc) {
+            constexpr int j = decltype(jc)::value;
+            v[j * stride] = inverse ? x[j] : hn::Mul(x[j], hn::Set(d, HaarScale(G, j)));
+        });
+    }
+}
+
 template <int B, int G, class DT>
 HWY_INLINE void FusedTransform(DT d, hn::Vec<DT>* cube, bool inverse) {
     constexpr int C = B / static_cast<int>(hn::MaxLanes(DT()));
     constexpr int P = B * C;  // vectors per patch
     const auto group_axis = [&] {
-        hn::Vec<DT> t[G];
-        for (int i = 0; i < P; ++i) {
-            for (int g = 0; g < G; ++g) t[g] = cube[g * P + i];
-            FusedLine<G>(d, t, inverse);
-            for (int g = 0; g < G; ++g) cube[g * P + i] = t[g];
-        }
+        for (int i = 0; i < P; ++i) FusedHaar<G>(d, cube + i, P, inverse);
     };
     if (inverse) group_axis();
     for (int g = 0; g < G; ++g) {
@@ -1529,7 +1691,8 @@ HWY_INLINE float FusedShrink(DT d, hn::Vec<DT>* G, const hn::Vec<DT>* R, int cou
         auto accw = hn::Zero(d);
         for (int i = 0; i < count; ++i) {
             const auto r2 = hn::Mul(R[i], R[i]);
-            auto w = hn::Div(r2, hn::Add(r2, vsig2));
+            const auto den = hn::Add(r2, vsig2);
+            auto w = hn::IfThenElseZero(hn::Gt(den, hn::Zero(d)), hn::Div(r2, den));
             if (i == 0) w = hn::IfThenElse(hn::FirstN(d, 1), hn::Set(d, 1.f), w);
             accw = hn::MulAdd(w, w, accw);
             G[i] = hn::Mul(G[i], w);
@@ -1555,7 +1718,7 @@ HWY_NOINLINE void FusedGroup(const float* const* srcs, const int* sstrides, cons
     const DT d;
     constexpr int C = B / static_cast<int>(hn::MaxLanes(DT()));
     constexpr int P = B * C, kVectors = G * P;
-    constexpr float kGain = kFusedLineGain<B> * kFusedLineGain<B> * kFusedLineGain<G>;
+    constexpr float kGain = kFusedLineGain<B> * kFusedLineGain<B>;  // Haar along the group: orthonormal
     const int kk = std::min(std::max(k, 1), G);
     const int slices = 2 * radius + 1;
     hn::Vec<DT> cube[kVectors];

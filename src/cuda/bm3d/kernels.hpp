@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // BM3D collaborative filtering on the device. The math follows the CPU
 // generic path (Bm3dFilterGroup): orthonormal 2D DCT per patch, orthonormal
-// DCT along the zero-padded group axis of length `group`, then either the
+// Haar along the zero-padded group axis of length `group`, then either the
 // hard threshold (|c| < 2.7 sigma -> 0, DC kept, weight 1/kept) or the
 // Wiener shrink against the reference cube (w = r^2/(r^2+sigma^2), DC 1,
 // weight 1/sum w^2), inverse transforms, and per-group weighted aggregation.

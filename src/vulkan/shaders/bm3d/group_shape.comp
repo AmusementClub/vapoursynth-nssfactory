@@ -92,7 +92,7 @@ void transform(bool ref, bool inverse) {
         for (int f = tid; f < AREA; f += THREADS) {
             float v[G];
             [[unroll]] for (int k = 0; k < G; ++k) v[k] = ref ? REF_AT(f + k * AREA) : CUBE_AT(f + k * AREA);
-            DCT_LINE(G)(v, true);
+            HAAR_LINE(G)(v, true);
             [[unroll]] for (int k = 0; k < G; ++k) CUBE_AT(base + f + k * AREA) = v[k];
         }
         CUBE_BARRIER();
@@ -118,7 +118,7 @@ void transform(bool ref, bool inverse) {
         for (int f = tid; f < AREA; f += THREADS) {
             float v[G];
             [[unroll]] for (int k = 0; k < G; ++k) v[k] = CUBE_AT(base + f + k * AREA);
-            DCT_LINE(G)(v, false);
+            HAAR_LINE(G)(v, false);
             [[unroll]] for (int k = 0; k < G; ++k) CUBE_AT(base + f + k * AREA) = v[k];
         }
         CUBE_BARRIER();
@@ -157,7 +157,7 @@ void main() {
         float w = 1.0f;
         if (i != 0) {
             precise float q = REF_AT(i) * REF_AT(i);
-            w = q / (q + sig2);
+            w = q + sig2 > 0.0f ? q / (q + sig2) : 0.0f;
         }
         CUBE_AT(i) *= w;
         w2 = fma(w, w, w2);

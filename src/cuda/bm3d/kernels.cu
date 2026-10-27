@@ -13,9 +13,10 @@ namespace {
 constexpr float kHardLambda = 2.7f;  // nss::kBmHardLambda
 
 // 8-point DCT-II / DCT-III butterflies (FFTW e10_8 / e01_8, the arithmetic of
-// the CPU's bm3d_filter8). Each is 4x the orthonormal transform, so the 3-D
-// forward scales coefficients by 64 and the round trip by 4096: both exact
-// powers of two, applied to the threshold and to the result.
+// the CPU's bm3d_filter8). Each is 4x the orthonormal transform, so the 2-D
+// forward scales coefficients by 16 and the round trip by 256 (the group axis
+// is the orthonormal Haar): exact powers of two, applied to the threshold and
+// to the result.
 constexpr float kDctP414 = 0.414213562373095048801688724209698078569671875f;
 constexpr float kDctP1847 = 1.847759065022573512256366378793576573644833252f;
 constexpr float kDctP198 = 0.198912367379658006911597622644676228597850501f;
@@ -158,6 +159,56 @@ __device__ __forceinline__ void dct_line_fixed(float* base, int stride, bool inv
     }
 }
 
+// The group-axis transform (noise profile 1, semantic version 3): the
+// orthonormal Haar transform of N samples (a power of two) at `stride`, in
+// the CPU's in-place layout (HaarLines): level h pairs the samples h apart
+// (sum to the lower, difference to the upper), the DC stays at sample 0; the
+// forward transform scales last, the inverse first.
+__host__ __device__ constexpr float haar_scale(int n, int j) {
+    int e = 0;
+    if (j == 0) {
+        while ((1 << e) < n) ++e;
+    } else {
+        while (((j >> e) & 1) == 0) ++e;
+        ++e;
+    }
+    float f = 1.f;
+    for (int i = 0; i < e / 2; ++i) f *= 0.5f;
+    return e % 2 ? f * 0.707106781186547524400844362104849039f : f;
+}
+
+template <int N>
+__device__ __forceinline__ void haar_line(float* base, int stride, bool inverse) {
+    if constexpr (N > 1) {
+        float x[N];
+#pragma unroll
+        for (int j = 0; j < N; ++j) x[j] = inverse ? base[j * stride] * haar_scale(N, j) : base[j * stride];
+        if (inverse) {
+#pragma unroll
+            for (int h = N / 2; h >= 1; h >>= 1) {
+#pragma unroll
+                for (int i = 0; i < N; i += 2 * h) {
+                    const float a = x[i], b = x[i + h];
+                    x[i] = a + b;
+                    x[i + h] = a - b;
+                }
+            }
+        } else {
+#pragma unroll
+            for (int h = 1; h < N; h <<= 1) {
+#pragma unroll
+                for (int i = 0; i < N; i += 2 * h) {
+                    const float a = x[i], b = x[i + h];
+                    x[i] = a + b;
+                    x[i + h] = a - b;
+                }
+            }
+        }
+#pragma unroll
+        for (int j = 0; j < N; ++j) base[j * stride] = inverse ? x[j] : x[j] * haar_scale(N, j);
+    }
+}
+
 // Sum over the block of one value per thread: lanes by shuffles, then the
 // warps in order. Fixed shape for a fixed block size. blockDim is a multiple
 // of 32.
@@ -178,7 +229,7 @@ __device__ __forceinline__ void transform_cube(float* cube, bool inverse) {
     constexpr int kArea = B * B;
     const int tid = threadIdx.x, threads = blockDim.x;
     if (inverse) {
-        for (int f = tid; f < kArea; f += threads) dct_line_fixed<G>(cube + f, kArea, true);
+        for (int f = tid; f < kArea; f += threads) haar_line<G>(cube + f, kArea, true);
         __syncthreads();
     }
     for (int i = tid; i < G * B; i += threads) dct_line_fixed<B>(cube + i * B, 1, inverse);
@@ -186,7 +237,7 @@ __device__ __forceinline__ void transform_cube(float* cube, bool inverse) {
     for (int i = tid; i < G * B; i += threads) dct_line_fixed<B>(cube + (i / B) * kArea + i % B, B, inverse);
     __syncthreads();
     if (!inverse) {
-        for (int f = tid; f < kArea; f += threads) dct_line_fixed<G>(cube + f, kArea, false);
+        for (int f = tid; f < kArea; f += threads) haar_line<G>(cube + f, kArea, false);
         __syncthreads();
     }
 }
@@ -199,7 +250,7 @@ __global__ void __launch_bounds__(256) group_shape_kernel(Bm3dGroupArgs a, bool 
     __shared__ float fsum[kMaxWarps];
     __shared__ int isum[kMaxWarps];
     constexpr int kArea = B * B, kCube = G * kArea;
-    constexpr float kScale = kLineScale<B> * kLineScale<B> * kLineScale<G>;
+    constexpr float kScale = kLineScale<B> * kLineScale<B>;  // the group-axis Haar is orthonormal
     const int r = blockIdx.x, tid = threadIdx.x, threads = blockDim.x;
     float* const out = a.fused.num ? nullptr : a.values + static_cast<long long>(r) * kCube;
     float* const cube = in_shared ? staged : out;
@@ -231,7 +282,7 @@ __global__ void __launch_bounds__(256) group_shape_kernel(Bm3dGroupArgs a, bool 
             float w = 1.f;
             if (i != 0) {
                 const float q = refc[i] * refc[i];
-                w = q / (q + sig2);
+                w = q + sig2 > 0.f ? q / (q + sig2) : 0.f;
             }
             cube[i] *= w;
             w2 = fmaf(w, w, w2);
@@ -361,7 +412,7 @@ __device__ __forceinline__ void forward_lanes(float* v, const float* const* plan
 #pragma unroll
     for (int p = 0; p < G; ++p) dct_line_fixed<B>(v + p * B, 1, false);  // down the lane's column
 #pragma unroll
-    for (int row = 0; row < B; ++row) dct_line_fixed<G>(v + row, B, false);  // group axis
+    for (int row = 0; row < B; ++row) haar_line<G>(v + row, B, false);  // group axis
     transpose_lanes<B, G>(v, buffer, lane);
 #pragma unroll
     for (int p = 0; p < G; ++p) dct_line_fixed<B>(v + p * B, 1, false);  // along the row the lane now holds
@@ -382,7 +433,7 @@ template <int B, int G, bool Wiener, bool Fused>
 __global__ void __launch_bounds__(32) group_warp_kernel(Bm3dGroupArgs a) {
     __shared__ float buffer[B * kWarpStride];
     constexpr int kLane = G * B, kCube = G * B * B, kPerWarp = 32 / B;
-    constexpr float kScale = kLineScale<B> * kLineScale<B> * kLineScale<G>;
+    constexpr float kScale = kLineScale<B> * kLineScale<B>;  // the group-axis Haar is orthonormal
     const int lane = threadIdx.x, sub = lane % B;
     const int r = blockIdx.x * kPerWarp + lane / B;
     const bool live = r < a.batch;
@@ -402,7 +453,7 @@ __global__ void __launch_bounds__(32) group_warp_kernel(Bm3dGroupArgs a) {
 #pragma unroll
         for (int i = 0; i < kLane; ++i) {
             const float q = v[i] * v[i];
-            const float w = (i == 0 && sub == 0) ? 1.f : q / (q + sig2);
+            const float w = (i == 0 && sub == 0) ? 1.f : q + sig2 > 0.f ? q / (q + sig2) : 0.f;
             gain[i] = w;
             w2 = fmaf(w, w, w2);
         }
@@ -426,7 +477,7 @@ __global__ void __launch_bounds__(32) group_warp_kernel(Bm3dGroupArgs a) {
     for (int p = 0; p < G; ++p) dct_line_fixed<B>(v + p * B, 1, true);
     transpose_lanes<B, G>(v, buffer, lane);
 #pragma unroll
-    for (int row = 0; row < B; ++row) dct_line_fixed<G>(v + row, B, true);
+    for (int row = 0; row < B; ++row) haar_line<G>(v + row, B, true);
 #pragma unroll
     for (int p = 0; p < G; ++p) dct_line_fixed<B>(v + p * B, 1, true);
     if (!live) return;
