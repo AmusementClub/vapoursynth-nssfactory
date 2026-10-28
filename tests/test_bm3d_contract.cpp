@@ -26,13 +26,34 @@ void axis(std::vector<double>& v,int length,int stride,int blocks,int span,bool 
   for(int i=0;i<length;++i)v[off+i*stride]=b[i];
  }
 }
+// Independent double orthonormal Haar matrix along the group (noise profile 1,
+// semantic version 3), built by the recursion H(2n) = [H(n) x (1, 1); I(n) x (1, -1)] / sqrt(2):
+// row 0 is the DC. Production keeps the coefficients in another (in-place)
+// order; the shrinkage is per coefficient with the DC at index 0, so the
+// filtered result is the same.
+std::vector<double> haar_matrix(int n){
+ std::vector<double>h{1.};
+ for(int m=1;m<n;m*=2){std::vector<double>next(4*m*m,0.);const double s=1/std::sqrt(2.);
+  for(int r=0;r<m;++r)for(int c=0;c<m;++c){next[r*2*m+2*c]=next[r*2*m+2*c+1]=h[r*m+c]*s;}
+  for(int r=0;r<m;++r){next[(m+r)*2*m+2*r]=s;next[(m+r)*2*m+2*r+1]=-s;}
+  h.swap(next);}
+ return h;
+}
+void haar_axis(std::vector<double>& v,int length,int stride,int span,bool inverse){
+ const auto h=haar_matrix(length);std::vector<double>a(length),b(length);
+ for(int line=0;line<span;++line){
+  for(int i=0;i<length;++i)a[i]=v[line+i*stride];
+  for(int i=0;i<length;++i){b[i]=0;for(int j=0;j<length;++j)b[i]+=(inverse?h[j*length+i]:h[i*length+j])*a[j];}
+  for(int i=0;i<length;++i)v[line+i*stride]=b[i];
+ }
+}
 void transform(std::vector<double>& v,int b,int g,bool inverse){
- if(!inverse){axis(v,b,1,g*b,1,false);axis(v,b,b,g,b,false);axis(v,g,b*b,1,b*b,false);}
- else{axis(v,g,b*b,1,b*b,true);axis(v,b,b,g,b,true);axis(v,b,1,g*b,1,true);}
+ if(!inverse){axis(v,b,1,g*b,1,false);axis(v,b,b,g,b,false);haar_axis(v,g,b*b,b*b,false);}
+ else{haar_axis(v,g,b*b,b*b,true);axis(v,b,b,g,b,true);axis(v,b,1,g*b,1,true);}
 }
 double oracle(std::vector<double>& v,std::vector<double> ref,int b,int g,double sigma,bool wiener){
  transform(v,b,g,false);if(wiener)transform(ref,b,g,false);double weight=0;
- for(std::size_t i=0;i<v.size();++i){if(wiener){double w=i?ref[i]*ref[i]/(ref[i]*ref[i]+sigma*sigma):1.;v[i]*=w;weight+=w*w;}
+ for(std::size_t i=0;i<v.size();++i){if(wiener){const double den=ref[i]*ref[i]+sigma*sigma;double w=i?(den>0?ref[i]*ref[i]/den:0.):1.;v[i]*=w;weight+=w*w;}
  else{bool keep=i==0||std::abs(v[i])>=2.7*sigma;if(!keep)v[i]=0;weight+=keep;}}
  transform(v,b,g,true);return 1/std::max(weight,1e-12);
 }
@@ -122,9 +143,8 @@ void threshold_neighbors() {
                          std::nextafter(threshold,std::numeric_limits<float>::infinity()),threshold*1.01f}) {
   std::vector<float> input(512),work(bm3d_filter_work_floats(8,8));
   std::vector<double> basis(512);
-  const double pi=std::acos(-1.);
   for(int g=0;g<8;++g)for(int p=0;p<64;++p){
-   const int i=g*64+p;basis[i]=std::cos(pi*(g+.5)/8)*.5/8;
+   const int i=g*64+p;basis[i]=(g<4?1.:-1.)/std::sqrt(8.)/8;  // coarsest group-axis Haar detail x patch DC
    input[i]=static_cast<float>(.25+coefficient*basis[i]);
   }
   float weight=0;bm3d_filter_group(input.data(),64,8,8,8,sigma,false,nullptr,&weight,work.data());

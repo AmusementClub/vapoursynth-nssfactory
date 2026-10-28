@@ -44,7 +44,7 @@ def temporal():
         def stamp(n, f, radius=radius):
             out = f.copy()
             for key, value in dict(_NSSFatVersion=2, _NSSFatRadius=radius, _NSSFatCenter=n,
-                                   _NSSFatLayout=1, _NSSModel=1, _NSSModelVersion=2, _NSSNoiseProfile=1).items():
+                                   _NSSFatLayout=1, _NSSModel=1, _NSSModelVersion=3, _NSSNoiseProfile=1).items():
                 out.props[key] = value
             return out
         fat=core.std.ModifyFrame(fat,fat,stamp)
@@ -137,13 +137,22 @@ def temporal():
 def matrix(n):
     k=np.arange(n)[:,None];x=np.arange(n)[None,:]
     return np.cos(np.pi*(x+.5)*k/n)*np.sqrt(np.where(k==0,1.,2.)/n)
+def haar(n):
+    # Orthonormal Haar matrix, H(2m) = [H(m) x (1, 1); I(m) x (1, -1)] / sqrt(2): the
+    # group-axis transform of model version 3 (row 0 the DC; production keeps
+    # the coefficients in another order, the per-coefficient shrinkage is the same).
+    h=np.ones((1,1))
+    while h.shape[0]<n:
+        m=h.shape[0];h=np.vstack([np.kron(h,[1,1]),np.kron(np.eye(m),[1,-1])])/np.sqrt(2)
+    return h
 def oracle(p,ref,group,sigma,wiener):
-    b=p.shape[0];d=matrix(b);g=matrix(group)
+    b=p.shape[0];d=matrix(b);g=haar(group)
     cube=np.zeros((group,b,b));cube[0]=p
     f=np.einsum('kg,yv,xu,gvu->kyx',g,d,d,cube,optimize=True)
     if wiener:
         cube[0]=ref;r=np.einsum('kg,yv,xu,gvu->kyx',g,d,d,cube,optimize=True)
-        with np.errstate(invalid='ignore',divide='ignore'):weight=r*r/(r*r+sigma*sigma)
+        den=r*r+sigma*sigma
+        with np.errstate(invalid='ignore',divide='ignore'):weight=np.where(den>0,r*r/den,0.)
         weight[0,0,0]=1;f*=weight
     else:
         mask=np.abs(f)>=2.7*sigma;mask[0,0,0]=True;f*=mask

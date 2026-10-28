@@ -95,6 +95,7 @@ The defaults are fast settings. Settings closer to the paper, with their quality
 
 - The paper's normal profile: both stages, step 3, groups of 16 (basic) and 32 (Wiener), a 39 x 39 window.
 - Pass 4/3 of the noise's sigma: the plugin's sigma follows bm3dcpu's convention (the noise profile multiplies it by 0.75), so the true sigma under-filters by 1.4 dB here.
+- Measured with BM3D model 2 (DCT along the group). Model 3 (Haar along the group) adds about +0.03 to +0.07 dB at the paper's settings on our 1080p test frames (σ 15 to 40), and its speed is the same.
 
 ## Signature
 

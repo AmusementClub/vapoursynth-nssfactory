@@ -149,7 +149,7 @@ def main():
             for n in (4, 0, 2, 1):
                 fat_frame = raw.get_frame(n)
                 for key, value in dict(_NSSFatVersion=2, _NSSFatCenter=n, _NSSFatRadius=2,
-                                       _NSSFatLayout=1, _NSSModel=model, _NSSModelVersion=7 if name=='NLH' else 6 if name=='TWSC' else 3 if name=='NCSR' else 2).items():
+                                       _NSSFatLayout=1, _NSSModel=model, _NSSModelVersion=7 if name=='NLH' else 6 if name=='TWSC' else 3 if name in ('NCSR', 'BM3D') else 2).items():
                     if fat_frame.props[key] != value:
                         raise AssertionError((name, key, value, fat_frame.props[key]))
                 actual, _ = evaluate(output, n)
@@ -168,7 +168,7 @@ def main():
                 a[sl * 16:sl * 16 + 8] = (n + 1) * (sl + 1)
                 a[sl * 16 + 8:(sl + 1) * 16] = sl + 2
             out.props.update(_NSSFatVersion=2, _NSSFatRadius=radius, _NSSFatCenter=n,
-                             _NSSFatLayout=1, _NSSModel=1, _NSSModelVersion=2, _NSSNoiseProfile=1)
+                             _NSSFatLayout=1, _NSSModel=1, _NSSModelVersion=3, _NSSNoiseProfile=1)
             return out
         fat = core.std.ModifyFrame(blank, blank, impulse)
         output = core.nss.VAggregate(fat, source, radius=radius)

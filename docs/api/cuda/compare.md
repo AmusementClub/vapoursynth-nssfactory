@@ -13,9 +13,11 @@ the published packages).
 
 ## Summary
 
-- **Same algorithm, same result.** At the same arguments the outputs match the other plugins: the denoised PSNR agrees
-  to 0.001 dB for spatial BM3D, CBM3D, WNNM and NLM.
-- **Temporal filters denoise better.** Temporal BM3D (`radius=1`) is +0.93 dB above all four BM3DCUDA builds, and
+- **Same algorithm, same result** for WNNM and NLM: at the same arguments the denoised PSNR agrees to 0.001 dB.
+- **Spatial BM3D and CBM3D denoise a little better** since BM3D model 3 (Haar along the group, as the paper;
+  BM3DCUDA and bm3dcpu use a DCT there, as model 2 did): +0.05 to +0.13 dB at the same arguments. Model 2 matched
+  them to 0.001 dB.
+- **Temporal filters denoise better.** Temporal BM3D (`radius=1`) is +0.99 dB above all four BM3DCUDA builds, and
   temporal WNNM +0.33 dB above VapourSynth-WNNM. The temporal search differs; see the notes.
 - **Faster on the GPU** (1080p, against the fastest other GPU plugin):
   - BM3D 1.35×, BM3D two stages 2.78×, CBM3D 1.22×, temporal BM3D 2.48×.
@@ -48,14 +50,20 @@ the difference, dB; 60 or more is the backends' own gate).
 
 | Case | Noisy | `nss` | `nss_cuda` | `bm3dcuda` | `bm3dcuda_rtc` | `bm3dcpu` |
 |---|---:|---:|---:|---:|---:|---:|
-| BM3D, gray, σ5 | 34.15 | 40.471 | 40.471 (108) | 40.471 (97) | 40.471 (97) | 40.470 (84) |
-| BM3D, gray, σ25 | 20.18 | 29.142 | 29.141 (77) | 29.142 (144) | 29.142 (144) | 29.141 (85) |
-| BM3D, gray, σ25, step 4 | 20.18 | 30.605 | 30.605 (93) | 30.605 (105) | 30.605 (105) | 30.605 (84) |
-| BM3D two stages, gray, σ5 | 34.15 | 40.371 | 40.371 (94) | 40.371 (91) | 40.371 (90) | 40.370 (67) |
-| BM3D two stages, gray, σ25 | 20.18 | 29.426 | 29.426 (74) | 29.426 (84) | 29.426 (84) | 29.427 (59) |
-| CBM3D, YUV444, σ10 (`chroma=1`) | 28.13 | 36.363 | 36.363 (102) | 36.363 (106) | 36.363 (106) | 36.363 (91) |
-| BM3D, YUV444, σ10, per plane | 28.13 | 36.825 | 36.825 (94) | 36.825 (95) | 36.825 (95) | 36.825 (89) |
-| **BM3D, gray, σ10, `radius=1`** | 28.13 | **36.478** | **36.478** (103) | 35.549 (42) | 35.549 (42) | 35.549 (42) |
+| BM3D, gray, σ5 | 34.15 | 40.553 | 40.553 (104) | 40.471 (48) | 40.471 (48) | 40.470 (48) |
+| BM3D, gray, σ25 | 20.18 | 29.219 | 29.219 (81) | 29.142 (35) | 29.142 (35) | 29.141 (35) |
+| BM3D, gray, σ25, step 4 | 20.18 | 30.608 | 30.608 (90) | 30.605 (42) | 30.605 (42) | 30.605 (42) |
+| BM3D two stages, gray, σ5 | 34.15 | 40.451 | 40.451 (92) | 40.371 (50) | 40.371 (50) | 40.370 (50) |
+| BM3D two stages, gray, σ25 | 20.18 | 29.480 | 29.480 (79) | 29.426 (37) | 29.426 (37) | 29.427 (37) |
+| CBM3D, YUV444, σ10 (`chroma=1`) | 28.13 | 36.493 | 36.493 (110) | 36.363 (42) | 36.363 (42) | 36.363 (42) |
+| BM3D, YUV444, σ10, per plane | 28.13 | 36.914 | 36.914 (96) | 36.825 (43) | 36.825 (43) | 36.825 (43) |
+| **BM3D, gray, σ10, `radius=1`** | 28.13 | **36.541** | **36.541** (108) | 35.549 (41) | 35.549 (41) | 35.549 (41) |
+
+The BM3D rows are BM3D model 3 (2026-10-27, a dev-host build of the change: GCC 15, CUDA 13.3 `120-real`; the third
+plugins as in the setup). Under model 2 the `nss` columns equalled BM3DCUDA's to 0.001 dB with an agreement of 59 dB or
+more; the Haar transform along the group moves them by more than the gate, so the agreement column now reads 35–50 dB
+for the third plugins while `nss_cuda` against `nss` stays at 79–110 dB. Speed is unchanged by the model (the speed
+tables are r2's).
 
 | Case | Noisy | `nss` | `nss_cuda` | `wnnm` |
 |---|---:|---:|---:|---:|
