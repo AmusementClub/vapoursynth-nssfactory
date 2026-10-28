@@ -9,8 +9,9 @@ reproducible numerics.
 |---|---|---|
 | `libnss` | `nss` | CPU: x86-64 with AVX2 or newer (Linux, Windows), arm64 with NEON (macOS, Linux) |
 | `libnss_cuda` | `nss_cuda` | NVIDIA GPUs of compute capability 7.5 or newer (Linux, Windows) |
+| `libnss_vk` (preview) | `nss_vk` | Vulkan 1.3 GPUs that meet its [requirements](docs/api/vk/README.md#device-requirements); BM3D and NLM so far, validated on NVIDIA |
 
-Both plugins take the same arguments and give the same results (the GPU's
+The plugins take the same arguments and give the same results (the GPUs'
 output is 60 dB PSNR or more from the CPU's). Input is constant-format 32-bit
 float Gray, YUV or RGB. The project is a work in progress.
 
@@ -53,8 +54,11 @@ out = core.nss.DA3D(clip, core.nss.BM3D(clip, sigma=20, final=1), sigma=15)  # D
 
 - [CPU API guide](docs/api/README.md): every filter's arguments, defaults,
   paper and speed.
-- [CUDA reference](docs/api/cuda/README.md): the GPU plugin, its extra
+- [CUDA reference](docs/api/cuda/README.md): the CUDA plugin, its extra
   arguments and its speed at 1080p.
+- [Vulkan reference](docs/api/vk/README.md): the Vulkan plugin (a preview:
+  BM3D and NLM, validated on NVIDIA), its device requirements and VapourSynth
+  R80+ GPU frames.
 - [Building](docs/api/building.md): build options, platforms and
   reproducibility.
 

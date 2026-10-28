@@ -61,7 +61,8 @@ inline constexpr std::size_t kDedicatedBytes = 4u << 20;
 // One VkBuffer with its own VMA allocation, addressable from shaders (buffer
 // device address) and usable by every queue family of the device. Host
 // memory kinds are persistently mapped. Device and Rebar memory is charged as
-// Workspace, Staging and Readback as Pinned.
+// Workspace, Staging and Readback as Pinned. On VapourSynth's device the
+// device-local ones are also declared to the core's VRAM budget.
 class Buffer {
 public:
     Buffer() = default;
@@ -98,6 +99,7 @@ private:
     void* mapped_ = nullptr;
     BudgetCharge charge_;
     BudgetCharge padding_;  // allocation size beyond `bytes`
+    std::int64_t reserved_ = 0;  // declared to VapourSynth's VRAM budget (Device::reserve)
 };
 
 // A pitched plane (`pitch` bytes per row) the host fills and kernels read.
@@ -105,7 +107,9 @@ private:
 // writes a staging copy that record_upload() copies on the upload queue.
 class UploadPlane {
 public:
-    enum class Mode { automatic, staging };  // staging: never use BAR (tests)
+    // staging: never use BAR (tests); device: device memory only, filled on
+    // the device (GPU frames: no host writes, needs_copy() is false).
+    enum class Mode { automatic, staging, device };
 
     UploadPlane() = default;
     UploadPlane(std::shared_ptr<Device> device, std::size_t pitch, int rows,
@@ -137,8 +141,10 @@ private:
 class DownloadPlane {
 public:
     DownloadPlane() = default;
+    // readback false: no readback buffer (GPU frames: the planes are copied
+    // into the output frames on the device; read() must not be called).
     DownloadPlane(std::shared_ptr<Device> device, std::size_t pitch, int rows,
-                  const std::shared_ptr<nss::ResourceBudget>& budget = nullptr);
+                  const std::shared_ptr<nss::ResourceBudget>& budget = nullptr, bool readback = true);
 
     void record_download(VkCommandBuffer commands) const;
     // Rows [first, first + rows) into `target` at `target_offset` (a frame

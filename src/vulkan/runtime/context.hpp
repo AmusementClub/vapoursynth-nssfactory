@@ -20,6 +20,9 @@
 #include <string>
 #include <vector>
 
+struct VSVULKANAPI;
+struct VSGPUMemoryReservation;
+
 namespace nss_vk {
 
 // Appended to every shared k<Filter>Signature (D21).
@@ -43,19 +46,22 @@ std::string signature(const char* shared);
 struct BackendArgs {
     int device_id = 0;
     int num_streams = kDefaultStreams;
+    bool device_explicit = false;
     bool streams_explicit = false;
 };
 // Throws std::invalid_argument("nss_vk.<filter>: ...") on invalid values.
 BackendArgs parse_backend_args(const VSAPI* vsapi, const VSMap* in, const char* filter);
 
 // One queue and the mutex its submissions take (vkQueueSubmit2 needs external
-// synchronization). Several roles may name the same queue.
+// synchronization). Several roles may name the same queue. On VapourSynth's
+// device the core's queue lock is taken instead (vs_queue: VSVulkanQueueType).
 struct Queue {
     VkQueue handle = VK_NULL_HANDLE;
     std::uint32_t family = 0;
     std::uint32_t index = 0;
     std::uint32_t timestamp_bits = 0;  // 0: no timestamps on this family
     std::mutex* mutex = nullptr;
+    int vs_queue = -1;
 };
 
 class Device {
@@ -65,11 +71,23 @@ public:
     // unsupported (D22) and `allow_unsupported` is false, or creation fails.
     // Only tests pass allow_unsupported (lavapipe primitive tests).
     static std::shared_ptr<Device> open(int index, bool allow_unsupported = false);
+    // VapourSynth's own Vulkan device (R80+ GPU frames, D29), adopted from
+    // the core: GPU frames must be processed on it, and plugins may not make
+    // a device of their own for them. One per core, kept while filters on it
+    // live; it never destroys the VkDevice. Kernels, uploads and downloads
+    // all run on the core's compute queue under its queue lock, buffers come
+    // from VMA as on our own devices (memory_limit_mb) and are reported to
+    // the core's VRAM budget (reserveGPUMemory), and slots signal timelines
+    // from createGPUTimeline, so that their values can be published on the
+    // planes they write. Throws std::runtime_error.
+    static std::shared_ptr<Device> open_core(VSCore* core, const VSVULKANAPI* api);
 
     Device(const Device&) = delete;
     Device& operator=(const Device&) = delete;
     ~Device();
 
+    // vkEnumeratePhysicalDevices index in nss_vk's instance (device_id); -1
+    // for VapourSynth's device when nss_vk's instance does not list it.
     int index() const noexcept { return index_; }
     VkPhysicalDevice physical() const noexcept { return physical_; }
     VkDevice handle() const noexcept { return device_; }
@@ -91,6 +109,15 @@ public:
     const std::vector<std::uint32_t>& families() const noexcept { return families_; }
     bool defer_downloads() const noexcept { return defer_downloads_; }
     void submit(const Queue& queue, const VkSubmitInfo2& info) const;
+
+    // VapourSynth's device (open_core): the core and its GPU API, else null.
+    VSCore* core() const noexcept { return core_; }
+    const VSVULKANAPI* core_api() const noexcept { return core_api_; }
+    bool core_device() const noexcept { return core_ != nullptr; }
+    // Device memory nss_vk holds on VapourSynth's device, declared to the
+    // core before it is allocated (reserveGPUMemory: its cache makes room)
+    // and taken back once it is freed. No-op on nss_vk's own devices.
+    void reserve(std::int64_t bytes) noexcept;
 
     // Uploads write device-local, host-visible memory when it is resizable BAR
     // (more than the legacy 256 MiB window) and NSS_VK_REBAR is not 0.
@@ -117,6 +144,7 @@ public:
 private:
     Device() = default;
     void create(int index);
+    void create_core(VSCore* core, const VSVULKANAPI* api);
     void load_pipeline_cache();
 
     int index_ = 0;
@@ -139,12 +167,22 @@ private:
     std::mutex cache_mutex_;
     std::uint64_t cache_saved_hash_ = 0;
     std::atomic<bool> poisoned_{false};
+    VSCore* core_ = nullptr;
+    const VSVULKANAPI* core_api_ = nullptr;
+    VSGPUMemoryReservation* reservation_ = nullptr;
+    std::mutex reserve_mutex_;
+    std::int64_t reserved_ = 0;
 };
 
 // Resolves device_id for a filter: unsupported devices are a creation error,
 // emulated ones log one warning per device and process. Throws
 // std::invalid_argument with the "nss_vk.<filter>: " prefix.
 std::shared_ptr<Device> acquire_device(int device_id, const char* filter, VSCore* core, const VSAPI* vsapi);
+// The same for GPU frames: VapourSynth's device. An explicit device_id must
+// name that device (as nss_vk's instance lists it); `api` is the core's GPU
+// API (gpu_frames.hpp take_clips).
+std::shared_ptr<Device> acquire_core_device(const BackendArgs& backend, const char* filter, VSCore* core,
+                                            const VSAPI* vsapi, const VSVULKANAPI* api);
 
 // The pipeline cache directory: NSS_VK_PIPELINE_CACHE when set ("0" or "off"
 // disables the cache), else the user cache directory

@@ -17,6 +17,9 @@
 #include <stdexcept>
 #include <random>
 #include <system_error>
+#if NSS_VK_GPU_FRAMES
+#include <VSVulkan4.h>
+#endif
 #ifdef _WIN32
 #include <process.h>
 #else
@@ -88,6 +91,7 @@ BackendArgs parse_backend_args(const VSAPI* vsapi, const VSMap* in, const char* 
             throw std::invalid_argument(prefix(filter) + "device_id must be in [0, " + std::to_string(INT32_MAX) + "]");
         }
         args.device_id = static_cast<int>(device);
+        args.device_explicit = true;
     }
     const int64_t streams = vsapi->mapGetInt(in, "num_streams", 0, &err);
     if (!err) {
@@ -167,6 +171,13 @@ Device::~Device() {
     if (poisoned()) return;
     if (pipeline_cache_) table_.vkDestroyPipelineCache(device_, pipeline_cache_, nullptr);
     if (allocator_) vmaDestroyAllocator(allocator_);
+    if (core_) {
+        // VapourSynth's device is the core's to destroy.
+#if NSS_VK_GPU_FRAMES
+        if (reservation_) core_api_->releaseGPUMemoryReservation(reservation_);
+#endif
+        return;
+    }
     if (device_ != VK_NULL_HANDLE) table_.vkDestroyDevice(device_, nullptr);
 }
 
@@ -316,9 +327,130 @@ void Device::create(int index) {
     load_pipeline_cache();
 }
 
+std::shared_ptr<Device> Device::open_core(VSCore* core, const VSVULKANAPI* api) {
+#if NSS_VK_GPU_FRAMES
+    // One per core while filters use it (weak references: the core destroys
+    // its device after its filters), never leaked into the next core.
+    static auto* mutex = new std::mutex();
+    static auto* devices = new std::map<VSCore*, std::weak_ptr<Device>>();
+    std::lock_guard lock(*mutex);
+    std::shared_ptr<Device> device = (*devices)[core].lock();
+    if (device && !device->poisoned()) return device;
+    device.reset(new Device());
+    device->create_core(core, api);  // on failure ~Device frees what was created
+    (*devices)[core] = device;
+    return device;
+#else
+    (void)core;
+    (void)api;
+    throw std::runtime_error("this build has no VapourSynth GPU frames (built without VSVulkan4.h)");
+#endif
+}
+
+void Device::create_core(VSCore* core, const VSVULKANAPI* api) {
+#if NSS_VK_GPU_FRAMES
+    VSVulkanCoreHandles handles{};
+    char error[512] = {};
+    if (api->getVulkanHandles(core, &handles, error, sizeof(error)) != 0) {
+        throw std::runtime_error(std::string("VapourSynth's Vulkan device is not available: ") + error);
+    }
+    // Physical-device queries and the device table go through the loader's
+    // dispatch, which nss_vk's own instance loaded (volk): the core's loader
+    // is the same library in the process. Should nss_vk's instance be missing
+    // (its loader is the core's, so at least 1.3), the core's instance loads
+    // the entry points instead.
+    const Instance& own = instance();
+    if (!own.handle) volkLoadInstanceOnly(handles.instance);
+    physical_ = handles.physicalDevice;
+    caps_ = query_caps(physical_);
+    support_ = classify(caps_);
+    if (support_.support == Support::unsupported) {
+        throw std::runtime_error("VapourSynth's Vulkan device " + label() + " is not supported: missing " +
+                                 join(support_.missing));
+    }
+    VkPhysicalDeviceIDProperties id{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};
+    VkPhysicalDeviceProperties2 properties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &id};
+    vkGetPhysicalDeviceProperties2(physical_, &properties);
+    index_ = -1;
+    for (std::size_t i = 0; i < own.devices.size(); ++i) {
+        VkPhysicalDeviceIDProperties other{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};
+        VkPhysicalDeviceProperties2 p{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &other};
+        vkGetPhysicalDeviceProperties2(own.devices[i], &p);
+        if (std::memcmp(other.deviceUUID, id.deviceUUID, VK_UUID_SIZE) == 0) index_ = static_cast<int>(i);
+    }
+    core_ = core;
+    core_api_ = api;
+    device_ = handles.device;
+    volkLoadDeviceTable(&table_, device_);
+
+    // Every stage on the core's compute queue: the copies of GPU frames are
+    // device-local (no transfer to overlap), and plane repacks are dispatches.
+    std::uint32_t family_count = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(physical_, &family_count, nullptr);
+    std::vector<VkQueueFamilyProperties> families(family_count);
+    vkGetPhysicalDeviceQueueFamilyProperties(physical_, &family_count, families.data());
+    queue_mutexes_ = std::make_unique<std::mutex[]>(1);
+    compute_.family = handles.computeQueueFamily;
+    compute_.index = handles.computeQueueIndex;
+    table_.vkGetDeviceQueue(device_, compute_.family, compute_.index, &compute_.handle);
+    compute_.timestamp_bits = compute_.family < family_count ? families[compute_.family].timestampValidBits : 0;
+    compute_.mutex = &queue_mutexes_[0];
+    compute_.vs_queue = vqCompute;
+    upload_ = download_ = compute_;
+    families_ = {compute_.family};
+    defer_downloads_ = false;
+    rebar_ = false;        // nothing is uploaded from the host here
+    host_import_ = false;  // the core enables no VK_EXT_external_memory_host
+    debug_labels_ = false; // nor debug utils on its instance
+    timestamp_period_ = properties.properties.limits.timestampPeriod;
+
+    VmaVulkanFunctions functions{};
+    functions.vkGetInstanceProcAddr = handles.getInstanceProcAddr;
+    functions.vkGetDeviceProcAddr =
+        reinterpret_cast<PFN_vkGetDeviceProcAddr>(handles.getInstanceProcAddr(handles.instance, "vkGetDeviceProcAddr"));
+    VmaAllocatorCreateInfo allocator_info{};
+    allocator_info.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;  // no VK_EXT_memory_budget on the core's device
+    allocator_info.physicalDevice = physical_;
+    allocator_info.device = device_;
+    allocator_info.instance = handles.instance;
+    allocator_info.vulkanApiVersion = kRequiredApiVersion;
+    allocator_info.pVulkanFunctions = &functions;
+    allocator_info.preferredLargeHeapBlockSize = 32ull << 20;
+    NSS_VK_CHECK(vmaCreateAllocator(&allocator_info, &allocator_));
+    reservation_ = api->reserveGPUMemory(core, 0, error, sizeof(error));  // null: nothing is reported
+    load_pipeline_cache();
+#else
+    (void)core;
+    (void)api;
+#endif
+}
+
 void Device::submit(const Queue& queue, const VkSubmitInfo2& info) const {
+#if NSS_VK_GPU_FRAMES
+    if (core_) {
+        // The core's queue lock is a leaf: nothing but the submission inside it.
+        core_api_->lockVulkanQueue(core_, queue.vs_queue);
+        const VkResult result = table_.vkQueueSubmit2(queue.handle, 1, &info, VK_NULL_HANDLE);
+        core_api_->unlockVulkanQueue(core_, queue.vs_queue);
+        NSS_VK_CHECK(result);
+        return;
+    }
+#endif
     std::lock_guard lock(*queue.mutex);
     NSS_VK_CHECK(table_.vkQueueSubmit2(queue.handle, 1, &info, VK_NULL_HANDLE));
+}
+
+void Device::reserve(std::int64_t bytes) noexcept {
+#if NSS_VK_GPU_FRAMES
+    if (!reservation_ || bytes == 0) return;
+    // An absolute total (updates are not deltas), published under the lock
+    // so that the last update carries the last total.
+    std::lock_guard lock(reserve_mutex_);
+    reserved_ = std::max<std::int64_t>(0, reserved_ + bytes);
+    core_api_->updateGPUMemoryReservation(reservation_, reserved_);
+#else
+    (void)bytes;
+#endif
 }
 
 void Device::load_pipeline_cache() {
@@ -403,6 +535,33 @@ std::shared_ptr<Device> acquire_device(int device_id, const char* filter, VSCore
         static std::set<int> warned;
         std::lock_guard lock(mutex);
         if (warned.insert(device->index()).second) {
+            const std::string message = "nss_vk: " + device->label() + " has subgroups of at most " +
+                                        std::to_string(device->support().native_lanes) +
+                                        " lanes; wider kernels run on the emulated warp layer (same results, slower)";
+            vsapi->logMessage(mtWarning, message.c_str(), core);
+        }
+    }
+    return device;
+}
+
+std::shared_ptr<Device> acquire_core_device(const BackendArgs& backend, const char* filter, VSCore* core,
+                                            const VSAPI* vsapi, const VSVULKANAPI* api) {
+    std::shared_ptr<Device> device;
+    try {
+        device = Device::open_core(core, api);
+    } catch (const std::exception& error) {
+        throw std::invalid_argument(prefix(filter) + error.what());
+    }
+    if (backend.device_explicit && backend.device_id != device->index()) {
+        throw std::invalid_argument(prefix(filter) + "GPU frames are processed on VapourSynth's Vulkan device, " +
+                                    device->label() + ", which is not device_id " + std::to_string(backend.device_id) +
+                                    ": omit device_id, or choose the device with core.set_vulkan_device()");
+    }
+    if (device->support().support == Support::emulated) {
+        static std::mutex mutex;
+        static std::set<const Device*> warned;
+        std::lock_guard lock(mutex);
+        if (warned.insert(device.get()).second) {
             const std::string message = "nss_vk: " + device->label() + " has subgroups of at most " +
                                         std::to_string(device->support().native_lanes) +
                                         " lanes; wider kernels run on the emulated warp layer (same results, slower)";

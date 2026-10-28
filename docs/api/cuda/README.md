@@ -189,6 +189,13 @@ GPU. NLM is temporal through `d`; LSSC has no temporal mode.
   its kernels run (one more source frame per plane stays on the GPU for that:
   about 8 MiB at 1080p gray).
 
+### GPU frames
+
+`nss_cuda` takes CPU frames only. On VapourSynth R80+ a GPU-resident clip
+(`std.GPUUpload`, a GPU filter's output) passed to an `nss_cuda` filter is
+downloaded by the core first, and the output is a CPU frame. Chains that stay
+on the GPU are [`nss_vk`'s](../vk/README.md#gpu-frames-vapoursynth-r80).
+
 ### Driver and GPU support
 
 - The release packages are built with CUDA 13.3 and need an NVIDIA driver of
@@ -222,7 +229,7 @@ frames directly, without the pinned staging copies.
   staging): with one stream BM3D 1.46–1.65×, WNNM gray 1.63×, NCSR
   1.17–1.19×, MCWNNM RGB 1.13×; with `num_streams=3`, 1.53–1.67× across the
   four. NLM at its default two streams: gray 1.73×, YUV420 1.47×, RGB 1.67×,
-  gray `d=0` 1.79× (two runs each). `nss_vk.NLM` (not shipped yet) uses the
+  gray `d=0` 1.79× (two runs each). `nss_vk.NLM` (a preview since r3) uses the
   same extension and runs at 0.87–1.03× of `nss_cuda.NLM` on that core.
   Rolling `radius=1` (two runs, output hashed): BM3D gray 1.20×, YUV420 1.11×, WNNM gray 1.21×; NCSR, MCWNNM, LSSC, DA3D, BM4D, NLH and TWSC
   within ±3% (their kernels set the pace). Direct transfers raise the

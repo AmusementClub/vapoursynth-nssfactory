@@ -8,9 +8,11 @@
 #include "gpuhost/chunk_cache.hpp"
 #include "nss/checked.hpp"
 #include "vulkan/runtime/frame_memory.hpp"
+#include "vulkan/runtime/gpu_frames.hpp"
 #include "vulkan/runtime/memory.hpp"
 #include "vulkan/runtime/pipeline.hpp"
 #include "vulkan/runtime/slot.hpp"
+#include "vulkan/runtime/vs_api.hpp"
 
 #include <algorithm>
 #include <array>
@@ -159,8 +161,13 @@ struct Driver : GroupFilterConfig {
     std::unique_ptr<Matcher> matcher;
     std::unique_ptr<Aggregator> aggregator;
     std::unique_ptr<SlotPool<GroupSlot>> pool;
+    // GPU frames: a rolling output frame is copied out of its chunk store on
+    // the device, by the slot of its permit.
     struct OutputPermit {
-        void settle() noexcept {}
+        std::unique_ptr<Slot> slot;
+        void settle() noexcept {
+            if (slot) slot->settle();
+        }
     };
     std::unique_ptr<SlotPool<OutputPermit>> outputs;
 
@@ -185,6 +192,8 @@ struct Driver : GroupFilterConfig {
     ChunkCache cache;
     PlanOrder order;
 
+    // GPU frames (VapourSynth's device), else null.
+    std::unique_ptr<GpuFrames> gpu;
     // Last: destroyed first, so that its imports go before the device can.
     std::unique_ptr<FrameMemory> frame_memory;
 };
@@ -329,12 +338,13 @@ void fit_batches(Driver& d, std::size_t budget) {
 std::size_t slot_fixed_bytes(const Driver& d) {
     const std::size_t nt = static_cast<std::size_t>(d.ntemp);
     // The plan assumes BAR uploads on a ReBAR device; without one the
-    // inputs have a staging mirror.
-    const std::size_t inputs = frame_bytes(d) * nt * clips(d) * (d.device->rebar() ? 1 : 2);
+    // inputs have a staging mirror. GPU frames need neither, nor readback.
+    const std::size_t inputs = frame_bytes(d) * nt * clips(d) * (d.gpu || d.device->rebar() ? 1 : 2);
     const std::size_t cells = d.plane_floats * static_cast<std::size_t>(d.unit_channels) * nt;
     const std::size_t out = frame_bytes(d) * fat_slices(d);
     const std::size_t tables = d.units.size() * 2 * nt * sizeof(VkDeviceAddress);
-    return inputs + (d.two_stage ? frame_bytes(d) : 0) + cells * 8 * 2 + d.plane_floats * 8 + out * 2 + tables + 4096;
+    return inputs + (d.two_stage ? frame_bytes(d) : 0) + cells * 8 * 2 + d.plane_floats * 8 + out * (d.gpu ? 1 : 2) +
+           tables + 4096;
 }
 
 // The memory plan of spatial and legacy output: num_streams (unless given),
@@ -398,6 +408,7 @@ std::size_t roll_slot_bytes(const Driver& d, bool per_unit, bool batch_out) {
 // Host bytes of a staging set's uploads: every active unit's at its own size,
 // or one unit's at the largest size for units that take turns.
 std::size_t roll_staging_bytes(const Driver& d, bool together) {
+    if (d.gpu) return 0;  // GPU frames are copied on the device
     const std::size_t uploads = static_cast<std::size_t>(chunk_window(d)) * clips(d) * d.unit_channels;
     if (!together) return d.plane_floats * sizeof(float) * uploads;
     std::size_t bytes = 0;
@@ -498,14 +509,15 @@ Batches make_batches(Driver& d) {
 std::unique_ptr<GroupSlot> make_slot(Driver& d) {
     auto s = std::make_unique<GroupSlot>(d.device);
     const std::size_t nt = static_cast<std::size_t>(d.ntemp);
-    s->inputs = PlaneStore(d.device, frame_bytes(d), d.ntemp * clips(d), d.budget);
+    s->inputs = PlaneStore(d.device, frame_bytes(d), d.ntemp * clips(d), d.budget,
+                           d.gpu ? UploadPlane::Mode::device : UploadPlane::Mode::automatic);
     if (d.two_stage) s->estimate = Buffer(d.device, frame_bytes(d), Memory::Device, d.budget);
     const std::size_t cells = d.plane_floats * static_cast<std::size_t>(d.unit_channels) * nt;
     s->num = Buffer(d.device, cells * 8, Memory::Device, d.budget);
     s->den = Buffer(d.device, cells * 8, Memory::Device, d.budget);
     s->rows = Buffer(d.device, d.plane_floats * 8, Memory::Device, d.budget);
     s->out = Buffer(d.device, frame_bytes(d) * fat_slices(d), Memory::Device, d.budget);
-    s->readback = Buffer(d.device, frame_bytes(d) * fat_slices(d), Memory::Readback, d.budget);
+    if (!d.gpu) s->readback = Buffer(d.device, frame_bytes(d) * fat_slices(d), Memory::Readback, d.budget);
     Batches b = make_batches(d);
     s->matches = std::move(b.matches);
     s->counts = std::move(b.counts);
@@ -569,7 +581,7 @@ std::unique_ptr<RollSlot> make_roll_slot(Driver& d) {
 
 std::unique_ptr<RollStaging> make_staging(Driver& d) {
     auto g = std::make_unique<RollStaging>();
-    g->bytes = Buffer(d.device, std::max<std::size_t>(d.staging_bytes, 4), Memory::Staging, d.budget);
+    if (!d.gpu) g->bytes = Buffer(d.device, std::max<std::size_t>(d.staging_bytes, 4), Memory::Staging, d.budget);
     std::size_t at = 0;
     const std::size_t uploads = static_cast<std::size_t>(chunk_window(d)) * clips(d) * d.unit_channels;
     for (const Unit* u : active_units(d)) {
@@ -785,6 +797,39 @@ std::size_t row_bytes(const Driver& d, int plane) {
     return static_cast<std::size_t>(nss::plane_width(d.vi, plane)) * sizeof(float);
 }
 
+// The results of a spatial or legacy frame of GPU frames, into the output
+// frame's planes on the device; a legacy plane the device leaves alone gets
+// its identity slices there too. Submits, publishes and waits.
+void gpu_results(Driver& d, GroupSlot& s, const VSFrame* src, VSFrame* dst) {
+    Slot& slot = s.slot;
+    const bool legacy = d.mode == GroupMode::Legacy;
+    const int slices = fat_slices(d), nt = d.ntemp, radius = d.radius;
+    for (int plane = 0; plane < d.vi.format.numPlanes; ++plane) {
+        const std::size_t bytes = row_bytes(d, plane);
+        const int height = nss::plane_height(d.vi, plane);
+        if (written(d, plane)) {
+            d.gpu->write(slot, Slot::Download, s.out.get(), s.out.address(),
+                         d.plane_offset[static_cast<std::size_t>(plane)] * sizeof(float) * slices, dst, plane, bytes,
+                         height * slices);
+        } else if (legacy) {
+            for (int t = 0; t < nt; ++t) {
+                if (t == radius) {
+                    d.gpu->copy(slot, Slot::Download, src, plane, dst, 2 * t * height, bytes, height);
+                } else {
+                    d.gpu->fill(slot, Slot::Download, dst, plane, 2 * t * height, height, 0u);
+                }
+                d.gpu->fill(slot, Slot::Download, dst, plane, (2 * t + 1) * height, height,
+                            t == radius ? 0x3f800000u : 0u);  // 1.0f
+            }
+        }
+    }
+    slot.submit();
+    for (int plane = 0; plane < d.vi.format.numPlanes; ++plane) {
+        if (legacy || written(d, plane)) d.gpu->publish(slot, dst, plane);
+    }
+    slot.wait();
+}
+
 // Spatial and legacy output: one frame per call.
 const VSFrame* frame_output(Driver* d, int n, VSFrameContext* ctx, VSCore* core, const VSAPI* vsapi) {
     nss::ResourceScope resource_scope(d->budget);
@@ -807,8 +852,13 @@ const VSFrame* frame_output(Driver* d, int n, VSFrameContext* ctx, VSCore* core,
     {
         auto lease = d->pool->acquire();
         permit.emplace(d->outputs->acquire());
-        if (legacy) {
-            dst = frames.newVideoFrame(&d->vi_out.format, d->vi_out.width, d->vi_out.height, src, core);
+        bool shared = false;  // spatial: a plane the device leaves alone is the source's
+        for (int plane = 0; !legacy && plane < d->vi.format.numPlanes; ++plane) shared = shared || !written(*d, plane);
+        if (legacy || (d->gpu && !shared)) {
+            // A GPU frame with every plane new is newGPUVideoFrame's: newVideoFrame2
+            // with no source plane makes a CPU frame.
+            dst = d->gpu ? d->gpu->new_frame(frames, &d->vi_out.format, d->vi_out.width, d->vi_out.height, src, core)
+                         : frames.newVideoFrame(&d->vi_out.format, d->vi_out.width, d->vi_out.height, src, core);
         } else {
             const VSFrame* from[3]{};
             const int from_plane[3]{0, 1, 2};
@@ -824,6 +874,11 @@ const VSFrame* frame_output(Driver* d, int n, VSFrameContext* ctx, VSCore* core,
             const std::size_t bytes = row_bytes(*d, plane);
             const int height = nss::plane_height(d->vi, plane);
             const std::size_t offset = d->plane_offset[static_cast<std::size_t>(plane)] * sizeof(float);
+            if (d->gpu) {
+                d->gpu->read(slot, Slot::Upload, frame, plane, s.inputs.buffer(), s.inputs.address(),
+                             s.inputs.region_bytes() * static_cast<std::size_t>(region) + offset, bytes, height);
+                return;
+            }
             const std::uint8_t* data = vsapi->getReadPtr(frame, plane);
             const std::ptrdiff_t stride = vsapi->getStride(frame, plane);
             // The upload stage only where there are copies (BAR writes need none).
@@ -844,40 +899,45 @@ const VSFrame* frame_output(Driver* d, int n, VSFrameContext* ctx, VSCore* core,
         }
         run_units(*d, s, n);
         // Downloads: into the frame itself where it is imported, else into
-        // the readback buffer. A legacy plane is its 2R+1 num / den slice
-        // pairs one after the other, as in the fat frame.
-        VkCommandBuffer download = slot.commands(Slot::Download);
-        std::array<bool, 3> direct{};
-        bool retained = false;
-        for (const int plane : planes) {
-            if (!written(*d, plane)) continue;
-            const std::size_t bytes = row_bytes(*d, plane) * nss::plane_height(d->vi, plane) * slices;
-            const std::size_t offset = d->plane_offset[static_cast<std::size_t>(plane)] * sizeof(float) * slices;
-            const HostPlane imported = d->frame_memory->pinned(dst, plane, vsapi->getWritePtr(dst, plane),
-                                                               vsapi->getStride(dst, plane), row_bytes(*d, plane));
-            if (imported) {
-                direct[static_cast<std::size_t>(plane)] = true;
-                if (!retained) slot.retain(dst, vsapi);
-                retained = true;
+        // the readback buffer (GPU frames: gpu_results). A legacy plane is
+        // its 2R+1 num / den slice pairs one after the other, as in the fat
+        // frame.
+        if (d->gpu) {
+            gpu_results(*d, s, src, dst);
+        } else {
+            VkCommandBuffer download = slot.commands(Slot::Download);
+            std::array<bool, 3> direct{};
+            bool retained = false;
+            for (const int plane : planes) {
+                if (!written(*d, plane)) continue;
+                const std::size_t bytes = row_bytes(*d, plane) * nss::plane_height(d->vi, plane) * slices;
+                const std::size_t offset = d->plane_offset[static_cast<std::size_t>(plane)] * sizeof(float) * slices;
+                const HostPlane imported = d->frame_memory->pinned(dst, plane, vsapi->getWritePtr(dst, plane),
+                                                                   vsapi->getStride(dst, plane), row_bytes(*d, plane));
+                if (imported) {
+                    direct[static_cast<std::size_t>(plane)] = true;
+                    if (!retained) slot.retain(dst, vsapi);
+                    retained = true;
+                }
+                copy_buffer(*d->device, download, s.out.get(), offset, imported ? imported.buffer : s.readback.get(),
+                            imported ? imported.offset : offset, bytes);
             }
-            copy_buffer(*d->device, download, s.out.get(), offset, imported ? imported.buffer : s.readback.get(),
-                        imported ? imported.offset : offset, bytes);
-        }
-        memory_barrier(*d->device, download, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                       VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_HOST_READ_BIT);
-        slot.submit();
-        slot.wait();
-        s.readback.invalidate();
-        for (const int plane : planes) {
-            if (!written(*d, plane) || direct[static_cast<std::size_t>(plane)]) continue;
-            const std::size_t bytes = row_bytes(*d, plane);
-            copy_rows(s.readback.as<std::uint8_t>() + d->plane_offset[static_cast<std::size_t>(plane)] * sizeof(float) * slices,
-                      static_cast<std::ptrdiff_t>(bytes), vsapi->getWritePtr(dst, plane), vsapi->getStride(dst, plane),
-                      bytes, nss::plane_height(d->vi, plane) * slices);
+            memory_barrier(*d->device, download, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                           VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_HOST_READ_BIT);
+            slot.submit();
+            slot.wait();
+            s.readback.invalidate();
+            for (const int plane : planes) {
+                if (!written(*d, plane) || direct[static_cast<std::size_t>(plane)]) continue;
+                const std::size_t bytes = row_bytes(*d, plane);
+                copy_rows(s.readback.as<std::uint8_t>() + d->plane_offset[static_cast<std::size_t>(plane)] * sizeof(float) * slices,
+                          static_cast<std::ptrdiff_t>(bytes), vsapi->getWritePtr(dst, plane), vsapi->getStride(dst, plane),
+                          bytes, nss::plane_height(d->vi, plane) * slices);
+            }
         }
     }
     // Legacy planes the device leaves alone: identity slices.
-    for (int plane = 0; legacy && plane < d->vi.format.numPlanes; ++plane) {
+    for (int plane = 0; legacy && !d->gpu && plane < d->vi.format.numPlanes; ++plane) {
         if (written(*d, plane)) continue;
         nss::host_detail::temporal_identity(
             reinterpret_cast<float*>(vsapi->getWritePtr(dst, plane)),
@@ -1094,16 +1154,21 @@ private:
     }
 };
 
-// Per upload of a unit: the imported planes (index clip * channels + c),
-// empty where staged.
-using RollDirect = std::array<HostPlane, 6>;
+// Where an upload of a unit copies a plane from (index clip * channels + c):
+// an imported frame (`host`), a GPU frame (`gpu`), else the staging set.
+struct PlaneSource {
+    HostPlane host;
+    const VSFrame* gpu = nullptr;
+};
+using RollDirect = std::array<PlaneSource, 6>;
 
 // The uploads of one unit of a chunk, recorded into `commands` (the lane's
 // upload stage): every frame its plan stages, from the staging set (base + i
 // * step) or the imported frame, into the ring buffers (the guide clip's
 // too).
-void record_uploads(Driver& d, VkCommandBuffer commands, RollState& r, const RollTurn& turn, const Unit& u,
+void record_uploads(Driver& d, Slot& slot, RollState& r, const RollTurn& turn, const Unit& u,
                     const RollStaging& staging, const std::vector<RollDirect>& direct) {
+    VkCommandBuffer commands = slot.commands(Slot::Upload);
     const int ring = src_ring(d), channels = u.channels, nclips = clips(d);
     const std::size_t first = static_cast<std::size_t>(u.first);
     const std::size_t plane_bytes = d.planes[u.first].floats * sizeof(float);
@@ -1112,7 +1177,13 @@ void record_uploads(Driver& d, VkCommandBuffer commands, RollState& r, const Rol
         const int fn = turn.uploads[i];
         const auto put = [&](int clip, int c, const Buffer& device) {
             const VkDeviceSize to = static_cast<VkDeviceSize>(c) * plane_bytes;
-            if (const HostPlane& h = direct[i][static_cast<std::size_t>(clip * channels + c)]) {
+            const PlaneSource& source = direct[i][static_cast<std::size_t>(clip * channels + c)];
+            if (source.gpu) {
+                d.gpu->read(slot, Slot::Upload, source.gpu, u.first + c, device.get(), device.address(), to,
+                            row_bytes(d, u.first), nss::plane_height(d.vi, u.first));
+                return;
+            }
+            if (const HostPlane& h = source.host) {
                 copy_buffer(*d.device, commands, h.buffer, h.offset, device.get(), to, plane_bytes);
                 return;
             }
@@ -1318,7 +1389,7 @@ void queue_units(Driver& d, const std::vector<RollTurn*>& turns, const std::vect
     if (wait_upload) lane.slot.wait_for(Slot::Upload, computed.first, computed.second);
     for (std::size_t j = 0; j < turns.size(); ++j) {
         if (turns[j]->uploads.empty()) continue;
-        record_uploads(d, lane.slot.commands(Slot::Upload), *turns[j]->state, *turns[j], *units[j], staging, *direct[j]);
+        record_uploads(d, lane.slot, *turns[j]->state, *turns[j], *units[j], staging, *direct[j]);
     }
     lane.slot.wait_for(Slot::Compute, computed.first, computed.second);
     VkCommandBuffer commands = lane.slot.commands(Slot::Compute);
@@ -1435,10 +1506,15 @@ std::shared_ptr<ChunkStore> compute_chunk(Driver* d, std::optional<SlotPool<Roll
                 bool used = false;
                 for (std::size_t c = 0; c < channels; ++c) {
                     const int plane = u.first + static_cast<int>(c);
+                    if (d->gpu) {  // copied on the device (record_uploads)
+                        direct[j][i][static_cast<std::size_t>(clip) * channels + c].gpu = f;
+                        used = true;
+                        continue;
+                    }
                     const std::uint8_t* data = vsapi->getReadPtr(f, plane);
                     const std::ptrdiff_t stride = vsapi->getStride(f, plane);
                     if (const HostPlane h = d->frame_memory->pinned(f, plane, data, stride, bytes)) {
-                        direct[j][i][static_cast<std::size_t>(clip) * channels + c] = h;
+                        direct[j][i][static_cast<std::size_t>(clip) * channels + c].host = h;
                         used = true;
                         continue;
                     }
@@ -1476,6 +1552,9 @@ std::shared_ptr<ChunkStore> compute_chunk(Driver* d, std::optional<SlotPool<Roll
             queue_units(*d, group, units, *store, g, planes, held, start, count, vsapi);
         }
     }
+    // GPU frames: the store is device memory; the output frames take the
+    // planes the device does not write from their source (rolling_output).
+    if (d->gpu) return store;
     // The device's planes are visible to the host from here on. Planes the
     // device does not write are the source's: the host writes them only now
     // (writes before the invalidate would be undefined on memory that is not
@@ -1496,6 +1575,41 @@ std::shared_ptr<ChunkStore> compute_chunk(Driver* d, std::optional<SlotPool<Roll
     return store;
 }
 
+// A rolling output frame of GPU frames: the planes the device writes are
+// copied out of the chunk's store on the device by the permit's slot (on the
+// compute queue, which also ran the chunk: its writes are made visible by a
+// barrier, the host having waited for them), the others are the source's.
+const VSFrame* gpu_rolling_output(Driver* d, int n, const ChunkStore& chunk, Slot& slot, nss::FrameScope& frames,
+                                  const VSFrame* src, VSCore* core, const VSAPI* vsapi) {
+    const VSFrame* from[3]{};
+    const int from_plane[3]{0, 1, 2};
+    bool shared = false;
+    for (int plane = 0; plane < d->vi.format.numPlanes; ++plane) {
+        from[plane] = written(*d, plane) ? nullptr : src;
+        shared = shared || from[plane];
+    }
+    VSFrame* dst = shared ? frames.newVideoFrame2(&d->vi.format, d->vi.width, d->vi.height, from, from_plane, src, core)
+                          : d->gpu->new_frame(frames, &d->vi.format, d->vi.width, d->vi.height, src, core);
+    nss::stamp_contribution(dst, 0, n, d->model, vsapi);
+    memory_barrier(*d->device, slot.commands(Slot::Compute), VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                   VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                   VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
+    for (int plane = 0; plane < d->vi.format.numPlanes; ++plane) {
+        if (!written(*d, plane)) continue;
+        const VkDeviceSize at = static_cast<VkDeviceSize>(n - chunk.start) * chunk.frame_bytes +
+                                chunk.plane_offset[static_cast<std::size_t>(plane)];
+        d->gpu->write(slot, Slot::Compute, chunk.bytes.get(), chunk.bytes.address(), at, dst, plane, row_bytes(*d, plane),
+                      nss::plane_height(d->vi, plane));
+    }
+    slot.submit();
+    for (int plane = 0; plane < d->vi.format.numPlanes; ++plane) {
+        if (written(*d, plane)) d->gpu->publish(slot, dst, plane);
+    }
+    slot.wait();
+    frames.freeFrame(src);
+    return frames.keep(dst);
+}
+
 const VSFrame* rolling_output(Driver* d, int n, VSFrameContext* ctx, VSCore* core, const VSAPI* vsapi) {
     const int start = n / d->rolling.rolling_chunk * d->rolling.rolling_chunk;
     const int count = std::min(d->rolling.rolling_chunk, d->vi.numFrames - start);
@@ -1507,6 +1621,7 @@ const VSFrame* rolling_output(Driver* d, int n, VSFrameContext* ctx, VSCore* cor
     nss::ResourceScope resource_scope(d->budget);
     nss::FrameScope frames(vsapi);
     const VSFrame* src = frames.getFrameFilter(n, d->node, ctx);
+    if (d->gpu) return gpu_rolling_output(d, n, *chunk, *permit->slot, frames, src, core, vsapi);
     VSFrame* dst = frames.newVideoFrame(&d->vi.format, d->vi.width, d->vi.height, src, core);
     nss::stamp_contribution(dst, 0, n, d->model, vsapi);
     frames.freeFrame(src);
@@ -1592,6 +1707,7 @@ void group_filter_install(GroupFilterConfig&& config, VSMap* out, VSCore* core, 
             d->basic[1].active = d->basic[2].active = false;
         }
     }
+    if (d->gpu_api) d->gpu = std::make_unique<GpuFrames>(d->device, vsapi);
     d->frame_memory = std::make_unique<FrameMemory>(d->device, core, vsapi);
     size_planes(*d);
     if (rolling(*d)) {
@@ -1626,7 +1742,7 @@ void group_filter_install(GroupFilterConfig&& config, VSMap* out, VSCore* core, 
             const std::size_t owned = d->budget->snapshot().owned;
             std::size_t store = 0;
             {
-                const Buffer probe(d->device, chunk_bytes(*d), Memory::Readback, d->budget);
+                const Buffer probe(d->device, chunk_bytes(*d), d->gpu ? Memory::Device : Memory::Readback, d->budget);
                 store = d->budget->snapshot().owned - owned;
             }
             // Per staging set a store being made and two output frames, and the cache at its starting size.
@@ -1641,9 +1757,11 @@ void group_filter_install(GroupFilterConfig&& config, VSMap* out, VSCore* core, 
         }
         std::array<std::size_t, 3> offsets{};
         for (int plane = 0; plane < 3; ++plane) offsets[plane] = d->plane_offset[plane] * sizeof(float);
+        // GPU frames: the stores stay on the device (output frames are copied out there).
+        const Memory store_memory = d->gpu ? Memory::Device : Memory::Readback;
         d->cache.configure(d->rolling.rolling_chunk, frame_bytes(*d), offsets, d->cache_size, d->cache_cap,
-                           [device = d->device, budget = d->budget](std::size_t bytes) {
-                               return Buffer(device, bytes, Memory::Readback, budget);
+                           [device = d->device, budget = d->budget, store_memory](std::size_t bytes) {
+                               return Buffer(device, bytes, store_memory, budget);
                            });
     } else {
         std::vector<std::unique_ptr<GroupSlot>> slots;
@@ -1651,15 +1769,19 @@ void group_filter_install(GroupFilterConfig&& config, VSMap* out, VSCore* core, 
         d->pool = std::make_unique<SlotPool<GroupSlot>>(std::move(slots));
     }
     std::vector<std::unique_ptr<Driver::OutputPermit>> permits;
-    for (std::size_t i = 0; i < d->permits; ++i) permits.push_back(std::make_unique<Driver::OutputPermit>());
+    for (std::size_t i = 0; i < d->permits; ++i) {
+        permits.push_back(std::make_unique<Driver::OutputPermit>());
+        if (d->gpu && rolling(*d)) permits.back()->slot = std::make_unique<Slot>(d->device);
+    }
     d->outputs = std::make_unique<SlotPool<Driver::OutputPermit>>(std::move(permits));
     d->device->save_pipeline_cache();
 
     const auto pattern = d->mode == GroupMode::Spatial ? rpStrictSpatial : rpGeneral;
     VSFilterDependency deps[2]{{d->node, pattern}, {d->guide, pattern}};
     Driver* raw = d.get();
-    VSNode* node = vsapi->createVideoFilter2(raw->name.c_str(), &raw->vi_out, nss::checked_frame<getFrame>, freeFilter,
-                                            fmParallel, deps, d->guide ? 2 : 1, raw, core);
+    VSNode* node = vs_api::create_video_filter(vsapi, raw->name.c_str(), &raw->vi_out, nss::checked_frame<getFrame>,
+                                               freeFilter, fmParallel, raw->gpu != nullptr, deps, d->guide ? 2 : 1, raw,
+                                               core);
     if (!node) throw std::runtime_error(prefix(*d) + "failed to create filter");
     d.release();
     vsapi->mapConsumeNode(out, "clip", node, maAppend);

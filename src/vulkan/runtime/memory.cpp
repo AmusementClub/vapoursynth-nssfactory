@@ -110,8 +110,24 @@ Buffer::Buffer(std::shared_ptr<Device> device, std::size_t bytes, Memory memory,
     // Plane-sized buffers get memory of their own: freed at once, never part
     // of a VMA block that outlives them uncharged.
     if (bytes >= kDedicatedBytes) allocation.flags |= VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+    // Declared before the allocation, so that VapourSynth's cache makes room
+    // for it first (reserveGPUMemory), and corrected to what was allocated.
+    if (!host && device_->core_device()) {
+        reserved_ = static_cast<std::int64_t>(bytes);
+        device_->reserve(reserved_);
+    }
     VmaAllocationInfo result{};
-    NSS_VK_CHECK(vmaCreateBuffer(device_->allocator(), &info, &allocation, &buffer_, &allocation_, &result));
+    if (const VkResult code = vmaCreateBuffer(device_->allocator(), &info, &allocation, &buffer_, &allocation_, &result);
+        code != VK_SUCCESS) {
+        device_->reserve(-std::exchange(reserved_, 0));
+        buffer_ = VK_NULL_HANDLE;
+        allocation_ = VK_NULL_HANDLE;
+        throw VkError(code, "vmaCreateBuffer failed: " + result_name(code));
+    }
+    if (reserved_ && result.size > bytes) {
+        device_->reserve(static_cast<std::int64_t>(result.size - bytes));
+        reserved_ = static_cast<std::int64_t>(result.size);
+    }
     mapped_ = result.pMappedData;
     // Charge what the device really reserved (alignment, dedicated rounding).
     if (result.size > bytes) {
@@ -120,6 +136,7 @@ Buffer::Buffer(std::shared_ptr<Device> device, std::size_t bytes, Memory memory,
                                     static_cast<std::size_t>(result.size - bytes));
         } catch (...) {
             vmaDestroyBuffer(device_->allocator(), buffer_, allocation_);
+            if (reserved_) device_->reserve(-std::exchange(reserved_, 0));
             buffer_ = VK_NULL_HANDLE;
             allocation_ = VK_NULL_HANDLE;
             throw;
@@ -142,6 +159,7 @@ Buffer& Buffer::operator=(Buffer&& other) noexcept {
         mapped_ = std::exchange(other.mapped_, nullptr);
         charge_ = std::move(other.charge_);
         padding_ = std::move(other.padding_);
+        reserved_ = std::exchange(other.reserved_, 0);
     }
     return *this;
 }
@@ -149,6 +167,7 @@ Buffer& Buffer::operator=(Buffer&& other) noexcept {
 void Buffer::reset() noexcept {
     // A poisoned device may still use the buffer: leak it.
     if (buffer_ != VK_NULL_HANDLE && !device_->poisoned()) vmaDestroyBuffer(device_->allocator(), buffer_, allocation_);
+    if (reserved_) device_->reserve(-std::exchange(reserved_, 0));
     buffer_ = VK_NULL_HANDLE;
     allocation_ = VK_NULL_HANDLE;
     address_ = 0;
@@ -180,7 +199,7 @@ UploadPlane::UploadPlane(std::shared_ptr<Device> device, std::size_t pitch, int 
         }
     }
     device_buffer_ = Buffer(device_, bytes, Memory::Device, budget);
-    staging_ = Buffer(device_, bytes, Memory::Staging, budget);
+    if (mode != Mode::device) staging_ = Buffer(device_, bytes, Memory::Staging, budget);
 }
 
 void UploadPlane::write(const void* host, std::ptrdiff_t host_stride, std::size_t row_bytes) {
@@ -196,11 +215,11 @@ void UploadPlane::record_upload(VkCommandBuffer commands) const {
 }
 
 DownloadPlane::DownloadPlane(std::shared_ptr<Device> device, std::size_t pitch, int rows,
-                             const std::shared_ptr<nss::ResourceBudget>& budget)
+                             const std::shared_ptr<nss::ResourceBudget>& budget, bool readback)
     : device_(std::move(device)), pitch_(pitch), rows_(rows) {
     const std::size_t bytes = pitch * static_cast<std::size_t>(rows);
     device_buffer_ = Buffer(device_, bytes, Memory::Device, budget);
-    readback_ = Buffer(device_, bytes, Memory::Readback, budget);
+    if (readback) readback_ = Buffer(device_, bytes, Memory::Readback, budget);
 }
 
 void DownloadPlane::record_download(VkCommandBuffer commands) const {
@@ -255,7 +274,7 @@ PlaneStore::PlaneStore(std::shared_ptr<Device> device, std::size_t region_bytes,
         }
     }
     device_buffer_ = Buffer(device_, bytes, Memory::Device, budget);
-    staging_ = Buffer(device_, bytes, Memory::Staging, budget);
+    if (mode != UploadPlane::Mode::device) staging_ = Buffer(device_, bytes, Memory::Staging, budget);
 }
 
 void PlaneStore::write(int region, std::size_t offset, const void* host, std::ptrdiff_t host_stride,

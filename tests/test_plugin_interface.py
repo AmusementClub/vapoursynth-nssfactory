@@ -82,7 +82,9 @@ def main():
     if not hasattr(core, ns):
         core.std.LoadPlugin(path=str(Path(args.plugin).resolve()))
     plugin = getattr(core, ns)
-    functions = {f.name: f.signature for f in plugin.functions()}
+    # GPU-frame residency flags (VapourSynth R80+: "clip:vnode:all;") are not
+    # part of the parity: the golden compares the arguments (D29).
+    functions = {f.name: re.sub(r"(:vnode(?:\[\])?):(?:all|gpu)", r"\1", f.signature) for f in plugin.functions()}
 
     clips = {
         "GRAYS": core.std.BlankClip(width=48, height=40, length=4, format=vs.GRAYS, color=0.5),
