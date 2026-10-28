@@ -32,17 +32,39 @@ the same search, at 1080p gray: about 1.25x spatial, and 2.7x / 3.3x at
 `radius=1` / `2` when frames are rendered in order. With `chroma=1` at YUV444:
 243 fps against its 200.
 
-With `block_size=8` and `block_step=4` the spatial search shares work between
-references (the square matcher of Davy & Ehret, *GPU acceleration of NL-means,
-BM3D and VBM3D*, JRTIP 2021): at step 4 an 8 x 8 block is four 4 x 4 quarters,
-each the corner of a neighbouring reference, so every quarter distance is
-computed once. Same matches up to near ties (distances differ in the last
-bits), same quality. 1080p gray against the per-reference search: 1.40x with
-`final=1, block_step=4, group_size=8, bm_range=10`, 1.26x at `block_step=4,
-group_size=16`, 1.57x at `final=1, block_step=4, group_size=32,
-group_size_basic=16, bm_range=19`, 1.42x on RGB, 1.17x with `chroma=1`. Windows
-of radius 1-2 with groups of 8 or more keep the per-reference search, radii of
-40 or more the tensor-core one; spatial only (`radius=0`).
+When `block_size` is twice `block_step` (2 / 1, 4 / 2, 8 / 4, 12 / 6, 16 / 8:
+`block_size=16` at its default step is one) the spatial search shares work
+between references (the square matcher of Davy & Ehret, *GPU acceleration of
+NL-means, BM3D and VBM3D*, JRTIP 2021): each block is four quarters of the
+step's side, each the corner of a neighbouring reference, so every quarter
+distance is computed once. Same matches up to near ties (distances differ in
+the last bits), same quality (the same PSNR to three decimals in every case
+below, under 1.5% of samples differing, by at most 0.015). 1080p gray, sigma
+25, against the per-reference search:
+
+| Shape | Arguments | Speed |
+|---|---|---:|
+| 8 / 4 | `final=1, group_size=8, bm_range=10` | 1.40x |
+| | `group_size=16` | 1.26x |
+| | `final=1, group_size=32, group_size_basic=16, bm_range=19` | 1.57x |
+| | RGB, `final=1, group_size=8, bm_range=10` / the same with `chroma=1` | 1.42x / 1.17x |
+| 4 / 2 | `group_size=16` (gray / RGB) | 1.38x / 1.40x |
+| | `group_size=16, bm_range=16` | 1.88x |
+| | `final=1, group_size=16` | 1.41x |
+| | `group_size=8, bm_range=4` | 1.15x |
+| 2 / 1 | `group_size=8, bm_range=4` | 1.11x |
+| 12 / 6 | `group_size=16` / with `bm_range=16` | 1.20x / 1.47x |
+| 16 / 8 | `group_size=16` / with `bm_range=20` | 1.14x / 1.55x |
+| | `final=1, group_size=32, group_size_basic=16, bm_range=16` | 1.04x |
+
+The per-reference search stays where it is faster: windows of radius 1 with
+groups of 4 to 16 and of radius 2 with groups of 8 to 16 (except at 12 / 6),
+radii of 40 or more at 8 / 4 (the tensor-core search), and batches of
+references too small to fill the GPU: fewer tiles of 15 x 15 references than
+it has SMs (on an RTX 5080, 84: planes under about 1.2 megapixels at 16 / 8,
+720p included, 0.7 at 12 / 6, 0.3 at 8 / 4), and the second stage of
+`final=1` with large blocks and groups, which runs in batches of a few rows.
+Spatial only (`radius=0`).
 
 ## Closer to the papers
 
