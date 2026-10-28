@@ -223,11 +223,14 @@ def main():
     # the workspace grows by whole buffers, at most one per worker. The
     # per-thread map is charged to the same account, so a step also carries a
     # map node and, now and then, a larger bucket array (48 bytes on libc++),
-    # both far below 1% of a buffer; the smallest step is one buffer.
+    # both far below 1% of a buffer. A sample can also fall between a map
+    # charge and its buffer (seen: 294168, 294208, 343168), so steps under 1%
+    # of the largest are bookkeeping; the smallest other step is one buffer.
     workspace_bytes = {int(s[0]) for s in stats}
     sizes = sorted(workspace_bytes)
     steps = [b - a for a, b in zip(sizes, sizes[1:])]
-    if sizes[0] <= 0 or len(steps) > 8 or (steps and sizes[-1] - sizes[0] > 8 * min(steps) * 1.01):
+    buffers = [s for s in steps if s * 100 >= max(steps)]
+    if sizes[0] <= 0 or len(buffers) > 8 or (buffers and sizes[-1] - sizes[0] > 8 * min(buffers) * 1.01):
         raise AssertionError(f"rolling scratch grew by more than one buffer per worker: {sizes}")
     rows.append(dict(test="rolling_concurrent_nonzero", requests=len(stats), workers=8,
                      workspace_bytes=list(workspace_bytes), peak_cached=max(int(s[1]) for s in stats),
