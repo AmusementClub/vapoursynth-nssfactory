@@ -189,6 +189,17 @@ if(NSS_TEST_ISA_VARIANTS)
   endforeach()
 endif()
 
+add_executable(test_pnlm test_pnlm.cpp)
+target_link_libraries(test_pnlm PRIVATE nss_cpu nss_workspace)
+target_compile_options(test_pnlm PRIVATE ${NSS_DA3D_TEST_FLAGS})
+add_test(NAME test_pnlm COMMAND test_pnlm)
+if(NSS_TEST_ISA_VARIANTS)
+  foreach(isa avx2 avx3)
+    add_test(NAME test_pnlm_${isa} COMMAND test_pnlm ${isa})
+    set_tests_properties(test_pnlm_${isa} PROPERTIES SKIP_RETURN_CODE 77)
+  endforeach()
+endif()
+
 add_executable(test_bm4d test_bm4d.cpp)
 target_link_libraries(test_bm4d PRIVATE nss_cpu nss_workspace)
 target_compile_options(test_bm4d PRIVATE ${NSS_DA3D_TEST_FLAGS})
@@ -329,6 +340,11 @@ if(VapourSynth_FOUND)
              COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_da3d_plugin.py"
                      --plugin "$<TARGET_FILE:nss>")
     set_tests_properties(test_da3d_plugin PROPERTIES LABELS "plugin" SKIP_RETURN_CODE 77)
+    # PNLM: denoising, the temporal window, planes, determinism, argument errors, limits.
+    add_test(NAME test_pnlm_plugin
+             COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_pnlm_plugin.py"
+                     --plugin "$<TARGET_FILE:nss>")
+    set_tests_properties(test_pnlm_plugin PROPERTIES LABELS "plugin" SKIP_RETURN_CODE 77)
     # BM4D: denoising, random access and concurrency, chunk geometry, planes, limits.
     add_test(NAME test_bm4d_plugin
              COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_bm4d_plugin.py"

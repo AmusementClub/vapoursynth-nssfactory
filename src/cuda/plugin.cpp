@@ -22,6 +22,7 @@ void register_twsc(VSPlugin* plugin, const VSPLUGINAPI* vspapi);
 void register_lssc(VSPlugin* plugin, const VSPLUGINAPI* vspapi);
 void register_da3d(VSPlugin* plugin, const VSPLUGINAPI* vspapi);
 void register_bm4d(VSPlugin* plugin, const VSPLUGINAPI* vspapi);
+void register_pnlm(VSPlugin* plugin, const VSPLUGINAPI* vspapi);
 }  // namespace nss_cuda
 
 namespace {
@@ -88,4 +89,5 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin* plugin, const VSPLUGINAPI
     nss_cuda::register_lssc(plugin, vspapi);
     nss_cuda::register_da3d(plugin, vspapi);
     nss_cuda::register_bm4d(plugin, vspapi);
+    nss_cuda::register_pnlm(plugin, vspapi);
 }
