@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: GPL-2.0-only
+// shaders/pnlm/common.glsl arithmetic test (tests/vk/test_vk_pnlm_math.cpp):
+// per input i, out[4 i] = pnlm_exp(x), out[4 i + 1] = div_rn(a, b),
+// out[4 i + 2] = pnlm_weight(d), out[4 i + 3] = pnlm_tent(i % P) (Q = 3);
+// flat[i] = pnlm_mix(raw, pnlm_flat(s1, s2, count)) from flat_in (4 a pixel).
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_GOOGLE_include_directive : require
+#define Q 3
+#include "pnlm/common.glsl"
+
+layout(local_size_x = 64) in;
+
+layout(push_constant) uniform Push {
+    Floats in4;  // x, a, b, d per input
+    Floats out4;
+    Floats flat_in;  // s1, s2, count, raw per input
+    Floats flat_out;
+    int count;
+    float inv_area, offset, inv_h2, inv_s2;
+} pc;
+
+void main() {
+    const int i = int(gl_GlobalInvocationID.x);
+    if (i >= pc.count) return;
+    const float x = pc.in4.v[4 * i], a = pc.in4.v[4 * i + 1], b = pc.in4.v[4 * i + 2], d = pc.in4.v[4 * i + 3];
+    pc.out4.v[4 * i] = pnlm_exp(x);
+    pc.out4.v[4 * i + 1] = div_rn(a, b);
+    pc.out4.v[4 * i + 2] = pnlm_weight_of(d, pc.inv_area, pc.offset, pc.inv_h2);
+    pc.out4.v[4 * i + 3] = pnlm_tent(i % P);
+    const float s1 = pc.flat_in.v[4 * i], s2 = pc.flat_in.v[4 * i + 1], n = pc.flat_in.v[4 * i + 2], raw = pc.flat_in.v[4 * i + 3];
+    pc.flat_out.v[i] = pnlm_mix(raw, pnlm_flat(s1, s2, n, pc.inv_s2));
+}

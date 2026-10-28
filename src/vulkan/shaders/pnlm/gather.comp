@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: GPL-2.0-only
+// PNLM output: every pixel the tent-weighted mean of the estimates of the
+// reference patches that cover it, in reference order (nss_cuda's
+// gather_kernel; deterministic, no atomics).
+//
+// Defines: Q.
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_GOOGLE_include_directive : require
+
+layout(local_size_x = 32, local_size_y = 8) in;
+
+#include "pnlm/common.glsl"
+
+layout(push_constant) uniform Push {
+    Floats est;
+    Floats out_plane;
+    int nx, ny, width, height, pitch;
+} pc;
+
+// Grid entries covering v along an axis (the CPU kernel's cover()).
+void cover(int v, int n, int count, out int lo, out int hi, out int last_entry) {
+    lo = v - P + 1 <= 0 ? 0 : (v - P + 1 + Q - 1) / Q;
+    hi = min(count - 1, v / Q);
+    const int last = n - P;
+    last_entry = (hi < count - 1 && last <= v && v < last + P) ? count - 1 : -1;
+}
+
+int grid_pos(int i, int n) {
+    const int v = i * Q, last = n - P;
+    return v < last ? v : last;
+}
+
+void main() {
+    const int x = int(gl_GlobalInvocationID.x), y = int(gl_GlobalInvocationID.y);
+    if (x >= pc.width || y >= pc.height) return;
+    int xlo, xhi, xlast, ylo, yhi, ylast;
+    cover(x, pc.width, pc.nx, xlo, xhi, xlast);
+    cover(y, pc.height, pc.ny, ylo, yhi, ylast);
+    precise float n = 0.0, d = 0.0;
+    for (int ia = 0; ia <= yhi - ylo + (ylast >= 0 ? 1 : 0); ++ia) {
+        const int iy = ylo + ia <= yhi ? ylo + ia : ylast;
+        const int gy = grid_pos(iy, pc.height);
+        if (gy > y || y >= gy + P) continue;
+        const float wy = pnlm_tent(y - gy);
+        for (int ib = 0; ib <= xhi - xlo + (xlast >= 0 ? 1 : 0); ++ib) {
+            const int ix = xlo + ib <= xhi ? xlo + ib : xlast;
+            const int gx = grid_pos(ix, pc.width);
+            if (gx > x || x >= gx + P) continue;
+            precise float wxy = wy * pnlm_tent(x - gx);
+            d = d + wxy;
+            n = fma(wxy, pc.est.v[(iy * pc.nx + ix) * AREA + (y - gy) * P + (x - gx)], n);
+        }
+    }
+    pc.out_plane.v[y * pc.pitch + x] = div_rn(n, d);
+}

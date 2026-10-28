@@ -167,6 +167,35 @@ foreach(_nss_b 1 2 4 8 12 16 32)
     endforeach()
   endforeach()
 endforeach()
+# PNLM (V15, shaders/pnlm): the square matcher for patches of 2q (q = 2, 3, 4)
+# keeping K = 7, 15 or 31 keys (m1: keys out) or weighting its references
+# itself (m2: K = 7, 15; native n and emulated e warp layers), the key path's
+# weighting (n, e) and the gather. WARP_L: nss::pnlm_lanes of the patch area.
+foreach(_nss_q 2 3 4)
+  if(_nss_q EQUAL 2)
+    set(_nss_l 16)
+  else()
+    set(_nss_l 32)
+  endif()
+  foreach(_nss_k 7 15 31)
+    nss_vk_add_shader(NSS_VK_SPIRV_SOURCES pnlm_match_q${_nss_q}_k${_nss_k}_m1 pnlm/match.comp LIGHT
+                      DEFINES Q=${_nss_q} K=${_nss_k} MODE=1 WARP_L=${_nss_l} WARP_EMULATED=0)
+  endforeach()
+  foreach(_nss_emu 0 1)
+    if(_nss_emu)
+      set(_nss_layer e)
+    else()
+      set(_nss_layer n)
+    endif()
+    foreach(_nss_k 7 15)
+      nss_vk_add_shader(NSS_VK_SPIRV_SOURCES pnlm_match_q${_nss_q}_k${_nss_k}_m2_${_nss_layer} pnlm/match.comp LIGHT
+                        DEFINES Q=${_nss_q} K=${_nss_k} MODE=2 WARP_L=${_nss_l} WARP_EMULATED=${_nss_emu})
+    endforeach()
+    nss_vk_add_shader(NSS_VK_SPIRV_SOURCES pnlm_weight_q${_nss_q}_${_nss_layer} pnlm/weight.comp
+                      DEFINES Q=${_nss_q} WARP_L=${_nss_l} WARP_EMULATED=${_nss_emu})
+  endforeach()
+  nss_vk_add_shader(NSS_VK_SPIRV_SOURCES pnlm_gather_q${_nss_q} pnlm/gather.comp DEFINES Q=${_nss_q})
+endforeach()
 # Fixed-point aggregation finish (common/aggregate.comp): rows, then finish.
 nss_vk_add_shader(NSS_VK_SPIRV_SOURCES aggregate_fixed_rows common/aggregate.comp DEFINES KERNEL=0)
 nss_vk_add_shader(NSS_VK_SPIRV_SOURCES aggregate_fixed_finish common/aggregate.comp DEFINES KERNEL=1)
@@ -177,6 +206,7 @@ foreach(_nss_n 1 2 4 8 12 16 32 64)
   nss_vk_add_shader(NSS_VK_SPIRV_SOURCES test_dct_n${_nss_n} test/dct.comp DEFINES N=${_nss_n})
 endforeach()
 nss_vk_add_shader(NSS_VK_SPIRV_SOURCES test_fixed_add test/fixed.comp)
+nss_vk_add_shader(NSS_VK_SPIRV_SOURCES test_pnlm_math test/pnlm_math.comp)
 set(_nss_kernel 0)
 foreach(_nss_name hsum accumulate reset finish)
   nss_vk_add_shader(NSS_VK_SPIRV_SOURCES nlm_plane_${_nss_name} nlm/plane.comp DEFINES KERNEL=${_nss_kernel})
@@ -311,6 +341,7 @@ add_library(nss_vk SHARED
   bm3d/filter.cpp
   common/group_driver.cpp
   nlm/filter.cpp
+  pnlm/filter.cpp
 )
 set_target_properties(nss_vk PROPERTIES
   PREFIX "lib"

@@ -9,6 +9,9 @@
   },
   "NLM": {
    "min_psnr": 60.0
+  },
+  "PNLM": {
+   "min_psnr": 60.0
   }
  },
  "note": "Seeded from cuda_tolerances_v1.json (D26); re-derive from the measured nss_vk spread per filter as filters are ported.",

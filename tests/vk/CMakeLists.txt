@@ -30,6 +30,13 @@ target_link_libraries(test_vk_slot_frames PRIVATE nss_vk_core)
 add_test(NAME test_vk_slot_frames COMMAND test_vk_slot_frames)
 set_tests_properties(test_vk_slot_frames PROPERTIES LABELS vk SKIP_RETURN_CODE 77)
 
+# PNLM's arithmetic (shaders/pnlm/common.glsl) against the model, bit for bit (V15).
+add_executable(test_vk_pnlm_math test_vk_pnlm_math.cpp)
+target_link_libraries(test_vk_pnlm_math PRIVATE nss_vk_core)
+target_include_directories(test_vk_pnlm_math PRIVATE "${PROJECT_SOURCE_DIR}/include")
+add_test(NAME test_vk_pnlm_math COMMAND test_vk_pnlm_math)
+set_tests_properties(test_vk_pnlm_math PROPERTIES LABELS vk SKIP_RETURN_CODE 77)
+
 # D23 warp layer, native against emulated against the host (V3).
 add_executable(test_vk_warp test_vk_warp.cpp)
 target_link_libraries(test_vk_warp PRIVATE nss_vk_core)
@@ -80,7 +87,7 @@ add_test(NAME test_vk_backend
 # D21 parity against the CPU golden. Filters still pending in
 # docs/vulkan-plan.md are expected to be missing; each phase removes the
 # filters it delivers. VAggregate is the CPU's alone (D21).
-set(NSS_VK_PENDING_FILTERS "WNNM,MCWNNM,NCSR,NLH,TWSC,LSSC,DA3D,BM4D,PNLM")
+set(NSS_VK_PENDING_FILTERS "WNNM,MCWNNM,NCSR,NLH,TWSC,LSSC,DA3D,BM4D")
 add_test(NAME test_vk_plugin_interface
          COMMAND ${Python3_EXECUTABLE} "${PROJECT_SOURCE_DIR}/tests/test_plugin_interface.py"
                  --plugin "${NSS_VK_PLUGIN}" --namespace nss_vk
@@ -108,7 +115,7 @@ if(NSS_VK_GPU_FRAMES_PYTHON)
 endif()
 # Filters against the CPU plugin (needs the CPU tree).
 if(TARGET nss)
-  foreach(filter nlm bm3d)
+  foreach(filter nlm bm3d pnlm)
     add_test(NAME test_vk_${filter}_live
              COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_vk_${filter}_live.py"
                      --cpu "$<TARGET_FILE:nss>" --vk "${NSS_VK_PLUGIN}")
@@ -121,4 +128,10 @@ if(TARGET nss)
     set_tests_properties(test_vk_${filter}_live_staged PROPERTIES LABELS vk SKIP_RETURN_CODE 77
                          ENVIRONMENT "NSS_VK_REBAR=0;NSS_VK_COPY_QUEUES=1")
   endforeach()
+  # PNLM's emulated warp-layer kernels on a native device.
+  add_test(NAME test_vk_pnlm_live_emulated
+           COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_vk_pnlm_live.py"
+                   --cpu "$<TARGET_FILE:nss>" --vk "${NSS_VK_PLUGIN}" --quick)
+  set_tests_properties(test_vk_pnlm_live_emulated PROPERTIES LABELS vk SKIP_RETURN_CODE 77
+                       ENVIRONMENT "NSS_VK_FORCE_EMULATED_WARP=1")
 endif()

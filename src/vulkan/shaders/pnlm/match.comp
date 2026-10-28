@@ -1,0 +1,195 @@
+// SPDX-License-Identifier: GPL-2.0-only
+// PNLM matching: the square matcher of Davy and Ehret (JRTIP 18, 2021,
+// section 4.1.4) for patches of 2Q at step Q, as nss_cuda's match_kernel
+// (src/cuda/pnlm/kernels.cu). A workgroup of 16 x 16 invocations takes 16 x
+// 16 lattice positions (every Q pixels); each computes the distance of its
+// own Q x Q quarter for each displacement (its quarter and a ring of Q
+// compared rows in registers, one new row a displacement), and the 15 x 15
+// references of the workgroup total their four quarters from shared memory.
+// A reference keeps its best K keys sorted in registers. Grids whose last
+// column or row is clamped take extra lattice passes (Params::pass), all in
+// one dispatch.
+//
+// MODE 1: the keys (the reference first) and counts out, for weight.comp.
+// MODE 2: the workgroup weights its references itself from shared memory
+// (small windows and groups up to 16; pnlm_fused on the host).
+//
+// Defines: Q, K (7, 15 or 31: group - 1 rounded up to 2^k - 1), MODE,
+// WARP_L (nss::pnlm_lanes of the patch area), WARP_EMULATED.
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_GOOGLE_include_directive : require
+
+#define WARP_WARPS 8
+#include "common/warp.glsl"
+#if MODE == 2
+#define PNLM_WEIGH
+#endif
+
+#define SIDE 16
+#define REFS 15
+#define SLOTS (REFS * REFS)
+
+layout(local_size_x = 256) in;
+
+shared float part[2][SIDE][SIDE + 1];
+#if MODE == 2
+shared uint sxy[SLOTS][K + 1];
+shared float sw[SLOTS][K + 1];
+shared int sk[SLOTS], sref[SLOTS];
+#endif
+
+#include "pnlm/common.glsl"
+
+layout(push_constant) uniform Push {
+    Params params;
+    Keys keys;    // MODE 1: group keys a reference
+    Ints counts;  // MODE 1
+    Floats est;   // MODE 2: AREA floats a reference
+} pc;
+
+const uint64_t kEmpty = ~0ul;
+const uint kInfinity = 0x7f800000u;
+
+// Grid index of the reference at v along an axis, or -1 when none is there.
+int grid_index(int v, int max_v, int count) {
+    if (v < 0 || v > max_v) return -1;
+    if (v == max_v) return count - 1;
+    return v % Q == 0 ? v / Q : -1;
+}
+
+void main() {
+    Params pr = pc.params;
+    const int tid = int(gl_LocalInvocationIndex), tx = tid % SIDE, ty = tid / SIDE;
+    const int block = w_workgroup();
+    int which = 0;
+    for (int i = 1; i < pr.passes; ++i) {
+        if (block >= pr.pass[4 * i + 3]) which = i;
+    }
+    const int ox = pr.pass[4 * which], oy = pr.pass[4 * which + 1], blocks_x = pr.pass[4 * which + 2];
+    const int local = block - pr.pass[4 * which + 3];
+    const int bx = local % blocks_x, by = local / blocks_x;
+    const int x0 = ox + Q * (REFS * bx + tx);
+    const int y0 = oy + Q * (REFS * by + ty);
+    const int width = pr.width, height = pr.height, pitch = pr.pitch, a = pr.a;
+    const int max_x = width - P, max_y = height - P, last_row = height - 1, last_col = width - 1;
+    const int col = grid_index(x0, max_x, pr.nx), row = grid_index(y0, max_y, pr.ny);
+    const int ref = row * pr.nx + col;
+    const bool live = tx < REFS && ty < REFS && col >= 0 && row >= 0;
+    Plane center = Plane(pr.frames[pr.center]);
+    int cols[Q];
+    [[unroll]] for (int c = 0; c < Q; ++c) cols[c] = min(max(x0 + c, 0), last_col);
+    float rq[Q][Q];
+    [[unroll]] for (int r = 0; r < Q; ++r) {
+        const int at = min(max(y0 + r, 0), last_row) * pitch;
+        [[unroll]] for (int c = 0; c < Q; ++c) rq[r][c] = center.v[at + cols[c]];
+    }
+    uint64_t best[K];
+    [[unroll]] for (int i = 0; i < K; ++i) best[i] = kEmpty;
+    int buf = 0;
+    for (int t = 0; t < pr.count; ++t) {
+        Plane plane = Plane(pr.frames[t]);
+        const bool other = t != pr.center;
+        for (int dx = -a; dx <= a; ++dx) {
+            int xs[Q];
+            [[unroll]] for (int c = 0; c < Q; ++c) xs[c] = min(max(x0 + c + dx, 0), last_col);
+            // v[slot][column]: before phase s, row y0 + dy + k is in slot (s + 1 + k) % Q for k < Q - 1.
+            float v[Q][Q];
+            [[unroll]] for (int k = 0; k < Q - 1; ++k) {
+                const int at = min(max(y0 - a + k, 0), last_row) * pitch;
+                [[unroll]] for (int c = 0; c < Q; ++c) v[k + 1][c] = plane.v[at + xs[c]];
+            }
+            const int xc = x0 + dx;
+            const bool col_ok = live && xc >= 0 && xc <= max_x;
+            int dy = -a;
+            while (dy <= a) {
+                [[unroll]] for (int s = 0; s < Q; ++s) {
+                    if (dy <= a) {  // uniform over the workgroup
+                        const int at = min(max(y0 + dy + Q - 1, 0), last_row) * pitch;
+                        [[unroll]] for (int c = 0; c < Q; ++c) v[s][c] = plane.v[at + xs[c]];
+                        float cs[Q];
+                        [[unroll]] for (int c = 0; c < Q; ++c) {
+                            precise float sum = 0.0;
+                            [[unroll]] for (int r = 0; r < Q; ++r) {
+                                precise float d = rq[r][c] - v[(s + 1 + r) % Q][c];
+                                sum = fma(d, d, sum);
+                            }
+                            cs[c] = sum;
+                        }
+                        precise float quarter = PNLM_COLUMNS(cs);
+                        part[buf][ty][tx] = quarter;
+                        memoryBarrierShared();
+                        barrier();
+                        const int yc = y0 + dy;
+                        if (col_ok && yc >= 0 && yc <= max_y && ((dx | dy) != 0 || other)) {
+                            precise float sum = (part[buf][ty][tx] + part[buf][ty][tx + 1]) +
+                                                (part[buf][ty + 1][tx] + part[buf][ty + 1][tx + 1]);
+                            const uint64_t key = uint64_t(min(floatBitsToUint(sum), kInfinity)) << 32 |
+                                                 uint64_t(pnlm_pos(t, yc, xc));
+                            if (key < best[K - 1]) {
+                                // Insertion into the sorted list (nss_cuda's insert_sorted).
+                                [[unroll]] for (int i = K - 1; i > 0; --i) {
+                                    best[i] = key < best[i - 1] ? best[i - 1] : (key < best[i] ? key : best[i]);
+                                }
+                                best[0] = key < best[0] ? key : best[0];
+                            }
+                        }
+                        // The other buffer is written next: the barrier above
+                        // ordered every read of it (two displacements ago) before.
+                        buf ^= 1;
+                        ++dy;
+                    }
+                }
+            }
+        }
+    }
+    const int group = pr.group;
+#if MODE == 1
+    if (!live) return;
+    const int base = ref * group;
+    pc.keys.k[base] = uint64_t(pnlm_pos(pr.center, y0, x0));
+    int filled = 0;
+    [[unroll]] for (int i = 0; i < K; ++i) {
+        if (i < group - 1 && best[i] != kEmpty) {
+            pc.keys.k[base + 1 + i] = best[i];
+            ++filled;
+        }
+    }
+    pc.counts.i[ref] = 1 + filled;
+#else
+    if (tx < REFS && ty < REFS) {
+        const int slot = ty * REFS + tx;
+        if (!live) {
+            sk[slot] = 0;
+        } else {
+            sref[slot] = ref;
+            sxy[slot][0] = pnlm_pos(pr.center, y0, x0);
+            sw[slot][0] = 1.0;
+            int n = 1;
+            [[unroll]] for (int i = 0; i < K; ++i) {
+                if (i < group - 1 && best[i] != kEmpty) {
+                    sxy[slot][n] = uint(best[i]);
+                    sw[slot][n] = pnlm_weight(uintBitsToFloat(uint(best[i] >> 32)), pr);
+                    ++n;
+                }
+            }
+            sk[slot] = n;
+        }
+    }
+    memoryBarrierShared();
+    barrier();
+    // WARP_L invocations a reference: 256 / WARP_L references a round, every
+    // invocation in every round (uniform for the warp layer).
+    const int per_round = 256 / WARP_L;
+    const int rounds = (SLOTS + per_round - 1) / per_round;
+    const int ll = tid % WARP_L;
+    for (int round = 0; round < rounds; ++round) {
+        const int s = round * per_round + tid / WARP_L;
+        const int slot = min(s, SLOTS - 1);
+        const int k = s < SLOTS ? sk[slot] : 0;
+        weigh(k, slot, k > 0 ? sref[slot] : 0, pr, pc.est, ll);
+    }
+#endif
+}
