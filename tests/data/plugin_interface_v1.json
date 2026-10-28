@@ -21004,6 +21004,1443 @@
     "width": 48
    }
   },
+  "PNLM|GRAYS|a=-1": {
+   "error": "nss.PNLM: a must be in [1, 64]"
+  },
+  "PNLM|GRAYS|a=0": {
+   "error": "nss.PNLM: a must be in [1, 64]"
+  },
+  "PNLM|GRAYS|a=1": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|a=1000": {
+   "error": "nss.PNLM: a must be in [1, 64]"
+  },
+  "PNLM|GRAYS|a=16": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|a=17": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|a=2": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|a=3": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|a=33": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|a=4": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|a=65": {
+   "error": "nss.PNLM: a must be in [1, 64]"
+  },
+  "PNLM|GRAYS|a=7": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|a=8": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|a=9": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|block_size=-1": {
+   "error": "nss.PNLM: block_size must be 4, 6 or 8"
+  },
+  "PNLM|GRAYS|block_size=0": {
+   "error": "nss.PNLM: block_size must be 4, 6 or 8"
+  },
+  "PNLM|GRAYS|block_size=1": {
+   "error": "nss.PNLM: block_size must be 4, 6 or 8"
+  },
+  "PNLM|GRAYS|block_size=1000": {
+   "error": "nss.PNLM: block_size must be 4, 6 or 8"
+  },
+  "PNLM|GRAYS|block_size=16": {
+   "error": "nss.PNLM: block_size must be 4, 6 or 8"
+  },
+  "PNLM|GRAYS|block_size=17": {
+   "error": "nss.PNLM: block_size must be 4, 6 or 8"
+  },
+  "PNLM|GRAYS|block_size=2": {
+   "error": "nss.PNLM: block_size must be 4, 6 or 8"
+  },
+  "PNLM|GRAYS|block_size=3": {
+   "error": "nss.PNLM: block_size must be 4, 6 or 8"
+  },
+  "PNLM|GRAYS|block_size=33": {
+   "error": "nss.PNLM: block_size must be 4, 6 or 8"
+  },
+  "PNLM|GRAYS|block_size=4": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|block_size=65": {
+   "error": "nss.PNLM: block_size must be 4, 6 or 8"
+  },
+  "PNLM|GRAYS|block_size=7": {
+   "error": "nss.PNLM: block_size must be 4, 6 or 8"
+  },
+  "PNLM|GRAYS|block_size=8": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|block_size=9": {
+   "error": "nss.PNLM: block_size must be 4, 6 or 8"
+  },
+  "PNLM|GRAYS|d=-1": {
+   "error": "nss.PNLM: d must be in [0, 31]"
+  },
+  "PNLM|GRAYS|d=0": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|d=1": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|d=1000": {
+   "error": "nss.PNLM: d must be in [0, 31]"
+  },
+  "PNLM|GRAYS|d=16": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|d=17": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|d=2": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|d=3": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|d=33": {
+   "error": "nss.PNLM: d must be in [0, 31]"
+  },
+  "PNLM|GRAYS|d=4": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|d=65": {
+   "error": "nss.PNLM: d must be in [0, 31]"
+  },
+  "PNLM|GRAYS|d=7": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|d=8": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|d=9": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|defaults": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|group_size=-1": {
+   "error": "nss.PNLM: group_size must be in [2, 32]"
+  },
+  "PNLM|GRAYS|group_size=0": {
+   "error": "nss.PNLM: group_size must be in [2, 32]"
+  },
+  "PNLM|GRAYS|group_size=1": {
+   "error": "nss.PNLM: group_size must be in [2, 32]"
+  },
+  "PNLM|GRAYS|group_size=1000": {
+   "error": "nss.PNLM: group_size must be in [2, 32]"
+  },
+  "PNLM|GRAYS|group_size=16": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|group_size=17": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|group_size=2": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|group_size=3": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|group_size=33": {
+   "error": "nss.PNLM: group_size must be in [2, 32]"
+  },
+  "PNLM|GRAYS|group_size=4": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|group_size=65": {
+   "error": "nss.PNLM: group_size must be in [2, 32]"
+  },
+  "PNLM|GRAYS|group_size=7": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|group_size=8": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|group_size=9": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|memory_limit_mb=-1": {
+   "error": "nss: memory_limit_mb must be in [1, 1048576]"
+  },
+  "PNLM|GRAYS|memory_limit_mb=0": {
+   "error": "nss: memory_limit_mb must be in [1, 1048576]"
+  },
+  "PNLM|GRAYS|memory_limit_mb=1": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|memory_limit_mb=1000": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|memory_limit_mb=16": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|memory_limit_mb=17": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|memory_limit_mb=2": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|memory_limit_mb=3": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|memory_limit_mb=33": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|memory_limit_mb=4": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|memory_limit_mb=65": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|memory_limit_mb=7": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|memory_limit_mb=8": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|memory_limit_mb=9": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|sigma=-1.0": {
+   "error": "nss.PNLM: sigma must be finite and non-negative"
+  },
+  "PNLM|GRAYS|sigma=0.0": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|sigma=0.5": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|sigma=1.0": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|sigma=1000.0": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|sigma=3.0": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|GRAYS|sigma=pair": {
+   "ok": {
+    "format": "GrayS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|a=-1": {
+   "error": "nss.PNLM: a must be in [1, 64]"
+  },
+  "PNLM|RGBS|a=0": {
+   "error": "nss.PNLM: a must be in [1, 64]"
+  },
+  "PNLM|RGBS|a=1": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|a=1000": {
+   "error": "nss.PNLM: a must be in [1, 64]"
+  },
+  "PNLM|RGBS|a=16": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|a=17": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|a=2": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|a=3": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|a=33": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|a=4": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|a=65": {
+   "error": "nss.PNLM: a must be in [1, 64]"
+  },
+  "PNLM|RGBS|a=7": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|a=8": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|a=9": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|block_size=-1": {
+   "error": "nss.PNLM: block_size must be 4, 6 or 8"
+  },
+  "PNLM|RGBS|block_size=0": {
+   "error": "nss.PNLM: block_size must be 4, 6 or 8"
+  },
+  "PNLM|RGBS|block_size=1": {
+   "error": "nss.PNLM: block_size must be 4, 6 or 8"
+  },
+  "PNLM|RGBS|block_size=1000": {
+   "error": "nss.PNLM: block_size must be 4, 6 or 8"
+  },
+  "PNLM|RGBS|block_size=16": {
+   "error": "nss.PNLM: block_size must be 4, 6 or 8"
+  },
+  "PNLM|RGBS|block_size=17": {
+   "error": "nss.PNLM: block_size must be 4, 6 or 8"
+  },
+  "PNLM|RGBS|block_size=2": {
+   "error": "nss.PNLM: block_size must be 4, 6 or 8"
+  },
+  "PNLM|RGBS|block_size=3": {
+   "error": "nss.PNLM: block_size must be 4, 6 or 8"
+  },
+  "PNLM|RGBS|block_size=33": {
+   "error": "nss.PNLM: block_size must be 4, 6 or 8"
+  },
+  "PNLM|RGBS|block_size=4": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|block_size=65": {
+   "error": "nss.PNLM: block_size must be 4, 6 or 8"
+  },
+  "PNLM|RGBS|block_size=7": {
+   "error": "nss.PNLM: block_size must be 4, 6 or 8"
+  },
+  "PNLM|RGBS|block_size=8": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|block_size=9": {
+   "error": "nss.PNLM: block_size must be 4, 6 or 8"
+  },
+  "PNLM|RGBS|d=-1": {
+   "error": "nss.PNLM: d must be in [0, 31]"
+  },
+  "PNLM|RGBS|d=0": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|d=1": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|d=1000": {
+   "error": "nss.PNLM: d must be in [0, 31]"
+  },
+  "PNLM|RGBS|d=16": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|d=17": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|d=2": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|d=3": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|d=33": {
+   "error": "nss.PNLM: d must be in [0, 31]"
+  },
+  "PNLM|RGBS|d=4": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|d=65": {
+   "error": "nss.PNLM: d must be in [0, 31]"
+  },
+  "PNLM|RGBS|d=7": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|d=8": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|d=9": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|defaults": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|group_size=-1": {
+   "error": "nss.PNLM: group_size must be in [2, 32]"
+  },
+  "PNLM|RGBS|group_size=0": {
+   "error": "nss.PNLM: group_size must be in [2, 32]"
+  },
+  "PNLM|RGBS|group_size=1": {
+   "error": "nss.PNLM: group_size must be in [2, 32]"
+  },
+  "PNLM|RGBS|group_size=1000": {
+   "error": "nss.PNLM: group_size must be in [2, 32]"
+  },
+  "PNLM|RGBS|group_size=16": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|group_size=17": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|group_size=2": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|group_size=3": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|group_size=33": {
+   "error": "nss.PNLM: group_size must be in [2, 32]"
+  },
+  "PNLM|RGBS|group_size=4": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|group_size=65": {
+   "error": "nss.PNLM: group_size must be in [2, 32]"
+  },
+  "PNLM|RGBS|group_size=7": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|group_size=8": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|group_size=9": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|memory_limit_mb=-1": {
+   "error": "nss: memory_limit_mb must be in [1, 1048576]"
+  },
+  "PNLM|RGBS|memory_limit_mb=0": {
+   "error": "nss: memory_limit_mb must be in [1, 1048576]"
+  },
+  "PNLM|RGBS|memory_limit_mb=1": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|memory_limit_mb=1000": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|memory_limit_mb=16": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|memory_limit_mb=17": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|memory_limit_mb=2": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|memory_limit_mb=3": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|memory_limit_mb=33": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|memory_limit_mb=4": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|memory_limit_mb=65": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|memory_limit_mb=7": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|memory_limit_mb=8": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|memory_limit_mb=9": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|sigma=-1.0": {
+   "error": "nss.PNLM: sigma must be finite and non-negative"
+  },
+  "PNLM|RGBS|sigma=0.0": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|sigma=0.5": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|sigma=1.0": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|sigma=1000.0": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|sigma=3.0": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|RGBS|sigma=pair": {
+   "ok": {
+    "format": "RGBS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|a=-1": {
+   "error": "nss.PNLM: a must be in [1, 64]"
+  },
+  "PNLM|YUV420PS|a=0": {
+   "error": "nss.PNLM: a must be in [1, 64]"
+  },
+  "PNLM|YUV420PS|a=1": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|a=1000": {
+   "error": "nss.PNLM: a must be in [1, 64]"
+  },
+  "PNLM|YUV420PS|a=16": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|a=17": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|a=2": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|a=3": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|a=33": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|a=4": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|a=65": {
+   "error": "nss.PNLM: a must be in [1, 64]"
+  },
+  "PNLM|YUV420PS|a=7": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|a=8": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|a=9": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|block_size=-1": {
+   "error": "nss.PNLM: block_size must be 4, 6 or 8"
+  },
+  "PNLM|YUV420PS|block_size=0": {
+   "error": "nss.PNLM: block_size must be 4, 6 or 8"
+  },
+  "PNLM|YUV420PS|block_size=1": {
+   "error": "nss.PNLM: block_size must be 4, 6 or 8"
+  },
+  "PNLM|YUV420PS|block_size=1000": {
+   "error": "nss.PNLM: block_size must be 4, 6 or 8"
+  },
+  "PNLM|YUV420PS|block_size=16": {
+   "error": "nss.PNLM: block_size must be 4, 6 or 8"
+  },
+  "PNLM|YUV420PS|block_size=17": {
+   "error": "nss.PNLM: block_size must be 4, 6 or 8"
+  },
+  "PNLM|YUV420PS|block_size=2": {
+   "error": "nss.PNLM: block_size must be 4, 6 or 8"
+  },
+  "PNLM|YUV420PS|block_size=3": {
+   "error": "nss.PNLM: block_size must be 4, 6 or 8"
+  },
+  "PNLM|YUV420PS|block_size=33": {
+   "error": "nss.PNLM: block_size must be 4, 6 or 8"
+  },
+  "PNLM|YUV420PS|block_size=4": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|block_size=65": {
+   "error": "nss.PNLM: block_size must be 4, 6 or 8"
+  },
+  "PNLM|YUV420PS|block_size=7": {
+   "error": "nss.PNLM: block_size must be 4, 6 or 8"
+  },
+  "PNLM|YUV420PS|block_size=8": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|block_size=9": {
+   "error": "nss.PNLM: block_size must be 4, 6 or 8"
+  },
+  "PNLM|YUV420PS|d=-1": {
+   "error": "nss.PNLM: d must be in [0, 31]"
+  },
+  "PNLM|YUV420PS|d=0": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|d=1": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|d=1000": {
+   "error": "nss.PNLM: d must be in [0, 31]"
+  },
+  "PNLM|YUV420PS|d=16": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|d=17": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|d=2": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|d=3": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|d=33": {
+   "error": "nss.PNLM: d must be in [0, 31]"
+  },
+  "PNLM|YUV420PS|d=4": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|d=65": {
+   "error": "nss.PNLM: d must be in [0, 31]"
+  },
+  "PNLM|YUV420PS|d=7": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|d=8": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|d=9": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|defaults": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|group_size=-1": {
+   "error": "nss.PNLM: group_size must be in [2, 32]"
+  },
+  "PNLM|YUV420PS|group_size=0": {
+   "error": "nss.PNLM: group_size must be in [2, 32]"
+  },
+  "PNLM|YUV420PS|group_size=1": {
+   "error": "nss.PNLM: group_size must be in [2, 32]"
+  },
+  "PNLM|YUV420PS|group_size=1000": {
+   "error": "nss.PNLM: group_size must be in [2, 32]"
+  },
+  "PNLM|YUV420PS|group_size=16": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|group_size=17": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|group_size=2": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|group_size=3": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|group_size=33": {
+   "error": "nss.PNLM: group_size must be in [2, 32]"
+  },
+  "PNLM|YUV420PS|group_size=4": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|group_size=65": {
+   "error": "nss.PNLM: group_size must be in [2, 32]"
+  },
+  "PNLM|YUV420PS|group_size=7": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|group_size=8": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|group_size=9": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|memory_limit_mb=-1": {
+   "error": "nss: memory_limit_mb must be in [1, 1048576]"
+  },
+  "PNLM|YUV420PS|memory_limit_mb=0": {
+   "error": "nss: memory_limit_mb must be in [1, 1048576]"
+  },
+  "PNLM|YUV420PS|memory_limit_mb=1": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|memory_limit_mb=1000": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|memory_limit_mb=16": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|memory_limit_mb=17": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|memory_limit_mb=2": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|memory_limit_mb=3": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|memory_limit_mb=33": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|memory_limit_mb=4": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|memory_limit_mb=65": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|memory_limit_mb=7": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|memory_limit_mb=8": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|memory_limit_mb=9": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|sigma=-1.0": {
+   "error": "nss.PNLM: sigma must be finite and non-negative"
+  },
+  "PNLM|YUV420PS|sigma=0.0": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|sigma=0.5": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|sigma=1.0": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|sigma=1000.0": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|sigma=3.0": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
+  "PNLM|YUV420PS|sigma=pair": {
+   "ok": {
+    "format": "YUV420PS",
+    "frames": 4,
+    "height": 40,
+    "width": 48
+   }
+  },
   "TWSC|GRAYS|admm_iter=-1": {
    "error": "nss: admm_iter outside supported range"
   },
@@ -31062,6 +32499,7 @@
   "NCSR": "clip:vnode;sigma:float[]:opt;block_size:int:opt;block_step:int:opt;group_size:int:opt;bm_range:int:opt;radius:int:opt;ps_num:int:opt;ps_range:int:opt;rclip:vnode:opt;iters:int:opt;delta:float:opt;memory_limit_mb:int:opt;temporal_mode:data:opt;rolling_chunk:int:opt;rolling_cache_chunks:int:opt;rolling_cache_limit:int:opt;",
   "NLH": "clip:vnode;sigma:float[]:opt;block_size:int[]:opt;block_step:int[]:opt;group_size:int[]:opt;bm_range:int:opt;radius:int:opt;ps_num:int:opt;ps_range:int:opt;q:int[]:opt;rclip:vnode:opt;noise_model:data:opt;search_window:int[]:opt;basic_iters:int:opt;lambda_basic:float:opt;hard_strength:float:opt;wiener_iters:int:opt;wiener_sigma_scale:float:opt;memory_limit_mb:int:opt;temporal_mode:data:opt;rolling_chunk:int:opt;rolling_cache_chunks:int:opt;rolling_cache_limit:int:opt;",
   "NLM": "clip:vnode;d:int:opt;a:int:opt;s:int:opt;h:float:opt;channels:data:opt;wmode:int:opt;wref:float:opt;rclip:vnode:opt;memory_limit_mb:int:opt;",
+  "PNLM": "clip:vnode;sigma:float[]:opt;d:int:opt;a:int:opt;block_size:int:opt;group_size:int:opt;memory_limit_mb:int:opt;",
   "TWSC": "clip:vnode;sigma:float[]:opt;block_size:int:opt;block_step:int:opt;group_size:int:opt;bm_range:int:opt;radius:int:opt;ps_num:int:opt;ps_range:int:opt;lambda2:float:opt;rclip:vnode:opt;iters:int:opt;delta:float:opt;estimate_sigma:int:opt;search_window:int:opt;admm_iter:int:opt;rho:float:opt;mu:float:opt;tol:float:opt;cfast:int:opt;memory_limit_mb:int:opt;temporal_mode:data:opt;rolling_chunk:int:opt;rolling_cache_chunks:int:opt;rolling_cache_limit:int:opt;",
   "VAggregate": "clip:vnode;src:vnode;radius:int:opt;planes:int[]:opt;allow_legacy:int:opt;memory_limit_mb:int:opt;",
   "Version": "",

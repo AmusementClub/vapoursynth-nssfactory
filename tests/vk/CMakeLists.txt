@@ -80,7 +80,7 @@ add_test(NAME test_vk_backend
 # D21 parity against the CPU golden. Filters still pending in
 # docs/vulkan-plan.md are expected to be missing; each phase removes the
 # filters it delivers. VAggregate is the CPU's alone (D21).
-set(NSS_VK_PENDING_FILTERS "WNNM,MCWNNM,NCSR,NLH,TWSC,LSSC,DA3D,BM4D")
+set(NSS_VK_PENDING_FILTERS "WNNM,MCWNNM,NCSR,NLH,TWSC,LSSC,DA3D,BM4D,PNLM")
 add_test(NAME test_vk_plugin_interface
          COMMAND ${Python3_EXECUTABLE} "${PROJECT_SOURCE_DIR}/tests/test_plugin_interface.py"
                  --plugin "${NSS_VK_PLUGIN}" --namespace nss_vk

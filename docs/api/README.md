@@ -17,6 +17,7 @@ more cores.
 |---|---:|---|---|
 | [BM3D](bm3d.md) | ~59† | yes | General use; the fastest |
 | [NLM](nlm.md) | ~131 | yes (`d`) | Light noise |
+| [PNLM](pnlm.md) | ~250§ | yes (`d`) | Light noise; edges and line art |
 | [WNNM](wnnm.md) | ~131 | yes | Texture and edge retention |
 | [NCSR](ncsr.md) | ~268 | yes | Sparse-coding quality at moderate cost |
 | [LSSC](lssc.md) | ~369‡ | no | Structured noise, film grain, text |
@@ -37,6 +38,10 @@ page).
 † BM3D measured with `bm_range=7`, its default until 2026-10-20 (now 9, about
 1.6x the candidates of the matching step).
 
+§ PNLM measured on a Ryzen 9 5950X core, where NLM takes ~113 ms; spatial
+(`d=0`) 135 ms against NLM's 28. On the GPU it is the faster of the two
+from `a=2` up.
+
 ‡ LSSC measured with model version 3 at `block_step=8`, its default until
 2026-10-21. Version 4 at its default `block_step=4` took 0.93x that time on a
 Ryzen 9 5950X core at sigma 3 and about half at sigma 25.
@@ -51,7 +56,8 @@ Ryzen 9 5950X core at sigma 3 and about half at sigma 25.
   `estimate_sigma=1`; the other filters take it as given. It sets the
   filter's strength, which matches the noise's σ only for some filters and
   settings: at the defaults BM3D wants about 4/3 σ, NCSR 1.8 σ, WNNM 2.2 σ,
-  MCWNNM 2.5 σ and TWSC 3.4 σ, and NLM `h` about 0.6 to 0.8 σ (the models
+  MCWNNM 2.5 σ and TWSC 3.4 σ, PNLM σ itself, and NLM `h` about 0.6 to
+  0.8 σ (the models
   are the same on both backends; see
   [Sigma at the default settings](cuda/README.md#sigma-at-the-default-settings)).
 - **`rclip` / `ref`**: an optional clip of the same format and size that guides

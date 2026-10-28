@@ -48,6 +48,31 @@ std::size_t spatial_match_scratch_bytes(int width, int height);
 // `stream`; again whenever the plane changes.
 void spatial_match_prepare(const float* plane, const MatchGeometry& geometry, void* scratch, cudaStream_t stream);
 
+// The square matcher (match_square.cu; Davy & Ehret 2021, section 4.1.4):
+// blocks of twice the step (2 at 1, 4 at 2, 8 at 4, 12 at 6, 16 at 8), one
+// channel, groups 2 to 32, symmetric windows. Quarter distances are shared by
+// the four references that contain them, so the distances differ from the
+// lane kernels' in the last bits (near ties may resolve differently); keys
+// and order are the same. spatial_match_square_shape: the geometries it can
+// run; spatial_match_square_takes: those where it is faster than the lane
+// kernels. Returns false (and does nothing) for a geometry the latter
+// rejects, or a batch of fewer thread blocks than the device has SMs (a few
+// grid rows: the lane kernels are faster then); with `any_shape` (tests,
+// timing) only for one the former rejects. Against the
+// tensor-core matcher it wins up to a window radius of 30 (1.15-1.9x) and
+// ties at 40: callers leave radii of kSquareTensorRadius and more to it where
+// it applies.
+inline constexpr int kSquareTensorRadius = 40;
+bool spatial_match_square_shape(const MatchGeometry& geometry, const RasterGrid& grid);
+bool spatial_match_square_takes(const MatchGeometry& geometry, const RasterGrid& grid);
+bool spatial_match_square(const float* plane, const MatchGeometry& geometry, const RasterGrid& grid, int ref_begin,
+                          int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream, bool any_shape = false);
+// The same search of frame `frame` of the device pointer table `frames`
+// (read on the device, in stream order).
+bool spatial_match_square_frame(const float* const* frames, int frame, const MatchGeometry& geometry,
+                                const RasterGrid& grid, int ref_begin, int ref_count, DeviceMatch* out, int* counts,
+                                cudaStream_t stream, bool any_shape = false);
+
 struct TemporalWindow {
     const float* const* frames;  // device array of ntemp device plane pointers (same pitch)
     int ntemp;
@@ -61,5 +86,16 @@ struct TemporalWindow {
 
 void predictive_match(const MatchGeometry& geometry, const TemporalWindow& window, const RasterGrid& grid,
                       int ref_begin, int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream);
+
+// The predictive search with its centre frame by the square matcher: the
+// centre window's matches as spatial_match_square finds them (the same keys
+// up to near ties), then the temporal layers of predictive_match seeded from
+// them. Returns false (and does nothing) where the square matcher declines
+// the centre frame (spatial_match_square_takes, or a batch too small to fill
+// the device; with `any_shape` only spatial_match_square_shape) or the lane
+// kernels do not serve the geometry; predictive_match is the search then.
+bool predictive_match_square(const MatchGeometry& geometry, const TemporalWindow& window, const RasterGrid& grid,
+                             int ref_begin, int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream,
+                             bool any_shape = false);
 
 }  // namespace nss_cuda

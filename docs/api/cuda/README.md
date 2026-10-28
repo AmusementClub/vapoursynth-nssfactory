@@ -1,7 +1,7 @@
 # nss_cuda.* Reference
 
-`libnss_cuda` (namespace `nss_cuda`) runs the eight denoisers of the CPU
-plugin on NVIDIA GPUs. The arguments, defaults and models are the same; the
+`libnss_cuda` (namespace `nss_cuda`) runs the filters of the CPU plugin
+(all but `VAggregate`) on NVIDIA GPUs. The arguments, defaults and models are the same; the
 output agrees with the CPU plugin to 60 dB PSNR or better (not bit for bit)
 and is identical from run to run on a given GPU, driver and build. Each page
 below describes every argument of one function; the papers and the reasoning
@@ -18,6 +18,7 @@ warm-up; the images differ by at most 3%.
 |---|---:|---:|---:|
 | [BM3D](bm3d.md) | 495 | 280 | 455 / 230 |
 | [NLM](nlm.md) | 620 | 260 | (temporal by default, `d=1`) |
+| [PNLM](pnlm.md) | 470 | 236 | (temporal by default, `d=1`; every plane) |
 | [WNNM](wnnm.md) | 500 | 285 | 455 / 230 |
 | [MCWNNM](mcwnnm.md) | — | 200 | — / 135 |
 | [NCSR](ncsr.md) | 390 | 215 | 265 / 135 |
@@ -32,6 +33,8 @@ warm-up; the images differ by at most 3%.
   `BM3D(final=1)` at 4/3 sigma as its guide (computed beforehand). DA3D's
   output is within a level of the CPU plugin's; BM4D's matching takes FP16
   distances (its PSNR is the CPU's).
+- PNLM was measured on 2026-10-28, when `NLM` measured 711 / 269 the same way;
+  PNLM filters every plane by default, `NLM` only luma (`sigma=[3, 0]`: 606).
 - NLH runs its default blind noise estimation; giving `sigma` skips it.
 - TWSC's default is a speed setting. Its quality geometry (`block_step=1,
   group_size=90, iters=12`) denoises 8 to 10 dB better and takes about 80 s
@@ -142,6 +145,7 @@ They pay where those leave the GPU idle, and not where the kernels dominate.
 | Filter | Default | Gain over one stream | Peak GPU memory, one stream → default |
 |---|---|---|---|
 | NLM | 2 | 1.23× (YUV420, d = 1); with direct transfers 1.06–1.50× (three: no faster) | 529 → 759 MiB (gray, d = 1) |
+| PNLM | 3 | 1.19× (gray, d = 1; two streams 1.13×) | 182 → 325 MiB (gray, d = 1) |
 | TWSC | 3 | 1.22× (gray; two streams: 1.03×) | 385 → 1084 MiB |
 | NCSR | 2; 3 with direct transfers | 1.10× (YUV420); with direct transfers 1.38–1.52× | 170 → 258 MiB (three: 346 MiB) |
 | BM3D, WNNM | 1; 2 with direct transfers | 0.99× staged; with direct transfers 1.01–1.14× (three streams; two equal them on YUV420) | YUV420 150 / 162 MiB, plus about 68 / 80 MiB per stream |
