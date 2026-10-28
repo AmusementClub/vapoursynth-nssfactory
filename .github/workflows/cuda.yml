@@ -80,7 +80,7 @@ jobs:
           # Headers only: the plugin is loaded by the host and never links libvapoursynth.
           git clone --depth 1 --branch R80 https://github.com/vapoursynth/vapoursynth /opt/vapoursynth
           # Python 3.12+ images can also load the plugin to exercise the no-GPU path.
-          if python3 -c 'import sys; sys.exit(sys.version_info < (3, 12))'; then /opt/venv/bin/pip install vapoursynth; fi
+          if python3 -c 'import sys; sys.exit(sys.version_info < (3, 12))'; then /opt/venv/bin/pip install vapoursynth==81; fi
       - uses: actions/checkout@v4
       # After the checkout, which empties a workspace that is not a repository.
       # In a container job github.workspace names the host's path: the cache
@@ -178,7 +178,7 @@ jobs:
       - name: packages
         run: |
           choco install ccache --no-progress
-          pip install vapoursynth ninja
+          pip install vapoursynth==81 ninja
           (Get-Command nvcc).Source
           nvcc --version
           cl 2>&1 | Select-Object -First 1

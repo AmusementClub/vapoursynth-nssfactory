@@ -74,7 +74,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build git ccache python3-venv ${{ matrix.cxx == 'g++' && 'g++' || 'clang' }}
           python3 -m venv .vsenv
-          .vsenv/bin/pip install vapoursynth numpy scipy
+          .vsenv/bin/pip install vapoursynth==81 numpy scipy
           echo "VapourSynth_INCLUDE_DIR=$(.vsenv/bin/python -c "import vapoursynth, pathlib; print(pathlib.Path(vapoursynth.__file__).parent / 'include')")" >> "$GITHUB_ENV"
       - name: configure
         run: |
@@ -126,7 +126,7 @@ jobs:
       - name: packages
         run: |
           choco install ccache llvm ninja --no-progress
-          pip install vapoursynth
+          pip install vapoursynth==81
       - name: configure
         run: |
           $vsInclude = python -c "import vapoursynth, pathlib; print(pathlib.Path(vapoursynth.__file__).parent / 'include')"

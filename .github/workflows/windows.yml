@@ -51,7 +51,7 @@ jobs:
       - name: packages
         run: |
           choco install ccache llvm ninja --no-progress
-          pip install vapoursynth numpy scipy
+          pip install vapoursynth==81 numpy scipy
       - name: verify clang++ target
         shell: powershell
         run: |
