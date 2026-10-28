@@ -64,7 +64,7 @@ builds only the CUDA plugin, without Highway or the CPU kernels.
 - **One GPU only:** `-DNSS_CUDA_ARCHITECTURES=120-real` (for example) builds
   much faster.
 
-## Vulkan plugin (in development)
+## Vulkan plugin (preview)
 
 ```bash
 cmake -S . -B build-vk -DCMAKE_BUILD_TYPE=Release -DNSS_ENABLE_VULKAN=ON
@@ -72,11 +72,12 @@ cmake --build build-vk -j
 ctest --test-dir build-vk -L vk
 ```
 
-This builds `libnss_vk` (namespace `nss_vk`; not
-shipped). It has no filters yet: `core.nss_vk.Backend(device_id=...)` reports
-the device, its support level (`native`, `emulated` or `unsupported`, with the
-missing Vulkan 1.3 features) and runs a load probe. `-DNSS_BUILD_CPU=OFF`
-builds only the Vulkan plugin.
+This builds `libnss_vk` (namespace `nss_vk`, a preview: BM3D and NLM; see the
+[Vulkan reference](vk/README.md)). `core.nss_vk.Backend(device_id=...)`
+reports the device, its support level (`native`, `emulated` or `unsupported`,
+with the missing Vulkan 1.3 features), whether VapourSynth GPU frames are
+used, and runs a load probe. `-DNSS_BUILD_CPU=OFF` builds only the Vulkan
+plugin.
 
 - **No SDK needed:** Vulkan-Headers, volk, VMA, glslang and SPIRV-Tools are
   fetched at configure time, pinned to Vulkan SDK 1.4.363.0 (VMA 3.4.0).
@@ -84,13 +85,20 @@ builds only the Vulkan plugin.
   the first build.
 - **No loader needed to load:** the plugin finds the Vulkan loader at run time
   and reports its absence through `Backend()`.
+- **VapourSynth GPU frames** (R80+) are built in when the VapourSynth headers
+  have `VSVulkan4.h` (R80 or newer; the release is built against R81's). The
+  plugin declares API 4.0 either way, so the same binary loads on R78 and
+  vapoursynth-classic, and takes GPU frames only on the cores it was tested
+  with ([tested cores](vk/README.md#tested-cores)). Older headers build it
+  without GPU frames.
 
 ## Options
 
 | Option | Default | Meaning |
 |---|---|---|
 | `NSS_ENABLE_CUDA` | OFF | Build the CUDA plugin. |
-| `NSS_ENABLE_VULKAN` | OFF | Build the Vulkan plugin (in development, not released). |
+| `NSS_ENABLE_VULKAN` | OFF | Build the Vulkan plugin (a preview). |
+| `NSS_VK_GPU_FRAMES_PYTHON` | empty | A Python whose VapourSynth is R80 or newer, for the GPU-frame test (`test_vk_gpu_frames_r8x`). |
 | `NSS_VK_GLSLANG`, `NSS_VK_SPIRV_OPT`, `NSS_VK_SPIRV_VAL` | empty | Installed `glslang`, `spirv-opt` and `spirv-val` to use instead of building the pinned ones; set all three or none. |
 | `NSS_BUILD_CPU` | ON | Build the CPU plugin and its tests. |
 | `NSS_CUDA_ARCHITECTURES` | see above | CUDA architectures to compile for. |

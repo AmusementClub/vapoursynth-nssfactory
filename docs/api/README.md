@@ -3,8 +3,9 @@
 `libnss` is the CPU plugin (namespace `nss`). Each page documents one filter:
 its signature, the parameters (the ones you usually touch first), the paper
 and where this implementation departs from it, the defaults, speed and
-pitfalls. The GPU plugin has the same filters and arguments; see the
-[CUDA reference](cuda/README.md).
+pitfalls. The GPU plugins have the same filters and arguments; see the
+[CUDA reference](cuda/README.md) and the [Vulkan reference](vk/README.md)
+(a preview: BM3D and NLM so far, with VapourSynth R80+ GPU frames).
 
 ## Choosing a filter
 

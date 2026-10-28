@@ -88,6 +88,24 @@ add_test(NAME test_vk_plugin_interface
                  --cpu-only VAggregate
                  --default-temporal rolling --rolling-cache adaptive)
 set_tests_properties(test_vk_backend test_vk_plugin_interface PROPERTIES LABELS vk SKIP_RETURN_CODE 77)
+# VapourSynth R80+ GPU frames (D29). With the configured Python's core older
+# than R80 (the dev host's R78 venv) it checks that the same binary registers
+# plain `vnode` arguments; NSS_VK_GPU_FRAMES_PYTHON names a Python whose
+# VapourSynth is R80 or later (dev host: ~/src/vs-envs/r81/python) for the
+# GPU-frame cases.
+set(NSS_VK_GPU_FRAMES_PYTHON "" CACHE STRING "Python with VapourSynth R80+ for test_vk_gpu_frames_r8x (optional)")
+set(_nss_vk_gpu_args --vk "${NSS_VK_PLUGIN}")
+if(TARGET nss)
+  list(APPEND _nss_vk_gpu_args --cpu "$<TARGET_FILE:nss>")
+endif()
+add_test(NAME test_vk_gpu_frames
+         COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_vk_gpu_frames.py" ${_nss_vk_gpu_args})
+set_tests_properties(test_vk_gpu_frames PROPERTIES LABELS vk SKIP_RETURN_CODE 77)
+if(NSS_VK_GPU_FRAMES_PYTHON)
+  add_test(NAME test_vk_gpu_frames_r8x
+           COMMAND ${NSS_VK_GPU_FRAMES_PYTHON} "${CMAKE_CURRENT_SOURCE_DIR}/test_vk_gpu_frames.py" ${_nss_vk_gpu_args})
+  set_tests_properties(test_vk_gpu_frames_r8x PROPERTIES LABELS vk SKIP_RETURN_CODE 77)
+endif()
 # Filters against the CPU plugin (needs the CPU tree).
 if(TARGET nss)
   foreach(filter nlm bm3d)
