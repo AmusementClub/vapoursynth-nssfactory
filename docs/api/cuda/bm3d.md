@@ -64,7 +64,25 @@ references too small to fill the GPU: fewer tiles of 15 x 15 references than
 it has SMs (on an RTX 5080, 84: planes under about 1.2 megapixels at 16 / 8,
 720p included, 0.7 at 12 / 6, 0.3 at 8 / 4), and the second stage of
 `final=1` with large blocks and groups, which runs in batches of a few rows.
-Spatial only (`radius=0`).
+
+With `radius > 0` the centre frame's window is searched this way under the
+same rules, and the predictive search of the other frames starts from its
+matches (the same search up to near ties: the same PSNR to three decimals,
+under 1.6% of samples differing, by at most 0.018). Gray 1800 x 1080 panned
+1 px a frame, sigma 25, against the per-reference search:
+
+| Shape | Arguments | Speed |
+|---|---|---:|
+| 8 / 4 | `radius=1, group_size=16` / with `bm_range=16` | 1.12x / 1.31x |
+| | `radius=1, final=1, group_size=16` | 1.14x |
+| | `radius=2, group_size=16` / `radius=3` | 1.08x / 1.07x |
+| | `radius=1, group_size=16, temporal_mode="legacy"` with `VAggregate` | 1.02x |
+| 4 / 2 | `radius=1, group_size=16` | 1.14x |
+| 12 / 6 | `radius=1, group_size=16` | 1.12x |
+| 16 / 8 | `radius=1, group_size=16` | 1.05x |
+
+The other frames' searches are unchanged and take most of the time at larger
+radii.
 
 ## Closer to the papers
 

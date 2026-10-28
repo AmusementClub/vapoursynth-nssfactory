@@ -60,6 +60,14 @@ struct Passes {
     int count;
 };
 
+// The searched plane: `plane`, or frame `frame` of the device pointer table
+// `frames` (a temporal window's centre: the table is filled on the stream).
+struct Source {
+    const float* plane;
+    const float* const* frames;
+    int frame;
+};
+
 // Grid index of the reference at x (y), or -1 when no reference is there.
 template <int Q>
 __device__ __forceinline__ int grid_index(int v, int max_v, int count) {
@@ -76,10 +84,11 @@ __device__ __forceinline__ float tree_sum(const float* c) {
 }
 
 template <int Q, int K>
-__global__ void __launch_bounds__(kSide * kSide) square_match_kernel(const float* plane, MatchGeometry g,
+__global__ void __launch_bounds__(kSide * kSide) square_match_kernel(Source source, MatchGeometry g,
                                                                      RasterGrid grid, int ref_begin, int ref_count,
                                                                      int rows, Passes passes, DeviceMatch* out,
                                                                      int* counts) {
+    const float* const plane = source.frames ? source.frames[source.frame] : source.plane;
     __shared__ float part[2][kSide][kSide + 1];
     const int tid = threadIdx.x, tx = tid % kSide, ty = tid / kSide;
     int which = 0;
@@ -221,27 +230,27 @@ Plan plan_square(int q, const RasterGrid& grid, int ref_begin, int ref_count) {
 }
 
 template <int Q, int K>
-void launch_square(const float* plane, const MatchGeometry& g, const RasterGrid& grid, int ref_begin, int ref_count,
+void launch_square(const Source& source, const MatchGeometry& g, const RasterGrid& grid, int ref_begin, int ref_count,
                    const Plan& plan, DeviceMatch* out, int* counts, cudaStream_t stream) {
     square_match_kernel<Q, K><<<plan.blocks, kSide * (plan.rows + 1), 0, stream>>>(
-        plane, g, grid, ref_begin, ref_count, plan.rows, plan.passes, out, counts);
+        source, g, grid, ref_begin, ref_count, plan.rows, plan.passes, out, counts);
     NSS_CUDA_CHECK_LAUNCH();
 }
 
 template <int Q>
-void dispatch_square(const float* plane, const MatchGeometry& g, const RasterGrid& grid, int ref_begin, int ref_count,
+void dispatch_square(const Source& source, const MatchGeometry& g, const RasterGrid& grid, int ref_begin, int ref_count,
                      const Plan& plan, DeviceMatch* out, int* counts, cudaStream_t stream) {
     const int wanted = g.group - 1;
     if (wanted <= 1) {
-        launch_square<Q, 1>(plane, g, grid, ref_begin, ref_count, plan, out, counts, stream);
+        launch_square<Q, 1>(source, g, grid, ref_begin, ref_count, plan, out, counts, stream);
     } else if (wanted <= 3) {
-        launch_square<Q, 3>(plane, g, grid, ref_begin, ref_count, plan, out, counts, stream);
+        launch_square<Q, 3>(source, g, grid, ref_begin, ref_count, plan, out, counts, stream);
     } else if (wanted <= 7) {
-        launch_square<Q, 7>(plane, g, grid, ref_begin, ref_count, plan, out, counts, stream);
+        launch_square<Q, 7>(source, g, grid, ref_begin, ref_count, plan, out, counts, stream);
     } else if (wanted <= 15) {
-        launch_square<Q, 15>(plane, g, grid, ref_begin, ref_count, plan, out, counts, stream);
+        launch_square<Q, 15>(source, g, grid, ref_begin, ref_count, plan, out, counts, stream);
     } else {
-        launch_square<Q, 31>(plane, g, grid, ref_begin, ref_count, plan, out, counts, stream);
+        launch_square<Q, 31>(source, g, grid, ref_begin, ref_count, plan, out, counts, stream);
     }
 }
 
@@ -274,8 +283,10 @@ bool spatial_match_square_takes(const MatchGeometry& g, const RasterGrid& grid) 
     return !lanes;
 }
 
-bool spatial_match_square(const float* plane, const MatchGeometry& g, const RasterGrid& grid, int ref_begin,
-                          int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream, bool any_shape) {
+namespace {
+
+bool run_square(const Source& source, const MatchGeometry& g, const RasterGrid& grid, int ref_begin, int ref_count,
+                DeviceMatch* out, int* counts, cudaStream_t stream, bool any_shape) {
     if (!(any_shape ? spatial_match_square_shape(g, grid) : spatial_match_square_takes(g, grid))) return false;
     if (ref_count <= 0) return true;
     const Plan plan = plan_square(grid.step, grid, ref_begin, ref_count);
@@ -285,13 +296,26 @@ bool spatial_match_square(const float* plane, const MatchGeometry& g, const Rast
     if (!any_shape && plan.blocks < multiprocessors()) return false;
     if (plan.blocks == 0) return true;
     switch (grid.step) {
-    case 1: dispatch_square<1>(plane, g, grid, ref_begin, ref_count, plan, out, counts, stream); break;
-    case 2: dispatch_square<2>(plane, g, grid, ref_begin, ref_count, plan, out, counts, stream); break;
-    case 4: dispatch_square<4>(plane, g, grid, ref_begin, ref_count, plan, out, counts, stream); break;
-    case 6: dispatch_square<6>(plane, g, grid, ref_begin, ref_count, plan, out, counts, stream); break;
-    default: dispatch_square<8>(plane, g, grid, ref_begin, ref_count, plan, out, counts, stream); break;
+    case 1: dispatch_square<1>(source, g, grid, ref_begin, ref_count, plan, out, counts, stream); break;
+    case 2: dispatch_square<2>(source, g, grid, ref_begin, ref_count, plan, out, counts, stream); break;
+    case 4: dispatch_square<4>(source, g, grid, ref_begin, ref_count, plan, out, counts, stream); break;
+    case 6: dispatch_square<6>(source, g, grid, ref_begin, ref_count, plan, out, counts, stream); break;
+    default: dispatch_square<8>(source, g, grid, ref_begin, ref_count, plan, out, counts, stream); break;
     }
     return true;
+}
+
+}  // namespace
+
+bool spatial_match_square(const float* plane, const MatchGeometry& g, const RasterGrid& grid, int ref_begin,
+                          int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream, bool any_shape) {
+    return run_square(Source{plane, nullptr, 0}, g, grid, ref_begin, ref_count, out, counts, stream, any_shape);
+}
+
+bool spatial_match_square_frame(const float* const* frames, int frame, const MatchGeometry& g, const RasterGrid& grid,
+                                int ref_begin, int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream,
+                                bool any_shape) {
+    return run_square(Source{nullptr, frames, frame}, g, grid, ref_begin, ref_count, out, counts, stream, any_shape);
 }
 
 }  // namespace nss_cuda

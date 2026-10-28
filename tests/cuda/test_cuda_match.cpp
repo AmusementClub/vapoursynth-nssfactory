@@ -138,7 +138,7 @@ void square_case(int q, int width, int height, int group, int range, int batches
 }
 
 void temporal_case(int width, int height, int block, int group, int step, int range, int radius, int center,
-                   int frame_count, bool flat, Stats& stats) {
+                   int frame_count, bool flat, Stats& stats, bool square = false) {
     const int ntemp = 2 * radius + 1;
     std::vector<std::vector<float>> frames;
     std::vector<nss_cuda::DeviceBuffer> d_frames;
@@ -172,14 +172,21 @@ void temporal_case(int width, int height, int block, int group, int step, int ra
     const nss_cuda::MatchGeometry g{width, height, width, block, range, group};
     const nss_cuda::TemporalWindow w{d_ptrs.as<const float*>(), ntemp, radius, radius, cfg.valid_t_begin,
                                      cfg.valid_t_end, cfg.ps_num, cfg.ps_range};
-    nss_cuda::predictive_match(g, w, grid, 0, grid.count(), d_out.as<nss_cuda::DeviceMatch>(), d_counts.as<int>(), nullptr);
+    if (square) {
+        CHECK(nss_cuda::predictive_match_square(g, w, grid, 0, grid.count(), d_out.as<nss_cuda::DeviceMatch>(),
+                                                d_counts.as<int>(), nullptr, true),
+              "square temporal %dx%d b%d s%d not taken", width, height, block, step);
+    } else {
+        nss_cuda::predictive_match(g, w, grid, 0, grid.count(), d_out.as<nss_cuda::DeviceMatch>(), d_counts.as<int>(),
+                                   nullptr);
+    }
     std::vector<nss_cuda::DeviceMatch> out(static_cast<std::size_t>(grid.count()) * group);
     std::vector<int> counts(grid.count());
     NSS_CUDA_CHECK(cudaMemcpy(out.data(), d_out.get(), d_out.bytes(), cudaMemcpyDeviceToHost));
     NSS_CUDA_CHECK(cudaMemcpy(counts.data(), d_counts.get(), d_counts.bytes(), cudaMemcpyDeviceToHost));
     char label[128];
-    std::snprintf(label, sizeof label, "temporal %dx%d b%d g%d s%d r%d R%d c%d/%d%s", width, height, block, group, step,
-                  range, radius, center, frame_count, flat ? " flat" : "");
+    std::snprintf(label, sizeof label, "temporal%s %dx%d b%d g%d s%d r%d R%d c%d/%d%s", square ? " square" : "", width,
+                  height, block, group, step, range, radius, center, frame_count, flat ? " flat" : "");
     for (int ref = 0; ref < grid.count(); ++ref) {
         nss::Match cpu[nss_cuda::kMaxGroup];
         const int n = nss::predictive_match(host_ptrs.data(), strides.data(), ntemp, width, height, grid.x(ref),
@@ -412,6 +419,17 @@ int main() {
             square_case(q, 67 * q, 35 * q, 32, 19, 5, flat, stats);  // several blocks each way
             square_case(q, 331, 203, 16, 12, 7, flat, stats);
         }
+    }
+    // Predictive search with the centre frame by the square matcher, every
+    // shape, clamped edges, a clipped window at either end of the clip.
+    for (const bool flat : {false, true}) {
+        temporal_case(161, 123, 8, 16, 4, 9, 1, 3, 9, flat, stats, true);
+        temporal_case(161, 123, 8, 8, 4, 9, 2, 0, 9, flat, stats, true);  // clip start
+        temporal_case(203, 151, 4, 16, 2, 7, 1, 4, 9, flat, stats, true);
+        temporal_case(363, 271, 16, 16, 8, 9, 1, 8, 9, flat, stats, true);  // clip end
+        temporal_case(245, 183, 12, 32, 6, 5, 1, 2, 9, flat, stats, true);
+        temporal_case(67, 53, 2, 8, 1, 4, 1, 1, 3, flat, stats, true);
+        temporal_case(160, 120, 8, 2, 4, 12, 3, 3, 7, flat, stats, true);  // regular grid
     }
     // Tensor-core matcher: windows of side 33 to 129 (symmetric and exact-size), every step, groups 2 to 16.
     for (const int kind : {0, 1}) {

@@ -29,6 +29,7 @@ INPUTS = {
     "g1080s25": ("MAPPA.png", "gray", None, 25.0, 1, False),
     "rgb1080": ("Ufotable.png", "rgb", None, 3.0, 1, False),
     "gseq": ("MAPPA.png", "gray", CROP, 3.0, 5, True),
+    "gseq1000s25": ("MAPPA.png", "gray", 1000, 25.0, 5, True),
     "rgbseq": ("Ufotable.png", "rgb", CROP, 3.0, 5, True),
 }
 
@@ -61,6 +62,11 @@ CASES = [
     case("bm3d-gseq-r1-legacy", "BM3D", "gseq", dict(radius=1), TEMPORAL, aggregate=1),
     case("bm3d-gseq-r2-legacy", "BM3D", "gseq", dict(radius=2), TEMPORAL, aggregate=2),
     case("bm3d-gseq-r1-rolling", "BM3D", "gseq", dict(radius=1, temporal_mode="rolling"), TEMPORAL),
+    # The square matcher on the centre frame of the temporal search.
+    case("bm3d-gseq1000-s25-r1-b8-step4-rolling", "BM3D", "gseq1000s25",
+         dict(sigma=25, radius=1, block_step=4, group_size=16, temporal_mode="rolling"), TEMPORAL),
+    case("bm3d-gseq1000-s25-r1-b4-step2-legacy", "BM3D", "gseq1000s25",
+         dict(sigma=25, radius=1, block_size=4, block_step=2, group_size=16), TEMPORAL, aggregate=1),
     case("bm3d-rgbseq-r1-legacy", "BM3D", "rgbseq", dict(radius=1), TEMPORAL, aggregate=1),
     # NLM (default d=1 is temporal)
     case("nlm-gseq", "NLM", "gseq", frames=TEMPORAL),

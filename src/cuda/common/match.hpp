@@ -67,6 +67,11 @@ bool spatial_match_square_shape(const MatchGeometry& geometry, const RasterGrid&
 bool spatial_match_square_takes(const MatchGeometry& geometry, const RasterGrid& grid);
 bool spatial_match_square(const float* plane, const MatchGeometry& geometry, const RasterGrid& grid, int ref_begin,
                           int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream, bool any_shape = false);
+// The same search of frame `frame` of the device pointer table `frames`
+// (read on the device, in stream order).
+bool spatial_match_square_frame(const float* const* frames, int frame, const MatchGeometry& geometry,
+                                const RasterGrid& grid, int ref_begin, int ref_count, DeviceMatch* out, int* counts,
+                                cudaStream_t stream, bool any_shape = false);
 
 struct TemporalWindow {
     const float* const* frames;  // device array of ntemp device plane pointers (same pitch)
@@ -81,5 +86,16 @@ struct TemporalWindow {
 
 void predictive_match(const MatchGeometry& geometry, const TemporalWindow& window, const RasterGrid& grid,
                       int ref_begin, int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream);
+
+// The predictive search with its centre frame by the square matcher: the
+// centre window's matches as spatial_match_square finds them (the same keys
+// up to near ties), then the temporal layers of predictive_match seeded from
+// them. Returns false (and does nothing) where the square matcher declines
+// the centre frame (spatial_match_square_takes, or a batch too small to fill
+// the device; with `any_shape` only spatial_match_square_shape) or the lane
+// kernels do not serve the geometry; predictive_match is the search then.
+bool predictive_match_square(const MatchGeometry& geometry, const TemporalWindow& window, const RasterGrid& grid,
+                             int ref_begin, int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream,
+                             bool any_shape = false);
 
 }  // namespace nss_cuda
