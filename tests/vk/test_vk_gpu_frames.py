@@ -95,9 +95,14 @@ def main():
     if missing:
         print(f"FAIL: {missing} without vnode:all on API 4.3")
         return 1
-    usable = [d for d in core.vulkan_devices if d.get("usable")] if hasattr(core, "vulkan_devices") else []
+    # Without a usable device (a loader below 1.4 raises here) there are no GPU frames.
+    try:
+        usable = [d for d in core.vulkan_devices if d.get("usable")]
+        reason = "VapourSynth has no usable Vulkan device"
+    except (vs.Error, AttributeError) as error:
+        usable, reason = [], str(error)
     if not usable:
-        print("vk gpu frames SKIP: VapourSynth has no usable Vulkan device")
+        print(f"vk gpu frames SKIP: {reason} (signatures checked)")
         return 77
     if args.cpu:
         core.std.LoadPlugin(path=os.path.abspath(args.cpu))
