@@ -10,6 +10,7 @@
 #include "frontend/validate.hpp"
 #include "vulkan/bm3d/kernels.hpp"
 #include "vulkan/common/group_driver.hpp"
+#include "vulkan/runtime/gpu_frames.hpp"
 
 #include <memory>
 #include <string>
@@ -44,7 +45,10 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     config.radius = p.radius;
     config.mode = rolling ? GroupMode::Rolling : GroupMode::Legacy;
     config.backend = parse_backend_args(vsapi, in, "BM3D");
-    config.device = acquire_device(config.backend.device_id, "BM3D", core, vsapi);
+    // GPU clips run on VapourSynth's device (or are downloaded, take_clips).
+    config.gpu_api = take_clips("BM3D", {{"clip", &config.node}, {"ref", &config.guide}}, core, vsapi);
+    config.device = config.gpu_api ? acquire_core_device(config.backend, "BM3D", core, vsapi, config.gpu_api)
+                                   : acquire_device(config.backend.device_id, "BM3D", core, vsapi);
     for (int plane = 0; plane < config.vi.format.numPlanes; ++plane) {
         GroupPlane& g = config.planes[plane];
         g.sigma = p.sigma[plane];
@@ -105,9 +109,9 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
 
 }  // namespace
 
-void register_bm3d(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
-    static const std::string args = signature(nss::frontend::kBm3dSignature);
-    vspapi->registerFunction("BM3D", args.c_str(), "clip:vnode;", nss::checked_create<create, kDefaultMemoryLimitMb>,
+void register_bm3d(VSPlugin* plugin, const VSPLUGINAPI* vspapi, bool gpu_frames) {
+    const std::string args = residency_args(signature(nss::frontend::kBm3dSignature), gpu_frames);
+    vspapi->registerFunction("BM3D", args.c_str(), clip_return(gpu_frames), nss::checked_create<create, kDefaultMemoryLimitMb>,
                              nullptr, plugin);
 }
 

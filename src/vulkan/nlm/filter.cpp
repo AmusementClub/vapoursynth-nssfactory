@@ -14,16 +14,21 @@
 // On vapoursynth-classic (VSFrameMemory.h) the copy queues read the planes of
 // imported frames and write the output into the frame itself (FrameMemory);
 // other planes are written into BAR memory or staging by the host, and read
-// back through the readback buffer, as before.
+// back through the readback buffer, as before. GPU frames (VapourSynth R80+,
+// D29) run on VapourSynth's device: their planes are copied on the device
+// where CPU frames are uploaded, and the result into the output frame's planes
+// where CPU frames are downloaded (GpuFrames).
 #include "frontend/nlm_args.hpp"
 #include "frontend/ownership.hpp"
 #include "frontend/temporal.hpp"
 #include "frontend/validate.hpp"
 #include "vulkan/runtime/context.hpp"
 #include "vulkan/runtime/frame_memory.hpp"
+#include "vulkan/runtime/gpu_frames.hpp"
 #include "vulkan/runtime/memory.hpp"
 #include "vulkan/runtime/pipeline.hpp"
 #include "vulkan/runtime/slot.hpp"
+#include "vulkan/runtime/vs_api.hpp"
 
 #include <VSHelper4.h>
 
@@ -143,8 +148,8 @@ struct TileSlot {
     Slot slot;
     DownloadPlane out;  // nc planes stacked
     TileSlot(const std::shared_ptr<Device>& device, std::size_t row_bytes, int rows,
-             const std::shared_ptr<nss::ResourceBudget>& budget)
-        : slot(device), out(device, row_bytes, rows, budget) {}
+             const std::shared_ptr<nss::ResourceBudget>& budget, bool gpu)
+        : slot(device), out(device, row_bytes, rows, budget, !gpu) {}
     void settle() noexcept { slot.settle(); }
 };
 
@@ -248,13 +253,14 @@ struct PlaneSlot {
     DownloadPlane out;
     void settle() noexcept { slot.settle(); }
     PlaneSlot(const std::shared_ptr<Device>& device, std::size_t frame_bytes, int region_count,
-              std::size_t plane_bytes, int nc, int rows, const std::shared_ptr<nss::ResourceBudget>& budget)
+              std::size_t plane_bytes, int nc, int rows, const std::shared_ptr<nss::ResourceBudget>& budget, bool gpu)
         : slot(device),
-          frames(device, frame_bytes, region_count, budget),
+          frames(device, frame_bytes, region_count, budget,
+                 gpu ? UploadPlane::Mode::device : UploadPlane::Mode::automatic),
           hsum_bwd(device, plane_bytes, Memory::Device, budget),
           hsum_fwd(device, plane_bytes, Memory::Device, budget),
           sums(device, plane_bytes * static_cast<std::size_t>(2 + nc), Memory::Device, budget),
-          out(device, plane_bytes / static_cast<std::size_t>(rows), rows * nc, budget) {}
+          out(device, plane_bytes / static_cast<std::size_t>(rows), rows * nc, budget, !gpu) {}
 };
 
 struct NlmData : nss::NlmParams {
@@ -280,6 +286,8 @@ struct NlmData : nss::NlmParams {
         void settle() noexcept {}
     };
     std::unique_ptr<SlotPool<OutputPermit>> outputs;
+    // GPU frames (VapourSynth's device), else null.
+    std::unique_ptr<GpuFrames> gpu;
     // Last: destroyed first, so that its imports go before the device can.
     std::unique_ptr<FrameMemory> frame_memory;
 };
@@ -301,12 +309,14 @@ float h2_inv_norm(const NlmData& d) {
 using Frames = std::vector<const VSFrame*>;
 
 // A plane the upload stage copies into a store region: from an imported frame
-// (`source`), else from the store's staging mirror.
+// (`source`), a GPU frame (`gpu`), else from the store's staging mirror.
 struct PlaneUpload {
     int region = 0;
     std::size_t offset = 0;
     HostPlane source;
-    const VSFrame* frame = nullptr;  // the imported frame
+    const VSFrame* frame = nullptr;  // the imported frame or the GPU frame
+    int plane = 0;
+    bool gpu = false;
 };
 
 // Frame t of the window (averaged planes, then reference planes) into region
@@ -318,6 +328,10 @@ void write_frame(const NlmData& d, PlaneStore& store, int region, const Frames& 
     const std::size_t row_bytes = static_cast<std::size_t>(d.width) * sizeof(float);
     const auto write = [&](const VSFrame* frame, int plane, int index) {
         const std::size_t offset = d.plane_bytes * static_cast<std::size_t>(index);
+        if (d.gpu) {
+            uploads.push_back({region, offset, {}, frame, plane, true});
+            return;
+        }
         const std::uint8_t* data = vsapi->getReadPtr(frame, plane);
         const std::ptrdiff_t stride = vsapi->getStride(frame, plane);
         if (const HostPlane source = d.frame_memory->pinned(frame, plane, data, stride, row_bytes)) {
@@ -337,8 +351,12 @@ void write_frame(const NlmData& d, PlaneStore& store, int region, const Frames& 
 void record_uploads(const NlmData& d, const PlaneStore& store, const std::vector<PlaneUpload>& uploads, Slot& slot,
                     const VSAPI* vsapi) {
     VkCommandBuffer commands = slot.commands(Slot::Upload);
+    const std::size_t row_bytes = static_cast<std::size_t>(d.width) * sizeof(float);
     for (const PlaneUpload& u : uploads) {
-        if (u.source) {
+        if (u.gpu) {
+            const VkDeviceSize at = store.region_bytes() * static_cast<std::size_t>(u.region) + u.offset;
+            d.gpu->read(slot, Slot::Upload, u.frame, u.plane, store.buffer(), store.address(), at, row_bytes, d.height);
+        } else if (u.source) {
             slot.retain(u.frame, vsapi);
             store.record_upload(commands, u.region, u.offset, d.plane_bytes, u.source.buffer, u.source.offset);
         } else {
@@ -353,6 +371,7 @@ using DirectOut = std::array<HostPlane, 3>;
 DirectOut direct_out(const NlmData& d, VSFrame* dst, const VSAPI* vsapi) {
     const std::size_t row_bytes = static_cast<std::size_t>(d.width) * sizeof(float);
     DirectOut direct{};
+    if (d.gpu) return direct;  // record_result writes GPU frames
     for (int c = 0; c < d.nc; ++c) {
         const int plane = d.first_plane + c;
         direct[c] = d.frame_memory->pinned(dst, plane, vsapi->getWritePtr(dst, plane), vsapi->getStride(dst, plane),
@@ -364,6 +383,15 @@ DirectOut direct_out(const NlmData& d, VSFrame* dst, const VSAPI* vsapi) {
 // The download stage's copies; the slot keeps the output frame until they are done when they write it.
 void record_result(const NlmData& d, const DownloadPlane& out, const DirectOut& direct, VSFrame* dst, Slot& slot,
                    const VSAPI* vsapi) {
+    if (d.gpu) {
+        const std::size_t row_bytes = static_cast<std::size_t>(d.width) * sizeof(float);
+        for (int c = 0; c < d.nc; ++c) {
+            d.gpu->write(slot, Slot::Download, out.buffer(), out.address(),
+                         out.pitch() * static_cast<std::size_t>(c * d.height), dst, d.first_plane + c, row_bytes,
+                         d.height);
+        }
+        return;
+    }
     VkCommandBuffer commands = slot.commands(Slot::Download);
     if (std::any_of(direct.begin(), direct.end(), [](const HostPlane& p) { return static_cast<bool>(p); })) {
         slot.retain(dst, vsapi);
@@ -372,8 +400,15 @@ void record_result(const NlmData& d, const DownloadPlane& out, const DirectOut& 
     out.record_host_barrier(commands);
 }
 
+// After the submission: a GPU frame's planes have the slot as their producer.
+void publish_result(const NlmData& d, const Slot& slot, const VSFrame* dst) {
+    if (!d.gpu) return;
+    for (int c = 0; c < d.nc; ++c) d.gpu->publish(slot, dst, d.first_plane + c);
+}
+
 // After the slot's wait: the planes the copies did not write.
 void read_result(const NlmData& d, const DownloadPlane& out, const DirectOut& direct, VSFrame* dst, const VSAPI* vsapi) {
+    if (d.gpu) return;
     const std::size_t row_bytes = static_cast<std::size_t>(d.width) * sizeof(float);
     for (int c = 0; c < d.nc; ++c) {
         if (direct[c]) continue;
@@ -452,6 +487,7 @@ void plane_frame(NlmData& d, const Frames& srcf, const Frames& reff, const MakeO
             record_result(d, p.out, direct, dst, slot, vsapi);
         }
         slot.submit();
+        if (i == 0) publish_result(d, slot, dst);
         slot.wait();
     }
     read_result(d, p.out, direct, dst, vsapi);
@@ -648,6 +684,7 @@ void tile_frame(NlmData& d, int n, const Frames& srcf, const Frames& reff, const
     slot.end_label(Slot::Compute);
     record_result(d, lease->out, direct, dst, slot, vsapi);
     slot.submit();
+    publish_result(d, slot, dst);
     weights.submitted(n, slot);
     if (staged) {
         const auto uploaded = slot.done(Slot::Upload);
@@ -690,6 +727,8 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
             const VSFrame* fr[3]{src_center, nullptr, nullptr};
             const int pl[3]{0, 1, 2};
             dst = frames.newVideoFrame2(&d->vi.format, d->vi.width, d->vi.height, fr, pl, src_center, core);
+        } else if (d->gpu) {
+            dst = d->gpu->new_frame(frames, &d->vi.format, d->vi.width, d->vi.height, src_center, core);
         } else {
             dst = frames.newVideoFrame(&d->vi.format, d->vi.width, d->vi.height, src_center, core);
         }
@@ -737,8 +776,12 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         throw std::invalid_argument("nss_vk.NLM: rclip must match clip");
     }
     d->backend = parse_backend_args(vsapi, in, "NLM");
-    d->device = acquire_device(d->backend.device_id, "NLM", core, vsapi);
+    // GPU clips run on VapourSynth's device (or are downloaded, take_clips).
+    const VSVULKANAPI* gpu_api = take_clips("NLM", {{"clip", &d->node}, {"rclip", &d->rclip}}, core, vsapi);
+    d->device = gpu_api ? acquire_core_device(d->backend, "NLM", core, vsapi, gpu_api)
+                        : acquire_device(d->backend.device_id, "NLM", core, vsapi);
     d->budget = nss::current_budget();
+    if (gpu_api) d->gpu = std::make_unique<GpuFrames>(d->device, vsapi);
     d->frame_memory = std::make_unique<FrameMemory>(d->device, core, vsapi);
 
     const bool uv = d->channels == nss::ChannelMode::UV;
@@ -756,7 +799,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     // The plan assumes BAR uploads on a ReBAR device. Should BAR memory run
     // out (other users), PlaneStore falls back to staging, which doubles the
     // cache: under a limit that is reported as memory_limit_mb exceeded.
-    const bool staged = !d->device->rebar();
+    const bool staged = !d->gpu && !d->device->rebar();
 
     const std::size_t limit = d->budget ? d->budget->snapshot().limit : SIZE_MAX;
     std::size_t output_bytes = 0;
@@ -783,7 +826,8 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     if (weight_sets * span * span * d->plane_bytes > d->device->caps().device_local_bytes / 4) weight_sets = 0;
     auto tile_bytes = [&] {
         return frame_bytes * cached * (staged ? 2 : 1) +
-               d->plane_bytes * slots * 2 * static_cast<std::size_t>(d->nc) + (slots + extra_outputs) * output_bytes +
+               d->plane_bytes * slots * (d->gpu ? 1 : 2) * static_cast<std::size_t>(d->nc) +
+               (slots + extra_outputs) * output_bytes +
                d->plane_bytes * weight_sets * span * span;
     };
     const long long shared_maps = tile_floats(d->a, d->s);
@@ -830,7 +874,8 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         std::vector<std::uint32_t> spec = constants(*d);
         spec.push_back(static_cast<std::uint32_t>(windows ? shared_all : shared_maps));
         d->tile = Pipeline(d->device, {id, sizeof(TilePush), 0, spec});
-        d->window.store = PlaneStore(d->device, frame_bytes, static_cast<int>(cached), d->budget);
+        d->window.store = PlaneStore(d->device, frame_bytes, static_cast<int>(cached), d->budget,
+                                     d->gpu ? UploadPlane::Mode::device : UploadPlane::Mode::automatic);
         for (std::size_t i = 0; i < cached; ++i) {
             auto frame = std::make_unique<WindowFrame>();
             frame->region = static_cast<int>(i);
@@ -838,7 +883,8 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         }
         std::vector<std::unique_ptr<TileSlot>> leases;
         for (std::size_t i = 0; i < slots; ++i) {
-            leases.push_back(std::make_unique<TileSlot>(d->device, row_bytes, d->height * d->nc, d->budget));
+            leases.push_back(
+                std::make_unique<TileSlot>(d->device, row_bytes, d->height * d->nc, d->budget, d->gpu != nullptr));
         }
         d->tile_pool = std::make_unique<SlotPool<TileSlot>>(std::move(leases));
         d->outputs = output_permits(slots + extra_outputs);
@@ -860,7 +906,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         std::vector<std::unique_ptr<PlaneSlot>> leases;
         for (int i = 0; i < d->backend.num_streams; ++i) {
             leases.push_back(std::make_unique<PlaneSlot>(d->device, frame_bytes, d->d > 0 ? 3 : 1, d->plane_bytes,
-                                                         d->nc, d->height, d->budget));
+                                                         d->nc, d->height, d->budget, d->gpu != nullptr));
         }
         d->pool = std::make_unique<SlotPool<PlaneSlot>>(std::move(leases));
         d->outputs = output_permits(static_cast<std::size_t>(d->backend.num_streams) + extra_outputs);
@@ -870,8 +916,8 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     const auto pattern = d->d == 0 ? rpStrictSpatial : rpGeneral;
     VSFilterDependency deps[2]{{d->node, pattern}, {d->rclip, pattern}};
     NlmData* raw = d.get();
-    VSNode* node = vsapi->createVideoFilter2("NLM", &raw->vi, nss::checked_frame<getFrame>, freeFilter, fmParallel,
-                                            deps, d->rclip ? 2 : 1, raw, core);
+    VSNode* node = vs_api::create_video_filter(vsapi, "NLM", &raw->vi, nss::checked_frame<getFrame>, freeFilter,
+                                               fmParallel, raw->gpu != nullptr, deps, d->rclip ? 2 : 1, raw, core);
     if (!node) throw std::runtime_error("nss_vk.NLM: failed to create filter");
     d.release();
     vsapi->mapConsumeNode(out, "clip", node, maAppend);
@@ -879,9 +925,10 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
 
 }  // namespace
 
-void register_nlm(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
-    static const std::string args = signature(nss::frontend::kNlmSignature);
-    vspapi->registerFunction("NLM", args.c_str(), "clip:vnode;", nss::checked_create<create, kDefaultMemoryLimitMb>, nullptr, plugin);
+void register_nlm(VSPlugin* plugin, const VSPLUGINAPI* vspapi, bool gpu_frames) {
+    const std::string args = residency_args(signature(nss::frontend::kNlmSignature), gpu_frames);
+    vspapi->registerFunction("NLM", args.c_str(), clip_return(gpu_frames), nss::checked_create<create, kDefaultMemoryLimitMb>,
+                             nullptr, plugin);
 }
 
 }  // namespace nss_vk

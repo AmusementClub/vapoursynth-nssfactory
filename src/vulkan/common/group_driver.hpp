@@ -6,7 +6,8 @@
 // (nss_vk aggregates every shape so, owner 2026-10-26); the driver owns
 //   - the memory plan against memory_limit_mb (slots, batches),
 //   - frame I/O: BAR or staged uploads and readback, or direct copies to and
-//     from VapourSynth frames under vapoursynth-classic (FrameMemory),
+//     from VapourSynth frames under vapoursynth-classic (FrameMemory), or
+//     GPU frames on VapourSynth's device (GpuFrames, D29),
 //   - matching (common/match.hpp, spatial or predictive, on the guide when
 //     there is one),
 //   - the three output modes: spatial, the legacy fat intermediate (float
@@ -84,6 +85,9 @@ struct GroupFilterConfig {
     std::shared_ptr<nss::ResourceBudget> budget;
     BackendArgs backend;
     std::shared_ptr<Device> device;
+    // GPU frames (gpu_frames.hpp take_clips): the clips are GPU resident and
+    // `device` is VapourSynth's; null for CPU frames.
+    const VSVULKANAPI* gpu_api = nullptr;
     GroupPlane planes[3];
     // Shared groups (CBM3D): with channels == 3 the groups are matched on
     // channel 0 and every channel is filtered with them (planes[c].sigma,

@@ -1,12 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // libnss_vk entry point (namespace nss_vk; docs/vulkan-plan.md). Filters join
 // phase by phase from V4 on; each will reuse its frontend parse_<filter> with
-// the "nss_vk" prefix and append device_id and num_streams (D21).
+// the "nss_vk" prefix and append device_id and num_streams (D21). On a core
+// with API 4.3 (VapourSynth R80+) the filters take and return `vnode:all`
+// clips: GPU frames are processed on VapourSynth's device (D29,
+// runtime/gpu_frames.hpp).
 #include "nss/version.hpp"
 #include "vulkan/runtime/device.hpp"
+#include "vulkan/runtime/gpu_frames.hpp"
 #include "vulkan/runtime/instance.hpp"
 #include "vulkan/runtime/probe.hpp"
 #include "vulkan/runtime/shaders.hpp"
+#include "vulkan/runtime/vs_api.hpp"
 
 #include <VapourSynth4.h>
 #include <VSHelper4.h>
@@ -15,8 +20,9 @@
 #include <string>
 
 namespace nss_vk {
-void register_nlm(VSPlugin* plugin, const VSPLUGINAPI* vspapi);
-void register_bm3d(VSPlugin* plugin, const VSPLUGINAPI* vspapi);
+// gpu_frames: the core offers API 4.3, so clip arguments are `vnode:all`.
+void register_nlm(VSPlugin* plugin, const VSPLUGINAPI* vspapi, bool gpu_frames);
+void register_bm3d(VSPlugin* plugin, const VSPLUGINAPI* vspapi, bool gpu_frames);
 }  // namespace nss_vk
 
 namespace {
@@ -29,8 +35,9 @@ void set_text(const VSAPI* vsapi, VSMap* out, const char* key, const std::string
     vsapi->mapSetData(out, key, value.c_str(), static_cast<int>(value.size()), dtUtf8, maReplace);
 }
 
-void VS_CC backendCreate(const VSMap* in, VSMap* out, void*, VSCore*, const VSAPI* vsapi) {
+void VS_CC backendCreate(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI* vsapi) {
     const nss_vk::Instance& vk = nss_vk::instance();
+    set_text(vsapi, out, "gpu_frames", nss_vk::gpu_frames_status(core, vsapi));
     const int count = static_cast<int>(vk.devices.size());
     set_text(vsapi, out, "loader_version", nss_vk::version_text(vk.loader_version));
     vsapi->mapSetInt(out, "device_count", count, maReplace);
@@ -88,17 +95,21 @@ void VS_CC backendCreate(const VSMap* in, VSMap* out, void*, VSCore*, const VSAP
 }  // namespace
 
 VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
+    // API 4.0 whatever the headers: R78 and vapoursynth-classic refuse a
+    // plugin that declares 4.3, and R80+ hands every API-4 plugin the same
+    // table (D29: one binary; runtime/vs_api.hpp).
     vspapi->configPlugin("com.nssfactory.nss_vk", "nss_vk", "NSS denoising factory (Vulkan)", VS_MAKE_VERSION(1, 0),
-                         VAPOURSYNTH_API_VERSION, 0, plugin);
+                         VS_MAKE_VERSION(VAPOURSYNTH_API_MAJOR, 0), 0, plugin);
+    const bool gpu_frames = nss_vk::vs_api::gpu_frames(vspapi);
     vspapi->registerFunction("Version", "", "version:data;", versionCreate, nullptr, plugin);
     vspapi->registerFunction("Backend", "device_id:int:opt;",
-        "loader_version:data;device_count:int;error:data;shader_tools:data;"
+        "loader_version:data;device_count:int;error:data;shader_tools:data;gpu_frames:data;"
         "device:int:opt;name:data:opt;device_type:data:opt;vendor_id:int:opt;api_version:data:opt;"
         "driver_name:data:opt;driver_info:data:opt;support:data:opt;missing:data:opt;native_lanes:int:opt;"
         "subgroup_size:int:opt;min_subgroup_size:int:opt;max_subgroup_size:int:opt;shared_memory_kb:int:opt;"
         "total_memory_mb:int:opt;host_visible_device_mb:int:opt;transfer_queues:int:opt;optional:data:opt;"
         "probe_ok:int:opt;probe_ms:float:opt;probe_subgroup_size:int:opt;probe_error:data:opt;",
         backendCreate, nullptr, plugin);
-    nss_vk::register_nlm(plugin, vspapi);
-    nss_vk::register_bm3d(plugin, vspapi);
+    nss_vk::register_nlm(plugin, vspapi, gpu_frames);
+    nss_vk::register_bm3d(plugin, vspapi, gpu_frames);
 }

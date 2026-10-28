@@ -20,6 +20,8 @@
 #include <utility>
 #include <vector>
 
+struct VSGPUTimeline;
+
 namespace nss_vk {
 
 class Slot {
@@ -47,11 +49,19 @@ public:
     void mark(Stage stage, std::uint32_t query);
 
     // Makes `stage` of this frame wait until another slot's timeline reaches
-    // `value` (a frame that slot uploads into a cache shared by the slots).
+    // `value` (a frame that slot uploads into a cache shared by the slots, or
+    // the producer pair of a GPU frame's plane). One wait per semaphore, for
+    // the highest value.
     void wait_for(Stage stage, VkSemaphore semaphore, std::uint64_t value);
     // After submit(): the timeline and value that mark `stage` of this frame
     // done, for other slots' wait_for. {null, 0} when the stage was empty.
     std::pair<VkSemaphore, std::uint64_t> done(Stage stage) const noexcept;
+    // On VapourSynth's device (Device::open_core): the slot's timeline as the
+    // core's counted object, for publishing producer pairs
+    // (setGPUPlaneProducer); null elsewhere. last_value(): the value the last
+    // stage of the frame submitted signals.
+    VSGPUTimeline* gpu_timeline() const noexcept { return gpu_timeline_; }
+    std::uint64_t last_value() const noexcept { return value_; }
 
     // Ends and submits the recorded stages in order, each waiting for the one
     // before. A frame with nothing recorded submits nothing. On a device with
@@ -100,6 +110,7 @@ private:
     std::shared_ptr<Device> device_;
     StageCommands stages_[kStages];
     VkSemaphore timeline_ = VK_NULL_HANDLE;
+    VSGPUTimeline* gpu_timeline_ = nullptr;  // owns timeline_ on VapourSynth's device
     std::uint64_t value_ = 0;  // last value a submitted stage signals
     State state_ = State::idle;
     bool deferred_ = false;  // the download stage waits for wait() (Device::defer_downloads)

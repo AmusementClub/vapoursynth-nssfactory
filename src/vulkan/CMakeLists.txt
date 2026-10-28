@@ -61,6 +61,7 @@ set(NSS_VK_SHADER_SOURCES "")
 set(NSS_VK_SPIRV_SOURCES "")
 nss_vk_add_shader(NSS_VK_SPIRV_SOURCES runtime_probe runtime/probe.comp)
 nss_vk_add_shader(NSS_VK_SPIRV_SOURCES runtime_plane_scale runtime/plane_scale.comp)
+nss_vk_add_shader(NSS_VK_SPIRV_SOURCES runtime_plane_copy runtime/plane_copy.comp)
 # NLM (V4): the tile kernel per patch radius (0-8 unrolled, x = at run time)
 # and with the windows in shared memory (i); the plane path.
 foreach(_nss_s RANGE -1 8)
@@ -265,15 +266,31 @@ add_library(nss_vk_core STATIC
   runtime/device.cpp
   runtime/error.cpp
   runtime/frame_memory.cpp
+  runtime/gpu_frames.cpp
   runtime/instance.cpp
   runtime/memory.cpp
   runtime/pipeline.cpp
   runtime/probe.cpp
   runtime/slot.cpp
   runtime/vma.cpp
+  runtime/vs_api43.cpp
 )
 target_include_directories(nss_vk_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_link_libraries(nss_vk_core PUBLIC nss_frontend nss_gpuhost nss_vk_headers nss_volk nss_vk_shaders)
+# VapourSynth R80+ GPU frames (D29): built against VSVulkan4.h when the
+# VapourSynth headers have it (R80 and later; CI pins the wheel). One binary
+# for every core: the plugin declares API 4.0, and only runtime/vs_api43.cpp
+# sees the 4.3 VSAPI members, which it touches once getAPIVersion() reports
+# 4.3. Older headers build the plugin without GPU frames.
+find_file(NSS_VK_VSVULKAN_HEADER VSVulkan4.h PATHS "${VapourSynth_INCLUDE_DIR}" NO_DEFAULT_PATH NO_CACHE)
+if(NSS_VK_VSVULKAN_HEADER)
+  target_compile_definitions(nss_vk_core PUBLIC NSS_VK_GPU_FRAMES=1)
+  set_source_files_properties(runtime/vs_api43.cpp PROPERTIES COMPILE_DEFINITIONS VS_USE_API_43)
+  message(STATUS "NSSFactory Vulkan: VapourSynth GPU frames (VSVulkan4.h)")
+else()
+  target_compile_definitions(nss_vk_core PUBLIC NSS_VK_GPU_FRAMES=0)
+  message(STATUS "NSSFactory Vulkan: no VSVulkan4.h, built without VapourSynth GPU frames")
+endif()
 set_target_properties(nss_vk_core PROPERTIES
   POSITION_INDEPENDENT_CODE ON
   CXX_VISIBILITY_PRESET hidden

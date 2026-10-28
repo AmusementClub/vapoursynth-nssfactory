@@ -3,8 +3,12 @@
 
 #include "vulkan/runtime/error.hpp"
 
+#include <algorithm>
 #include <stdexcept>
 #include <string>
+#if NSS_VK_GPU_FRAMES
+#include <VSVulkan4.h>
+#endif
 
 namespace nss_vk {
 
@@ -26,11 +30,22 @@ Slot::Slot(std::shared_ptr<Device> device, std::uint32_t timestamps) : device_(s
             allocate.commandBufferCount = 1;
             NSS_VK_CHECK(vk.vkAllocateCommandBuffers(handle, &allocate, &stage.buffer));
         }
-        VkSemaphoreTypeCreateInfo type{VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};
-        type.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
-        type.initialValue = 0;
-        VkSemaphoreCreateInfo semaphore{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, &type};
-        NSS_VK_CHECK(vk.vkCreateSemaphore(handle, &semaphore, nullptr, &timeline_));
+        if (device_->core_device()) {
+#if NSS_VK_GPU_FRAMES
+            // A timeline of the core's (initial value 0): the planes it is
+            // published on hold references of their own.
+            char error[256] = {};
+            gpu_timeline_ = device_->core_api()->createGPUTimeline(device_->core(), error, sizeof(error));
+            if (!gpu_timeline_) throw std::runtime_error(std::string("nss_vk: createGPUTimeline failed: ") + error);
+            timeline_ = device_->core_api()->getGPUTimelineSemaphore(gpu_timeline_);
+#endif
+        } else {
+            VkSemaphoreTypeCreateInfo type{VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};
+            type.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+            type.initialValue = 0;
+            VkSemaphoreCreateInfo semaphore{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, &type};
+            NSS_VK_CHECK(vk.vkCreateSemaphore(handle, &semaphore, nullptr, &timeline_));
+        }
         if (timestamps > 0 && device_->caps().host_query_reset) {
             VkQueryPoolCreateInfo pool{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
             pool.queryType = VK_QUERY_TYPE_TIMESTAMP;
@@ -75,7 +90,15 @@ void Slot::release() noexcept {
     const VolkDeviceTable& vk = device_->vk();
     const VkDevice handle = device_->handle();
     if (queries_) vk.vkDestroyQueryPool(handle, queries_, nullptr);
-    if (timeline_) vk.vkDestroySemaphore(handle, timeline_, nullptr);
+#if NSS_VK_GPU_FRAMES
+    if (gpu_timeline_) {
+        device_->core_api()->freeGPUTimeline(gpu_timeline_);
+    } else
+#endif
+    if (timeline_) {
+        vk.vkDestroySemaphore(handle, timeline_, nullptr);
+    }
+    gpu_timeline_ = nullptr;
     for (StageCommands& stage : stages_) {
         if (stage.pool) vk.vkDestroyCommandPool(handle, stage.pool, nullptr);
         stage.pool = VK_NULL_HANDLE;
@@ -146,6 +169,12 @@ void Slot::mark(Stage stage, std::uint32_t query) {
 void Slot::wait_for(Stage stage, VkSemaphore semaphore, std::uint64_t value) {
     if (semaphore == VK_NULL_HANDLE || semaphore == timeline_) return;
     commands(stage);  // the stage must be submitted for the wait to apply
+    for (auto& wait : stages_[stage].waits) {
+        if (wait.first == semaphore) {
+            wait.second = std::max(wait.second, value);
+            return;
+        }
+    }
     stages_[stage].waits.emplace_back(semaphore, value);
 }
 

@@ -65,6 +65,9 @@ public:
         checked_int(checked_mul(w, h));
         return hold(api_->newVideoFrame2(format, w, h, frames, planes, props, core), true);
     }
+    // A frame made elsewhere (a GPU frame from VSVULKANAPI::newGPUVideoFrame),
+    // held and charged as an output like newVideoFrame's.
+    VSFrame* adoptOutput(VSFrame* frame) { return hold(frame, true); }
     // Existing group APIs use one stride per channel across time. Retain the
     // direct view when it fits that contract, otherwise adapt only that plane.
     const float* readPlane(const VSFrame* frame, int plane, int expected_stride) {
