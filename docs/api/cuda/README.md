@@ -202,7 +202,8 @@ GPU. NLM is temporal through `d`; LSSC has no temporal mode.
 ### Direct transfers with vapoursynth-classic
 
 Under [vapoursynth-classic](https://github.com/AmusementClub/vapoursynth-classic)
-builds that provide its `VSFrameMemory.h` extension (frame pool blocks and
+[R57.A14](https://github.com/AmusementClub/vapoursynth-classic/releases/tag/R57.A14)
+or newer, which provides its `VSFrameMemory.h` extension (frame pool blocks and
 release hooks), every filter copies between the GPU and the VapourSynth
 frames directly, without the pinned staging copies.
 
