@@ -26,8 +26,10 @@ INPUTS = {
     "rgb256s25": ("Ufotable.png", "rgb", CROP, 25.0, 1, False),
     "yuv256": ("Ufotable.png", "yuv420", CROP, 3.0, 1, False),
     "g1080": ("MAPPA.png", "gray", None, 3.0, 1, False),
+    "g1080s25": ("MAPPA.png", "gray", None, 25.0, 1, False),
     "rgb1080": ("Ufotable.png", "rgb", None, 3.0, 1, False),
     "gseq": ("MAPPA.png", "gray", CROP, 3.0, 5, True),
+    "gseq1000s25": ("MAPPA.png", "gray", 1000, 25.0, 5, True),
     "rgbseq": ("Ufotable.png", "rgb", CROP, 3.0, 5, True),
 }
 
@@ -52,9 +54,19 @@ CASES = [
     case("bm3d-rgb256", "BM3D", "rgb256"),
     case("bm3d-yuv256", "BM3D", "yuv256", dict(sigma=[3, 2, 2])),
     case("bm3d-g1080", "BM3D", "g1080"),
+    # Square matcher shapes (block twice the step) on a plane large enough to take it.
+    case("bm3d-g1080-s25-b16g16", "BM3D", "g1080s25", dict(sigma=25, block_size=16, group_size=16)),
+    case("bm3d-g1080-s25-b12-step6", "BM3D", "g1080s25", dict(sigma=25, block_size=12, block_step=6, group_size=16)),
+    case("bm3d-g1080-s25-b8-step4", "BM3D", "g1080s25", dict(sigma=25, block_step=4, group_size=16, bm_range=12)),
+    case("bm3d-g1080-s25-b4-step2", "BM3D", "g1080s25", dict(sigma=25, block_size=4, block_step=2, group_size=16)),
     case("bm3d-gseq-r1-legacy", "BM3D", "gseq", dict(radius=1), TEMPORAL, aggregate=1),
     case("bm3d-gseq-r2-legacy", "BM3D", "gseq", dict(radius=2), TEMPORAL, aggregate=2),
     case("bm3d-gseq-r1-rolling", "BM3D", "gseq", dict(radius=1, temporal_mode="rolling"), TEMPORAL),
+    # The square matcher on the centre frame of the temporal search.
+    case("bm3d-gseq1000-s25-r1-b8-step4-rolling", "BM3D", "gseq1000s25",
+         dict(sigma=25, radius=1, block_step=4, group_size=16, temporal_mode="rolling"), TEMPORAL),
+    case("bm3d-gseq1000-s25-r1-b4-step2-legacy", "BM3D", "gseq1000s25",
+         dict(sigma=25, radius=1, block_size=4, block_step=2, group_size=16), TEMPORAL, aggregate=1),
     case("bm3d-rgbseq-r1-legacy", "BM3D", "rgbseq", dict(radius=1), TEMPORAL, aggregate=1),
     # NLM (default d=1 is temporal)
     case("nlm-gseq", "NLM", "gseq", frames=TEMPORAL),

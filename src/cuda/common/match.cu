@@ -13,6 +13,7 @@
 #include <array>
 #include <atomic>
 #include <cstddef>
+#include <stdexcept>
 #include <type_traits>
 
 namespace nss_cuda {
@@ -858,11 +859,13 @@ __global__ void __launch_bounds__(32 * kLaneWarps) spatial_match_lane_kernel(con
 
 // Predictive search in the same layout, for ps_num <= L. The lanes hold the
 // global list under (distance, t, y, x), t beside the key, and per layer the
-// layer's best L candidates.
+// layer's best L candidates. `seeded`: the centre frame's matches are already
+// in `out` and `counts` (predictive_match_square: the square matcher's, in
+// key order) and the lanes take them instead of scanning the centre window.
 template <int B, int L, int C>
 __global__ void __launch_bounds__(32 * kLaneWarps) predictive_match_lane_kernel(MatchGeometry g, TemporalWindow tw, RasterGrid grid,
                                                                    int ref_begin, int ref_count, DeviceMatch* out,
-                                                                   int* counts) {
+                                                                   int* counts, bool seeded) {
     const int lane = threadIdx.x % 32, sub = lane % L;
     const int r = (blockIdx.x * kLaneWarps + threadIdx.x / 32) * (32 / L) + lane / L;
     const bool live = r < ref_count;
@@ -874,7 +877,17 @@ __global__ void __launch_bounds__(32 * kLaneWarps) predictive_match_lane_kernel(
     float ref[C * B * kLaneCols<B, L>];
     lane_reference<B, L, C>(tw.frames[t0], g, cx, cy, sub, ref);
     unsigned long long held = kLaneEmpty;
-    lane_scan<B, L, C, false>(tw.frames[t0], g, cx, cy, g.lo(), g.hi(), true, lane_position(cx, cy), lane, ref, held);
+    if (seeded) {
+        // Lane j takes match j (entry 1 + j, after the reference); only this
+        // reference's lanes read or write its entries.
+        const DeviceMatch* centre = out + static_cast<long long>(rr) * g.group;
+        if (sub < counts[rr] - 1 && sub < wanted) {
+            const DeviceMatch m = centre[1 + sub];
+            held = static_cast<unsigned long long>(__float_as_uint(m.dist)) << 32 | lane_position(m.x, m.y);
+        }
+    } else {
+        lane_scan<B, L, C, false>(tw.frames[t0], g, cx, cy, g.lo(), g.hi(), true, lane_position(cx, cy), lane, ref, held);
+    }
     if (sub >= wanted) held = kLaneEmpty;
     int held_t = t0;
 
@@ -957,12 +970,12 @@ int lane_group(const MatchGeometry& g, int ps_num) {
 
 template <int B, int L, int C>
 void launch_lane(const float* plane, const MatchGeometry& g, const TemporalWindow* tw, const RasterGrid& grid,
-                 int ref_begin, int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream) {
+                 int ref_begin, int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream, bool seeded) {
     const int per_block = kLaneWarps * (32 / L);
     const int blocks = (ref_count + per_block - 1) / per_block;
     if (tw) {
         predictive_match_lane_kernel<B, L, C><<<blocks, 32 * kLaneWarps, 0, stream>>>(g, *tw, grid, ref_begin, ref_count,
-                                                                                   out, counts);
+                                                                                   out, counts, seeded);
     } else {
         spatial_match_lane_kernel<B, L, C><<<blocks, 32 * kLaneWarps, 0, stream>>>(plane, g, grid, ref_begin,
                                                                                    ref_count, out, counts);
@@ -970,12 +983,13 @@ void launch_lane(const float* plane, const MatchGeometry& g, const TemporalWindo
 }
 
 bool launch_lanes(const float* plane, const MatchGeometry& g, const TemporalWindow* tw, const RasterGrid& grid,
-                  int ref_begin, int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream) {
+                  int ref_begin, int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream,
+                  bool seeded = false) {
     switch ((g.channels == 3 ? 10000 : 0) + g.block * 100 + lane_group(g, tw ? tw->ps_num : 0)) {
 #define NSS_LANE(B, L) \
-    case B * 100 + L: launch_lane<B, L, 1>(plane, g, tw, grid, ref_begin, ref_count, out, counts, stream); break;
+    case B * 100 + L: launch_lane<B, L, 1>(plane, g, tw, grid, ref_begin, ref_count, out, counts, stream, seeded); break;
 #define NSS_LANE_JOINT(B, L) \
-    case 10000 + B * 100 + L: launch_lane<B, L, 3>(plane, g, tw, grid, ref_begin, ref_count, out, counts, stream); break;
+    case 10000 + B * 100 + L: launch_lane<B, L, 3>(plane, g, tw, grid, ref_begin, ref_count, out, counts, stream, seeded); break;
 #define NSS_LANES(B) NSS_LANE(B, 8) NSS_LANE(B, 16) NSS_LANE(B, 32)
 #define NSS_LANES_JOINT(B) NSS_LANE_JOINT(B, 8) NSS_LANE_JOINT(B, 16) NSS_LANE_JOINT(B, 32)
     NSS_LANES(1) NSS_LANES(2) NSS_LANES(3) NSS_LANES(4) NSS_LANES(5) NSS_LANES(6) NSS_LANES(7) NSS_LANES(8)
@@ -1675,6 +1689,21 @@ void predictive_match(const MatchGeometry& geometry, const TemporalWindow& windo
         predictive_match_kernel<256><<<ref_count, kThreads, 0, stream>>>(geometry, window, grid, ref_begin, out, counts);
     }
     NSS_CUDA_CHECK_LAUNCH();
+}
+
+bool predictive_match_square(const MatchGeometry& geometry, const TemporalWindow& window, const RasterGrid& grid,
+                             int ref_begin, int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream,
+                             bool any_shape) {
+    if (lane_group(geometry, window.ps_num) == 0) return false;
+    if (!spatial_match_square_frame(window.frames, window.t0, geometry, grid, ref_begin, ref_count, out, counts,
+                                    stream, any_shape)) {
+        return false;
+    }
+    if (ref_count <= 0) return true;
+    if (!launch_lanes(nullptr, geometry, &window, grid, ref_begin, ref_count, out, counts, stream, true)) {
+        throw std::logic_error("predictive_match_square: lane kernel missing after the square search");
+    }
+    return true;
 }
 
 }  // namespace nss_cuda
