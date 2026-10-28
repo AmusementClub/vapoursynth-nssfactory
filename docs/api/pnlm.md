@@ -5,8 +5,12 @@ similar patches in a window around it (and, with `d > 0`, in the frames
 before and after) are averaged with weights from their distance, the whole
 patch is estimated at once, and the overlapping estimates are blended. It is
 NLM as Davy and Ehret run it on the GPU: better output than [`NLM`](nlm.md)
-at the same window, and on the GPU its kernels are faster than `NLM`'s from
-`a = 2` up (the CPU takes about twice `NLM`'s time).
+at the same window, and its cost grows much more slowly with the search
+window `a` and the temporal radius `d`. On the GPU it runs as fast as `NLM`
+at the defaults and 3 to 13 times faster at `a = 8` or `d = 2`; on one CPU
+core it takes about twice `NLM`'s time at the defaults, the same at `a = 8`
+or `a = 4, d = 1`, and half at `a = 8, d = 1` (see Defaults rationale and
+performance).
 
 ```python
 out = core.nss.PNLM(clip, sigma=3)                 # defaults: d=1, a=2, block_size=6
@@ -103,10 +107,25 @@ lost in the tests.
 and 39.32 / 39.49 / 39.36 at σ 10; 4 keeps the most edge contrast up to σ 5
 and falls behind above σ 10.
 
-One Ryzen 9 5950X core, 1080p gray, defaults: about 250 ms a frame
-(`d = 0`: 135 ms); `NLM` at its defaults takes 113 ms (`d = 0`: 28 ms). The
-matching grows with `(2a+1)^2 (2d+1)`, the rest (about 65 ms) does not; the
-cost is highest at `block_size = 4`.
+Speed against `NLM` as `a` and `d` grow, each at its defaults otherwise
+(1080p gray). `NLM` computes a distance for every pixel at every
+displacement; PNLM one quarter distance a reference position (every
+`block_size / 2` pixels each way), shared by four references, so both grow
+with `(2a+1)^2 (2d+1)` but PNLM from a far smaller base, plus about 65 ms
+on the CPU that does not grow. PNLM / `NLM`:
+
+| | `a = 2` | `a = 4` | `a = 8` |
+|---|---:|---:|---:|
+| CPU, one Ryzen 9 5950X core, ms a frame, `d = 0` | 139 / 28 | 245 / 94 | 469 / 423 |
+| CPU, `d = 1` | 247 / 114 | 445 / 399 | 972 / 1786 |
+| CUDA, RTX 5080, fps, `d = 0` | 732 / 733 | 731 / 705 | 706 / 210 |
+| CUDA, `d = 1` | 721 / 712 | 699 / 214 | 535 / 51 |
+| CUDA, `d = 2` | 713 / 384 | 670 / 110 | 392 / 31 |
+
+On the GPU both wait for the host up to about 700 fps (details on the
+[CUDA page](cuda/pnlm.md#heavier-settings)). `block_size = 8` is the
+cheapest and 4 the dearest; `NLM`'s patch radius `s` changes its cost
+little.
 
 ## Pitfalls
 

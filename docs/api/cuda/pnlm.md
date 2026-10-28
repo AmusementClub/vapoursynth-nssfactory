@@ -25,10 +25,28 @@ with `NLM` measured in the same session:
 | `NLM`, defaults (`d=1`; YUV: luma only) | 711 | 269 |
 
 At the defaults both filters are bound by the frames' copies and the host,
-not the kernels: PNLM filters every plane by default, `NLM` only luma. With
-larger windows `NLM`'s kernels take over (gray, constant source: `a=4`
-PNLM 528 against `NLM` 199 fps, `a=8` 483 against 52). GPU time of the
-kernels a frame (gray, `nsys`):
+not the kernels: PNLM filters every plane by default, `NLM` only luma.
+
+### Heavier settings
+
+PNLM's cost grows far more slowly with the search window `a` and the
+temporal radius `d`: `NLM` computes a distance for every pixel at every
+displacement, about `(2a+1)^2 (2d+1)` of them a pixel, while PNLM computes
+one quarter distance a reference position (every `block_size / 2` pixels each
+way: a ninth of the pixels at `block_size=6`) and shares it between four
+references. Gray 1080p, each at its defaults but `a` and `d`, the method
+above (five test images; every run within 2% of the median), fps:
+
+| | `a=2` | `a=4` | `a=8` |
+|---|---:|---:|---:|
+| `d=0`: PNLM / `NLM` | 732 / 733 | 731 / 705 | 706 / 210 (3.4x) |
+| `d=1`: PNLM / `NLM` | 721 / 712 | 699 / 214 (3.3x) | 535 / 51 (10.5x) |
+| `d=2`: PNLM / `NLM` | 713 / 384 (1.9x) | 670 / 110 (6.1x) | 392 / 31 (12.6x) |
+
+Up to about 700 fps both wait for the host; below that the kernels set the
+pace. `block_size` 8 is cheaper still (fewer references), 4 dearer; `NLM`'s
+patch radius `s` changes its cost little. GPU time of the kernels a frame
+(gray, `nsys`):
 
 | | `a=2` | `a=4` | `a=8` |
 |---|---:|---:|---:|
