@@ -908,10 +908,16 @@ __global__ void __launch_bounds__(32 * kLaneWarps) predictive_match_lane_kernel(
                 if (t < first || t >= last) break;
                 const float* plane = tw.frames[t];
                 unsigned long long local = kLaneEmpty;
-                for (int i = 0; i < tw.ps_num; ++i) {
-                    const unsigned c = __shfl_sync(kAllLanes, centers, i, L);
-                    lane_scan<B, L, C, true>(plane, g, static_cast<int>(c & 0xffffu), static_cast<int>(c >> 16), tw.ps_range,
-                                          tw.ps_range, i < nc, ~0u, lane, ref, local);
+                if (tw.ps_num == 1) {
+                    const unsigned c = __shfl_sync(kAllLanes, centers, 0, L);
+                    lane_scan<B, L, C, false>(plane, g, static_cast<int>(c & 0xffffu), static_cast<int>(c >> 16), tw.ps_range,
+                                           tw.ps_range, nc > 0, ~0u, lane, ref, local);
+                } else {
+                    for (int i = 0; i < tw.ps_num; ++i) {
+                        const unsigned c = __shfl_sync(kAllLanes, centers, i, L);
+                        lane_scan<B, L, C, true>(plane, g, static_cast<int>(c & 0xffffu), static_cast<int>(c >> 16),
+                                              tw.ps_range, tw.ps_range, i < nc, ~0u, lane, ref, local);
+                    }
                 }
                 const int found = lanes_set<L>(__ballot_sync(kAllLanes, sub < local_k && local != kLaneEmpty), lane);
                 // The layer's best into the global list, one at a time.
