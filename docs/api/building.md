@@ -72,7 +72,7 @@ cmake --build build-vk -j
 ctest --test-dir build-vk -L vk
 ```
 
-This builds `libnss_vk` (namespace `nss_vk`, a preview: BM3D and NLM; see the
+This builds `libnss_vk` (namespace `nss_vk`, a preview: BM3D, NLM and PNLM; see the
 [Vulkan reference](vk/README.md)). `core.nss_vk.Backend(device_id=...)`
 reports the device, its support level (`native`, `emulated` or `unsupported`,
 with the missing Vulkan 1.3 features), whether VapourSynth GPU frames are

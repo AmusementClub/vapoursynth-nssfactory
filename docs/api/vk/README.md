@@ -1,8 +1,8 @@
 # nss_vk.* Reference (preview)
 
 `libnss_vk` (namespace `nss_vk`) runs filters of the CPU plugin on Vulkan
-GPUs. It is a **preview**: two filters are ported so far, [BM3D](bm3d.md) and
-[NLM](nlm.md), and it has been validated on NVIDIA GPUs only (AMD and Intel
+GPUs. It is a **preview**: three filters are ported so far, [BM3D](bm3d.md),
+[NLM](nlm.md) and [PNLM](pnlm.md), and it has been validated on NVIDIA GPUs only (AMD and Intel
 GPUs are untested). The arguments, defaults and models are the CPU plugin's;
 the output agrees with it to the CUDA plugin's 60 dB PSNR gate or better (not
 bit for bit) and is identical from run to run on a given GPU, driver and
@@ -20,6 +20,7 @@ order and not read back by the consumer, median of three runs (2026-10-28):
 |---|---:|---:|---:|
 | [BM3D](bm3d.md) | 730 / 485 / 245 | 1165 / 756 / 375 | 1703 / 1051 / 586 |
 | [NLM](nlm.md) | 804 / 710 / 209 | 851 / 836 / 381 | 841 / 839 / 505 |
+| [PNLM](pnlm.md) (`sigma=3`) | 735 / 487 / 260 | 1134 / 771 / 382 | 1729 / 1085 / 600 |
 
 - **CPU frames** are uploaded through resizable BAR memory (or staging) and
   downloaded through host memory on nss_vk's own device; that is also the path
@@ -31,7 +32,8 @@ order and not read back by the consumer, median of three runs (2026-10-28):
   the upload and download cost what the filter's own transfers did. The gain
   of GPU frames is in chains ([below](#when-gpu-frames-pay)).
 - Against `nss_cuda` (the same host): BM3D 1.03–1.07× on classic with direct
-  transfers and 1.19–1.27× on R78; NLM 0.87–1.03× on classic.
+  transfers and 1.19–1.27× on R78; NLM 0.87–1.03× on classic; PNLM 1.38–1.41×
+  on R78 at its defaults, 0.92× at `a=8, d=2`.
 
 ## Functions
 
@@ -39,13 +41,14 @@ order and not read back by the consumer, median of three runs (2026-10-28):
 |---|---|---|
 | `core.nss_vk.BM3D` | [bm3d.md](bm3d.md) | [bm3d.md](../bm3d.md) |
 | `core.nss_vk.NLM` | [nlm.md](nlm.md) | [nlm.md](../nlm.md) |
+| `core.nss_vk.PNLM` | [pnlm.md](pnlm.md) | [pnlm.md](../pnlm.md) |
 
 ```python
 core.nss_vk.Version()                 # version:data
 core.nss_vk.Backend([int device_id])  # loader, device, support level, GPU frames
 ```
 
-The other filters of the CPU plugin are not ported yet; `PNLM` is next.
+The other filters of the CPU plugin are not ported yet.
 `VAggregate` is the CPU plugin's alone: `core.nss.VAggregate` reduces the
 legacy temporal output of `nss_vk.BM3D` (also when it is a GPU clip: the core
 downloads it).
@@ -126,8 +129,8 @@ out = den.std.GPUDownload()                                 # or leave it: outpu
   budget (`core.max_vram_cache_size`), so VapourSynth makes room for them by
   evicting cached GPU frames; `memory_limit_mb` still caps nss_vk's own
   buffers.
-- **Planes left alone** (NLM's `channels="Y"` or `"UV"`, BM3D planes with
-  `sigma=0`) share the source's GPU planes: no copy.
+- **Planes left alone** (NLM's `channels="Y"` or `"UV"`, BM3D and PNLM
+  planes with `sigma=0`) share the source's GPU planes: no copy.
 - **Legacy temporal output** stays on the GPU too; `core.nss.VAggregate`
   (a CPU filter) gets it downloaded by the core.
 

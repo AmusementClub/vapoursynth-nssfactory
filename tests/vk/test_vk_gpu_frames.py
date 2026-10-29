@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-only
-"""VapourSynth R80+ GPU frames in nss_vk (D29, docs/vulkan-plan.md VG1-VG3).
+"""VapourSynth R80+ GPU frames in nss_vk (D29, docs/vulkan-plan.md VG1-VG3, V15).
 
 On a core with API 4.3 (R80+): every nss_vk filter run on GPU-resident clips
 (std.GPUUpload) must give the bits of the same filter on CPU frames and
-return GPU-resident frames, across NLM's and BM3D's paths (tile and plane,
+return GPU-resident frames, across NLM's, BM3D's and PNLM's paths (tile and plane,
 channel modes with shared planes, spatial / final / chroma / ref, legacy with
 identity slices, rolling with chunks of one), rows padded or not, chains of
 nss_vk filters that stay resident, and a legacy fat clip into the CPU
@@ -77,7 +77,7 @@ def main():
     core.add_log_handler(lambda kind, message: log.append(message))
     core.std.LoadPlugin(path=os.path.abspath(args.vk))
     functions = {f.name: f.signature for f in core.nss_vk.functions()}
-    filters = [name for name in ("NLM", "BM3D") if name in functions]
+    filters = [name for name in ("NLM", "BM3D", "PNLM") if name in functions]
     status = core.nss_vk.Backend().get("gpu_frames", b"")
     status = status.decode() if isinstance(status, bytes) else status
     if core.api_version.api_minor < 3:
@@ -147,14 +147,25 @@ def main():
         (vs.GRAYS, 128, 96, dict(sigma=8, radius=2, rolling_chunk=1)),
         (vs.GRAYS, 128, 96, dict(sigma=8, radius=1, final=1, temporal_mode="legacy")),
     ]
+    pnlm = [
+        (vs.GRAYS, 333, 211, dict(sigma=6.0)),                                      # padded rows, fused path
+        (vs.YUV420PS, 160, 120, dict(sigma=[6.0, 0.0, 4.0])),                       # a plane shared with the source
+        (vs.RGBS, 141, 97, dict(sigma=8.0, d=1, a=5)),                              # key path
+        (vs.GRAYS, 128, 96, dict(sigma=6.0, d=3, block_size=8, a=7, group_size=32)),
+    ]
     if args.quick:
-        nlm, bm3d = nlm[:3], bm3d[:4]
+        nlm, bm3d, pnlm = nlm[:3], bm3d[:4], pnlm[:2]
     for i, (fmt, w, h, kw) in enumerate(nlm):
         compare(f"NLM {core.get_video_format(fmt).name} {w}x{h} {kw}", make_clip(core, fmt, w, h, i),
                 lambda c, kw=kw: core.nss_vk.NLM(c, **kw))
     for i, (fmt, w, h, kw) in enumerate(bm3d):
         compare(f"BM3D {core.get_video_format(fmt).name} {w}x{h} {kw}", make_clip(core, fmt, w, h, 100 + i),
                 lambda c, kw=kw: core.nss_vk.BM3D(c, **kw))
+
+    if "PNLM" in functions:
+        for i, (fmt, w, h, kw) in enumerate(pnlm):
+            compare(f"PNLM {core.get_video_format(fmt).name} {w}x{h} {kw}", make_clip(core, fmt, w, h, 200 + i),
+                    lambda c, kw=kw: core.nss_vk.PNLM(c, **kw))
 
     src = make_clip(core, vs.GRAYS, 133, 111, 7)
     ref = make_clip(core, vs.GRAYS, 133, 111, 8)

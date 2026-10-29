@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: GPL-2.0-only
+// PNLM weighting of the key path (match.comp MODE 1), as nss_cuda's
+// weight_kernel: 256 invocations take 256 / WARP_L references, WARP_L each.
+//
+// Defines: Q, WARP_L (nss::pnlm_lanes of the patch area), WARP_EMULATED.
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_GOOGLE_include_directive : require
+
+#define WARP_WARPS 8
+#include "common/warp.glsl"
+#define PNLM_WEIGH
+#define R (256 / WARP_L)
+#define MAX_GROUP 32
+
+layout(local_size_x = 256) in;
+
+shared uint sxy[R][MAX_GROUP];
+shared float sw[R][MAX_GROUP];
+shared int sk[R];
+
+#include "pnlm/common.glsl"
+
+layout(push_constant) uniform Push {
+    Params params;
+    Keys keys;
+    Ints counts;
+    Floats est;
+    int refs;
+} pc;
+
+void main() {
+    Params pr = pc.params;
+    const int tid = int(gl_LocalInvocationIndex), r0 = w_workgroup() * R, group = pr.group;
+    for (int j = tid; j < R * group; j += 256) {
+        const int s = j / group, i = j % group, ref = r0 + s;
+        if (ref >= pc.refs) {
+            if (i == 0) sk[s] = 0;
+            continue;
+        }
+        const int k = pc.counts.i[ref];
+        if (i == 0) sk[s] = k;
+        if (i < k) {
+            const uint64_t key = pc.keys.k[ref * group + i];
+            sxy[s][i] = uint(key);
+            sw[s][i] = i == 0 ? 1.0 : pnlm_weight(uintBitsToFloat(uint(key >> 32)), pr);
+        }
+    }
+    memoryBarrierShared();
+    barrier();
+    const int s = tid / WARP_L;
+    weigh(sk[s], s, r0 + s, pr, pc.est, tid % WARP_L);
+}
