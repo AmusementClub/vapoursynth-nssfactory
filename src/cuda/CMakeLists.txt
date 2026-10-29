@@ -88,6 +88,7 @@ set(NSS_CUDA_IEEE_SOURCES
   bm3d/kernels.cu
   common/aggregate.cu
   common/match.cu
+  common/match_column.cu
   common/match_square.cu
   lssc/kernels.cu
   mcwnnm/kernels.cu
