@@ -100,15 +100,15 @@ void spatial_case(int width, int height, int block, int group, int step, int ran
 
 // The exact column matcher against the existing lane path and the CPU, in
 // uneven batches that do not start on grid rows.
-void column_case(int width, int height, int group, int step, int range, int batches, bool flat, Stats& stats) {
-    const auto plane = make_plane(width, height, 19u + group + step + range, flat);
+void column_case(int block, int width, int height, int group, int step, int range, int batches, bool flat, Stats& stats) {
+    const auto plane = make_plane(width, height, 19u + block + group + step + range, flat);
     nss_cuda::DeviceBuffer d_plane(plane.size() * sizeof(float));
     NSS_CUDA_CHECK(cudaMemcpy(d_plane.get(), plane.data(), plane.size() * sizeof(float), cudaMemcpyHostToDevice));
-    const auto grid = nss_cuda::make_raster_grid(width, height, 8, step);
+    const auto grid = nss_cuda::make_raster_grid(width, height, block, step);
     const int n = grid.count();
-    const nss_cuda::MatchGeometry g{width, height, width, 8, range, group};
-    CHECK(nss_cuda::spatial_match_column_takes(g, grid), "column %dx%d g%d s%d not supported", width, height, group,
-          step);
+    const nss_cuda::MatchGeometry g{width, height, width, block, range, group};
+    CHECK(nss_cuda::spatial_match_column_takes(g, grid), "column %dx%d b%d g%d s%d not supported", width, height, block,
+          group, step);
     std::vector<nss_cuda::DeviceMatch> out[2];
     std::vector<int> counts[2];
     for (int path = 0; path < 2; ++path) {
@@ -124,7 +124,7 @@ void column_case(int width, int height, int group, int step, int range, int batc
                                                     d_out.as<nss_cuda::DeviceMatch>() +
                                                         static_cast<std::size_t>(begin) * group,
                                                     d_counts.as<int>() + begin, nullptr),
-                      "column %dx%d g%d s%d batch declined", width, height, group, step);
+                      "column %dx%d b%d g%d s%d batch declined", width, height, block, group, step);
             } else {
                 nss_cuda::spatial_match(d_plane.as<float>(), g, grid, begin, end - begin,
                                         d_out.as<nss_cuda::DeviceMatch>() + static_cast<std::size_t>(begin) * group,
@@ -137,8 +137,8 @@ void column_case(int width, int height, int group, int step, int range, int batc
         NSS_CUDA_CHECK(cudaMemcpy(counts[path].data(), d_counts.get(), d_counts.bytes(), cudaMemcpyDeviceToHost));
     }
     char label[112];
-    std::snprintf(label, sizeof label, "column %dx%d g%d s%d r%d batches %d%s", width, height, group, step, range,
-                  batches, flat ? " flat" : "");
+    std::snprintf(label, sizeof label, "column %dx%d b%d g%d s%d r%d batches %d%s", width, height, block, group, step,
+                  range, batches, flat ? " flat" : "");
     for (int ref = 0; ref < n; ++ref) {
         CHECK(counts[0][ref] == counts[1][ref], "%s ref %d: lane count %d column count %d", label, ref, counts[0][ref],
               counts[1][ref]);
@@ -148,7 +148,7 @@ void column_case(int width, int height, int group, int step, int range, int batc
                           sizeof(nss_cuda::DeviceMatch) * count) == 0,
               "%s ref %d: lane and column results differ", label, ref);
         nss::Match cpu[nss_cuda::kMaxGroup];
-        const int m = nss::spatial_match(plane.data(), width, width, height, grid.x(ref), grid.y(ref), 8, range, group,
+        const int m = nss::spatial_match(plane.data(), width, width, height, grid.x(ref), grid.y(ref), block, range, group,
                                          cpu);
         compare_group(cpu, m, out[1].data() + static_cast<std::size_t>(ref) * group, counts[1][ref], flat, stats, label,
                       ref);
@@ -455,21 +455,38 @@ int main() {
         temporal_case(71, 66, 16, 16, 6, 7, 2, 2, 5, flat, stats);
         temporal_case(71, 66, 4, 8, 5, 7, 2, 0, 9, flat, stats);
     }
-    // Exact column reuse at steps 1 to 3, every supported group, clamped
-    // edges, flat images and windows wider than the plane. Step 4 stays out.
+    // Exact column reuse at steps 1 to 3, every supported block/group,
+    // clamped edges, flat images, one-reference grids and oversized windows.
     for (const bool flat : {false, true}) {
         for (const int group : {8, 16, 32}) {
             for (const int step : {1, 2, 3}) {
-                column_case(97, 83, group, step, 7, 3, flat, stats);
-                column_case(101, 76, group, step, 10, 2, flat, stats);
+                for (const int block : {4, 8, 12, 16}) {
+                    const auto grid = nss_cuda::make_raster_grid(97, 83, block, step);
+                    const nss_cuda::MatchGeometry g{97, 83, 97, block, 7, group};
+                    if ((block == 4 && step == 2) || (block == 16 && group == 32) ||
+                        (block == 16 && group == 8 && step == 3)) {
+                        CHECK(!nss_cuda::spatial_match_column_takes(g, grid),
+                              "rejected shape taken by the column matcher: b%d g%d s%d", block, group, step);
+                        continue;
+                    }
+                    column_case(block, 97, 83, group, step, 7, 3, flat, stats);
+                    column_case(block, 101, 76, group, step, 10, 2, flat, stats);
+                }
             }
         }
-        column_case(40, 36, 16, 3, 40, 2, flat, stats);
+        for (const int block : {4, 8, 12, 16}) {
+            column_case(block, 40, 36, 16, 3, 40, 2, flat, stats);
+            column_case(block, block, block, 16, 1, 40, 1, flat, stats);
+        }
     }
     {
         const auto grid = nss_cuda::make_raster_grid(97, 83, 8, 4);
         const nss_cuda::MatchGeometry g{97, 83, 97, 8, 7, 8};
         CHECK(!nss_cuda::spatial_match_column_takes(g, grid), "step 4 taken by the column matcher");
+        const auto unsupported_grid = nss_cuda::make_raster_grid(97, 83, 32, 1);
+        const nss_cuda::MatchGeometry unsupported{97, 83, 97, 32, 7, 32};
+        CHECK(!nss_cuda::spatial_match_column_takes(unsupported, unsupported_grid),
+              "block 32 taken by the column matcher");
     }
     // Square matcher, every quarter side: regular grids (max_x, max_y
     // multiples of q), a clamped last column, row or both, a single

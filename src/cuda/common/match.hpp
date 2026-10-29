@@ -38,9 +38,11 @@ using nss::gpuhost::make_raster_grid;
 void spatial_match(const float* plane, const MatchGeometry& geometry, const RasterGrid& grid, int ref_begin,
                    int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream, const void* scratch = nullptr);
 
-// Exact column-reuse matching for BM3D: one channel, block 8, steps 1 to 3,
-// groups 8, 16 and 32, symmetric windows. Distances and keys are identical to
-// the lane kernels; step 4 and every other geometry keep their existing path.
+// Exact column-reuse matching for BM3D: one channel, blocks 4, 8, 12 and 16,
+// steps 1 to 3, groups 8, 16 and 32, symmetric windows. Distances and keys are
+// identical to the lane kernels. Measured exclusions keep their existing path:
+// block 4 at step 2 (square), block 16 with group 32, and block 16 / group 8 at
+// step 3. Block 32 and step 4 and above are not column-matcher candidates.
 bool spatial_match_column_takes(const MatchGeometry& geometry, const RasterGrid& grid);
 bool spatial_match_column(const float* plane, const MatchGeometry& geometry, const RasterGrid& grid, int ref_begin,
                           int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream);
