@@ -53,7 +53,8 @@ memory telemetry separately before claiming memory stability.
 - On Windows with vapoursynth-classic R57.A14+, run the NLM, BM3D and PNLM
   transfer paths, verify direct transfers really activate, and compare with
   fallback staging. Include `nss_cuda`'s direct path. A Windows compile or
-  a Linux classic run does not satisfy this check.
+  a Linux classic run does not satisfy this check. The owner deferred this
+  gate on 2026-10-29; it remains unvalidated and full V12 coverage is not claimed.
 - Measure 1080p NLM, BM3D and PNLM against `nss_cuda` and the 32-thread CPU:
   Gray/YUV420/RGB, ordinary CPU frames, classic direct transfers and Vulkan
   resident GPU frames. Keep upload/filter/download timings distinct from
