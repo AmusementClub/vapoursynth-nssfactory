@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
+#include <cstdint>
 #include <cmath>
 #include <vector>
 
@@ -17,6 +19,7 @@ HWY_BEFORE_NAMESPACE();
 namespace nss {
 namespace HWY_NAMESPACE {
 namespace hn = hwy::HWY_NAMESPACE;
+#include "cpu/nlh/select_top3-inl.hpp"
 
 void PixelMatch(const float* group, int m, int n, int lda, int q, int* idx) {
     if (!group || !idx || m < 1 || n < 1 || q < 1 || lda < m) {
@@ -152,6 +155,9 @@ void PixelMatch(const float* group, int m, int n, int lda, int q, int* idx) {
     };
 
     auto select_row = [&](float* distances, int r) {
+        if ((HWY_TARGET == HWY_AVX3 || HWY_TARGET == HWY_AVX2) &&
+            m == 64 && n == 16 && qq == 4 &&
+            SelectTopThree64(d, distances, r, best_idx + r * 4 + 1, best_dist + r * 4 + 1)) return;
         const auto inf = hn::Set(d, kInf);
         distances[r] = kInf;
         for (int slot = 1; slot < qq; ++slot) {
