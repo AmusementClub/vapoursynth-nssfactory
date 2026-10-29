@@ -110,8 +110,8 @@ low-noise gray one for every clip with a smaller search window and one Basic
 round fewer. It favours low and moderate noise (see the comparison under the
 preset table); for strong or real camera noise pass the version 5 values.
 Benchmark-geometry
-(block 8/8, step 8/8) runs at ~6621 ms/frame single-core 1080p GRAYS
-(~0.15 fps); the true defaults with blind estimation are heavier. The Basic
+(block 8/8, step 8/8) runs at about 0.15 fps at 1080p gray on one CPU core;
+the true defaults with blind estimation are heavier. The Basic
 stage dominates; blind estimation adds a matching pass over every fourth
 position per axis (8x8 blocks, window 40) per frame. Model version 5 estimated
 on every position; the two estimates agree to 0.2% (0.04% on average).

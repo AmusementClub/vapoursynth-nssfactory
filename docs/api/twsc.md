@@ -128,8 +128,8 @@ mode, and the removed `lambda1` parameter is rejected (including zero).
 ## Defaults rationale and performance
 
 The default is the fast geometry `block_size=8, block_step=8, group_size=8,
-iters=2`, the same for every noise level (sigma sets the strength): ~1337 ms
-per 1080p gray frame on one CPU core (~0.75 fps).
+iters=2`, the same for every noise level (sigma sets the strength): about
+0.75 fps at 1080p gray on one CPU core.
 
 It is a speed setting. The paper's high-quality regime, `block_step=1,
 group_size=90, iters=12` (4 on the fast color path), denoises 8 to 10 dB

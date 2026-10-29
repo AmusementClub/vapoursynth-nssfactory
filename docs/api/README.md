@@ -14,19 +14,19 @@ One CPU core (Emerald Rapids), 1920x1080 gray, sigma 3, default arguments
 they scale with the pixel count, and VapourSynth runs frames in parallel on
 more cores.
 
-| Filter | ms / frame | Temporal | Good for |
+| Filter | fps | Temporal | Good for |
 |---|---:|---|---|
-| [BM3D](bm3d.md) | ~59† | yes | General use; the fastest |
-| [NLM](nlm.md) | ~131 | yes (`d`) | Light noise |
-| [PNLM](pnlm.md) | ~250§ | yes (`d`) | Light noise; edges and line art |
-| [WNNM](wnnm.md) | ~131 | yes | Texture and edge retention |
-| [NCSR](ncsr.md) | ~268 | yes | Sparse-coding quality at moderate cost |
-| [LSSC](lssc.md) | ~369‡ | no | Structured noise, film grain, text |
-| [TWSC](twsc.md) | ~1337 | yes | Real-world noise |
-| [NLH](nlh.md) | ~6621* | yes | Real-world noise of unknown level |
-| [MCWNNM](mcwnnm.md) | ~2326 | yes | RGB color noise |
+| [BM3D](bm3d.md) | ~17† | yes | General use; the fastest |
+| [NLM](nlm.md) | ~7.6 | yes (`d`) | Light noise |
+| [PNLM](pnlm.md) | ~4.0§ | yes (`d`) | Light noise; edges and line art |
+| [WNNM](wnnm.md) | ~7.6 | yes | Texture and edge retention |
+| [NCSR](ncsr.md) | ~3.7 | yes | Sparse-coding quality at moderate cost |
+| [LSSC](lssc.md) | ~2.7‡ | no | Structured noise, film grain, text |
+| [TWSC](twsc.md) | ~0.75 | yes | Real-world noise |
+| [NLH](nlh.md) | ~0.15* | yes | Real-world noise of unknown level |
+| [MCWNNM](mcwnnm.md) | ~0.43 | yes | RGB color noise |
 
-[BM4D](bm4d.md) (about 6.6 s a frame, temporal by construction) treats the
+[BM4D](bm4d.md) (about 0.15 fps, temporal by construction) treats the
 clip as a volume of 3D cubes; it beats temporal BM3D on still and slowly
 moving content, and is the slowest. [DA3D](da3d.md) is not a denoiser on its own: it takes the noisy clip and
 another filter's output and returns a refined result (see its page for its
@@ -36,16 +36,15 @@ gain and cost).
 sigma; its default (smaller steps, blind estimation) is much heavier (see its
 page).
 
-† BM3D measured with `bm_range=7`, its default until 2026-10-20 (now 9, about
-1.6x the candidates of the matching step).
+† BM3D measured with `bm_range=7`; the current default is 9, about 1.6x the
+candidates of the matching step.
 
-§ PNLM measured on a Ryzen 9 5950X core, where NLM takes ~113 ms; spatial
-(`d=0`) 135 ms against NLM's 28. On the GPU it is the faster of the two
-from `a=2` up.
+§ PNLM measured on a Ryzen 9 5950X core: NLM 8.8 fps; spatial (`d=0`) PNLM
+7.4 fps against NLM's 35.7. On the GPU it is the faster of the two from `a=2` up.
 
-‡ LSSC measured with model version 3 at `block_step=8`, its default until
-2026-10-21. Version 4 at its default `block_step=4` took 0.93x that time on a
-Ryzen 9 5950X core at sigma 3 and about half at sigma 25.
+‡ LSSC measured with model version 3 at `block_step=8`. Version 4 at its
+default `block_step=4` took about 7% less time at sigma 3 and about half at
+sigma 25 on a Ryzen 9 5950X core.
 
 ## Conventions
 

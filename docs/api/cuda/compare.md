@@ -8,8 +8,7 @@ same arguments:
 - [vs-nlm-ispc](https://github.com/AmusementClub/vs-nlm-ispc): `nlm_ispc`.
 - [vs-nlm-cuda](https://github.com/AmusementClub/vs-nlm-cuda): `nlm_cuda`.
 
-The last section compares r2 with r1. Measured 2026-10-21 with the release builds of r2 (CUDA 12.9, the toolkit of
-the published packages).
+The last section compares r2 with r1, using the published release builds.
 
 ## Summary
 
@@ -20,12 +19,12 @@ the published packages).
 - **Temporal filters denoise better.** Temporal BM3D (`radius=1`) is +0.99 dB above all four BM3DCUDA builds, and
   temporal WNNM +0.33 dB above VapourSynth-WNNM. The temporal search differs; see the notes.
 - **Faster on the GPU** (1080p, against the fastest other GPU plugin):
-  - BM3D 1.35×, BM3D two stages 2.78×, CBM3D 1.22×, temporal BM3D 2.48×.
-  - NLM 1.56×, NLM `d=1` 3.0×.
-  - WNNM, which has no other GPU implementation: 19× the CPU plugin VapourSynth-WNNM.
+  - BM3D 35% faster, BM3D two stages 178% faster, CBM3D 22% faster, temporal BM3D 148% faster.
+  - NLM 56% faster, NLM `d=1` 200% faster.
+  - WNNM, which has no other GPU implementation: 1,800% faster than the CPU plugin VapourSynth-WNNM.
 - **On the CPU:**
-  - WNNM is 3.0× VapourSynth-WNNM, and NLM is 1.3–1.45× vs-nlm-ispc per thread.
-  - BM3D runs at 0.87–0.94× of bm3dcpu, and at 0.53× for temporal BM3D, which does more search for the better result
+  - WNNM is 200% faster than VapourSynth-WNNM, and NLM is 30–45% faster than vs-nlm-ispc per thread.
+  - BM3D runs at 87–94% of bm3dcpu's fps, and at 53% for temporal BM3D, which does more search for the better result
     above.
 
 ## Setup
@@ -59,7 +58,7 @@ the difference, dB; 60 or more is the backends' own gate).
 | BM3D, YUV444, σ10, per plane | 28.13 | 36.914 | 36.914 (96) | 36.825 (43) | 36.825 (43) | 36.825 (43) |
 | **BM3D, gray, σ10, `radius=1`** | 28.13 | **36.541** | **36.541** (108) | 35.549 (41) | 35.549 (41) | 35.549 (41) |
 
-The BM3D rows are BM3D model 3 (2026-10-27, a dev-host build of the change: GCC 15, CUDA 13.3 `120-real`; the third
+The BM3D rows use model 3 from a dev-host build (GCC 15, CUDA 13.3 `120-real`; the third
 plugins as in the setup). Under model 2 the `nss` columns equalled BM3DCUDA's to 0.001 dB with an agreement of 59 dB or
 more; the Haar transform along the group moves them by more than the gate, so the agreement column now reads 35–50 dB
 for the third plugins while `nss_cuda` against `nss` stays at 79–110 dB. Speed is unchanged by the model (the speed
@@ -116,14 +115,14 @@ CPU plugins, 32 threads (ratio: `nss` against the other CPU plugin):
     next.
   - BM3DCUDA's `BM3Dv2` searches the neighbouring frames its own way.
   - On this pan our search finds better groups: +0.93 dB for BM3D, +0.33 dB for WNNM.
-  - On the CPU the extra search costs time (0.53× of `bm3dcpu`); on the GPU `nss_cuda` is still 2.5× faster than
+  - On the CPU the extra search costs time (53% of `bm3dcpu`'s fps); on the GPU `nss_cuda` is still 150% faster than
     `bm3dcuda`.
   - `nss` on the CPU at `radius=1` is `temporal_mode="legacy"` + `nss.VAggregate`. The CPU's `"rolling"` gives the same
     output but does not scale across frame requests: 14 fps.
-- **WNNM speed.** VapourSynth-WNNM is a CPU plugin (with MKL); the 19× is GPU against CPU. CPU against CPU, `nss` is
-  3.0× faster.
-- **vs-nlm-ispc** does not get faster with more VapourSynth threads on this host. Single-threaded, `nss` was 1.29–1.45×
-  faster in the 2026-10-17 run; the NLM code has not changed since.
+- **WNNM speed.** VapourSynth-WNNM is a CPU plugin (with MKL); the 1,800% gain is GPU against CPU. CPU against CPU,
+  `nss` is 200% faster.
+- **vs-nlm-ispc** does not get faster with more VapourSynth threads on this host. Single-threaded, `nss` was 29–45%
+  faster; the NLM code has not changed since.
 - **vs-nlm-cuda RGB.**
   - With float input, its RGB distance loses the colour-dependent weight of KNLMeansCL's red-mean formula:
     `inv_divisor` is 0 for float, so `w = 0`.
@@ -134,8 +133,8 @@ CPU plugins, 32 threads (ratio: `nss` against the other CPU plugin):
   amplifies it.
 - **Toolkit.**
   - The release packages are built with CUDA 12.9 for driver compatibility.
-  - A build with CUDA 13.3 gives the same output and the same speed within 4% for every filter except NLM: about 1.35×
-    faster with neighbouring frames (`d=1`, the default) and 1.08× on RGB.
+  - A build with CUDA 13.3 gives the same output and the same speed within 4% for every filter except NLM: about 35%
+    faster with neighbouring frames (`d=1`, the default) and 8% faster on RGB.
   - The NLM rows above are the release build's.
 - **Limits.**
   - One GPU and one CPU.
