@@ -120,6 +120,13 @@ foreach(_nss_c 1 3)
     endforeach()
   endforeach()
 endforeach()
+# BM3D square matching (block = 2Q at step Q), with its own reduction order.
+foreach(_nss_q 1 2 4 6 8)
+  foreach(_nss_k 1 3 7 15 31)
+    nss_vk_add_shader(NSS_VK_SPIRV_SOURCES match_square_q${_nss_q}_k${_nss_k} common/match_square.comp
+                      DEFINES Q=${_nss_q} K=${_nss_k})
+  endforeach()
+endforeach()
 # The block fallback (common/match_block.comp): a workgroup per reference for
 # what the lanes do not take (groups beyond 33, two channels, joint blocks
 # beyond 8), groups and ps_num up to K = 64 or 256, spatial and predictive.
@@ -292,6 +299,7 @@ add_library(nss_vk_core STATIC
   bm3d/kernels.cpp
   common/aggregate.cpp
   common/match.cpp
+  common/match_square.cpp
   runtime/context.cpp
   runtime/device.cpp
   runtime/error.cpp

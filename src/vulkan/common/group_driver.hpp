@@ -95,6 +95,7 @@ struct GroupFilterConfig {
     // filtered.
     int channels = 1;
     bool shared_match = false;
+    bool square_match = false;
     // Two stages in one node (BM3D final): the source is first filtered with
     // `basic` and no guide, and that estimate stays on the device as the
     // guide of the second stage. The node takes no guide clip then; spatial
