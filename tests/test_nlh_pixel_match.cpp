@@ -34,7 +34,7 @@ int main(int argc, char** argv) {
                      std::streamsize(indices.size() * sizeof(int)));
     };
     try {
-        for (int m : {4, 49, 64, 65, 81, 100, 256}) for (int n : {1, 16, 64})
+        for (int m : {4, 49, 63, 64, 65, 81, 100, 256}) for (int n : {1, 15, 16, 17, 64})
         for (int pattern = 0; pattern < 3; ++pattern) {
             const int lda = m + 3, count = std::min(m, 16);
             std::vector<float> group(lda * n, std::numeric_limits<float>::quiet_NaN());
@@ -68,7 +68,7 @@ int main(int argc, char** argv) {
         }
         // These outputs are compared with the frozen library separately. They
         // preserve its finite sentinel ties and overflow-distance behavior.
-        if (output.is_open()) for (int m : {65, 81, 100, 256}) for (int n : {1, 16, 64})
+        if (output.is_open()) for (int m : {63, 64, 65, 81, 100, 256}) for (int n : {1, 15, 16, 17, 64})
         for (int pattern = 0; pattern < 3; ++pattern) for (int q : {2, 4, 8, 16}) {
             const int lda = m + 3;
             std::vector<float> group(lda * n, std::numeric_limits<float>::quiet_NaN());
