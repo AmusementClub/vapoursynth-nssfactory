@@ -346,8 +346,8 @@ jobs:
           path: nssfactory-*-windows-x86_64-cuda.zip
           if-no-files-found: error
 
-  # Vulkan plugin (docs/vulkan-plan.md): packaged for testing only. draft-release
-  # does not attach these until phase V12.
+  # Vulkan plugin (docs/vulkan-plan.md): r3 preview package. Runtime validation
+  # is NVIDIA-only for this release; CI proves the no-device build and tests.
   build-linux-vk:
     runs-on: ubuntu-latest
     steps:
@@ -380,8 +380,9 @@ jobs:
       - name: package
         run: |
           pkg="nssfactory-${PKG_LABEL}-linux-x86_64-vk"
-          mkdir -p "pkg/$pkg"
+          mkdir -p "pkg/$pkg/docs"
           cp build/src/vulkan/libnss_vk.so README.md LICENSE NOTICE "pkg/$pkg/"
+          cp -r docs/api "pkg/$pkg/docs/"
           tar -C pkg -czf "$pkg.tar.gz" "$pkg"
       - uses: actions/upload-artifact@v4
         with:
@@ -422,8 +423,9 @@ jobs:
           $dll = Get-ChildItem -Recurse build -Filter libnss_vk.dll | Select-Object -First 1
           if (-not $dll) { throw "libnss_vk.dll was not produced" }
           $pkg = "nssfactory-${env:PKG_LABEL}-windows-x86_64-vk"
-          New-Item -ItemType Directory "pkg/$pkg" | Out-Null
+          New-Item -ItemType Directory "pkg/$pkg/docs" | Out-Null
           Copy-Item $dll.FullName, README.md, LICENSE, NOTICE "pkg/$pkg/"
+          Copy-Item -Recurse docs\api "pkg/$pkg/docs/"
           tar -C pkg -a -c -f "$pkg.zip" "$pkg"
       - uses: actions/upload-artifact@v4
         with:

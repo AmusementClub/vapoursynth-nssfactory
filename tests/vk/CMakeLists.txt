@@ -108,10 +108,26 @@ endif()
 add_test(NAME test_vk_gpu_frames
          COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_vk_gpu_frames.py" ${_nss_vk_gpu_args})
 set_tests_properties(test_vk_gpu_frames PROPERTIES LABELS vk SKIP_RETURN_CODE 77)
+
+add_test(NAME test_vk_stress_harness
+         COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_vk_stress_harness.py")
+set_tests_properties(test_vk_stress_harness PROPERTIES LABELS vk TIMEOUT 30)
+
+# D30 r3 preview: repeatedly create/free and render NLM, BM3D and PNLM.  The
+# test runs on a real Vulkan device (including GPU frames where supported) and
+# skips cleanly in build-only CI.
+add_test(NAME test_vk_stress
+         COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_vk_stress.py"
+                 --plugin "${NSS_VK_PLUGIN}")
+set_tests_properties(test_vk_stress PROPERTIES LABELS vk SKIP_RETURN_CODE 77 TIMEOUT 600)
 if(NSS_VK_GPU_FRAMES_PYTHON)
   add_test(NAME test_vk_gpu_frames_r8x
            COMMAND ${NSS_VK_GPU_FRAMES_PYTHON} "${CMAKE_CURRENT_SOURCE_DIR}/test_vk_gpu_frames.py" ${_nss_vk_gpu_args})
   set_tests_properties(test_vk_gpu_frames_r8x PROPERTIES LABELS vk SKIP_RETURN_CODE 77)
+  add_test(NAME test_vk_stress_r8x
+           COMMAND ${NSS_VK_GPU_FRAMES_PYTHON} "${CMAKE_CURRENT_SOURCE_DIR}/test_vk_stress.py"
+                   --plugin "${NSS_VK_PLUGIN}" --require-gpu)
+  set_tests_properties(test_vk_stress_r8x PROPERTIES LABELS vk TIMEOUT 600)
 endif()
 # Filters against the CPU plugin (needs the CPU tree).
 if(TARGET nss)
