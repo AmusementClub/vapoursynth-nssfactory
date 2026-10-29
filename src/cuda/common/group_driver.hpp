@@ -103,6 +103,8 @@ struct GroupFilterConfig {
     // temporal search (predictive_match_square): BM3D. Its distances differ from the
     // lane kernels' in the last bits, so the other filters keep those.
     bool square_match = false;
+    // Exact column-reuse matching where it applies (block 8, step <= 3): BM3D.
+    bool column_match = false;
     // Two stages in one node (BM3D final): the source is first filtered with
     // `basic` and no guide, and that estimate stays on the device as the
     // guide of the second stage, `planes`. The node takes no guide clip then.

@@ -38,6 +38,13 @@ using nss::gpuhost::make_raster_grid;
 void spatial_match(const float* plane, const MatchGeometry& geometry, const RasterGrid& grid, int ref_begin,
                    int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream, const void* scratch = nullptr);
 
+// Exact column-reuse matching for BM3D: one channel, block 8, steps 1 to 3,
+// groups 8, 16 and 32, symmetric windows. Distances and keys are identical to
+// the lane kernels; step 4 and every other geometry keep their existing path.
+bool spatial_match_column_takes(const MatchGeometry& geometry, const RasterGrid& grid);
+bool spatial_match_column(const float* plane, const MatchGeometry& geometry, const RasterGrid& grid, int ref_begin,
+                          int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream);
+
 // The tensor-core matcher of large windows (sm_80+): one channel, block 8,
 // group 2 to 16, a window side of 40 to 129, at least 8 references a grid
 // row. Below a side of 40 the lane kernels are faster end to end (RTX 5080).

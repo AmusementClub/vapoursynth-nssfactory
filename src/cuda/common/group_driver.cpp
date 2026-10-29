@@ -542,6 +542,7 @@ std::size_t tensor_scratch_bytes(const Driver& d) {
     for (const GroupPlane* p : stage_planes(d)) {
         MatchGeometry g{p->width, p->height, p->width, p->block, p->range, p->group};
         g.channels = d.shared_match ? 1 : d.channels;
+        if (d.column_match && spatial_match_column_takes(g, p->grid)) continue;
         if (d.square_match && spatial_match_square_takes(g, p->grid) && g.lo() < kSquareTensorRadius) continue;
         if (spatial_match_tensor(g, p->grid)) width = std::max(width, p->width), height = std::max(height, p->height);
     }
@@ -759,12 +760,13 @@ void filter_center(const Driver& d, Slot& s, const GroupPlane& p, int center, bo
     if (rolling) fixed = *rolling;
     if (p.fused && !rolling) fixed_clear(fixed, p.floats * d.channels, stream);
     const float* match_plane = radius > 0 ? nullptr : match_guide ? s.host_ref_ptrs[0] : s.host_src_ptrs[0];
-    // The square matcher where it applies, except for the large windows the
-    // tensor-core matcher takes (when this device and plan have it).
+    // The column or square matcher where it applies, except for the large
+    // windows the tensor-core matcher takes (when this device and plan have it).
     const bool tensor_ok = radius == 0 && s.match_scratch.get() && spatial_match_tensor(geometry, p.grid);
+    const bool column = radius == 0 && d.column_match && spatial_match_column_takes(geometry, p.grid);
     const bool square = radius == 0 && d.square_match && spatial_match_square_takes(geometry, p.grid) &&
                         !(tensor_ok && geometry.lo() >= kSquareTensorRadius);
-    const bool tensor = !square && tensor_ok;
+    const bool tensor = !column && !square && tensor_ok;
     if (tensor) spatial_match_prepare(match_plane, geometry, s.match_scratch.get(), stream);
     for (int begin = 0; begin < p.grid.count(); begin += p.batch) {
         const int count = std::min(p.batch, p.grid.count() - begin);
@@ -777,6 +779,12 @@ void filter_center(const Driver& d, Slot& s, const GroupPlane& p, int center, bo
                                               s.counts.as<int>(), stream))) {
                     predictive_match(geometry, window, p.grid, begin, count, s.matches.as<DeviceMatch>(),
                                      s.counts.as<int>(), stream);
+                }
+            } else if (column) {
+                if (!spatial_match_column(match_plane, geometry, p.grid, begin, count, s.matches.as<DeviceMatch>(),
+                                          s.counts.as<int>(), stream)) {
+                    spatial_match(match_plane, geometry, p.grid, begin, count, s.matches.as<DeviceMatch>(),
+                                  s.counts.as<int>(), stream);
                 }
             } else if (!square || !spatial_match_square(match_plane, geometry, p.grid, begin, count,
                                                         s.matches.as<DeviceMatch>(), s.counts.as<int>(), stream)) {

@@ -67,8 +67,9 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         b.fused = bm3d_fuses(b.block, b.group, false);
     }
     config.two_stage = p.final;
-    // Spatial matching by the square matcher where it applies (block twice the step).
+    // Spatial matching by the square or column matcher where it applies.
     config.square_match = true;
+    config.column_match = true;
     // Only the shapes whose Wiener stage keeps its reference cube in device memory need scratch.
     config.scratch_floats = [](const GroupPlane& g, bool guide) { return bm3d_scratch_floats(g.block, g.group, guide); };
     if (p.chroma) {
