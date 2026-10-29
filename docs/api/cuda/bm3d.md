@@ -32,10 +32,9 @@ the same search, at 1080p gray: about 1.25x spatial, and 2.7x / 3.3x at
 `radius=1` / `2` when frames are rendered in order. With `chroma=1` at YUV444:
 243 fps against its 200.
 
-For spatial searches (`radius=0`) with one match channel and a symmetric
-`bm_range`, the exact column matcher shares vertical column distances between
-references on the same grid row. Its distances and selected matches are bit for
-bit the same as the per-reference lane search. It is admitted per shape:
+For spatial, single-channel, symmetric-window searches, the exact column
+matcher reuses vertical distances across references on each grid row and
+returns bit-identical matches to the lane matcher.
 
 | `block_size` | `block_step` | `group_size` |
 |---|---|---|
@@ -45,13 +44,10 @@ bit the same as the per-reference lane search. It is admitted per shape:
 | 16 | 1, 2 | 8, 16 |
 | 16 | 3 | 16 |
 
-Block 4 at step 2 keeps the square matcher below; block 16 with group 32, and
-block 16 / group 8 at step 3, keep the lane matcher. Block 32 is not a column
-candidate. These exclusions are measured performance decisions, not different
-output contracts. On one RTX 5080, paired 1080p Gray spatial calls over the 20
-new 4/12/16 shapes measured **1.11–1.54x end to end** (three pairs per shape,
-at least seven seconds per variant, identical output); this is not a speed
-promise for other GPUs or drivers.
+Other shapes keep their existing matcher: block 4 step 2 uses square; block 16
+with group 32, and block 16 / group 8 at step 3, use lane. Block 32 and
+temporal searches do not use column. On an RTX 5080, the 20 new 4/12/16 shapes
+measured **1.11–1.54x** in paired 1080p Gray runs with identical output.
 
 When `block_size` is twice `block_step` (2 / 1, 4 / 2, 8 / 4, 12 / 6, 16 / 8:
 `block_size=16` at its default step is one) the spatial search shares work
