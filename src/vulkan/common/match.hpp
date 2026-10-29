@@ -95,4 +95,25 @@ private:
     std::map<std::string, Pipeline> pipelines_;
 };
 
+// Square matching for BM3D's block = 2 * step shapes. The quarter-distance
+// arithmetic differs from the lane kernels in the last bits, so near ties may
+// resolve differently. spatial() declines a shape that admission rejects and
+// leaves it to Matcher's existing path.
+bool spatial_match_square_shape(const MatchGeometry& g, const RasterGrid& grid);
+bool spatial_match_square_takes(const MatchGeometry& g, const RasterGrid& grid);
+
+class SquareMatcher {
+public:
+    explicit SquareMatcher(std::shared_ptr<Device> device) : device_(std::move(device)) {}
+    void prepare(const MatchGeometry& g, const RasterGrid& grid);
+    void spatial(VkCommandBuffer commands, VkDeviceAddress plane, const MatchGeometry& g, const RasterGrid& grid,
+                 int ref_begin, int ref_count, VkDeviceAddress matches, VkDeviceAddress counts);
+
+private:
+    const Pipeline& pipeline(int q, int group);
+    std::shared_ptr<Device> device_;
+    std::mutex mutex_;
+    std::map<std::string, Pipeline> pipelines_;
+};
+
 }  // namespace nss_vk

@@ -48,8 +48,11 @@ final=1` on classic: 478 fps against `nss_cuda`'s 640).
   `rolling_chunk` and the order frames are asked for in, and agrees with the
   legacy intermediate reduced by `VAggregate` to rounding.
 - **Model.** BM3D model 3 (orthonormal Haar along the group), as the CPU and
-  CUDA plugins. Matching runs on the lane matcher; `nss_cuda`'s square and
-  tensor-core matchers are not ported.
+  CUDA plugins.
+- **Matching.** Spatial search uses the square matcher for `block=2/step=1`,
+  `4/2`, `8/4`, `12/6` and `16/8`, with groups 2–32 and one match channel.
+  Other spatial shapes keep their existing matcher; temporal search always
+  uses the predictive lane matcher. The tensor-core matcher is not ported.
 - **Memory.** Peak device memory at 1080p `radius=1` (eight threads): gray
   566 MiB, YUV420 839 MiB, RGB 1657 MiB; RGB legacy 1226 MiB.
 

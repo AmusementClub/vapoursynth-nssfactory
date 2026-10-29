@@ -70,6 +70,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         b.ps_num = p.ps_num_basic[plane];
     }
     config.two_stage = p.final;
+    config.square_match = true;
     config.scratch_floats = [](const GroupPlane& g, bool wiener) { return bm3d_scratch_floats(g.block, g.group, wiener); };
     if (p.chroma) {
         // CBM3D: one unit of three planes, groups matched on plane 0. Plane 0

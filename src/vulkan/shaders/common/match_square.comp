@@ -1,0 +1,147 @@
+// SPDX-License-Identifier: GPL-2.0-only
+// Square matcher for blocks of 2Q at step Q: every Q x Q quarter distance is
+// shared by the four references that contain it. Distances use the quarter
+// column chains and a tree, not the lane kernels' block-row chains, so near
+// ties may resolve differently. Defines: Q, K (group - 1 rounded up to 2^k - 1).
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_control_flow_attributes : require
+
+#define SIDE 16
+#define REFS 15
+
+layout(local_size_x = 256) in;
+shared float part[2][SIDE][SIDE + 1];
+
+struct Match {
+    int x;
+    int y;
+    int t;
+    float dist;
+};
+layout(buffer_reference) buffer Matches { Match m[]; };
+layout(buffer_reference) buffer Counts { int c[]; };
+layout(buffer_reference) buffer Plane { float v[]; };
+
+layout(push_constant) uniform Push {
+    uint64_t source, matches, counts;
+    int width, height, pitch, group_range;
+    int nx_ny, step_rows, max_x, max_y, ref_begin, ref_count;
+    int pass[16];
+} pc;
+
+const uint64_t kEmpty = ~0ul;
+const uint kInfinity = 0x7f800000u;
+
+int grid_index(int v, int max_v, int count) {
+    if (v < 0 || v > max_v) return -1;
+    if (v == max_v) return count - 1;
+    return v % Q == 0 ? v / Q : -1;
+}
+
+float tree_sum(float c[Q]) {
+#if Q == 1
+    return c[0];
+#elif Q == 2
+    return c[0] + c[1];
+#elif Q == 4
+    return (c[0] + c[1]) + (c[2] + c[3]);
+#elif Q == 6
+    return ((c[0] + c[1]) + c[2]) + ((c[3] + c[4]) + c[5]);
+#else
+    return ((c[0] + c[1]) + (c[2] + c[3])) + ((c[4] + c[5]) + (c[6] + c[7]));
+#endif
+}
+
+void insert_sorted(inout uint64_t best[K], uint64_t key) {
+    [[unroll]] for (int i = K - 1; i > 0; --i) best[i] = key < best[i - 1] ? best[i - 1] : (key < best[i] ? key : best[i]);
+    best[0] = key < best[0] ? key : best[0];
+}
+
+void main() {
+    const int tid = int(gl_LocalInvocationIndex), tx = tid % SIDE, ty = tid / SIDE;
+    const int block = int(gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x);
+    int which = 0;
+    [[unroll]] for (int i = 1; i < 4; ++i) {
+        if (pc.pass[4 * i + 3] >= 0 && block >= pc.pass[4 * i + 3]) which = i;
+    }
+    const int ox = pc.pass[4 * which], oy = pc.pass[4 * which + 1], blocks_x = pc.pass[4 * which + 2];
+    const int local = block - pc.pass[4 * which + 3];
+    const int bx = local % blocks_x, by = local / blocks_x;
+    const int rows = (pc.step_rows >> 16) & 0xff;
+    const uint64_t source = pc.source;
+    const int x0 = ox + Q * (REFS * bx + tx), y0 = oy + Q * (rows * by + ty);
+    const int group = pc.group_range >> 16, range = pc.group_range & 0xffff;
+    const int nx = pc.nx_ny & 0xffff, ny = pc.nx_ny >> 16;
+    const int col = grid_index(x0, pc.max_x, nx), row = grid_index(y0, pc.max_y, ny);
+    const int ref = row * nx + col;
+    const bool live = tx < REFS && ty < rows && col >= 0 && row >= 0 && ref >= pc.ref_begin &&
+                      ref < pc.ref_begin + pc.ref_count;
+    const int max_x = pc.width - 2 * Q, max_y = pc.height - 2 * Q;
+    const int last_row = pc.height - 1, last_col = pc.width - 1;
+    int cols[Q];
+    [[unroll]] for (int c = 0; c < Q; ++c) cols[c] = min(max(x0 + c, 0), last_col);
+    float rq[Q][Q];
+    [[unroll]] for (int r = 0; r < Q; ++r) {
+        const int at = min(max(y0 + r, 0), last_row) * pc.pitch;
+        [[unroll]] for (int c = 0; c < Q; ++c) rq[r][c] = Plane(source).v[at + cols[c]];
+    }
+    uint64_t best[K];
+    [[unroll]] for (int i = 0; i < K; ++i) best[i] = kEmpty;
+    int buf = 0;
+    for (int dx = -range; dx <= range; ++dx) {
+        int xs[Q];
+        [[unroll]] for (int c = 0; c < Q; ++c) xs[c] = min(max(x0 + c + dx, 0), last_col);
+        float v[Q][Q];
+        [[unroll]] for (int k = 0; k < Q - 1; ++k) {
+            const int at = min(max(y0 - range + k, 0), last_row) * pc.pitch;
+            [[unroll]] for (int c = 0; c < Q; ++c) v[k + 1][c] = Plane(source).v[at + xs[c]];
+        }
+        const int xc = x0 + dx;
+        const bool col_ok = live && xc >= 0 && xc <= max_x;
+        int dy = -range;
+        while (dy <= range) {
+            [[unroll]] for (int s = 0; s < Q; ++s) {
+                if (dy <= range) {
+                    const int at = min(max(y0 + dy + Q - 1, 0), last_row) * pc.pitch;
+                    [[unroll]] for (int c = 0; c < Q; ++c) v[s][c] = Plane(source).v[at + xs[c]];
+                    float cs[Q];
+                    [[unroll]] for (int c = 0; c < Q; ++c) {
+                        precise float sum = 0.0;
+                        [[unroll]] for (int r = 0; r < Q; ++r) {
+                            precise float d = rq[r][c] - v[(s + 1 + r) % Q][c];
+                            sum = fma(d, d, sum);
+                        }
+                        cs[c] = sum;
+                    }
+                    part[buf][ty][tx] = tree_sum(cs);
+                    memoryBarrierShared();
+                    barrier();
+                    const int yc = y0 + dy;
+                    if (col_ok && yc >= 0 && yc <= max_y && (dx | dy) != 0) {
+                        precise float sum = (part[buf][ty][tx] + part[buf][ty][tx + 1]) +
+                                            (part[buf][ty + 1][tx] + part[buf][ty + 1][tx + 1]);
+                        const uint64_t key = uint64_t(min(floatBitsToUint(sum), kInfinity)) << 32 |
+                                             uint64_t(yc) << 16 | uint64_t(xc);
+                        if (key < best[K - 1]) insert_sorted(best, key);
+                    }
+                    buf ^= 1;
+                    ++dy;
+                }
+            }
+        }
+    }
+    if (!live) return;
+    const int dst = (ref - pc.ref_begin) * group;
+    Matches(pc.matches).m[dst] = Match(x0, y0, 0, 0.0);
+    int filled = 0;
+    [[unroll]] for (int i = 0; i < K; ++i) {
+        if (i < group - 1 && best[i] != kEmpty) {
+            const uint at = uint(best[i]), bits = uint(best[i] >> 32);
+            Matches(pc.matches).m[dst + 1 + i] = Match(int(at & 0xffffu), int(at >> 16), 0, uintBitsToFloat(bits));
+            ++filled;
+        }
+    }
+    Counts(pc.counts).c[ref - pc.ref_begin] = 1 + filled;
+}

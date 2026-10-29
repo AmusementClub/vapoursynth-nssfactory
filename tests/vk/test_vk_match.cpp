@@ -227,6 +227,40 @@ void temporal_case(const std::shared_ptr<Device>& device, Matcher& matcher, int 
     if (failures != before) std::printf("%s: %d failures\n", label, failures - before);
 }
 
+void square_case(const std::shared_ptr<Device>& device, SquareMatcher& square, int width, int height, int block,
+                 int group, int step, int range, bool flat, Stats& stats, int pad = 0, bool split = false) {
+    const auto plane = make_plane(width, height, 7u + block + group, flat);
+    const int pitch = width + pad;
+    UploadPlane d_plane(device, static_cast<std::size_t>(pitch) * sizeof(float), height);
+    d_plane.write(plane.data(), static_cast<std::ptrdiff_t>(width * sizeof(float)), width * sizeof(float));
+    const RasterGrid grid = make_raster_grid(width, height, block, step);
+    const MatchGeometry g{width, height, pitch, block, range, group};
+    CHECK(spatial_match_square_takes(g, grid), "square b%d g%d s%d: shape rejected", block, group, step);
+    DownloadPlane out(device, static_cast<std::size_t>(grid.count()) * group * sizeof(DeviceMatch), 1);
+    DownloadPlane counts(device, static_cast<std::size_t>(grid.count()) * sizeof(int), 1);
+    Slot slot(device);
+    if (d_plane.needs_copy()) d_plane.record_upload(slot.commands(Slot::Upload));
+    const int first = split ? grid.count() / 3 : grid.count();
+    square.spatial(slot.commands(Slot::Compute), d_plane.address(), g, grid, 0, first, out.address(), counts.address());
+    square.spatial(slot.commands(Slot::Compute), d_plane.address(), g, grid, first, grid.count() - first,
+                   out.address() + static_cast<VkDeviceAddress>(first) * group * sizeof(DeviceMatch),
+                   counts.address() + static_cast<VkDeviceAddress>(first) * sizeof(int));
+    out.record_download(slot.commands(Slot::Download));
+    counts.record_download(slot.commands(Slot::Download));
+    slot.submit();
+    slot.wait();
+    Run run{std::vector<DeviceMatch>(static_cast<std::size_t>(grid.count()) * group), std::vector<int>(grid.count())};
+    out.read(run.matches.data(), 0, run.matches.size() * sizeof(DeviceMatch));
+    counts.read(run.counts.data(), 0, run.counts.size() * sizeof(int));
+    for (int ref = 0; ref < grid.count(); ++ref) {
+        nss::Match cpu[256];
+        const int n = nss::spatial_match(plane.data(), width, width, height, grid.x(ref), grid.y(ref), block, range,
+                                         group, cpu);
+        compare_group(cpu, n, run.matches.data() + static_cast<std::size_t>(ref) * group, run.counts[ref], flat, stats,
+                      "square spatial", ref);
+    }
+}
+
 // nss::image_match: `nch` channels summed, the exact-size window
 // [c - window / 2, c + window - window / 2 - 1], groups up to 256, and the
 // predictive search over `frames` frames from reference frame t0 (as
@@ -324,7 +358,15 @@ int main(int argc, char** argv) {
     }
     std::shared_ptr<Device> device = Device::open(index, argc > 1);
     Matcher matcher(device);
+    SquareMatcher square(device);
     Stats stats;
+    for (const bool flat : {false, true}) {
+        square_case(device, square, 71, 66, 2, 8, 1, 7, flat, stats, 3, true);
+        square_case(device, square, 71, 66, 4, 16, 2, 7, flat, stats);
+        square_case(device, square, 71, 66, 8, 8, 4, 7, flat, stats, 0, true);
+        square_case(device, square, 71, 66, 12, 32, 6, 7, flat, stats);
+        square_case(device, square, 71, 66, 16, 16, 8, 7, flat, stats, 5, true);
+    }
     for (const bool flat : {false, true}) {
         for (const int block : {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}) {
             for (const int group : {2, 8, 16, 32}) {

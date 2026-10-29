@@ -159,6 +159,7 @@ struct Driver : GroupFilterConfig {
     bool basic_out[3]{true, true, true};    // two_stage: the first stage filters channel c of a unit
     std::size_t slots = 0, permits = 0;
     std::unique_ptr<Matcher> matcher;
+    std::unique_ptr<SquareMatcher> square_matcher;
     std::unique_ptr<Aggregator> aggregator;
     std::unique_ptr<SlotPool<GroupSlot>> pool;
     // GPU frames: a rolling output frame is copied out of its chunk store on
@@ -662,6 +663,9 @@ void filter_center(Driver& d, VkCommandBuffer commands, const BatchBuffers& buff
         if (d.radius > 0) {
             d.matcher->predictive(commands, geometry, window, p.grid, begin, count, buffers.matches.address(),
                                   buffers.counts.address());
+        } else if (d.square_matcher && spatial_match_square_takes(geometry, p.grid)) {
+            d.square_matcher->spatial(commands, io.match, geometry, p.grid, begin, count, buffers.matches.address(),
+                                       buffers.counts.address());
         } else {
             d.matcher->spatial(commands, io.match, geometry, p.grid, begin, count, buffers.matches.address(),
                                buffers.counts.address());
@@ -1716,6 +1720,7 @@ void group_filter_install(GroupFilterConfig&& config, VSMap* out, VSCore* core, 
         plan_frames(*d);
     }
     d->matcher = std::make_unique<Matcher>(d->device);
+    if (d->square_match) d->square_matcher = std::make_unique<SquareMatcher>(d->device);
     d->aggregator = std::make_unique<Aggregator>(d->device);
     for (const GroupPlane* p : stage_planes(*d)) {
         MatchGeometry g{p->width, p->height, p->width, p->block, p->range, p->group};
@@ -1724,6 +1729,7 @@ void group_filter_install(GroupFilterConfig&& config, VSMap* out, VSCore* core, 
         const int ps_num = d->radius > 0 ? p->ps_num : 0;
         if (!d->matcher->supports(g, ps_num)) throw std::logic_error(prefix(*d) + "no matcher for this search");
         d->matcher->prepare(g, d->radius > 0, ps_num);
+        if (d->square_matcher) d->square_matcher->prepare(g, p->grid);
         if (d->prepare) d->prepare(*p, p->wiener);
     }
     if (rolling(*d)) {
