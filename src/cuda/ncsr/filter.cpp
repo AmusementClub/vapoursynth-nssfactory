@@ -54,6 +54,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         g.ps_range = p.ps_range;
         g.fused = true;
     }
+    config.column_match = true;
     config.launch = [](const GroupLaunch& l) {
         NcsrGroupArgs args{};
         args.src = l.src;
