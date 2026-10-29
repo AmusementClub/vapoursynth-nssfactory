@@ -93,7 +93,7 @@ core.nss_cuda.NCSR(clip clip[, float[] sigma = 3.0, int block_size = 8,
 
 ## Speed
 
-1080p, RTX 5080 with a Ryzen 5950X, one stream, 2026-10-16: default (gray) 516 fps,
+1080p, RTX 5080 with a Ryzen 5950X, one stream: default (gray) 516 fps,
 `block_step=4` 266, `group_size=16` 177, `group_size=32, block_step=4` 13.3, RGB 195,
 `radius=1` 310 (`iters=1`: 456); `group_size=32` with the default step 50. The
 16-thread CPU plugin on the same host: 35.8, 6.8, 3.0, 0.084, 8.4 and 11.7 (21.6).

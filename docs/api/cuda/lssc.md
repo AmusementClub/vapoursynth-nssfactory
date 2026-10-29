@@ -26,9 +26,9 @@ runs at 92 fps at sigma 3 and 195 at sigma 25 (gray: 285 and 635).
 Model version 3 (k-means clusters and a group soft threshold, default
 `block_step=8`) ran the same images at 205 (YUV420) and 145 (RGB), where
 version 4 then ran at 230 and 145 (before its GPU dictionary and alpha0
-changes of 2026-10-22): paired on each image, version 4 was 1.14x in YUV420
-(0.95x to 1.17x) and 0.99x in RGB (0.72x to 1.13x); the most textured images
-are the slowest.
+changes): paired on each image, version 4 was 14% faster in YUV420
+(between 5% slower and 17% faster) and 1% slower in RGB (between 28% slower
+and 13% faster); the most textured images are the slowest.
 
 ## Closer to the papers
 

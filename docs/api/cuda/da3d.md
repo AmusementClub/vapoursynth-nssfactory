@@ -48,8 +48,7 @@ requires; more measured no faster.
   100 dB or more from the CPU's output, the same PSNR to the clean frame,
   the patch counts within 1%): the 64 x 64 FFT is the CPU's radix-4
   arithmetic in shared memory and the kernels are built without
-  contraction; only the sums' order differs (1.15x on gray, owner's choice
-  of 2026-10-22).
+  contraction; only the sums' order differs (15% faster on gray).
 - **Memory**: about 7 bytes a pixel per stream for a joint RGB clip (the
   tiles' sums), plus the frames; a plane-by-plane clip holds the work of
   every filtered plane at once.

@@ -14,7 +14,7 @@ filters keeps its frames in video memory.
 
 Frames per second at 1080p, default arguments (BM3D `sigma=3`), on an RTX 5080
 (Ryzen 9 5950X host, driver 595.91.07), one instance, frames requested in
-order and not read back by the consumer, median of three runs (2026-10-28):
+order and not read back by the consumer, median of three runs:
 
 | Filter | VapourSynth R81, CPU frames (gray / YUV420 / RGB) | vapoursynth-classic, [direct transfers](#direct-transfers-with-vapoursynth-classic) | R81, [GPU frames](#gpu-frames-vapoursynth-r80) |
 |---|---:|---:|---:|

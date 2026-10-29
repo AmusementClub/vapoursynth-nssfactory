@@ -120,12 +120,12 @@ same build is reproducible bit-for-bit on a given toolchain.
 ## Defaults rationale and performance
 
 `block=8, step=8, group=8, sigma=3` is the balanced point chosen from this
-repository's calibration matrix; `bm_range` was 7 there and is 9 since
-2026-10-20 (BM3DCUDA's default as well). Over nine 1080p test images, gray and
+repository's calibration matrix; `bm_range` was 7 there and is now 9
+(BM3DCUDA's default as well). Over nine 1080p test images, gray and
 RGB, the wider window gains 0.04 to 0.17 dB PSNR at sigma 3 to 25 (mean +0.06
 at sigma 3, +0.12 at 10, +0.14 at 25) and never loses; 12 and 16 gain about
-twice that with 1.7x and 3.0x the candidates of 9. ~59 ms per 1080p
-GRAYS frame on a single Emerald Rapids core (~17 fps, measured with
+twice that with 1.7x and 3.0x the candidates of 9. About 17 fps per 1080p
+GRAYS frame on a single Emerald Rapids core (measured with
 `bm_range=7`) — the fastest filter here. The dominant cost driver is
 `block_step` (positions scale as `1/step^2`), then `bm_range` and
 `group_size`.

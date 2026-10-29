@@ -111,14 +111,14 @@ Speed against `NLM` as `a` and `d` grow, each at its defaults otherwise
 (1080p gray). `NLM` computes a distance for every pixel at every
 displacement; PNLM one quarter distance a reference position (every
 `block_size / 2` pixels each way), shared by four references, so both grow
-with `(2a+1)^2 (2d+1)` but PNLM from a far smaller base, plus about 65 ms
-on the CPU that does not grow. PNLM / `NLM`:
+with `(2a+1)^2 (2d+1)` but PNLM from a far smaller base, plus nearly constant
+CPU overhead. PNLM / `NLM`, fps:
 
 | | `a = 2` | `a = 4` | `a = 8` |
 |---|---:|---:|---:|
-| CPU, one Ryzen 9 5950X core, ms a frame, `d = 0` | 139 / 28 | 245 / 94 | 469 / 423 |
-| CPU, `d = 1` | 247 / 114 | 445 / 399 | 972 / 1786 |
-| CUDA, RTX 5080, fps, `d = 0` | 732 / 733 | 731 / 705 | 706 / 210 |
+| CPU, one Ryzen 9 5950X core, `d = 0` | 7.19 / 35.71 | 4.08 / 10.64 | 2.13 / 2.36 |
+| CPU, `d = 1` | 4.05 / 8.77 | 2.25 / 2.51 | 1.03 / 0.56 |
+| CUDA, RTX 5080, `d = 0` | 732 / 733 | 731 / 705 | 706 / 210 |
 | CUDA, `d = 1` | 721 / 712 | 699 / 214 | 535 / 51 |
 | CUDA, `d = 2` | 713 / 384 | 670 / 110 | 392 / 31 |
 

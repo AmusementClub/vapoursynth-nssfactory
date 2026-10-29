@@ -33,16 +33,16 @@ warm-up; the images differ by at most 3%.
   `BM3D(final=1)` at 4/3 sigma as its guide (computed beforehand). DA3D's
   output is within a level of the CPU plugin's; BM4D's matching takes FP16
   distances (its PSNR is the CPU's).
-- PNLM was measured on 2026-10-28, when `NLM` measured 711 / 269 the same way;
-  PNLM filters every plane by default, `NLM` only luma (`sigma=[3, 0]`: 606).
+- PNLM filters every plane by default; `NLM` filters only luma and measured
+  711 / 269 fps the same way (`sigma=[3, 0]`: 606).
 - NLH runs its default blind noise estimation; giving `sigma` skips it.
 - TWSC's default is a speed setting. Its quality geometry (`block_step=1,
-  group_size=90, iters=12`) denoises 8 to 10 dB better and takes about 80 s
-  per YUV420 1080p frame and 45 s per RGB frame; its page has the trade-offs.
+  group_size=90, iters=12`) denoises 8 to 10 dB better and runs at about
+  0.012 fps for YUV420 and 0.022 fps for RGB at 1080p; its page has the trade-offs.
 - MCWNNM takes RGB only.
 - The release packages are built with CUDA 13.3. Up to r2 they were built with CUDA 12.9, which
-  gives the same output and the same speed within 5% for every filter except NLM, about 1.25x
-  slower at its defaults (490 / 255 fps).
+  gives the same output and the same speed within 5% for every filter except NLM, about 20%
+  fewer fps at its defaults (490 / 255 fps).
 - Against BM3DCUDA, VapourSynth-WNNM, vs-nlm-ispc and vs-nlm-cuda at the same arguments, and
   r2 against r1: [Against other plugins](compare.md).
 - The CPU plugin's speed is on the [CPU API guide](../README.md).

@@ -7,7 +7,7 @@ its most expensive one per pixel family.
 
 ```python
 out = core.nss.MCWNNM(rgb_clip, sigma=[25, 25, 25])   # defaults
-quick = core.nss.MCWNNM(rgb_clip, sigma=25, iters=1)  # coarser but ~2x faster
+quick = core.nss.MCWNNM(rgb_clip, sigma=25, iters=1)  # coarser but ~100% faster
 ```
 
 ## Signature
@@ -64,10 +64,10 @@ output bit-for-bit.
 ## Defaults rationale and performance
 
 Defaults mirror the shared geometry (block/step/group/range 8/8/8/7) plus the
-authors' ADMM schedule. ~2326 ms per 1080p frame single-core (~0.43 fps) —
-**note this is for all three RGB planes**, so per-channel cost is ~3x a gray
-filter at the same settings. `admm_iter` and `iters` multiply the solve cost
-directly; `block_step` scales positions as usual.
+authors' ADMM schedule. About 0.43 fps at 1080p on one CPU core —
+**note this is for all three RGB planes**, so per-channel cost is about three
+times a gray filter at the same settings. `admm_iter` and `iters` multiply the
+solve cost directly; `block_step` scales positions as usual.
 
 Settings closer to the paper, with their measured quality and GPU speed, are on the [CUDA page](cuda/mcwnnm.md#closer-to-the-papers); the CPU takes the same arguments.
 

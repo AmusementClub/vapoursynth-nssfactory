@@ -91,7 +91,7 @@ sigma 10／25 的平均 PSNR 相對舊版分別下降約 0.366／0.167 dB。
 ## Defaults rationale and performance
 
 Shared geometry (8/8/8/7) + two rounds, matching the calibration matrix.
-~268 ms per 1080p GRAYS frame single-core (~3.7 fps). Matching cost scales
+About 3.7 fps at 1080p gray on one CPU core. Matching cost scales
 with `1/step^2 * bm_range^2`; per-group cost scales with the PCA/SVD solve at
 `block^2 x group`.
 

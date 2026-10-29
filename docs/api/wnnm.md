@@ -2,7 +2,7 @@
 
 Weighted Nuclear Norm Minimization: patch groups are shrunk through a weighted
 singular-value soft-threshold instead of a fixed transform. Better texture and
-edge retention than BM3D on natural noise, at about 2x BM3D's cost.
+edge retention than BM3D on natural noise, at about twice BM3D's cost.
 
 ```python
 out = core.nss.WNNM(clip, sigma=25)                    # defaults
@@ -57,7 +57,7 @@ pinned so a given toolchain reproduces output bit-for-bit.
 
 `block=8, step=8, group=8, bm_range=7, sigma=3` mirrors the shared search
 geometry used across this plugin's denoisers so algorithms can be compared at
-matched settings. ~131 ms per 1080p GRAYS frame single-core (~7.6 fps).
+matched settings. About 7.6 fps at 1080p gray on one CPU core.
 Cost scales with `1/step^2` for matching plus per-group SVD work growing with
 `group_size` and `block_size^2`.
 

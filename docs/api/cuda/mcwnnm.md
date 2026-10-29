@@ -19,7 +19,7 @@ quick = core.nss_cuda.MCWNNM(rgb_clip, sigma=25, iters=1)
 | default | — | 200 |
 | `radius=1` | — | 135 |
 
-`iters=1` (one round instead of two) is about 1.5x faster at `radius=1`.
+`iters=1` (one round instead of two) is about 50% faster at `radius=1`.
 
 ## Closer to the papers
 
@@ -94,7 +94,7 @@ core.nss_cuda.MCWNNM(clip clip[, float[] sigma = 3.0, int block_size = 8,
 
 ## Speed
 
-RGB 1080p, RTX 5080 with a Ryzen 5950X, one stream, 2026-10-16: default 178 fps,
+RGB 1080p, RTX 5080 with a Ryzen 5950X, one stream: default 178 fps,
 `radius=1` 113 (`iters=1`: 169), `radius=2` 90. Before the rolling mode ran on the
 device (legacy + reduction on the host) `radius=1` took 39 fps (`iters=1`: 40).
 

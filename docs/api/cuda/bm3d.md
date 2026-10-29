@@ -28,9 +28,9 @@ temporal = core.nss.VAggregate(fat, clip, radius=1)       # the CPU plugin's VAg
 | `radius=1` | 455 | 230 |
 
 Against [BM3DCUDA](https://github.com/WolframRhodium/VapourSynth-BM3DCUDA) with
-the same search, at 1080p gray: about 1.25x spatial, and 2.7x / 3.3x at
-`radius=1` / `2` when frames are rendered in order. With `chroma=1` at YUV444:
-243 fps against its 200.
+the same search, at 1080p gray: about 25% faster spatial, and 170% / 230%
+faster at `radius=1` / `2` when frames are rendered in order. With `chroma=1`
+at YUV444: 243 fps against its 200.
 
 For spatial, single-channel, symmetric-window searches, the exact column
 matcher reuses vertical distances across references on each grid row and
@@ -47,7 +47,7 @@ returns bit-identical matches to the lane matcher.
 Other shapes keep their existing matcher: block 4 step 2 uses square; block 16
 with group 32, and block 16 / group 8 at step 3, use lane. Block 32 and
 temporal searches do not use column. On an RTX 5080, the 20 new 4/12/16 shapes
-measured **1.11–1.54x** in paired 1080p Gray runs with identical output.
+measured **11–54% faster** in paired 1080p Gray runs with identical output.
 
 When `block_size` is twice `block_step` (2 / 1, 4 / 2, 8 / 4, 12 / 6, 16 / 8:
 `block_size=16` at its default step is one) the spatial search shares work
