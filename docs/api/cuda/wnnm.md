@@ -83,6 +83,9 @@ core.nss_cuda.WNNM(clip clip[, float[] sigma = 3.0, int block_size = 8,
 
 - **Accuracy.** 86–143 dB against the CPU plugin on the reference set (the SVD
   is taken through an FP32 Gram matrix); identical from run to run.
+- **Matching.** Spatial search reuses [BM3D's exact column matcher](bm3d.md#speed)
+  with the same block, step and group limits. Other spatial shapes and temporal
+  search keep their existing matchers.
 
 ## Pitfalls
 

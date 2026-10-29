@@ -48,6 +48,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         g.ps_range = p.ps_range;
         g.fused = true;
     }
+    config.column_match = true;
     const int residual = p.residual, adaptive = p.adaptive;
     config.launch = [residual, adaptive](const GroupLaunch& l) {
         WnnmGroupArgs args{};

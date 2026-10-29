@@ -85,6 +85,9 @@ core.nss_cuda.NCSR(clip clip[, float[] sigma = 3.0, int block_size = 8,
 
 - **Accuracy.** 105–139 dB against the CPU plugin on the reference set;
   identical from run to run.
+- **Matching.** Spatial search reuses [BM3D's exact column matcher](bm3d.md#speed)
+  with the same block, step and group limits. Other spatial shapes and temporal
+  search keep their existing matchers.
 - **Temporal output** runs every round on the GPU and agrees with the legacy
   intermediate reduced by `VAggregate` to 142–152 dB.
 - **Memory.** At gray 1080p `radius=1` an instance takes about 310 MiB of GPU
