@@ -18,6 +18,9 @@
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
 #extension GL_EXT_control_flow_attributes : require
 #extension GL_GOOGLE_include_directive : require
+#ifndef PS1
+#define PS1 0
+#endif
 
 #define WARP_L L
 #define WARP_WARPS 4
@@ -217,8 +220,13 @@ void main() {
                 uint64_t local = EMPTY;
                 for (int i = 0; i < pc.ps_num; ++i) {
                     const uint c = w_shfl(centers, i);
+#if PS1
+                    lane_scan(plane, int(c & 0xffffu), int(c >> 16), pc.ps_range, pc.ps_range, i < nc, 0xffffffffu, false,
+                              local);
+#else
                     lane_scan(plane, int(c & 0xffffu), int(c >> 16), pc.ps_range, pc.ps_range, i < nc, 0xffffffffu, true,
                               local);
+#endif
                 }
                 const int found = w_count(sub < local_k && local != EMPTY);
                 // The layer's best into the global list, one at a time.

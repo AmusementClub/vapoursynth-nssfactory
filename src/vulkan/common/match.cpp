@@ -59,7 +59,8 @@ const Pipeline& Matcher::pipeline(const MatchGeometry& g, bool predictive, int p
     const bool emulate = emulated(g, ps_num);
     const std::string id =
         lane ? "match_lane_b" + std::to_string(g.block) + "_l" + std::to_string(lane_group(g, ps_num)) + "_c" +
-                   std::to_string(g.channels) + (predictive ? "_p" : "_s") + (emulate ? "_e" : "_n")
+                   std::to_string(g.channels) + (predictive ? "_p" : "_s") + (emulate ? "_e" : "_n") +
+                   (predictive && ps_num == 1 ? "_ps1" : "")
              : "match_block_k" + std::to_string(block_k(g, ps_num)) + (predictive ? "_p" : "_s");
     std::lock_guard lock(mutex_);
     auto it = pipelines_.find(id);
