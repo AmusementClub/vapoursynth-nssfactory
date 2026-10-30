@@ -2,7 +2,8 @@
 // Square matcher for blocks of 2Q at step Q: every Q x Q quarter distance is
 // shared by the four references that contain it. Distances use the quarter
 // column chains and a tree, not the lane kernels' block-row chains, so near
-// ties may resolve differently. Defines: Q, K (group - 1 rounded up to 2^k - 1).
+// ties may resolve differently. Defines: Q, K (group - 1 rounded up to 2^k - 1),
+// TEMPORAL (resolve the center plane through the device frame table).
 #version 460
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
@@ -23,6 +24,7 @@ struct Match {
 layout(buffer_reference) buffer Matches { Match m[]; };
 layout(buffer_reference) buffer Counts { int c[]; };
 layout(buffer_reference) buffer Plane { float v[]; };
+layout(buffer_reference) buffer Table { uint64_t p[]; };
 
 layout(push_constant) uniform Push {
     uint64_t source, matches, counts;
@@ -70,7 +72,11 @@ void main() {
     const int local = block - pc.pass[4 * which + 3];
     const int bx = local % blocks_x, by = local / blocks_x;
     const int rows = (pc.step_rows >> 16) & 0xff;
+#if TEMPORAL
+    const uint64_t source = Table(pc.source).p[(pc.step_rows >> 24) - 1];
+#else
     const uint64_t source = pc.source;
+#endif
     const int x0 = ox + Q * (REFS * bx + tx), y0 = oy + Q * (rows * by + ty);
     const int group = pc.group_range >> 16, range = pc.group_range & 0xffff;
     const int nx = pc.nx_ny & 0xffff, ny = pc.nx_ny >> 16;
@@ -134,12 +140,17 @@ void main() {
     }
     if (!live) return;
     const int dst = (ref - pc.ref_begin) * group;
-    Matches(pc.matches).m[dst] = Match(x0, y0, 0, 0.0);
+#if TEMPORAL
+    const int t0 = (pc.step_rows >> 24) - 1;
+#else
+    const int t0 = 0;
+#endif
+    Matches(pc.matches).m[dst] = Match(x0, y0, t0, 0.0);
     int filled = 0;
     [[unroll]] for (int i = 0; i < K; ++i) {
         if (i < group - 1 && best[i] != kEmpty) {
             const uint at = uint(best[i]), bits = uint(best[i] >> 32);
-            Matches(pc.matches).m[dst + 1 + i] = Match(int(at & 0xffffu), int(at >> 16), 0, uintBitsToFloat(bits));
+            Matches(pc.matches).m[dst + 1 + i] = Match(int(at & 0xffffu), int(at >> 16), t0, uintBitsToFloat(bits));
             ++filled;
         }
     }

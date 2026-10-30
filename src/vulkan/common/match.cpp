@@ -25,6 +25,9 @@ static_assert(sizeof(Push) == 120, "matches the push blocks of shaders/common/ma
 // The block fallback's bound on the group and ps_num (match_block.comp's K).
 constexpr int kBlockMaxK = 256;
 int block_k(const MatchGeometry& g, int ps_num) { return g.group <= 64 && ps_num <= 64 ? 64 : kBlockMaxK; }
+bool ps2_fast(const MatchGeometry& g, int ps_num) {
+    return ps_num == 2 && g.block == 16 && g.channels == 1 && lane_group(g, ps_num) == 16;
+}
 
 }  // namespace
 
@@ -53,14 +56,15 @@ bool Matcher::emulated(const MatchGeometry& g, int ps_num) const {
     return force_emulation_ || device_->support().native_lanes < width;
 }
 
-const Pipeline& Matcher::pipeline(const MatchGeometry& g, bool predictive, int ps_num) {
+const Pipeline& Matcher::pipeline(const MatchGeometry& g, bool predictive, int ps_num, bool seeded) {
     if (!supports(g, ps_num)) throw std::logic_error("nss_vk: no matcher for this search");
     const bool lane = lanes(g, ps_num);
     const bool emulate = emulated(g, ps_num);
     const std::string id =
         lane ? "match_lane_b" + std::to_string(g.block) + "_l" + std::to_string(lane_group(g, ps_num)) + "_c" +
                    std::to_string(g.channels) + (predictive ? "_p" : "_s") + (emulate ? "_e" : "_n") +
-                   (predictive && ps_num == 1 ? "_ps1" : "")
+                   (predictive && ps_num == 1 ? "_ps1" : predictive && ps2_fast(g, ps_num) ? "_ps2" : "") +
+                   (seeded ? "_seed" : "")
              : "match_block_k" + std::to_string(block_k(g, ps_num)) + (predictive ? "_p" : "_s");
     std::lock_guard lock(mutex_);
     auto it = pipelines_.find(id);
@@ -74,8 +78,8 @@ const Pipeline& Matcher::pipeline(const MatchGeometry& g, bool predictive, int p
     return it->second;
 }
 
-void Matcher::prepare(const MatchGeometry& g, bool predictive, int ps_num) {
-    pipeline(g, predictive, ps_num);
+void Matcher::prepare(const MatchGeometry& g, bool predictive, int ps_num, bool seeded) {
+    pipeline(g, predictive, ps_num, seeded);
 }
 
 namespace {
@@ -106,13 +110,15 @@ Push push_of(const MatchGeometry& g, const RasterGrid& grid, int ref_begin, int 
 }  // namespace
 
 void Matcher::dispatch(VkCommandBuffer commands, const MatchGeometry& g, bool predictive, int ps_num, const void* push,
-                       int ref_count) {
+                       int ref_count, bool seeded) {
     if (static_cast<long long>(ref_count) * g.group >= (1LL << 31)) {
         throw std::logic_error("nss_vk: match batch beyond 32-bit indices");
     }
-    const Pipeline& p = pipeline(g, predictive, ps_num);
-    // Lanes: 32 / L references a warp, four warps a workgroup. Block: one a workgroup.
-    const int per_group = lanes(g, ps_num) ? kLaneWarps * (32 / lane_group(g, ps_num)) : 1;
+    const Pipeline& p = pipeline(g, predictive, ps_num, seeded);
+    // Lanes: 32 / L references a warp. The PS2 variant uses eight warps, the
+    // other lane kernels four. Block: one reference a workgroup.
+    const int warps = predictive && ps2_fast(g, ps_num) ? 8 : kLaneWarps;
+    const int per_group = lanes(g, ps_num) ? warps * (32 / lane_group(g, ps_num)) : 1;
     const int groups = (ref_count + per_group - 1) / per_group;
     const int x = std::min(groups, max_groups_x_);
     p.dispatch(commands, push, static_cast<std::uint32_t>(x), static_cast<std::uint32_t>((groups + x - 1) / x));
@@ -128,7 +134,7 @@ void Matcher::spatial(VkCommandBuffer commands, VkDeviceAddress plane, const Mat
 
 void Matcher::predictive(VkCommandBuffer commands, const MatchGeometry& g, const TemporalWindow& window,
                          const RasterGrid& grid, int ref_begin, int ref_count, VkDeviceAddress matches,
-                         VkDeviceAddress counts) {
+                         VkDeviceAddress counts, bool seeded) {
     if (ref_count <= 0) return;
     Push p = push_of(g, grid, ref_begin, ref_count, matches, counts);
     p.source = window.frames;
@@ -139,7 +145,7 @@ void Matcher::predictive(VkCommandBuffer commands, const MatchGeometry& g, const
     p.valid_end = window.valid_end;
     p.ps_num = window.ps_num;
     p.ps_range = window.ps_range;
-    dispatch(commands, g, true, window.ps_num, &p, ref_count);
+    dispatch(commands, g, true, window.ps_num, &p, ref_count, seeded);
 }
 
 }  // namespace nss_vk

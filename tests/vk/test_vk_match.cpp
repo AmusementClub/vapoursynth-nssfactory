@@ -168,7 +168,8 @@ void spatial_case(const std::shared_ptr<Device>& device, Matcher& matcher, int w
 
 
 void temporal_case(const std::shared_ptr<Device>& device, Matcher& matcher, int width, int height, int block, int group,
-                   int step, int range, int radius, int center, int frame_count, bool flat, Stats& stats, int ps_num = 2) {
+                   int step, int range, int radius, int center, int frame_count, bool flat, Stats& stats, int ps_num = 2,
+                   int ps_range = 4, SquareMatcher* square = nullptr) {
     const int ntemp = 2 * radius + 1;
     std::vector<std::vector<float>> frames;
     std::vector<std::unique_ptr<UploadPlane>> d_frames;
@@ -192,7 +193,7 @@ void temporal_case(const std::shared_ptr<Device>& device, Matcher& matcher, int 
     cfg.bm_range = range;
     cfg.radius = radius;
     cfg.ps_num = std::min(ps_num, group);
-    cfg.ps_range = 4;
+    cfg.ps_range = ps_range;
     cfg.valid_t_begin = std::max(0, radius - center);
     cfg.valid_t_end = radius + std::min(radius + 1, frame_count - center);
 
@@ -201,8 +202,8 @@ void temporal_case(const std::shared_ptr<Device>& device, Matcher& matcher, int 
     const TemporalWindow w{table.address(), ntemp, radius, radius, cfg.valid_t_begin, cfg.valid_t_end, cfg.ps_num,
                            cfg.ps_range};
     char label[128];
-    std::snprintf(label, sizeof label, "temporal %dx%d b%d g%d s%d r%d R%d c%d/%d p%d%s", width, height, block, group,
-                  step, range, radius, center, frame_count, cfg.ps_num, flat ? " flat" : "");
+    std::snprintf(label, sizeof label, "temporal %dx%d b%d g%d s%d r%d R%d c%d/%d p%d/%d%s", width, height, block,
+                  group, step, range, radius, center, frame_count, cfg.ps_num, cfg.ps_range, flat ? " flat" : "");
     if (!matcher.supports(g, cfg.ps_num)) {
         CHECK(false, "%s: not supported", label);
         return;
@@ -223,6 +224,31 @@ void temporal_case(const std::shared_ptr<Device>& device, Matcher& matcher, int 
                                             grid.y(ref), radius, cfg, cpu);
         compare_group(cpu, n, run.matches.data() + static_cast<std::size_t>(ref) * group, run.counts[ref], flat, stats,
                       label, ref);
+    }
+    if (square) {
+        const Run seeded = run_both(device, matcher, g, cfg.ps_num, grid.count(),
+                                    [&](Slot& slot, VkDeviceAddress out, VkDeviceAddress counts) {
+                                        for (auto& f : d_frames) {
+                                            if (f->needs_copy()) f->record_upload(slot.commands(Slot::Upload));
+                                        }
+                                        if (table.needs_copy()) table.record_upload(slot.commands(Slot::Upload));
+                                        square->temporal(slot.commands(Slot::Compute), table.address(), radius, g, grid, 0,
+                                                         grid.count(), out, counts);
+                                        compute_barrier(*device, slot.commands(Slot::Compute));
+                                        matcher.predictive(slot.commands(Slot::Compute), g, w, grid, 0, grid.count(), out,
+                                                           counts, true);
+                                    },
+                                    "seeded square");
+        for (int ref = 0; ref < grid.count(); ++ref) {
+            CHECK(seeded.counts[ref] == run.counts[ref], "seeded square ref %d: count %d != %d", ref,
+                  seeded.counts[ref], run.counts[ref]);
+            for (int i = 0; i < std::min(seeded.counts[ref], run.counts[ref]); ++i) {
+                const DeviceMatch& a = seeded.matches[static_cast<std::size_t>(ref) * group + i];
+                const DeviceMatch& b = run.matches[static_cast<std::size_t>(ref) * group + i];
+                const bool same = a.x == b.x && a.y == b.y && a.t == b.t;
+                CHECK((flat && same) || near_tie(a.dist, b.dist), "seeded square ref %d entry %d differs", ref, i);
+            }
+        }
     }
     if (failures != before) std::printf("%s: %d failures\n", label, failures - before);
 }
@@ -366,6 +392,14 @@ int main(int argc, char** argv) {
         square_case(device, square, 71, 66, 8, 8, 4, 7, flat, stats, 0, true);
         square_case(device, square, 71, 66, 12, 32, 6, 7, flat, stats);
         square_case(device, square, 71, 66, 16, 16, 8, 7, flat, stats, 5, true);
+        for (const int q : {1, 2, 4, 6, 8}) {
+            temporal_case(device, matcher, 71, 66, 2 * q, 8, q, 7, 1, 1, 3, flat, stats, 2, 4, &square);
+        }
+        temporal_case(device, matcher, 71, 66, 8, 32, 4, 7, 2, 2, 5, flat, stats, 2, 4, &square);
+        temporal_case(device, matcher, 71, 66, 8, 2, 4, 7, 1, 1, 3, flat, stats, 2, 4, &square);
+        temporal_case(device, matcher, 71, 66, 8, 8, 4, 7, 1, 1, 3, flat, stats, 4, 4, &square);
+        temporal_case(device, matcher, 71, 66, 8, 8, 4, 7, 1, 1, 3, flat, stats, 1, 4, &square);
+        temporal_case(device, matcher, 71, 66, 16, 16, 8, 7, 1, 1, 3, flat, stats, 2, 4, &square);
     }
     for (const bool flat : {false, true}) {
         for (const int block : {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}) {
@@ -393,6 +427,9 @@ int main(int argc, char** argv) {
         temporal_case(device, matcher, 71, 66, 1, 16, 1, 5, 1, 1, 3, flat, stats);
         temporal_case(device, matcher, 71, 66, 32, 8, 9, 7, 1, 1, 3, flat, stats);
         temporal_case(device, matcher, 71, 66, 16, 16, 6, 7, 2, 2, 5, flat, stats);
+        for (const int ps_range : {0, 1, 7}) {
+            temporal_case(device, matcher, 71, 66, 16, 16, 6, 7, 1, 1, 3, flat, stats, 2, ps_range);
+        }
         temporal_case(device, matcher, 71, 66, 8, 8, 4, 7, 1, 1, 3, flat, stats, 1);
         temporal_case(device, matcher, 71, 66, 8, 16, 5, 7, 2, 0, 9, flat, stats, 1);
         // ps_num up to the lanes of a reference (the shuffle sources reach L - 1).

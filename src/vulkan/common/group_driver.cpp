@@ -660,7 +660,15 @@ void filter_center(Driver& d, VkCommandBuffer commands, const BatchBuffers& buff
     }
     for (int begin = 0; begin < p.grid.count(); begin += p.batch) {
         const int count = std::min(p.batch, p.grid.count() - begin);
-        if (d.radius > 0) {
+        const bool square_seeded = d.radius > 0 && d.square_matcher && d.matcher->lanes(geometry, p.ps_num) &&
+                                   spatial_match_square_takes(geometry, p.grid);
+        if (square_seeded) {
+            d.square_matcher->temporal(commands, io.match, window.t0, geometry, p.grid, begin, count,
+                                       buffers.matches.address(), buffers.counts.address());
+            compute_barrier(*d.device, commands);
+            d.matcher->predictive(commands, geometry, window, p.grid, begin, count, buffers.matches.address(),
+                                  buffers.counts.address(), true);
+        } else if (d.radius > 0) {
             d.matcher->predictive(commands, geometry, window, p.grid, begin, count, buffers.matches.address(),
                                   buffers.counts.address());
         } else if (d.square_matcher && spatial_match_square_takes(geometry, p.grid)) {
@@ -1728,8 +1736,10 @@ void group_filter_install(GroupFilterConfig&& config, VSMap* out, VSCore* core, 
         g.channel_step = static_cast<long long>(p->floats);
         const int ps_num = d->radius > 0 ? p->ps_num : 0;
         if (!d->matcher->supports(g, ps_num)) throw std::logic_error(prefix(*d) + "no matcher for this search");
-        d->matcher->prepare(g, d->radius > 0, ps_num);
-        if (d->square_matcher) d->square_matcher->prepare(g, p->grid);
+        const bool square_seeded = d->radius > 0 && d->square_matcher && d->matcher->lanes(g, ps_num) &&
+                                   spatial_match_square_takes(g, p->grid);
+        d->matcher->prepare(g, d->radius > 0, ps_num, square_seeded);
+        if (d->square_matcher) d->square_matcher->prepare(g, p->grid, square_seeded);
         if (d->prepare) d->prepare(*p, p->wiener);
     }
     if (rolling(*d)) {
