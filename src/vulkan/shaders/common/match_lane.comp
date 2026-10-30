@@ -11,8 +11,8 @@
 // shuffle with part of the subgroup.
 //
 // Defines: B (block), L (lanes per reference, 8 / 16 / 32), C (channels, 1 or
-// 3 joint), PREDICTIVE (0 spatial, 1 the predictive temporal search),
-// WARP_EMULATED (common/warp.glsl). Four 32-lane warps a workgroup.
+// 3 joint), PREDICTIVE (0 spatial, 1 predictive), PS1 / PS2 (seed counts),
+// SEEDED (reuse center matches), MATCH_WARPS (default 4), WARP_EMULATED.
 #version 460
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
@@ -21,9 +21,18 @@
 #ifndef PS1
 #define PS1 0
 #endif
+#ifndef PS2
+#define PS2 0
+#endif
+#ifndef SEEDED
+#define SEEDED 0
+#endif
+#ifndef MATCH_WARPS
+#define MATCH_WARPS 4
+#endif
 
 #define WARP_L L
-#define WARP_WARPS 4
+#define WARP_WARPS MATCH_WARPS
 #include "common/warp.glsl"
 
 layout(local_size_x = 32 * WARP_WARPS) in;
@@ -36,8 +45,8 @@ struct Match {
 };
 layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer Plane { float v[]; };
 layout(buffer_reference, std430, buffer_reference_align = 8) readonly buffer Table { uint64_t p[]; };
-layout(buffer_reference, std430, buffer_reference_align = 16) writeonly buffer Matches { Match m[]; };
-layout(buffer_reference, std430, buffer_reference_align = 4) writeonly buffer Counts { int c[]; };
+layout(buffer_reference, std430, buffer_reference_align = 16) buffer Matches { Match m[]; };
+layout(buffer_reference, std430, buffer_reference_align = 4) buffer Counts { int c[]; };
 
 layout(push_constant) uniform Push {
     uint64_t source;   // spatial: the plane; predictive: a table of ntemp plane addresses
@@ -179,10 +188,57 @@ void lane_scan(uint64_t plane, int mx, int my, int lo, int hi, bool enabled, uin
     }
 }
 
+#if PS2
+// The temporal layer needs only two keys. Every lane has the same candidate
+// after lane_tree, so keep the same best two on every lane instead of a
+// lane-held list with ballot and shuffle insertion.
+void lane_scan2(uint64_t plane, int mx, int my, int lo, int hi, bool enabled, uint skip, inout uint64_t best0,
+                inout uint64_t best1) {
+    const int sub = w_sub();
+    const int column = sub;
+    const int max_x = pc.width - B, max_y = pc.height - B, last_row = pc.height - 1;
+    const int bottom = my + hi;
+    for (int x = mx - lo; x <= mx + hi; ++x) {
+        const bool col_ok = enabled && x >= 0 && x <= max_x;
+        const int col = clamp(x, 0, max_x);
+        float v[B];
+        [[unroll]] for (int k = 1; k < B; ++k) {
+            const int row = clamp(my - lo + k - 1, 0, last_row) * pc.pitch + col;
+            v[k] = Plane(plane).v[row + column];
+        }
+        for (int y = my - lo; y <= bottom; ++y) {
+            const int row = clamp(y + B - 1, 0, last_row) * pc.pitch + col;
+            precise float sum = 0.0f;
+            [[unroll]] for (int k = 0; k < B - 1; ++k) v[k] = v[k + 1];
+            v[B - 1] = Plane(plane).v[row + column];
+            [[unroll]] for (int k = 0; k < B; ++k) {
+                precise float d = g_ref[k] - v[k];
+                sum = fma(d, d, sum);
+            }
+            sum = lane_tree(sum);
+            const uint at = lane_position(x, y);
+            const bool ok = col_ok && y >= 0 && y <= max_y && at != skip;
+            const uint64_t key = ok ? (uint64_t(min(floatBitsToUint(sum), INF_BITS)) << 32 | uint64_t(at)) : EMPTY;
+            const bool fresh = key != best0 && key != best1;
+            const bool first = key < best0;
+            const bool second = fresh && !first && key < best1;
+            best1 = first ? best0 : second ? key : best1;
+            best0 = first ? key : best0;
+        }
+    }
+}
+#endif
+
 Match lane_match(uint64_t key, int t) {
     const uint at = uint(key), bits = uint(key >> 32);
     return Match(int(at & 0xffffu), int(at >> 16), t, uintBitsToFloat(bits));
 }
+
+#if SEEDED
+uint64_t key_of(Match m) {
+    return uint64_t(floatBitsToUint(m.dist)) << 32 | uint64_t(m.y) << 16 | uint64_t(m.x);
+}
+#endif
 
 void main() {
     const int sub = w_sub();
@@ -198,7 +254,13 @@ void main() {
     const int t0 = pc.t0;
     const uint64_t center_plane = Table(pc.source).p[t0];
     lane_reference(center_plane, cx, cy, sub);
+#if SEEDED
+    if (sub < wanted && sub < Counts(pc.counts).c[rr] - 1) {
+        held = key_of(Matches(pc.matches).m[rr * pc.group + 1 + sub]);
+    }
+#else
     lane_scan(center_plane, cx, cy, pc.lo, pc.hi, true, lane_position(cx, cy), false, held);
+#endif
     held = sub >= wanted ? EMPTY : held;
     int held_t = t0;
     if (pc.radius > 0 && pc.ntemp > 1) {
@@ -218,6 +280,16 @@ void main() {
                 if (t < first || t >= last) break;
                 const uint64_t plane = Table(pc.source).p[t];
                 uint64_t local = EMPTY;
+#if PS2
+                uint64_t best0 = EMPTY, best1 = EMPTY;
+                const uint c0 = w_shfl(centers, 0);
+                lane_scan2(plane, int(c0 & 0xffffu), int(c0 >> 16), pc.ps_range, pc.ps_range, 0 < nc, 0xffffffffu,
+                           best0, best1);
+                const uint c1 = w_shfl(centers, 1);
+                lane_scan2(plane, int(c1 & 0xffffu), int(c1 >> 16), pc.ps_range, pc.ps_range, 1 < nc, 0xffffffffu,
+                           best0, best1);
+                local = sub == 0 ? best0 : sub == 1 ? best1 : EMPTY;
+#else
                 for (int i = 0; i < pc.ps_num; ++i) {
                     const uint c = w_shfl(centers, i);
 #if PS1
@@ -228,9 +300,14 @@ void main() {
                               local);
 #endif
                 }
+#endif
                 const int found = w_count(sub < local_k && local != EMPTY);
                 // The layer's best into the global list, one at a time.
+#if PS2
+                [[unroll]] for (int i = 0; i < 2; ++i) {
+#else
                 for (int i = 0; i < pc.ps_num; ++i) {
+#endif
                     const uint64_t e = w_shfl64(local, i);
                     const uint64_t pre = w_up64(held);
                     const int pre_t = int(w_up(uint(held_t)));

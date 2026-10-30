@@ -148,11 +148,49 @@ foreach(_nss_c 1 3)
     endforeach()
   endforeach()
 endforeach()
+# Square-center seeding for every block = 2 * step shape served by the lane
+# matcher. PS1 keeps its no-dedupe specialization; B16 PS2 has its own below.
+foreach(_nss_b 2 4 8 12 16)
+  foreach(_nss_l 8 16 32)
+    foreach(_nss_emu 0 1)
+      if(_nss_emu)
+        set(_nss_layer e)
+      else()
+        set(_nss_layer n)
+      endif()
+      nss_vk_add_shader(NSS_VK_SPIRV_SOURCES
+                        match_lane_b${_nss_b}_l${_nss_l}_c1_p_${_nss_layer}_seed common/match_lane.comp
+                        DEFINES B=${_nss_b} L=${_nss_l} C=1 PREDICTIVE=1 SEEDED=1
+                                WARP_EMULATED=${_nss_emu})
+      nss_vk_add_shader(NSS_VK_SPIRV_SOURCES
+                        match_lane_b${_nss_b}_l${_nss_l}_c1_p_${_nss_layer}_ps1_seed common/match_lane.comp
+                        DEFINES B=${_nss_b} L=${_nss_l} C=1 PREDICTIVE=1 PS1=1 SEEDED=1
+                                WARP_EMULATED=${_nss_emu})
+    endforeach()
+  endforeach()
+endforeach()
+# B16/L16 single-channel PS2: fixed two-seed loops, a register top-2 and eight
+# warps a workgroup. Keep the generic ps>1 variants for every other shape.
+foreach(_nss_emu 0 1)
+  if(_nss_emu)
+    set(_nss_layer e)
+  else()
+    set(_nss_layer n)
+  endif()
+  nss_vk_add_shader(NSS_VK_SPIRV_SOURCES
+                    match_lane_b16_l16_c1_p_${_nss_layer}_ps2 common/match_lane.comp
+                    DEFINES B=16 L=16 C=1 PREDICTIVE=1 PS2=1 MATCH_WARPS=8 WARP_EMULATED=${_nss_emu})
+  nss_vk_add_shader(NSS_VK_SPIRV_SOURCES
+                    match_lane_b16_l16_c1_p_${_nss_layer}_ps2_seed common/match_lane.comp
+                    DEFINES B=16 L=16 C=1 PREDICTIVE=1 PS2=1 SEEDED=1 MATCH_WARPS=8 WARP_EMULATED=${_nss_emu})
+endforeach()
 # BM3D square matching (block = 2Q at step Q), with its own reduction order.
 foreach(_nss_q 1 2 4 6 8)
   foreach(_nss_k 1 3 7 15 31)
     nss_vk_add_shader(NSS_VK_SPIRV_SOURCES match_square_q${_nss_q}_k${_nss_k} common/match_square.comp
                       DEFINES Q=${_nss_q} K=${_nss_k})
+    nss_vk_add_shader(NSS_VK_SPIRV_SOURCES match_square_q${_nss_q}_k${_nss_k}_t common/match_square.comp
+                      DEFINES Q=${_nss_q} K=${_nss_k} TEMPORAL=1)
   endforeach()
 endforeach()
 # The block fallback (common/match_block.comp): a workgroup per reference for

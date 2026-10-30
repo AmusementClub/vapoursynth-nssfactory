@@ -72,23 +72,25 @@ bool spatial_match_square_takes(const MatchGeometry& g, const RasterGrid& grid) 
     return !lanes;
 }
 
-const Pipeline& SquareMatcher::pipeline(int q, int group) {
+const Pipeline& SquareMatcher::pipeline(int q, int group, bool temporal) {
     const int wanted = group - 1;
     const int k = wanted <= 1 ? 1 : wanted <= 3 ? 3 : wanted <= 7 ? 7 : wanted <= 15 ? 15 : 31;
-    const std::string id = "match_square_q" + std::to_string(q) + "_k" + std::to_string(k);
+    const std::string id = "match_square_q" + std::to_string(q) + "_k" + std::to_string(k) + (temporal ? "_t" : "");
     std::lock_guard lock(mutex_);
     auto it = pipelines_.find(id);
     if (it == pipelines_.end()) it = pipelines_.emplace(id, Pipeline(device_, {id, sizeof(SquarePush), 0, {}})).first;
     return it->second;
 }
 
-void SquareMatcher::prepare(const MatchGeometry& g, const RasterGrid& grid) {
-    if (spatial_match_square_shape(g, grid)) pipeline(grid.step, g.group);
+void SquareMatcher::prepare(const MatchGeometry& g, const RasterGrid& grid, bool temporal) {
+    if (!spatial_match_square_shape(g, grid)) return;
+    pipeline(grid.step, g.group);
+    if (temporal) pipeline(grid.step, g.group, true);
 }
 
 void SquareMatcher::spatial(VkCommandBuffer commands, VkDeviceAddress plane, const MatchGeometry& g,
                             const RasterGrid& grid, int ref_begin, int ref_count, VkDeviceAddress matches,
-                            VkDeviceAddress counts) {
+                            VkDeviceAddress counts, int frame) {
     if (ref_count <= 0 || !spatial_match_square_takes(g, grid)) return;
     const int q = grid.step;
     const Passes plan = plan_square(q, grid, ref_begin, ref_count);
@@ -102,16 +104,22 @@ void SquareMatcher::spatial(VkCommandBuffer commands, VkDeviceAddress plane, con
     p.pitch = g.pitch;
     p.group_range = (g.group << 16) | g.bm_range;
     p.nx_ny = (grid.ny << 16) | grid.nx;
-    p.step_rows = (plan.rows << 16) | q;
+    p.step_rows = ((frame + 1) << 24) | (plan.rows << 16) | q;
     p.max_x = grid.max_x;
     p.max_y = grid.max_y;
     p.ref_begin = ref_begin;
     p.ref_count = ref_count;
     std::copy(&plan.pass[0][0], &plan.pass[0][0] + 16, p.pass);
-    const Pipeline& pipe = pipeline(q, g.group);
+    const Pipeline& pipe = pipeline(q, g.group, frame >= 0);
     const int x = std::min(plan.blocks, 65535);
     pipe.dispatch(commands, &p, static_cast<std::uint32_t>(x),
                   static_cast<std::uint32_t>((plan.blocks + x - 1) / x));
+}
+
+void SquareMatcher::temporal(VkCommandBuffer commands, VkDeviceAddress frames, int t0, const MatchGeometry& g,
+                             const RasterGrid& grid, int ref_begin, int ref_count, VkDeviceAddress matches,
+                             VkDeviceAddress counts) {
+    spatial(commands, frames, g, grid, ref_begin, ref_count, matches, counts, t0);
 }
 
 }  // namespace nss_vk

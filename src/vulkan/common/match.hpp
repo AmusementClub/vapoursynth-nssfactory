@@ -60,8 +60,9 @@ public:
     bool supports(const MatchGeometry& g, int ps_num) const;
     // Whether the lane kernels serve the search (else the block fallback).
     bool lanes(const MatchGeometry& g, int ps_num) const;
-    // Creates the pipeline a search will use (at filter creation).
-    void prepare(const MatchGeometry& g, bool predictive, int ps_num);
+    // Creates the pipeline a search will use (at filter creation). Seeded
+    // predictive reuses the center matches already in the output buffer.
+    void prepare(const MatchGeometry& g, bool predictive, int ps_num, bool seeded = false);
 
     // References [ref_begin, ref_begin + ref_count) of the grid; `matches`
     // holds ref_count * g.group DeviceMatch (group-strided), `counts`
@@ -70,7 +71,7 @@ public:
                  int ref_begin, int ref_count, VkDeviceAddress matches, VkDeviceAddress counts);
     void predictive(VkCommandBuffer commands, const MatchGeometry& g, const TemporalWindow& window,
                     const RasterGrid& grid, int ref_begin, int ref_count, VkDeviceAddress matches,
-                    VkDeviceAddress counts);
+                    VkDeviceAddress counts, bool seeded = false);
     // Whether a search of this shape runs on the emulated warp layer here (D23;
     // never the block fallback, which has no subgroup operations).
     bool emulated(const MatchGeometry& g, int ps_num) const;
@@ -81,9 +82,9 @@ public:
     void limit_groups_x(int x) noexcept { max_groups_x_ = x; }
 
 private:
-    const Pipeline& pipeline(const MatchGeometry& g, bool predictive, int ps_num);
+    const Pipeline& pipeline(const MatchGeometry& g, bool predictive, int ps_num, bool seeded = false);
     void dispatch(VkCommandBuffer commands, const MatchGeometry& g, bool predictive, int ps_num, const void* push,
-                  int ref_count);
+                  int ref_count, bool seeded = false);
 
     std::shared_ptr<Device> device_;
     bool force_emulation_ = false;
@@ -105,12 +106,15 @@ bool spatial_match_square_takes(const MatchGeometry& g, const RasterGrid& grid);
 class SquareMatcher {
 public:
     explicit SquareMatcher(std::shared_ptr<Device> device) : device_(std::move(device)) {}
-    void prepare(const MatchGeometry& g, const RasterGrid& grid);
+    void prepare(const MatchGeometry& g, const RasterGrid& grid, bool temporal = false);
     void spatial(VkCommandBuffer commands, VkDeviceAddress plane, const MatchGeometry& g, const RasterGrid& grid,
-                 int ref_begin, int ref_count, VkDeviceAddress matches, VkDeviceAddress counts);
+                 int ref_begin, int ref_count, VkDeviceAddress matches, VkDeviceAddress counts, int frame = -1);
+    void temporal(VkCommandBuffer commands, VkDeviceAddress frames, int t0, const MatchGeometry& g,
+                  const RasterGrid& grid, int ref_begin, int ref_count, VkDeviceAddress matches,
+                  VkDeviceAddress counts);
 
 private:
-    const Pipeline& pipeline(int q, int group);
+    const Pipeline& pipeline(int q, int group, bool temporal = false);
     std::shared_ptr<Device> device_;
     std::mutex mutex_;
     std::map<std::string, Pipeline> pipelines_;
