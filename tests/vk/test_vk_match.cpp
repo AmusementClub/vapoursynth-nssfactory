@@ -393,6 +393,8 @@ int main(int argc, char** argv) {
         temporal_case(device, matcher, 71, 66, 1, 16, 1, 5, 1, 1, 3, flat, stats);
         temporal_case(device, matcher, 71, 66, 32, 8, 9, 7, 1, 1, 3, flat, stats);
         temporal_case(device, matcher, 71, 66, 16, 16, 6, 7, 2, 2, 5, flat, stats);
+        temporal_case(device, matcher, 71, 66, 8, 8, 4, 7, 1, 1, 3, flat, stats, 1);
+        temporal_case(device, matcher, 71, 66, 8, 16, 5, 7, 2, 0, 9, flat, stats, 1);
         // ps_num up to the lanes of a reference (the shuffle sources reach L - 1).
         temporal_case(device, matcher, 71, 66, 8, 8, 4, 5, 1, 1, 3, flat, stats, 8);
         temporal_case(device, matcher, 71, 66, 8, 16, 5, 5, 1, 1, 3, flat, stats, 16);
