@@ -74,6 +74,13 @@ below, under 1.5% of samples differing, by at most 0.015). 1080p gray, sigma
 | 16 / 8 | `group_size=16` / with `bm_range=20` | 1.14x / 1.55x |
 | | `final=1, group_size=32, group_size_basic=16, bm_range=16` | 1.04x |
 
+The generalized square matcher also covers 12 / 4 and 16 / 4, sharing each
+step-sized tile among 3 x 3 or 4 x 4 references. In paired 1080p Gray runs at
+sigma 10 on an RTX 5080, 12 / 4 was 1.48x / 1.41x / 1.32x for groups 8 / 16 /
+32, and 16 / 4 was 1.44x / 1.35x for groups 8 / 16. Groups 2 and 4 also win.
+At 12 / 3 and 8 / 2 the exact column matcher remains preferable; 16 / 4 with
+group 32 keeps its existing path.
+
 The per-reference search stays where it is faster: windows of radius 1 with
 groups of 4 to 16 and of radius 2 with groups of 8 to 16 (except at 12 / 6),
 radii of 40 or more at 8 / 4 (the tensor-core search), and batches of
