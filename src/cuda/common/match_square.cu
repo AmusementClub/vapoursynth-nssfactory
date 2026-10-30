@@ -1,25 +1,23 @@
 // SPDX-License-Identifier: GPL-2.0-only
-// Square matcher for blocks of twice the step (Davy & Ehret, "GPU
+// Square matcher for blocks of R times the step (Davy & Ehret, "GPU
 // acceleration of NL-means, BM3D and VBM3D", JRTIP 18 (2021), section 4.1.4).
 //
-// At step Q a 2Q x 2Q block is four Q x Q quarters, and each quarter is the
-// top-left quarter of a reference of the grid: the quarter distances for a
-// displacement are shared by the four references that contain them. A block
-// of 16 x 16 threads takes 16 x 16 lattice positions; every thread computes
-// the distance of its own top-left quarter for each displacement (its
-// reference quarter in registers, the compared quarter a ring of Q rows in
-// registers, one new row a displacement), and the 15 x 15 references of the
-// block's top-left corner total their four quarters from shared memory. A
-// batch of fewer grid rows takes blocks of 16 x (rows + 1) threads for
-// 15 x rows references, so that it computes only its own rows.
-// A reference keeps its best group - 1 keys sorted in registers (the paper's
-// Algorithm 2: an insertion only when a key beats the last one).
+// At step Q an RQ x RQ block is R^2 Q x Q tiles, and each tile is the top-left
+// tile of a reference of the grid: its distance for a displacement is shared
+// by the R^2 references that contain it. A block of 16 x 16 threads takes
+// 16 x 16 lattice positions; every thread computes the distance of its own
+// top-left tile for each displacement (its reference tile in registers, the
+// compared tile a ring of Q rows in registers, one new row a displacement),
+// and the references of the block's top-left corner total their R^2 tiles from
+// shared memory. There are 16 - R + 1 references per side. A batch of fewer
+// grid rows takes blocks of 16 x (rows + R - 1) threads so that it computes
+// only its own rows. A reference keeps its best group - 1 keys sorted in
+// registers (the paper's Algorithm 2: insert only when a key beats the last).
 //
 // Keys and order are the lane kernels' (distance bits capped at +inf, then
-// y, then x; the reference first), but a distance is the sum of four quarter
-// sums (Q-row column chains, then a tree) instead of the lane kernels'
-// block-row chains: the last bits differ, so near ties may resolve
-// differently.
+// y, then x; the reference first), but a distance is the sum of R^2 tile sums
+// (Q-row column chains, then a tree) instead of the lane kernels' block-row
+// chains: the last bits differ, so near ties may resolve differently.
 //
 // Grids whose last column or row is clamped (max_x or max_y not a multiple of
 // Q) take extra passes on a lattice shifted to put the clamped references on
@@ -32,8 +30,7 @@
 namespace nss_cuda {
 namespace {
 
-constexpr int kSide = 16;         // threads per block side
-constexpr int kRefs = kSide - 1;  // references per block side
+constexpr int kSide = 16;  // threads per block side
 constexpr unsigned kInfinity = 0x7f800000u;
 constexpr unsigned long long kEmpty = ~0ull;
 
@@ -44,9 +41,9 @@ __device__ __forceinline__ void insert_sorted(unsigned long long (&t)[K], unsign
     t[0] = key < t[0] ? key : t[0];
 }
 
-// A lattice: position (j, i) of block (bx, by) is the quarter at
-// (ox + Q (15 bx + j), oy + Q (rows by + i)), rows the launch's references
-// per block column.
+// A lattice: position (j, i) of block (bx, by) is the tile at
+// (ox + Q ((16 - R + 1) bx + j), oy + Q (rows by + i)), rows the launch's
+// references per block column.
 struct Pass {
     int ox, oy;
     int blocks_x;     // blocks per lattice row band
@@ -76,18 +73,19 @@ __device__ __forceinline__ int grid_index(int v, int max_v, int count) {
     return v % Q == 0 ? v / Q : -1;
 }
 
-// A quarter's distance from its column sums: a pairwise tree.
+// A tile's distance from its column sums: a pairwise tree.
 template <int N>
 __device__ __forceinline__ float tree_sum(const float* c) {
     if constexpr (N == 1) return c[0];
     else return tree_sum<(N + 1) / 2>(c) + tree_sum<N / 2>(c + (N + 1) / 2);
 }
 
-template <int Q, int K>
+template <int R, int Q, int K>
 __global__ void __launch_bounds__(kSide * kSide) square_match_kernel(Source source, MatchGeometry g,
                                                                      RasterGrid grid, int ref_begin, int ref_count,
                                                                      int rows, Passes passes, DeviceMatch* out,
                                                                      int* counts) {
+    constexpr int refs = kSide - R + 1;
     const float* const plane = source.frames ? source.frames[source.frame] : source.plane;
     __shared__ float part[2][kSide][kSide + 1];
     const int tid = threadIdx.x, tx = tid % kSide, ty = tid / kSide;
@@ -99,14 +97,14 @@ __global__ void __launch_bounds__(kSide * kSide) square_match_kernel(Source sour
     const int local = static_cast<int>(blockIdx.x) - pass.first_block;
     const int bx = local % pass.blocks_x;
     const int by = local / pass.blocks_x;
-    const int x0 = pass.ox + Q * (kRefs * bx + tx);
+    const int x0 = pass.ox + Q * (refs * bx + tx);
     const int y0 = pass.oy + Q * (rows * by + ty);
     const int col = grid_index<Q>(x0, grid.max_x, grid.nx), row = grid_index<Q>(y0, grid.max_y, grid.ny);
     const int ref = row * grid.nx + col;
-    const bool live = tx < kRefs && ty < rows && col >= 0 && row >= 0 && ref >= ref_begin &&
+    const bool live = tx < refs && ty < rows && col >= 0 && row >= 0 && ref >= ref_begin &&
                       ref < ref_begin + ref_count;
     const int lo = g.lo(), hi = g.hi();
-    const int max_x = g.width - 2 * Q, max_y = g.height - 2 * Q, last_row = g.height - 1, last_col = g.width - 1;
+    const int max_x = g.width - R * Q, max_y = g.height - R * Q, last_row = g.height - 1, last_col = g.width - 1;
     const long long pitch = g.pitch;
     int cols[Q];
 #pragma unroll
@@ -159,8 +157,13 @@ __global__ void __launch_bounds__(kSide * kSide) square_match_kernel(Source sour
                 __syncthreads();
                 const int yc = y0 + dy;
                 if (col_ok && yc >= 0 && yc <= max_y && (dx | dy) != 0) {
-                    const float sum = (part[buf][ty][tx] + part[buf][ty][tx + 1]) +
-                                      (part[buf][ty + 1][tx] + part[buf][ty + 1][tx + 1]);
+                    float tiles[R * R];
+#pragma unroll
+                    for (int r = 0; r < R; ++r) {
+#pragma unroll
+                        for (int c = 0; c < R; ++c) tiles[r * R + c] = part[buf][ty + r][tx + c];
+                    }
+                    const float sum = tree_sum<R * R>(tiles);
                     const unsigned long long key =
                         static_cast<unsigned long long>(min(__float_as_uint(sum), kInfinity)) << 32 |
                         static_cast<unsigned>(yc) << 16 | static_cast<unsigned>(xc);
@@ -196,24 +199,25 @@ struct Plan {
     int rows;
 };
 
-Plan plan_square(int q, const RasterGrid& grid, int ref_begin, int ref_count) {
+Plan plan_square(int q, int r, const RasterGrid& grid, int ref_begin, int ref_count) {
+    const int refs = kSide - r + 1;
     const int row_first = ref_begin / grid.nx, row_last = (ref_begin + ref_count - 1) / grid.nx;
     const bool clamp_x = grid.max_x % q != 0, clamp_y = grid.max_y % q != 0;
     const int lattice_cols = clamp_x ? grid.nx - 1 : grid.nx;  // references at x = q j
     const int lattice_rows = clamp_y ? grid.ny - 1 : grid.ny;
-    const int blocks_x = (lattice_cols + kRefs - 1) / kRefs;
-    // Bands of up to 15 lattice rows from the batch's first row of y = q i,
-    // as even as they go: a batch of a few rows (large blocks and groups run
-    // in small batches) computes only those rows and one more.
+    const int blocks_x = (lattice_cols + refs - 1) / refs;
+    // Bands of at most 16 - R + 1 lattice rows from the batch's first row of
+    // y = q i, as even as they go: a batch of a few rows computes only those
+    // rows and the R - 1 extra rows their tiles need.
     const int last_lattice = std::min(row_last, lattice_rows - 1);
     const int span = last_lattice - row_first + 1;
-    const int bands = span > 0 ? (span + kRefs - 1) / kRefs : 0;
+    const int bands = span > 0 ? (span + refs - 1) / refs : 0;
     Plan plan{};
     plan.rows = bands > 0 ? (span + bands - 1) / bands : 1;
     // The clamped column (x = max_x) and row (y = max_y) are the last of a
-    // lattice shifted so that they fall on it (thread 14 of its block's row,
-    // thread rows - 1 of its column).
-    const int shift_x = grid.max_x - q * (kRefs - 1), shift_y = grid.max_y - q * (plan.rows - 1);
+    // lattice shifted so that they fall on it (the last reference thread of
+    // its block's row or column).
+    const int shift_x = grid.max_x - q * (refs - 1), shift_y = grid.max_y - q * (plan.rows - 1);
     const bool last_row = clamp_y && row_last == grid.ny - 1;
     const auto add = [&](int ox, int oy, int bx, int nbands) {
         if (bx <= 0 || nbands <= 0) return;
@@ -229,28 +233,28 @@ Plan plan_square(int q, const RasterGrid& grid, int ref_begin, int ref_count) {
     return plan;
 }
 
-template <int Q, int K>
+template <int R, int Q, int K>
 void launch_square(const Source& source, const MatchGeometry& g, const RasterGrid& grid, int ref_begin, int ref_count,
                    const Plan& plan, DeviceMatch* out, int* counts, cudaStream_t stream) {
-    square_match_kernel<Q, K><<<plan.blocks, kSide * (plan.rows + 1), 0, stream>>>(
+    square_match_kernel<R, Q, K><<<plan.blocks, kSide * (plan.rows + R - 1), 0, stream>>>(
         source, g, grid, ref_begin, ref_count, plan.rows, plan.passes, out, counts);
     NSS_CUDA_CHECK_LAUNCH();
 }
 
-template <int Q>
+template <int R, int Q>
 void dispatch_square(const Source& source, const MatchGeometry& g, const RasterGrid& grid, int ref_begin, int ref_count,
                      const Plan& plan, DeviceMatch* out, int* counts, cudaStream_t stream) {
     const int wanted = g.group - 1;
     if (wanted <= 1) {
-        launch_square<Q, 1>(source, g, grid, ref_begin, ref_count, plan, out, counts, stream);
+        launch_square<R, Q, 1>(source, g, grid, ref_begin, ref_count, plan, out, counts, stream);
     } else if (wanted <= 3) {
-        launch_square<Q, 3>(source, g, grid, ref_begin, ref_count, plan, out, counts, stream);
+        launch_square<R, Q, 3>(source, g, grid, ref_begin, ref_count, plan, out, counts, stream);
     } else if (wanted <= 7) {
-        launch_square<Q, 7>(source, g, grid, ref_begin, ref_count, plan, out, counts, stream);
+        launch_square<R, Q, 7>(source, g, grid, ref_begin, ref_count, plan, out, counts, stream);
     } else if (wanted <= 15) {
-        launch_square<Q, 15>(source, g, grid, ref_begin, ref_count, plan, out, counts, stream);
+        launch_square<R, Q, 15>(source, g, grid, ref_begin, ref_count, plan, out, counts, stream);
     } else {
-        launch_square<Q, 31>(source, g, grid, ref_begin, ref_count, plan, out, counts, stream);
+        launch_square<R, Q, 31>(source, g, grid, ref_begin, ref_count, plan, out, counts, stream);
     }
 }
 
@@ -265,9 +269,12 @@ int multiprocessors() {
 
 bool spatial_match_square_shape(const MatchGeometry& g, const RasterGrid& grid) {
     const int q = grid.step;
-    return (q == 1 || q == 2 || q == 4 || q == 6 || q == 8) && g.block == 2 * q && g.channels == 1 &&
-           g.range_hi < 0 && g.group >= 2 && g.group <= 32 && g.width >= g.block && g.height >= g.block &&
-           g.width <= 0xffff && g.height <= 0xffff && grid.nx >= 1 && grid.ny >= 1;
+    const bool quarters = (q == 1 || q == 2 || q == 4 || q == 6 || q == 8) && g.block == 2 * q;
+    const bool generalized = (g.block == 12 && q == 3) || (g.block == 12 && q == 4) ||
+                             (g.block == 16 && q == 4) || (g.block == 8 && q == 2);
+    return (quarters || generalized) && g.channels == 1 && g.range_hi < 0 && g.group >= 2 && g.group <= 32 &&
+           g.width >= g.block && g.height >= g.block && g.width <= 0xffff && g.height <= 0xffff && grid.nx >= 1 &&
+           grid.ny >= 1;
 }
 
 bool spatial_match_square_takes(const MatchGeometry& g, const RasterGrid& grid) {
@@ -289,18 +296,29 @@ bool run_square(const Source& source, const MatchGeometry& g, const RasterGrid& 
                 DeviceMatch* out, int* counts, cudaStream_t stream, bool any_shape) {
     if (!(any_shape ? spatial_match_square_shape(g, grid) : spatial_match_square_takes(g, grid))) return false;
     if (ref_count <= 0) return true;
-    const Plan plan = plan_square(grid.step, grid, ref_begin, ref_count);
+    const int r = g.block / grid.step;
+    const Plan plan = plan_square(grid.step, r, grid, ref_begin, ref_count);
     // A batch of fewer blocks than the device has SMs leaves it idle: the
     // lane kernels are faster then (1080p gray, RTX 5080: square 0.35-0.97x
     // below 84 blocks, 0.88-1.95x at 80-128, 1.15-2.5x above).
     if (!any_shape && plan.blocks < multiprocessors()) return false;
     if (plan.blocks == 0) return true;
-    switch (grid.step) {
-    case 1: dispatch_square<1>(source, g, grid, ref_begin, ref_count, plan, out, counts, stream); break;
-    case 2: dispatch_square<2>(source, g, grid, ref_begin, ref_count, plan, out, counts, stream); break;
-    case 4: dispatch_square<4>(source, g, grid, ref_begin, ref_count, plan, out, counts, stream); break;
-    case 6: dispatch_square<6>(source, g, grid, ref_begin, ref_count, plan, out, counts, stream); break;
-    default: dispatch_square<8>(source, g, grid, ref_begin, ref_count, plan, out, counts, stream); break;
+    if (r == 2) {
+        switch (grid.step) {
+        case 1: dispatch_square<2, 1>(source, g, grid, ref_begin, ref_count, plan, out, counts, stream); break;
+        case 2: dispatch_square<2, 2>(source, g, grid, ref_begin, ref_count, plan, out, counts, stream); break;
+        case 4: dispatch_square<2, 4>(source, g, grid, ref_begin, ref_count, plan, out, counts, stream); break;
+        case 6: dispatch_square<2, 6>(source, g, grid, ref_begin, ref_count, plan, out, counts, stream); break;
+        default: dispatch_square<2, 8>(source, g, grid, ref_begin, ref_count, plan, out, counts, stream); break;
+        }
+    } else if (g.block == 12 && grid.step == 3) {
+        dispatch_square<4, 3>(source, g, grid, ref_begin, ref_count, plan, out, counts, stream);
+    } else if (g.block == 12 && grid.step == 4) {
+        dispatch_square<3, 4>(source, g, grid, ref_begin, ref_count, plan, out, counts, stream);
+    } else if (g.block == 16) {
+        dispatch_square<4, 4>(source, g, grid, ref_begin, ref_count, plan, out, counts, stream);
+    } else {
+        dispatch_square<4, 2>(source, g, grid, ref_begin, ref_count, plan, out, counts, stream);
     }
     return true;
 }

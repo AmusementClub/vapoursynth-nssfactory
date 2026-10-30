@@ -249,6 +249,24 @@ def main():
                     failures.append(f"{label}: psnr {value:.2f} < {floor}")
                 if any(not np.array_equal(x, y) for x, y in zip(b, again)):
                     failures.append(f"{label}: not run-to-run identical")
+    for block, step in ((12, 3), (12, 4), (16, 4), (8, 2)):
+        for stage in ("basic", "final"):
+            kwargs = dict(sigma=10, block_size=block, block_step=step, group_size=16, bm_range=4)
+            cpu_ref = core.nss.BM3D(gray, **kwargs) if stage == "final" else None
+            gpu_ref = core.nss_cuda.BM3D(gray, **kwargs) if stage == "final" else None
+            cpu = core.nss.BM3D(gray, ref=cpu_ref, **kwargs) if cpu_ref else core.nss.BM3D(gray, **kwargs)
+            gpu = core.nss_cuda.BM3D(gray, ref=gpu_ref, **kwargs) if gpu_ref else core.nss_cuda.BM3D(gray, **kwargs)
+            a, b = frame_planes(cpu), frame_planes(gpu)
+            value = psnr(a, b)
+            worst = min(worst, value)
+            cases += 1
+            label = f"general square b{block} s{step} {stage}"
+            if value < floor:
+                failures.append(f"{label}: psnr {value:.2f} < {floor}")
+            again = frame_planes(core.nss_cuda.BM3D(gray, ref=gpu_ref, **kwargs) if gpu_ref
+                                 else core.nss_cuda.BM3D(gray, **kwargs))
+            if any(not np.array_equal(x, y) for x, y in zip(b, again)):
+                failures.append(f"{label}: not run-to-run identical")
     t_cases, t_worst, t_failures = temporal(core, args.quick, floor)
     cases += t_cases
     worst = min(worst, t_worst)

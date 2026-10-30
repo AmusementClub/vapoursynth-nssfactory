@@ -58,11 +58,11 @@ std::size_t spatial_match_scratch_bytes(int width, int height);
 void spatial_match_prepare(const float* plane, const MatchGeometry& geometry, void* scratch, cudaStream_t stream);
 
 // The square matcher (match_square.cu; Davy & Ehret 2021, section 4.1.4):
-// blocks of twice the step (2 at 1, 4 at 2, 8 at 4, 12 at 6, 16 at 8), one
-// channel, groups 2 to 32, symmetric windows. Quarter distances are shared by
-// the four references that contain them, so the distances differ from the
-// lane kernels' in the last bits (near ties may resolve differently); keys
-// and order are the same. spatial_match_square_shape: the geometries it can
+// blocks of twice the step (2 at 1, 4 at 2, 8 at 4, 12 at 6, 16 at 8), plus
+// 12/3, 12/4, 16/4 and 8/2, one channel, groups 2 to 32, symmetric windows.
+// Tile distances are shared by the references that contain them, so distances
+// differ from the lane kernels' in the last bits (near ties may resolve
+// differently); keys and order are the same. spatial_match_square_shape: the geometries it can
 // run; spatial_match_square_takes: those where it is faster than the lane
 // kernels. Returns false (and does nothing) for a geometry the latter
 // rejects, or a batch of fewer thread blocks than the device has SMs (a few

@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <random>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -155,21 +156,22 @@ void column_case(int block, int width, int height, int group, int step, int rang
     }
 }
 
-// The square matcher (block 2q, step q) against the CPU, in `batches`
+// The square matcher (block = reuse * step) against the CPU, in `batches`
 // uneven batches that do not start on grid rows.
-void square_case(int q, int width, int height, int group, int range, int batches, bool flat, Stats& stats) {
+void square_case(int q, int width, int height, int group, int range, int batches, bool flat, Stats& stats,
+                 int reuse = 2) {
     const auto plane = make_plane(width, height, 13u + q + group + range, flat);
     nss_cuda::DeviceBuffer d_plane(plane.size() * sizeof(float));
     NSS_CUDA_CHECK(cudaMemcpy(d_plane.get(), plane.data(), plane.size() * sizeof(float), cudaMemcpyHostToDevice));
-    const int block = 2 * q;
+    const int block = reuse * q;
     const auto grid = nss_cuda::make_raster_grid(width, height, block, q);
     const int n = grid.count();
     nss_cuda::DeviceBuffer d_out(static_cast<std::size_t>(n) * group * sizeof(nss_cuda::DeviceMatch));
     nss_cuda::DeviceBuffer d_counts(static_cast<std::size_t>(n) * sizeof(int));
     NSS_CUDA_CHECK(cudaMemset(d_counts.get(), 0, d_counts.bytes()));
     const nss_cuda::MatchGeometry g{width, height, width, block, range, group};
-    CHECK(nss_cuda::spatial_match_square_shape(g, grid), "square q%d %dx%d g%d not supported", q, width, height,
-          group);
+    CHECK(nss_cuda::spatial_match_square_shape(g, grid), "square b%d s%d %dx%d g%d not supported", block, q, width,
+          height, group);
     for (int b = 0; b < batches; ++b) {
         const int begin = static_cast<int>(static_cast<long long>(n) * b * b / (batches * batches));
         const int end = static_cast<int>(static_cast<long long>(n) * (b + 1) * (b + 1) / (batches * batches));
@@ -182,8 +184,8 @@ void square_case(int q, int width, int height, int group, int range, int batches
     NSS_CUDA_CHECK(cudaMemcpy(out.data(), d_out.get(), d_out.bytes(), cudaMemcpyDeviceToHost));
     NSS_CUDA_CHECK(cudaMemcpy(counts.data(), d_counts.get(), d_counts.bytes(), cudaMemcpyDeviceToHost));
     char label[96];
-    std::snprintf(label, sizeof label, "square q%d %dx%d g%d r%d batches %d%s", q, width, height, group, range, batches,
-                  flat ? " flat" : "");
+    std::snprintf(label, sizeof label, "square b%d s%d %dx%d g%d r%d batches %d%s", block, q, width, height, group,
+                  range, batches, flat ? " flat" : "");
     for (int ref = 0; ref < n; ++ref) {
         CHECK(counts[ref] >= 1, "%s ref %d: no result", label, ref);
         nss::Match cpu[nss_cuda::kMaxGroup];
@@ -510,6 +512,22 @@ int main() {
             square_case(q, 331, 203, 16, 12, 7, flat, stats);
         }
     }
+    for (const bool flat : {false, true}) {
+        for (const auto& shape : {std::pair<int, int>{3, 4}, {4, 3}, {4, 4}, {2, 4}}) {
+            const int q = shape.first, reuse = shape.second, u = 25 * q;
+            for (const int group : {2, 3, 4, 8, 16, 32}) {
+                square_case(q, u, u - q, group, 7, 3, flat, stats, reuse);
+                square_case(q, u - 1, u + 1, group, 9, 4, flat, stats, reuse);
+                square_case(q, u + 1, u - q, group, 10, 2, flat, stats, reuse);
+                square_case(q, u, u + q - 1, group, 10, 2, flat, stats, reuse);
+            }
+            square_case(q, reuse * q, reuse * q, 8, 9, 1, flat, stats, reuse);
+            square_case(q, reuse * q + 2, reuse * q + 1, 8, 9, 1, flat, stats, reuse);
+            square_case(q, 10 * q, 9 * q, 16, 40, 2, flat, stats, reuse);
+            square_case(q, 67 * q, 35 * q, 32, 19, 5, flat, stats, reuse);
+            square_case(q, 331, 203, 16, 12, 7, flat, stats, reuse);
+        }
+    }
     // Predictive search with the centre frame by the square matcher, every
     // shape, clamped edges, a clipped window at either end of the clip.
     for (const bool flat : {false, true}) {
@@ -520,6 +538,10 @@ int main() {
         temporal_case(245, 183, 12, 32, 6, 5, 1, 2, 9, flat, stats, true);
         temporal_case(67, 53, 2, 8, 1, 4, 1, 1, 3, flat, stats, true);
         temporal_case(160, 120, 8, 2, 4, 12, 3, 3, 7, flat, stats, true);  // regular grid
+        temporal_case(161, 123, 12, 16, 3, 9, 1, 3, 9, flat, stats, true);
+        temporal_case(203, 151, 12, 16, 4, 7, 1, 4, 9, flat, stats, true);
+        temporal_case(161, 123, 16, 16, 4, 9, 1, 3, 9, flat, stats, true);
+        temporal_case(203, 151, 8, 16, 2, 7, 1, 4, 9, flat, stats, true);
     }
     // Tensor-core matcher: windows of side 33 to 129 (symmetric and exact-size), every step, groups 2 to 16.
     for (const int kind : {0, 1}) {
