@@ -1,0 +1,147 @@
+// SPDX-License-Identifier: GPL-2.0-only
+// Exact column-reuse matcher for one-channel spatial searches.
+// Defines: B = 4/8/12/16, K = group - 1, CPT = step + 1.
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_control_flow_attributes : require
+
+#ifndef B
+#define B 8
+#endif
+
+layout(local_size_x = 128) in;
+shared float colsum[2][128 * CPT + B];
+
+struct Match {
+    int x;
+    int y;
+    int t;
+    float dist;
+};
+layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer Plane { float v[]; };
+layout(buffer_reference, std430, buffer_reference_align = 16) buffer Matches { Match m[]; };
+layout(buffer_reference, std430, buffer_reference_align = 4) buffer Counts { int c[]; };
+
+layout(push_constant) uniform Push {
+    uint64_t source, matches, counts;
+    int width, height, pitch, group;
+    int lo, hi, nx, ny;
+    int step, max_x, max_y, ref_begin;
+    int ref_count, row_first, segs, reserved;
+} pc;
+
+const uint64_t EMPTY = 0xffffffffffffffffUL;
+const uint INF_BITS = 0x7f800000u;
+
+void insert_sorted(inout uint64_t best[K], uint64_t key) {
+    [[unroll]] for (int i = K - 1; i > 0; --i) {
+        best[i] = key < best[i - 1] ? best[i - 1] : (key < best[i] ? key : best[i]);
+    }
+    best[0] = key < best[0] ? key : best[0];
+}
+
+precise float column_total(int r, int buf) {
+#if B == 4
+    return (colsum[buf][r] + colsum[buf][r + 1]) + (colsum[buf][r + 2] + colsum[buf][r + 3]);
+#elif B == 8
+    return ((colsum[buf][r] + colsum[buf][r + 1]) + (colsum[buf][r + 2] + colsum[buf][r + 3])) +
+           ((colsum[buf][r + 4] + colsum[buf][r + 5]) + (colsum[buf][r + 6] + colsum[buf][r + 7]));
+#elif B == 12
+    return ((colsum[buf][r] + colsum[buf][r + 1]) + (colsum[buf][r + 2] + colsum[buf][r + 3])) +
+               ((colsum[buf][r + 4] + colsum[buf][r + 5]) + (colsum[buf][r + 6] + colsum[buf][r + 7])) +
+           ((colsum[buf][r + 8] + colsum[buf][r + 9]) + (colsum[buf][r + 10] + colsum[buf][r + 11]));
+#else
+    return (((colsum[buf][r] + colsum[buf][r + 1]) + (colsum[buf][r + 2] + colsum[buf][r + 3])) +
+            ((colsum[buf][r + 4] + colsum[buf][r + 5]) + (colsum[buf][r + 6] + colsum[buf][r + 7]))) +
+           (((colsum[buf][r + 8] + colsum[buf][r + 9]) + (colsum[buf][r + 10] + colsum[buf][r + 11])) +
+            ((colsum[buf][r + 12] + colsum[buf][r + 13]) + (colsum[buf][r + 14] + colsum[buf][r + 15])));
+#endif
+}
+
+void main() {
+    const int tid = int(gl_LocalInvocationIndex);
+    const int block = int(gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x);
+    const int col_first = (block % pc.segs) * 128;
+    const int row = pc.row_first + block / pc.segs;
+    const int lo_col = max(col_first, pc.ref_begin - row * pc.nx);
+    const int hi_col = min(min(col_first + 128, pc.nx), pc.ref_begin + pc.ref_count - row * pc.nx) - 1;
+    if (row >= pc.ny || lo_col > hi_col) return;
+
+    const int base = row * pc.nx;
+    const int col = col_first + tid;
+    const bool live = col >= lo_col && col <= hi_col;
+    const int x0 = min(lo_col * pc.step, pc.max_x);
+    const int span = min(hi_col * pc.step, pc.max_x) - x0 + B;
+    const int yr = min(row * pc.step, pc.max_y);
+    const int cx = live ? min(col * pc.step, pc.max_x) : x0;
+    const int max_x = pc.width - B, max_y = pc.height - B;
+    const int last_row = pc.height - 1, last_col = pc.width - 1;
+
+    float reference[CPT][B];
+    bool own[CPT];
+    [[unroll]] for (int c = 0; c < CPT; ++c) {
+        const int j = tid + c * 128;
+        own[c] = j < span;
+        const int x = min(x0 + j, last_col);
+        [[unroll]] for (int k = 0; k < B; ++k) reference[c][k] = Plane(pc.source).v[(yr + k) * pc.pitch + x];
+    }
+    uint64_t best[K];
+    [[unroll]] for (int i = 0; i < K; ++i) best[i] = EMPTY;
+    int buf = 0;
+
+    for (int dx = -pc.lo; dx <= pc.hi; ++dx) {
+        int xs[CPT];
+        float values[CPT][B];
+        [[unroll]] for (int c = 0; c < CPT; ++c) xs[c] = clamp(x0 + tid + c * 128 + dx, 0, last_col);
+        [[unroll]] for (int k = 0; k < B - 1; ++k) {
+            const int at = clamp(yr - pc.lo + k, 0, last_row) * pc.pitch;
+            [[unroll]] for (int c = 0; c < CPT; ++c) values[c][k + 1] = Plane(pc.source).v[at + xs[c]];
+        }
+        const int xc = cx + dx;
+        const bool col_ok = live && xc >= 0 && xc <= max_x;
+        int dy = -pc.lo;
+        while (dy <= pc.hi) {
+            [[unroll]] for (int s = 0; s < B; ++s) {
+                if (dy > pc.hi) break;
+                const int ytop = yr + dy;
+                const int at = clamp(ytop + B - 1, 0, last_row) * pc.pitch;
+                [[unroll]] for (int c = 0; c < CPT; ++c) {
+                    values[c][s] = Plane(pc.source).v[at + xs[c]];
+                    if (own[c]) {
+                        precise float sum = 0.0;
+                        [[unroll]] for (int k = 0; k < B; ++k) {
+                            precise float d = reference[c][k] - values[c][(s + 1 + k) % B];
+                            sum = fma(d, d, sum);
+                        }
+                        colsum[buf][tid + c * 128] = sum;
+                    }
+                }
+                memoryBarrierShared();
+                barrier();
+                if (col_ok && ytop >= 0 && ytop <= max_y && (dx | dy) != 0) {
+                    const int r = cx - x0;
+                    precise float sum = column_total(r, buf);
+                    const uint64_t key = uint64_t(min(floatBitsToUint(sum), INF_BITS)) << 32 |
+                                         uint64_t(ytop) << 16 | uint64_t(xc);
+                    if (key < best[K - 1]) insert_sorted(best, key);
+                }
+                buf ^= 1;
+                ++dy;
+            }
+        }
+    }
+    if (!live) return;
+    const int ref = base + col - pc.ref_begin;
+    const int dst = ref * pc.group;
+    Matches(pc.matches).m[dst] = Match(cx, yr, 0, 0.0);
+    int filled = 0;
+    [[unroll]] for (int i = 0; i < K; ++i) {
+        if (best[i] != EMPTY) {
+            const uint at = uint(best[i]), bits = uint(best[i] >> 32);
+            Matches(pc.matches).m[dst + 1 + i] = Match(int(at & 0xffffu), int(at >> 16), 0, uintBitsToFloat(bits));
+            ++filled;
+        }
+    }
+    Counts(pc.counts).c[ref] = 1 + filled;
+}

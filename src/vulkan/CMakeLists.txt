@@ -184,13 +184,62 @@ foreach(_nss_emu 0 1)
                     match_lane_b16_l16_c1_p_${_nss_layer}_ps2_seed common/match_lane.comp
                     DEFINES B=16 L=16 C=1 PREDICTIVE=1 PS2=1 SEEDED=1 MATCH_WARPS=8 WARP_EMULATED=${_nss_emu})
 endforeach()
-# BM3D square matching (block = 2Q at step Q), with its own reduction order.
-foreach(_nss_q 1 2 4 6 8)
+# B8/L8 PS2 radius-1 experiment: evaluate backward and forward prediction
+# before merging them in the original order. Other radii retain the generic loop.
+foreach(_nss_emu 0 1)
+  if(_nss_emu)
+    set(_nss_layer e)
+  else()
+    set(_nss_layer n)
+  endif()
+  nss_vk_add_shader(NSS_VK_SPIRV_SOURCES
+                    match_lane_b8_l8_c1_p_${_nss_layer}_pair2 common/match_lane.comp
+                    DEFINES B=8 L=8 C=1 PREDICTIVE=1 PS2=1 PAIR2=1 MATCH_WARPS=8 WARP_EMULATED=${_nss_emu})
+  nss_vk_add_shader(NSS_VK_SPIRV_SOURCES
+                    match_lane_b8_l8_c1_p_${_nss_layer}_pair2_seed common/match_lane.comp
+                    DEFINES B=8 L=8 C=1 PREDICTIVE=1 PS2=1 PAIR2=1 SEEDED=1 MATCH_WARPS=8 WARP_EMULATED=${_nss_emu})
+endforeach()
+# Exact column-reuse matching for one-channel spatial searches. CPT is step + 1,
+# the number of 128-reference segments a thread covers. B12/B16 group 8 uses
+# the paired layout of the eight-lane matcher; B4 step 2, B12 step 3 and B16
+# group 32 stay out (B16 group 8 step 3 also uses square).
+foreach(_nss_b 4 8 12 16)
+  foreach(_nss_k 7 15 31)
+    if((_nss_b EQUAL 12 OR _nss_b EQUAL 16) AND _nss_k EQUAL 7)
+      continue()
+    endif()
+    if(_nss_b EQUAL 16 AND _nss_k EQUAL 31)
+      continue()
+    endif()
+    foreach(_nss_cpt 2 3 4)
+      if(_nss_b EQUAL 4 AND _nss_cpt EQUAL 3)
+        continue()
+      endif()
+      nss_vk_add_shader(NSS_VK_SPIRV_SOURCES match_column_b${_nss_b}_k${_nss_k}_c${_nss_cpt} common/match_column.comp
+                        DEFINES B=${_nss_b} K=${_nss_k} CPT=${_nss_cpt})
+    endforeach()
+  endforeach()
+endforeach()
+foreach(_nss_b 12 16)
+  foreach(_nss_cpt 2 3 4)
+    if(_nss_b EQUAL 16 AND _nss_cpt EQUAL 4)
+      continue()
+    endif()
+    nss_vk_add_shader(NSS_VK_SPIRV_SOURCES match_column_pair8_b${_nss_b}_c${_nss_cpt} common/match_column_pair8.comp
+                      DEFINES B=${_nss_b} K=7 CPT=${_nss_cpt})
+  endforeach()
+endforeach()
+# BM3D square matching (block = RQ at step Q), with its own reduction order.
+set(_nss_square_shapes 2_1 2_2 2_4 2_6 2_8 4_3 3_4 4_4 4_2)
+foreach(_nss_shape IN LISTS _nss_square_shapes)
+  string(REPLACE "_" ";" _nss_shape ${_nss_shape})
+  list(GET _nss_shape 0 _nss_r)
+  list(GET _nss_shape 1 _nss_q)
   foreach(_nss_k 1 3 7 15 31)
-    nss_vk_add_shader(NSS_VK_SPIRV_SOURCES match_square_q${_nss_q}_k${_nss_k} common/match_square.comp
-                      DEFINES Q=${_nss_q} K=${_nss_k})
-    nss_vk_add_shader(NSS_VK_SPIRV_SOURCES match_square_q${_nss_q}_k${_nss_k}_t common/match_square.comp
-                      DEFINES Q=${_nss_q} K=${_nss_k} TEMPORAL=1)
+    nss_vk_add_shader(NSS_VK_SPIRV_SOURCES match_square_r${_nss_r}_q${_nss_q}_k${_nss_k} common/match_square.comp
+                      DEFINES R=${_nss_r} Q=${_nss_q} K=${_nss_k})
+    nss_vk_add_shader(NSS_VK_SPIRV_SOURCES match_square_r${_nss_r}_q${_nss_q}_k${_nss_k}_t common/match_square.comp
+                      DEFINES R=${_nss_r} Q=${_nss_q} K=${_nss_k} TEMPORAL=1)
   endforeach()
 endforeach()
 # The block fallback (common/match_block.comp): a workgroup per reference for
@@ -365,6 +414,7 @@ add_library(nss_vk_core STATIC
   bm3d/kernels.cpp
   common/aggregate.cpp
   common/match.cpp
+  common/match_column.cpp
   common/match_square.cpp
   runtime/context.cpp
   runtime/device.cpp

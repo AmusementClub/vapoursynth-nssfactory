@@ -133,7 +133,8 @@ Run run_both(const std::shared_ptr<Device>& device, Matcher& matcher, const Matc
 // pad: extra floats a device row (pitch > width); split: the references in
 // two dispatches (a nonzero ref_begin).
 void spatial_case(const std::shared_ptr<Device>& device, Matcher& matcher, int width, int height, int block, int group,
-                  int step, int range, bool flat, Stats& stats, int pad = 0, bool split = false) {
+                  int step, int range, bool flat, Stats& stats, int pad = 0, bool split = false,
+                  ColumnMatcher* column = nullptr) {
     const auto plane = make_plane(width, height, 7u + block + group, flat);
     const int pitch = width + pad;
     UploadPlane d_plane(device, static_cast<std::size_t>(pitch) * sizeof(float), height);
@@ -148,9 +149,9 @@ void spatial_case(const std::shared_ptr<Device>& device, Matcher& matcher, int w
         return;
     }
     const int before = failures;
+    const int first = split ? grid.count() / 3 : grid.count();
     const Run run = run_both(device, matcher, g, 0, grid.count(), [&](Slot& slot, VkDeviceAddress out, VkDeviceAddress counts) {
         if (d_plane.needs_copy()) d_plane.record_upload(slot.commands(Slot::Upload));
-        const int first = split ? grid.count() / 3 : grid.count();
         matcher.spatial(slot.commands(Slot::Compute), d_plane.address(), g, grid, 0, first, out, counts);
         matcher.spatial(slot.commands(Slot::Compute), d_plane.address(), g, grid, first, grid.count() - first,
                         out + static_cast<VkDeviceAddress>(first) * group * sizeof(DeviceMatch),
@@ -162,6 +163,42 @@ void spatial_case(const std::shared_ptr<Device>& device, Matcher& matcher, int w
                                          group, cpu);
         compare_group(cpu, n, run.matches.data() + static_cast<std::size_t>(ref) * group, run.counts[ref], flat, stats,
                       label, ref);
+    }
+    if (column && spatial_match_column_takes(g, grid)) {
+        DownloadPlane out(device, static_cast<std::size_t>(grid.count()) * group * sizeof(DeviceMatch), 1);
+        DownloadPlane counts(device, static_cast<std::size_t>(grid.count()) * sizeof(int), 1);
+        Slot slot(device);
+        if (d_plane.needs_copy()) d_plane.record_upload(slot.commands(Slot::Upload));
+        column->spatial(slot.commands(Slot::Compute), d_plane.address(), g, grid, 0, first, out.address(),
+                        counts.address());
+        column->spatial(slot.commands(Slot::Compute), d_plane.address(), g, grid, first, grid.count() - first,
+                        out.address() + static_cast<VkDeviceAddress>(first) * group * sizeof(DeviceMatch),
+                        counts.address() + static_cast<VkDeviceAddress>(first) * sizeof(int));
+        out.record_download(slot.commands(Slot::Download));
+        counts.record_download(slot.commands(Slot::Download));
+        slot.submit();
+        slot.wait();
+        Run other{std::vector<DeviceMatch>(static_cast<std::size_t>(grid.count()) * group),
+                  std::vector<int>(grid.count())};
+        out.read(other.matches.data(), 0, other.matches.size() * sizeof(DeviceMatch));
+        counts.read(other.counts.data(), 0, other.counts.size() * sizeof(int));
+        const bool same = std::memcmp(run.matches.data(), other.matches.data(), run.matches.size() * sizeof(DeviceMatch)) == 0 &&
+                          run.counts == other.counts;
+        CHECK(same, "%s: column matcher differs from the lane matcher", label);
+        if (!same) {
+            for (int ref = 0; ref < grid.count(); ++ref) {
+                const auto* a = run.matches.data() + static_cast<std::size_t>(ref) * group;
+                const auto* b = other.matches.data() + static_cast<std::size_t>(ref) * group;
+                if (run.counts[ref] == other.counts[ref] &&
+                    std::memcmp(a, b, static_cast<std::size_t>(group) * sizeof(DeviceMatch)) == 0) continue;
+                std::printf("COLUMN_DIFF ref %d counts %d/%d\n", ref, run.counts[ref], other.counts[ref]);
+                for (int i = 0; i < group; ++i) {
+                    std::printf("  %d lane (%d,%d) %.9g column (%d,%d) %.9g\n", i, a[i].x, a[i].y, a[i].dist, b[i].x,
+                                b[i].y, b[i].dist);
+                }
+                break;
+            }
+        }
     }
     if (failures != before) std::printf("%s: %d failures\n", label, failures - before);
 }
@@ -254,11 +291,13 @@ void temporal_case(const std::shared_ptr<Device>& device, Matcher& matcher, int 
 }
 
 void square_case(const std::shared_ptr<Device>& device, SquareMatcher& square, int width, int height, int block,
-                 int group, int step, int range, bool flat, Stats& stats, int pad = 0, bool split = false) {
+                 int group, int step, int range, bool flat, Stats& stats, int pad = 0, bool split = false,
+                 int reuse = 2) {
     const auto plane = make_plane(width, height, 7u + block + group, flat);
     const int pitch = width + pad;
     UploadPlane d_plane(device, static_cast<std::size_t>(pitch) * sizeof(float), height);
     d_plane.write(plane.data(), static_cast<std::ptrdiff_t>(width * sizeof(float)), width * sizeof(float));
+    block = reuse * step;
     const RasterGrid grid = make_raster_grid(width, height, block, step);
     const MatchGeometry g{width, height, pitch, block, range, group};
     CHECK(spatial_match_square_takes(g, grid), "square b%d g%d s%d: shape rejected", block, group, step);
@@ -384,6 +423,7 @@ int main(int argc, char** argv) {
     }
     std::shared_ptr<Device> device = Device::open(index, argc > 1);
     Matcher matcher(device);
+    ColumnMatcher column(device);
     SquareMatcher square(device);
     Stats stats;
     for (const bool flat : {false, true}) {
@@ -392,9 +432,18 @@ int main(int argc, char** argv) {
         square_case(device, square, 71, 66, 8, 8, 4, 7, flat, stats, 0, true);
         square_case(device, square, 71, 66, 12, 32, 6, 7, flat, stats);
         square_case(device, square, 71, 66, 16, 16, 8, 7, flat, stats, 5, true);
+        for (const auto& shape : {std::pair<int, int>{3, 4}, {4, 3}, {4, 4}, {2, 4}}) {
+            const int q = shape.first, reuse = shape.second;
+            square_case(device, square, 75, 73, reuse * q, 16, q, 9, flat, stats, 0, true, reuse);
+            square_case(device, square, 73, 75, reuse * q, 16, q, 9, flat, stats, 3, false, reuse);
+        }
         for (const int q : {1, 2, 4, 6, 8}) {
             temporal_case(device, matcher, 71, 66, 2 * q, 8, q, 7, 1, 1, 3, flat, stats, 2, 4, &square);
         }
+        temporal_case(device, matcher, 71, 66, 12, 16, 3, 9, 1, 1, 3, flat, stats, 2, 4, &square);
+        temporal_case(device, matcher, 71, 66, 12, 16, 4, 7, 1, 1, 3, flat, stats, 2, 4, &square);
+        temporal_case(device, matcher, 71, 66, 16, 16, 4, 9, 1, 1, 3, flat, stats, 2, 4, &square);
+        temporal_case(device, matcher, 71, 66, 8, 16, 2, 7, 1, 1, 3, flat, stats, 2, 4, &square);
         temporal_case(device, matcher, 71, 66, 8, 32, 4, 7, 2, 2, 5, flat, stats, 2, 4, &square);
         temporal_case(device, matcher, 71, 66, 8, 2, 4, 7, 1, 1, 3, flat, stats, 2, 4, &square);
         temporal_case(device, matcher, 71, 66, 8, 8, 4, 7, 1, 1, 3, flat, stats, 4, 4, &square);
@@ -405,6 +454,14 @@ int main(int argc, char** argv) {
         for (const int block : {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}) {
             for (const int group : {2, 8, 16, 32}) {
                 spatial_case(device, matcher, 97, 83, block, group, std::min(block, 3), 7, flat, stats);
+            }
+        }
+        for (const int block : {4, 8, 12, 16}) {
+            for (const int group : {8, 16, 32}) {
+                for (const int step : {1, 2, 3}) {
+                    spatial_case(device, matcher, 97, 83, block, group, step, 7, flat, stats, 0, false, &column);
+                }
+                spatial_case(device, matcher, 97, 83, block, group, 2, 7, flat, stats, 13, true, &column);
             }
         }
         // The block fallback: groups beyond the lanes (BM3D's 64), one top-K
