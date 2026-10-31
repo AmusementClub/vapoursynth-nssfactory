@@ -3,6 +3,8 @@
 // frontend parse_<filter> with the "nss_cuda" prefix and appends the backend
 // arguments (device_id, num_streams) to the CPU plugin's signature.
 #include "cuda/runtime/device.hpp"
+#include "cuda/runtime/gpu_frames.hpp"
+#include "cuda/runtime/vs_api.hpp"
 #include "nss/version.hpp"
 
 #include <VapourSynth4.h>
@@ -13,7 +15,7 @@
 
 namespace nss_cuda {
 void register_bm3d(VSPlugin* plugin, const VSPLUGINAPI* vspapi);
-void register_nlm(VSPlugin* plugin, const VSPLUGINAPI* vspapi);
+void register_nlm(VSPlugin* plugin, const VSPLUGINAPI* vspapi, bool gpu_frames);
 void register_wnnm(VSPlugin* plugin, const VSPLUGINAPI* vspapi);
 void register_mcwnnm(VSPlugin* plugin, const VSPLUGINAPI* vspapi);
 void register_ncsr(VSPlugin* plugin, const VSPLUGINAPI* vspapi);
@@ -31,7 +33,7 @@ void VS_CC versionCreate(const VSMap*, VSMap* out, void*, VSCore*, const VSAPI* 
     vsapi->mapSetData(out, "version", nss::version_string(), -1, dtUtf8, maReplace);
 }
 
-void VS_CC backendCreate(const VSMap* in, VSMap* out, void*, VSCore*, const VSAPI* vsapi) {
+void VS_CC backendCreate(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI* vsapi) {
     const nss_cuda::RuntimeInfo runtime = nss_cuda::runtime_info();
     vsapi->mapSetInt(out, "device_count", runtime.device_count, maReplace);
     vsapi->mapSetInt(out, "driver_version", runtime.driver_version, maReplace);
@@ -39,6 +41,8 @@ void VS_CC backendCreate(const VSMap* in, VSMap* out, void*, VSCore*, const VSAP
     vsapi->mapSetData(out, "compiled_architectures", nss_cuda::compiled_architectures(), -1, dtUtf8, maReplace);
     vsapi->mapSetData(out, "error", runtime.error.c_str(), -1, dtUtf8, maReplace);
     vsapi->mapSetInt(out, "ptx_jit_available", runtime.ptx_jit_available(), maReplace);
+    const std::string gpu_frames = nss_cuda::gpu_frames_status(core, vsapi);
+    vsapi->mapSetData(out, "gpu_frames", gpu_frames.c_str(), -1, dtUtf8, maReplace);
 
     int err = 0;
     const int requested = vsapi->mapGetIntSaturated(in, "device_id", 0, &err);
@@ -75,12 +79,13 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin* plugin, const VSPLUGINAPI
     vspapi->registerFunction("Version", "", "version:data;", versionCreate, nullptr, plugin);
     vspapi->registerFunction("Backend", "device_id:int:opt;",
         "device_count:int;driver_version:int;runtime_version:int;compiled_architectures:data;error:data;"
-        "ptx_jit_available:int;"
+        "ptx_jit_available:int;gpu_frames:data;"
         "device:int:opt;name:data:opt;compute_capability:data:opt;support:data:opt;total_memory_mb:int:opt;"
         "multiprocessors:int:opt;probe_ok:int:opt;probe_ms:float:opt;probe_error:data:opt;",
         backendCreate, nullptr, plugin);
+    const bool gpu_frames = nss_cuda::gpu_frames_registration(vspapi);
     nss_cuda::register_bm3d(plugin, vspapi);
-    nss_cuda::register_nlm(plugin, vspapi);
+    nss_cuda::register_nlm(plugin, vspapi, gpu_frames);
     nss_cuda::register_wnnm(plugin, vspapi);
     nss_cuda::register_mcwnnm(plugin, vspapi);
     nss_cuda::register_ncsr(plugin, vspapi);

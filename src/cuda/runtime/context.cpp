@@ -27,6 +27,7 @@ BackendArgs parse_backend_args(const VSAPI* vsapi, const VSMap* in, const char* 
     if (!err) {
         if (device < 0 || device > INT32_MAX) throw std::invalid_argument(prefix(filter) + "device_id must be >= 0");
         args.device_id = static_cast<int>(device);
+        args.device_explicit = true;
     }
     const int64_t streams = vsapi->mapGetInt(in, "num_streams", 0, &err);
     if (!err) {

@@ -56,6 +56,7 @@ public:
     const VSFrame* getFrameFilter(int n, VSNode* node, VSFrameContext* context) {
         return hold(api_->getFrameFilter(n, node, context));
     }
+    const VSFrame* adoptInput(const VSFrame* frame) { return hold(frame); }
     VSFrame* newVideoFrame(const VSVideoFormat* format, int w, int h, const VSFrame* props, VSCore* core) {
         checked_int(checked_mul(w, h));
         return hold(api_->newVideoFrame(format, w, h, props, core), true);

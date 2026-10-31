@@ -140,8 +140,29 @@ set(NSS_CUDA_RUNTIME_SOURCES
   runtime/device.cpp
   runtime/frame_io.cpp
   runtime/frame_memory.cpp
+  runtime/gpu_frames.cpp
   runtime/memory.cpp
+  runtime/vs_api43.cpp
 )
+
+option(NSS_CUDA_GPU_FRAMES "Build the experimental R81 GPU-frame frontend for nss_cuda.NLM" OFF)
+if(NSS_CUDA_GPU_FRAMES)
+  find_file(NSS_CUDA_VSVULKAN_HEADER VSVulkan4.h PATHS "${VapourSynth_INCLUDE_DIR}" NO_DEFAULT_PATH NO_CACHE)
+  if(NOT NSS_CUDA_VSVULKAN_HEADER)
+    message(FATAL_ERROR "NSS_CUDA_GPU_FRAMES requires R81 VapourSynth headers (VSVulkan4.h)")
+  endif()
+  file(STRINGS "${NSS_CUDA_VSVULKAN_HEADER}" _nss_cuda_exportable_frame REGEX "getExportableFrameFilter")
+  if(NOT _nss_cuda_exportable_frame)
+    message(FATAL_ERROR "NSS_CUDA_GPU_FRAMES requires R81 VSVulkan4.h with getExportableFrameFilter")
+  endif()
+  find_path(NSS_CUDA_VULKAN_INCLUDE_DIR vulkan/vulkan_core.h
+            HINTS "$ENV{VULKAN_SDK}/Include" "$ENV{VULKAN_SDK}/include")
+  if(NOT NSS_CUDA_VULKAN_INCLUDE_DIR)
+    message(FATAL_ERROR "NSS_CUDA_GPU_FRAMES requires Vulkan headers (set NSS_CUDA_VULKAN_INCLUDE_DIR or VULKAN_SDK)")
+  endif()
+  set_source_files_properties(runtime/vs_api43.cpp PROPERTIES COMPILE_DEFINITIONS VS_USE_API_43)
+  message(STATUS "NSSFactory CUDA: experimental R81 GPU-frame frontend for NLM")
+endif()
 
 # Optional cuSolverDx (MathDx package root, the directory holding include/
 # and lib/: nvidia/mathdx/<version>): the eigen steps of NCSR's groups of 17
@@ -211,6 +232,12 @@ target_compile_options(nss_cuda_core PRIVATE "${NSS_CUDA_THREADS_OPTION}")
 set_source_files_properties(runtime/device.cpp PROPERTIES COMPILE_DEFINITIONS
   "NSS_CUDA_ARCH_STRING=\"${NSS_CUDA_ARCH_STRING}\";NSS_CUDA_CUBIN_ARCHS=${NSS_CUDA_CUBIN_ARCHS_CSV};NSS_CUDA_PTX_ARCHS=${NSS_CUDA_PTX_ARCHS_CSV}")
 target_link_libraries(nss_cuda_core PUBLIC nss_frontend nss_gpuhost CUDA::cudart_static)
+if(NSS_CUDA_GPU_FRAMES)
+  target_compile_definitions(nss_cuda_core PUBLIC NSS_CUDA_GPU_FRAMES=1)
+  target_include_directories(nss_cuda_core SYSTEM PRIVATE "${NSS_CUDA_VULKAN_INCLUDE_DIR}")
+else()
+  target_compile_definitions(nss_cuda_core PUBLIC NSS_CUDA_GPU_FRAMES=0)
+endif()
 if(NSS_CUDA_MATHDX)
   target_link_libraries(nss_cuda_core PUBLIC nss_cuda_solverdx)
 endif()
