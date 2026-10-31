@@ -8,7 +8,6 @@ namespace nss_vk {
 namespace {
 
 constexpr int kSide = 16;
-constexpr int kRefs = kSide - 1;
 
 struct SquarePush {
     VkDeviceAddress source, matches, counts;
@@ -25,18 +24,19 @@ struct Passes {
     int rows = 1;
 };
 
-Passes plan_square(int q, const RasterGrid& grid, int ref_begin, int ref_count) {
+Passes plan_square(int q, int r, const RasterGrid& grid, int ref_begin, int ref_count) {
+    const int refs = kSide - r + 1;
     const int row_first = ref_begin / grid.nx, row_last = (ref_begin + ref_count - 1) / grid.nx;
     const bool clamp_x = grid.max_x % q != 0, clamp_y = grid.max_y % q != 0;
     const int lattice_cols = clamp_x ? grid.nx - 1 : grid.nx;
     const int lattice_rows = clamp_y ? grid.ny - 1 : grid.ny;
-    const int blocks_x = (lattice_cols + kRefs - 1) / kRefs;
+    const int blocks_x = (lattice_cols + refs - 1) / refs;
     const int last_lattice = std::min(row_last, lattice_rows - 1);
     const int span = last_lattice - row_first + 1;
-    const int bands = span > 0 ? (span + kRefs - 1) / kRefs : 0;
+    const int bands = span > 0 ? (span + refs - 1) / refs : 0;
     Passes plan{};
     plan.rows = bands > 0 ? (span + bands - 1) / bands : 1;
-    const int shift_x = grid.max_x - q * (kRefs - 1), shift_y = grid.max_y - q * (plan.rows - 1);
+    const int shift_x = grid.max_x - q * (refs - 1), shift_y = grid.max_y - q * (plan.rows - 1);
     const bool last_row = clamp_y && row_last == grid.ny - 1;
     const auto add = [&](int ox, int oy, int bx, int nbands) {
         if (bx <= 0 || nbands <= 0) return;
@@ -60,9 +60,12 @@ Passes plan_square(int q, const RasterGrid& grid, int ref_begin, int ref_count) 
 
 bool spatial_match_square_shape(const MatchGeometry& g, const RasterGrid& grid) {
     const int q = grid.step;
-    return (q == 1 || q == 2 || q == 4 || q == 6 || q == 8) && g.block == 2 * q && g.channels == 1 &&
-           g.range_hi < 0 && g.group >= 2 && g.group <= 32 && g.width >= g.block && g.height >= g.block &&
-           g.width <= 0xffff && g.height <= 0xffff && grid.nx >= 1 && grid.ny >= 1;
+    const bool quarters = (q == 1 || q == 2 || q == 4 || q == 6 || q == 8) && g.block == 2 * q;
+    const bool generalized = (g.block == 12 && q == 3) || (g.block == 12 && q == 4) ||
+                             (g.block == 16 && q == 4) || (g.block == 8 && q == 2);
+    return (quarters || generalized) && g.channels == 1 && g.range_hi < 0 && g.group >= 2 && g.group <= 32 &&
+           g.width >= g.block && g.height >= g.block && g.width <= 0xffff && g.height <= 0xffff && grid.nx >= 1 &&
+           grid.ny >= 1;
 }
 
 bool spatial_match_square_takes(const MatchGeometry& g, const RasterGrid& grid) {
@@ -72,10 +75,11 @@ bool spatial_match_square_takes(const MatchGeometry& g, const RasterGrid& grid) 
     return !lanes;
 }
 
-const Pipeline& SquareMatcher::pipeline(int q, int group, bool temporal) {
+const Pipeline& SquareMatcher::pipeline(int q, int r, int group, bool temporal) {
     const int wanted = group - 1;
     const int k = wanted <= 1 ? 1 : wanted <= 3 ? 3 : wanted <= 7 ? 7 : wanted <= 15 ? 15 : 31;
-    const std::string id = "match_square_q" + std::to_string(q) + "_k" + std::to_string(k) + (temporal ? "_t" : "");
+    const std::string id = "match_square_r" + std::to_string(r) + "_q" + std::to_string(q) + "_k" +
+                           std::to_string(k) + (temporal ? "_t" : "");
     std::lock_guard lock(mutex_);
     auto it = pipelines_.find(id);
     if (it == pipelines_.end()) it = pipelines_.emplace(id, Pipeline(device_, {id, sizeof(SquarePush), 0, {}})).first;
@@ -84,16 +88,17 @@ const Pipeline& SquareMatcher::pipeline(int q, int group, bool temporal) {
 
 void SquareMatcher::prepare(const MatchGeometry& g, const RasterGrid& grid, bool temporal) {
     if (!spatial_match_square_shape(g, grid)) return;
-    pipeline(grid.step, g.group);
-    if (temporal) pipeline(grid.step, g.group, true);
+    const int r = g.block / grid.step;
+    pipeline(grid.step, r, g.group);
+    if (temporal) pipeline(grid.step, r, g.group, true);
 }
 
 void SquareMatcher::spatial(VkCommandBuffer commands, VkDeviceAddress plane, const MatchGeometry& g,
                             const RasterGrid& grid, int ref_begin, int ref_count, VkDeviceAddress matches,
                             VkDeviceAddress counts, int frame) {
     if (ref_count <= 0 || !spatial_match_square_takes(g, grid)) return;
-    const int q = grid.step;
-    const Passes plan = plan_square(q, grid, ref_begin, ref_count);
+    const int q = grid.step, r = g.block / q;
+    const Passes plan = plan_square(q, r, grid, ref_begin, ref_count);
     if (plan.blocks == 0) return;
     SquarePush p{};
     p.source = plane;
@@ -110,7 +115,7 @@ void SquareMatcher::spatial(VkCommandBuffer commands, VkDeviceAddress plane, con
     p.ref_begin = ref_begin;
     p.ref_count = ref_count;
     std::copy(&plan.pass[0][0], &plan.pass[0][0] + 16, p.pass);
-    const Pipeline& pipe = pipeline(q, g.group, frame >= 0);
+    const Pipeline& pipe = pipeline(q, r, g.group, frame >= 0);
     const int x = std::min(plan.blocks, 65535);
     pipe.dispatch(commands, &p, static_cast<std::uint32_t>(x),
                   static_cast<std::uint32_t>((plan.blocks + x - 1) / x));

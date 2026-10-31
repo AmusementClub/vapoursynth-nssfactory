@@ -12,6 +12,7 @@
 //
 // Defines: B (block), L (lanes per reference, 8 / 16 / 32), C (channels, 1 or
 // 3 joint), PREDICTIVE (0 spatial, 1 predictive), PS1 / PS2 (seed counts),
+// PAIR2 (B8/L8 PS2 radius-1 paired directions),
 // SEEDED (reuse center matches), MATCH_WARPS (default 4), WARP_EMULATED.
 #version 460
 #extension GL_EXT_buffer_reference : require
@@ -23,6 +24,9 @@
 #endif
 #ifndef PS2
 #define PS2 0
+#endif
+#ifndef PAIR2
+#define PAIR2 0
 #endif
 #ifndef SEEDED
 #define SEEDED 0
@@ -240,6 +244,37 @@ uint64_t key_of(Match m) {
 }
 #endif
 
+#if PS2
+uint64_t scan2_direction(uint64_t plane, uint centers, int nc, bool enabled) {
+    const int sub = w_sub();
+    uint64_t best0 = EMPTY, best1 = EMPTY;
+    const uint c0 = w_shfl(centers, 0);
+    lane_scan2(plane, int(c0 & 0xffffu), int(c0 >> 16), pc.ps_range, pc.ps_range, 0 < nc && enabled, 0xffffffffu,
+               best0, best1);
+    const uint c1 = w_shfl(centers, 1);
+    lane_scan2(plane, int(c1 & 0xffffu), int(c1 >> 16), pc.ps_range, pc.ps_range, 1 < nc && enabled, 0xffffffffu,
+               best0, best1);
+    return sub == 0 ? best0 : sub == 1 ? best1 : EMPTY;
+}
+
+void merge2(uint64_t local, int t, int found, inout uint64_t held, inout int held_t) {
+    const int sub = w_sub();
+    [[unroll]] for (int i = 0; i < 2; ++i) {
+        const uint64_t e = w_shfl64(local, i);
+        const uint64_t pre = w_up64(held);
+        const int pre_t = int(w_up(uint(held_t)));
+        const uint bits = uint(e >> 32), at = uint(e);
+        const uint h_bits = uint(held >> 32), p_bits = uint(pre >> 32);
+        const bool before_held = bits < h_bits || (bits == h_bits && (t < held_t || (t == held_t && at < uint(held))));
+        const bool before_pre = bits < p_bits || (bits == p_bits && (t < pre_t || (t == pre_t && at < uint(pre))));
+        const bool insert = i < found && before_held;
+        const bool head = sub == 0 || !before_pre;
+        held = insert ? (head ? e : pre) : held;
+        held_t = insert ? (head ? t : pre_t) : held_t;
+    }
+}
+#endif
+
 void main() {
     const int sub = w_sub();
     const int r = w_segment();
@@ -272,59 +307,65 @@ void main() {
         const int first = max(0, pc.valid_begin);
         const int last = pc.valid_end < 0 ? pc.ntemp : min(pc.ntemp, pc.valid_end);
         const int local_k = min(pc.ps_num, pc.group);
-        for (int sign = -1; sign <= 1; sign += 2) {
-            uint centers = seeds;
-            int nc = seed_count;
-            for (int dt = 1; dt <= pc.radius; ++dt) {
-                const int t = t0 + sign * dt;
-                if (t < first || t >= last) break;
-                const uint64_t plane = Table(pc.source).p[t];
-                uint64_t local = EMPTY;
+#if PAIR2
+        if (pc.radius == 1) {
+            const int backward = t0 - 1, forward = t0 + 1;
+            const bool use_backward = backward >= first && backward < last;
+            const bool use_forward = forward >= first && forward < last;
+            const uint64_t local_backward = scan2_direction(Table(pc.source).p[backward], seeds, seed_count, use_backward);
+            const uint64_t local_forward = scan2_direction(Table(pc.source).p[forward], seeds, seed_count, use_forward);
+            const int found_backward = w_count(sub < local_k && local_backward != EMPTY);
+            const int found_forward = w_count(sub < local_k && local_forward != EMPTY);
+            merge2(local_backward, backward, found_backward, held, held_t);
+            merge2(local_forward, forward, found_forward, held, held_t);
+        } else
+#endif
+        {
+            for (int sign = -1; sign <= 1; sign += 2) {
+                uint centers = seeds;
+                int nc = seed_count;
+                for (int dt = 1; dt <= pc.radius; ++dt) {
+                    const int t = t0 + sign * dt;
+                    if (t < first || t >= last) break;
+                    const uint64_t plane = Table(pc.source).p[t];
+                    uint64_t local = EMPTY;
 #if PS2
-                uint64_t best0 = EMPTY, best1 = EMPTY;
-                const uint c0 = w_shfl(centers, 0);
-                lane_scan2(plane, int(c0 & 0xffffu), int(c0 >> 16), pc.ps_range, pc.ps_range, 0 < nc, 0xffffffffu,
-                           best0, best1);
-                const uint c1 = w_shfl(centers, 1);
-                lane_scan2(plane, int(c1 & 0xffffu), int(c1 >> 16), pc.ps_range, pc.ps_range, 1 < nc, 0xffffffffu,
-                           best0, best1);
-                local = sub == 0 ? best0 : sub == 1 ? best1 : EMPTY;
+                    local = scan2_direction(plane, centers, nc, true);
 #else
-                for (int i = 0; i < pc.ps_num; ++i) {
-                    const uint c = w_shfl(centers, i);
+                    for (int i = 0; i < pc.ps_num; ++i) {
+                        const uint c = w_shfl(centers, i);
 #if PS1
-                    lane_scan(plane, int(c & 0xffffu), int(c >> 16), pc.ps_range, pc.ps_range, i < nc, 0xffffffffu, false,
-                              local);
+                        lane_scan(plane, int(c & 0xffffu), int(c >> 16), pc.ps_range, pc.ps_range, i < nc, 0xffffffffu,
+                                  false, local);
 #else
-                    lane_scan(plane, int(c & 0xffffu), int(c >> 16), pc.ps_range, pc.ps_range, i < nc, 0xffffffffu, true,
-                              local);
+                        lane_scan(plane, int(c & 0xffffu), int(c >> 16), pc.ps_range, pc.ps_range, i < nc, 0xffffffffu,
+                                  true, local);
 #endif
-                }
+                    }
 #endif
-                const int found = w_count(sub < local_k && local != EMPTY);
-                // The layer's best into the global list, one at a time.
+                    const int found = w_count(sub < local_k && local != EMPTY);
 #if PS2
-                [[unroll]] for (int i = 0; i < 2; ++i) {
+                    merge2(local, t, found, held, held_t);
 #else
-                for (int i = 0; i < pc.ps_num; ++i) {
+                    for (int i = 0; i < pc.ps_num; ++i) {
+                        const uint64_t e = w_shfl64(local, i);
+                        const uint64_t pre = w_up64(held);
+                        const int pre_t = int(w_up(uint(held_t)));
+                        const uint bits = uint(e >> 32), at = uint(e);
+                        const uint h_bits = uint(held >> 32), p_bits = uint(pre >> 32);
+                        const bool before_held =
+                            bits < h_bits || (bits == h_bits && (t < held_t || (t == held_t && at < uint(held))));
+                        const bool before_pre =
+                            bits < p_bits || (bits == p_bits && (t < pre_t || (t == pre_t && at < uint(pre))));
+                        const bool insert = i < found && before_held;
+                        const bool head = sub == 0 || !before_pre;
+                        held = insert ? (head ? e : pre) : held;
+                        held_t = insert ? (head ? t : pre_t) : held_t;
+                    }
 #endif
-                    const uint64_t e = w_shfl64(local, i);
-                    const uint64_t pre = w_up64(held);
-                    const int pre_t = int(w_up(uint(held_t)));
-                    const uint bits = uint(e >> 32), at = uint(e);
-                    const uint h_bits = uint(held >> 32), p_bits = uint(pre >> 32);
-                    const bool before_held =
-                        bits < h_bits || (bits == h_bits && (t < held_t || (t == held_t && at < uint(held))));
-                    const bool before_pre =
-                        bits < p_bits || (bits == p_bits && (t < pre_t || (t == pre_t && at < uint(pre))));
-                    // Selects, not a branch (see lane_scan).
-                    const bool insert = i < found && before_held;
-                    const bool head = sub == 0 || !before_pre;
-                    held = insert ? (head ? e : pre) : held;
-                    held_t = insert ? (head ? t : pre_t) : held_t;
+                    centers = uint(local);
+                    nc = found;
                 }
-                centers = uint(local);
-                nc = found;  // none: the later layers of this direction find nothing either
             }
         }
     }

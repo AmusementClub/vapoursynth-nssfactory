@@ -62,7 +62,7 @@ public:
     bool lanes(const MatchGeometry& g, int ps_num) const;
     // Creates the pipeline a search will use (at filter creation). Seeded
     // predictive reuses the center matches already in the output buffer.
-    void prepare(const MatchGeometry& g, bool predictive, int ps_num, bool seeded = false);
+    void prepare(const MatchGeometry& g, bool predictive, int ps_num, bool seeded = false, int radius = 0);
 
     // References [ref_begin, ref_begin + ref_count) of the grid; `matches`
     // holds ref_count * g.group DeviceMatch (group-strided), `counts`
@@ -82,9 +82,10 @@ public:
     void limit_groups_x(int x) noexcept { max_groups_x_ = x; }
 
 private:
-    const Pipeline& pipeline(const MatchGeometry& g, bool predictive, int ps_num, bool seeded = false);
+    const Pipeline& pipeline(const MatchGeometry& g, bool predictive, int ps_num, bool seeded = false,
+                             bool pair2 = false);
     void dispatch(VkCommandBuffer commands, const MatchGeometry& g, bool predictive, int ps_num, const void* push,
-                  int ref_count, bool seeded = false);
+                  int ref_count, bool seeded = false, bool pair2 = false);
 
     std::shared_ptr<Device> device_;
     bool force_emulation_ = false;
@@ -96,7 +97,25 @@ private:
     std::map<std::string, Pipeline> pipelines_;
 };
 
-// Square matching for BM3D's block = 2 * step shapes. The quarter-distance
+// Exact column-reuse matching for one-channel block-4/8/12/16 spatial
+// searches. The SSD reduction and top-K ordering match Matcher's lane kernels.
+bool spatial_match_column_takes(const MatchGeometry& g, const RasterGrid& grid);
+
+class ColumnMatcher {
+public:
+    explicit ColumnMatcher(std::shared_ptr<Device> device) : device_(std::move(device)) {}
+    void prepare(const MatchGeometry& g, const RasterGrid& grid);
+    void spatial(VkCommandBuffer commands, VkDeviceAddress plane, const MatchGeometry& g, const RasterGrid& grid,
+                 int ref_begin, int ref_count, VkDeviceAddress matches, VkDeviceAddress counts);
+
+private:
+    const Pipeline& pipeline(int block, int group, int step);
+    std::shared_ptr<Device> device_;
+    std::mutex mutex_;
+    std::map<std::string, Pipeline> pipelines_;
+};
+
+// Square matching for BM3D's block = R * step shapes. The tile-distance
 // arithmetic differs from the lane kernels in the last bits, so near ties may
 // resolve differently. spatial() declines a shape that admission rejects and
 // leaves it to Matcher's existing path.
@@ -114,7 +133,7 @@ public:
                   VkDeviceAddress counts);
 
 private:
-    const Pipeline& pipeline(int q, int group, bool temporal = false);
+    const Pipeline& pipeline(int q, int r, int group, bool temporal = false);
     std::shared_ptr<Device> device_;
     std::mutex mutex_;
     std::map<std::string, Pipeline> pipelines_;

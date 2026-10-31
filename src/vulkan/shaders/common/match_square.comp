@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
-// Square matcher for blocks of 2Q at step Q: every Q x Q quarter distance is
-// shared by the four references that contain it. Distances use the quarter
-// column chains and a tree, not the lane kernels' block-row chains, so near
-// ties may resolve differently. Defines: Q, K (group - 1 rounded up to 2^k - 1),
+// Square matcher for blocks of RQ at step Q: every Q x Q tile distance is
+// shared by the R^2 references that contain it. Distances use the tile column
+// chains and trees, not the lane kernels' block-row chains, so near ties may
+// resolve differently. Defines: R, Q, K (group - 1 rounded up to 2^k - 1),
 // TEMPORAL (resolve the center plane through the device frame table).
 #version 460
 #extension GL_EXT_buffer_reference : require
@@ -10,7 +10,7 @@
 #extension GL_EXT_control_flow_attributes : require
 
 #define SIDE 16
-#define REFS 15
+#define REFS (SIDE - R + 1)
 
 layout(local_size_x = 256) in;
 shared float part[2][SIDE][SIDE + 1];
@@ -47,12 +47,25 @@ float tree_sum(float c[Q]) {
     return c[0];
 #elif Q == 2
     return c[0] + c[1];
+#elif Q == 3
+    return (c[0] + c[1]) + c[2];
 #elif Q == 4
     return (c[0] + c[1]) + (c[2] + c[3]);
 #elif Q == 6
     return ((c[0] + c[1]) + c[2]) + ((c[3] + c[4]) + c[5]);
 #else
     return ((c[0] + c[1]) + (c[2] + c[3])) + ((c[4] + c[5]) + (c[6] + c[7]));
+#endif
+}
+
+precise float tile_sum(float c[R * R]) {
+#if R == 2
+    return (c[0] + c[1]) + (c[2] + c[3]);
+#elif R == 3
+    return (((c[0] + c[1]) + c[2]) + (c[3] + c[4])) + ((c[5] + c[6]) + (c[7] + c[8]));
+#else
+    return (((c[0] + c[1]) + (c[2] + c[3])) + ((c[4] + c[5]) + (c[6] + c[7]))) +
+           (((c[8] + c[9]) + (c[10] + c[11])) + ((c[12] + c[13]) + (c[14] + c[15])));
 #endif
 }
 
@@ -84,7 +97,7 @@ void main() {
     const int ref = row * nx + col;
     const bool live = tx < REFS && ty < rows && col >= 0 && row >= 0 && ref >= pc.ref_begin &&
                       ref < pc.ref_begin + pc.ref_count;
-    const int max_x = pc.width - 2 * Q, max_y = pc.height - 2 * Q;
+    const int max_x = pc.width - R * Q, max_y = pc.height - R * Q;
     const int last_row = pc.height - 1, last_col = pc.width - 1;
     int cols[Q];
     [[unroll]] for (int c = 0; c < Q; ++c) cols[c] = min(max(x0 + c, 0), last_col);
@@ -126,8 +139,11 @@ void main() {
                     barrier();
                     const int yc = y0 + dy;
                     if (col_ok && yc >= 0 && yc <= max_y && (dx | dy) != 0) {
-                        precise float sum = (part[buf][ty][tx] + part[buf][ty][tx + 1]) +
-                                            (part[buf][ty + 1][tx] + part[buf][ty + 1][tx + 1]);
+                        precise float tiles[R * R];
+                        [[unroll]] for (int r = 0; r < R; ++r) {
+                            [[unroll]] for (int c = 0; c < R; ++c) tiles[r * R + c] = part[buf][ty + r][tx + c];
+                        }
+                        precise float sum = tile_sum(tiles);
                         const uint64_t key = uint64_t(min(floatBitsToUint(sum), kInfinity)) << 32 |
                                              uint64_t(yc) << 16 | uint64_t(xc);
                         if (key < best[K - 1]) insert_sorted(best, key);

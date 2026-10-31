@@ -159,6 +159,7 @@ struct Driver : GroupFilterConfig {
     bool basic_out[3]{true, true, true};    // two_stage: the first stage filters channel c of a unit
     std::size_t slots = 0, permits = 0;
     std::unique_ptr<Matcher> matcher;
+    std::unique_ptr<ColumnMatcher> column_matcher;
     std::unique_ptr<SquareMatcher> square_matcher;
     std::unique_ptr<Aggregator> aggregator;
     std::unique_ptr<SlotPool<GroupSlot>> pool;
@@ -671,9 +672,12 @@ void filter_center(Driver& d, VkCommandBuffer commands, const BatchBuffers& buff
         } else if (d.radius > 0) {
             d.matcher->predictive(commands, geometry, window, p.grid, begin, count, buffers.matches.address(),
                                   buffers.counts.address());
+        } else if (d.column_matcher && spatial_match_column_takes(geometry, p.grid)) {
+            d.column_matcher->spatial(commands, io.match, geometry, p.grid, begin, count, buffers.matches.address(),
+                                       buffers.counts.address());
         } else if (d.square_matcher && spatial_match_square_takes(geometry, p.grid)) {
             d.square_matcher->spatial(commands, io.match, geometry, p.grid, begin, count, buffers.matches.address(),
-                                       buffers.counts.address());
+                                      buffers.counts.address());
         } else {
             d.matcher->spatial(commands, io.match, geometry, p.grid, begin, count, buffers.matches.address(),
                                buffers.counts.address());
@@ -1728,6 +1732,7 @@ void group_filter_install(GroupFilterConfig&& config, VSMap* out, VSCore* core, 
         plan_frames(*d);
     }
     d->matcher = std::make_unique<Matcher>(d->device);
+    if (d->column_match) d->column_matcher = std::make_unique<ColumnMatcher>(d->device);
     if (d->square_match) d->square_matcher = std::make_unique<SquareMatcher>(d->device);
     d->aggregator = std::make_unique<Aggregator>(d->device);
     for (const GroupPlane* p : stage_planes(*d)) {
@@ -1738,7 +1743,8 @@ void group_filter_install(GroupFilterConfig&& config, VSMap* out, VSCore* core, 
         if (!d->matcher->supports(g, ps_num)) throw std::logic_error(prefix(*d) + "no matcher for this search");
         const bool square_seeded = d->radius > 0 && d->square_matcher && d->matcher->lanes(g, ps_num) &&
                                    spatial_match_square_takes(g, p->grid);
-        d->matcher->prepare(g, d->radius > 0, ps_num, square_seeded);
+        d->matcher->prepare(g, d->radius > 0, ps_num, square_seeded, d->radius);
+        if (d->column_matcher && d->radius == 0) d->column_matcher->prepare(g, p->grid);
         if (d->square_matcher) d->square_matcher->prepare(g, p->grid, square_seeded);
         if (d->prepare) d->prepare(*p, p->wiener);
     }
