@@ -40,6 +40,7 @@ std::string signature(const char* shared);
 struct BackendArgs {
     int device_id = 0;
     int num_streams = kDefaultStreams;
+    bool device_explicit = false;
     bool streams_explicit = false;
 };
 // Throws std::invalid_argument("nss_cuda.<filter>: ...") on invalid values.

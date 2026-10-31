@@ -191,10 +191,20 @@ GPU. NLM is temporal through `d`; LSSC has no temporal mode.
 
 ### GPU frames
 
-`nss_cuda` takes CPU frames only. On VapourSynth R80+ a GPU-resident clip
-(`std.GPUUpload`, a GPU filter's output) passed to an `nss_cuda` filter is
-downloaded by the core first, and the output is a CPU frame. Chains that stay
-on the GPU are [`nss_vk`'s](../vk/README.md#gpu-frames-vapoursynth-r80).
+By default `nss_cuda` takes CPU frames only. On VapourSynth R80+ a GPU-resident
+clip (`std.GPUUpload`, a GPU filter's output) passed to an `nss_cuda` filter is
+downloaded by the core first, and the output is a CPU frame.
+
+An **experimental, opt-in R81 frontend** covers `nss_cuda.NLM`: build with
+`-DNSS_CUDA_GPU_FRAMES=ON` and set `NSS_CUDA_GPU_FRAMES=1` before loading the
+plugin. NLM then accepts CPU or GPU frames (`vnode:all`), keeps GPU input and
+output resident, and uses its plane path with device-to-device plane copies.
+Other filters keep their CPU-frame interface. On R80 and untested newer cores
+NLM explicitly downloads GPU input instead. The frontend uses per-stream CUDA /
+Vulkan timeline semaphores and a bounded external-memory import cache; it keeps
+the existing host wait per frame. `Backend()["gpu_frames"]` reports the mode.
+The normal Vulkan GPU-chain implementation remains
+[`nss_vk`'s](../vk/README.md#gpu-frames-vapoursynth-r80).
 
 ### Driver and GPU support
 

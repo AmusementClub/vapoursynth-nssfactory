@@ -55,6 +55,20 @@ add_test(NAME test_cuda_plugin_interface
                  --default-temporal rolling --rolling-cache adaptive)
 set_tests_properties(test_cuda_backend test_cuda_backend_forced_jit test_cuda_plugin_interface PROPERTIES
   LABELS cuda SKIP_RETURN_CODE 77)
+if(NSS_CUDA_GPU_FRAMES)
+  set(NSS_CUDA_GPU_FRAMES_PYTHON "" CACHE STRING "Python with VapourSynth R81 for test_cuda_gpu_frames_r81 (optional)")
+  add_test(NAME test_cuda_gpu_frames
+           COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_cuda_gpu_frames.py" --cuda "${NSS_CUDA_PLUGIN}")
+  set_tests_properties(test_cuda_gpu_frames PROPERTIES LABELS cuda SKIP_RETURN_CODE 77
+                       ENVIRONMENT "NSS_CUDA_GPU_FRAMES=1")
+  if(NSS_CUDA_GPU_FRAMES_PYTHON)
+    add_test(NAME test_cuda_gpu_frames_r81
+             COMMAND ${NSS_CUDA_GPU_FRAMES_PYTHON} "${CMAKE_CURRENT_SOURCE_DIR}/test_cuda_gpu_frames.py"
+                     --cuda "${NSS_CUDA_PLUGIN}")
+    set_tests_properties(test_cuda_gpu_frames_r81 PROPERTIES LABELS cuda SKIP_RETURN_CODE 77
+                         ENVIRONMENT "NSS_CUDA_GPU_FRAMES=1")
+  endif()
+endif()
 # Short create/free soak over every filter (device errors, memory growth).
 add_test(NAME test_cuda_stress
          COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/stress_cuda.py" --cuda "${NSS_CUDA_PLUGIN}"
