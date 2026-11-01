@@ -24,12 +24,15 @@ struct VSGPUTimeline;
 
 namespace nss_vk {
 
+bool timing_enabled();
+constexpr std::uint32_t kTimingQueryCount = 256;
+
 class Slot {
 public:
     enum Stage { Upload, Compute, Download, kStages };
 
     // timestamps: query slots for mark() (0 = none).
-    explicit Slot(std::shared_ptr<Device> device, std::uint32_t timestamps = 0);
+    explicit Slot(std::shared_ptr<Device> device, std::uint32_t timestamps = timing_enabled() ? kTimingQueryCount : 0);
     Slot(const Slot&) = delete;
     Slot& operator=(const Slot&) = delete;
     ~Slot();
@@ -75,6 +78,8 @@ public:
     // Times of this frame's marked queries in nanoseconds since query 0 (0 for
     // unmarked or unavailable ones). Valid after wait() until the next frame.
     const std::vector<double>& timestamps_ns() const noexcept { return times_; }
+    bool has_timestamps() const noexcept { return query_count_ != 0; }
+    std::uint32_t submit_count() const noexcept { return submit_count_; }
 
     // Back to idle from any state, never throwing: waits for a pending frame
     // (bounded), drops commands that were recorded but not submitted.
@@ -116,6 +121,7 @@ private:
     bool deferred_ = false;  // the download stage waits for wait() (Device::defer_downloads)
     VkQueryPool queries_ = VK_NULL_HANDLE;
     std::uint32_t query_count_ = 0;
+    std::uint32_t submit_count_ = 0;
     std::vector<int> marked_;  // per query: the stage that wrote it, -1 = none
     std::vector<double> times_;
     std::vector<std::pair<const VSFrame*, const VSAPI*>> retained_;

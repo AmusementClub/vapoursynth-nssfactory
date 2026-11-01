@@ -26,6 +26,7 @@
 #include "vulkan/runtime/memory.hpp"
 #include "vulkan/runtime/pipeline.hpp"
 #include "vulkan/runtime/slot.hpp"
+#include "vulkan/runtime/timing.hpp"
 #include "vulkan/runtime/vs_api.hpp"
 
 #include <algorithm>
@@ -102,6 +103,7 @@ struct PnlmData : nss::PnlmParams {
         void settle() noexcept {}
     };
     std::unique_ptr<SlotPool<OutputPermit>> outputs;
+    TimingStats timing;
     std::unique_ptr<GpuFrames> gpu;
     // Last: destroyed first, so that its imports go before the device can.
     std::unique_ptr<FrameMemory> frame_memory;
@@ -224,6 +226,7 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
     permit.emplace(d->outputs->acquire());
     PnlmSlot& s = *lease;
     Slot& slot = s.slot;
+    FrameTimer timer(slot);
 
     // Planes with sigma 0 are the source's.
     VSFrame* dst = nullptr;
@@ -302,6 +305,7 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
             const MatchPush match{block, keys, counts, s.est.address()};
             d->match.dispatch(commands, &match, static_cast<std::uint32_t>(blocks[static_cast<std::size_t>(c)]));
             compute_barrier(*d->device, commands);
+            if (d->count == 1) timer.match_end();
             if (!d->fused) {
                 const int per = 256 / nss::pnlm_lanes(d->block * d->block);
                 const WeightPush weight{block, keys, counts, s.est.address(), static_cast<std::int32_t>(refs), 0};
@@ -315,9 +319,11 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
                            static_cast<std::uint32_t>((b.height + 7) / 8));
         // The next plane's matcher overwrites the estimates.
         compute_barrier(*d->device, commands);
+        if (d->count == 1) timer.filter_end();
     }
 
     // Results: into the GPU frame or the imported frame, else the readback buffer.
+    timer.download_begin();
     std::array<bool, 3> direct{};
     if (d->gpu) {
         for (int c = 0; c < d->count; ++c) {
@@ -352,6 +358,8 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
         dependency.pMemoryBarriers = &barrier;
         d->device->vk().vkCmdPipelineBarrier2(download, &dependency);
     }
+    timer.download_end();
+    timer.upload_end();
     slot.submit();
     if (d->gpu) {
         for (int c = 0; c < d->count; ++c) d->gpu->publish(slot, dst, d->planes[c]);
@@ -361,7 +369,8 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
         window.mark_queued(uploaded.first, uploaded.second);
     }
     window.read_by(slot.done(Slot::Compute));
-    slot.wait();
+    timer.wait();
+    d->timing.add(timer.values());
     if (!d->gpu) {
         s.readback.invalidate();
         for (int c = 0; c < d->count; ++c) {
@@ -377,7 +386,9 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
 }
 
 void VS_CC freeFilter(void* instance, VSCore*, const VSAPI*) {
-    delete static_cast<PnlmData*>(instance);
+    auto* d = static_cast<PnlmData*>(instance);
+    if (timing_enabled()) d->timing.print("nss_vk.PNLM");
+    delete d;
 }
 
 void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI* vsapi) {

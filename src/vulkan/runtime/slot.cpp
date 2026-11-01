@@ -4,6 +4,8 @@
 #include "vulkan/runtime/error.hpp"
 
 #include <algorithm>
+#include <cstdlib>
+#include <cstring>
 #include <stdexcept>
 #include <string>
 #if NSS_VK_GPU_FRAMES
@@ -11,6 +13,11 @@
 #endif
 
 namespace nss_vk {
+
+bool timing_enabled() {
+    const char* value = std::getenv("NSS_VK_TIMES");
+    return value && *value && std::strcmp(value, "0") != 0;
+}
 
 Slot::Slot(std::shared_ptr<Device> device, std::uint32_t timestamps) : device_(std::move(device)) {
     const VolkDeviceTable& vk = device_->vk();
@@ -221,11 +228,13 @@ void Slot::submit_stage(StageCommands& s) {
     info.pSignalSemaphoreInfos = &signal;
     device_->submit(*s.queue, info);
     s.done = ++value_;
+    ++submit_count_;
 }
 
 void Slot::submit() {
     if (state_ == State::broken) throw std::runtime_error("nss_vk: execution slot unusable after a failed wait");
     if (state_ != State::recording) return;
+    submit_count_ = 0;
     // With one copy queue for both directions, a download batch would wait
     // there for its kernel and hold every later upload (queues run their
     // batches in order): it is submitted by wait() once the kernel is done, so

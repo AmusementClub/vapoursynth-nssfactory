@@ -189,3 +189,4 @@ most half the core's frame cache is imported.
 | `NSS_VK_DIRECT_IO`, `NSS_VK_DIRECT_IO_MAX_MB`, `NSS_VK_DIRECT_IO_STATS` | Direct transfers with vapoursynth-classic (above). |
 | `NSS_VK_WAIT_TIMEOUT_MS` | How long a frame may take on the device before it is an error (default 60000). |
 | `NSS_VK_REBAR=0`, `NSS_VK_COPY_QUEUES=0/1/2` | Diagnostics: no resizable BAR uploads; fewer copy queues. |
+| `NSS_VK_TIMES` | `1`: record per-slot timestamps and print aggregate upload/match/filter/aggregate/download/wait/submit statistics when a filter is freed. Disabled by default. |

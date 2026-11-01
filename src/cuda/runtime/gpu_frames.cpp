@@ -42,6 +42,16 @@ constexpr int kTestedCore = 81;
 constexpr std::size_t kMaxMemoryImports = 16;
 constexpr std::size_t kMaxSemaphoreImports = 16;
 
+std::size_t memory_import_limit() {
+    const char* value = std::getenv("NSS_CUDA_GPU_IMPORT_CACHE");
+    if (!value || !*value) return kMaxMemoryImports;
+    char* end = nullptr;
+    const long parsed = std::strtol(value, &end, 10);
+    return end == value || parsed < 1 || parsed > static_cast<long>(kMaxMemoryImports)
+               ? kMaxMemoryImports
+               : static_cast<std::size_t>(parsed);
+}
+
 nss::NodeRef download(const nss::NodeRef& node, const char* filter, VSCore* core, const VSAPI* vsapi) {
     VSPlugin* std_plugin = vsapi->getPluginByID("com.vapoursynth.std", core);
     VSMap* args = vsapi->createMap();
@@ -293,8 +303,11 @@ struct GpuStream::Impl {
         cudaExternalSemaphore_t semaphore = nullptr;
     };
 
-    Impl(std::shared_ptr<GpuFrames> frames_, cudaStream_t stream_) : frames(std::move(frames_)), stream(stream_) {
-        imports.reserve(kMaxMemoryImports);
+    const std::size_t import_limit = memory_import_limit();
+
+    Impl(std::shared_ptr<GpuFrames> frames_, cudaStream_t stream_)
+        : frames(std::move(frames_)), stream(stream_), import_limit(memory_import_limit()) {
+        imports.reserve(import_limit);
         semaphores.reserve(kMaxSemaphoreImports);
         char error[256] = {};
         timeline = frames->api()->createGPUTimeline(frames->core(), error, sizeof(error));
@@ -387,7 +400,7 @@ struct GpuStream::Impl {
                 return static_cast<std::uint8_t*>(import.base) + exported.offset;
             }
         }
-        if (imports.size() >= kMaxMemoryImports) {
+        if (imports.size() >= import_limit) {
             const auto victim = std::min_element(imports.begin(), imports.end(), [](const MemoryImport& a, const MemoryImport& b) {
                 return a.used < b.used;
             });
@@ -419,6 +432,11 @@ struct GpuStream::Impl {
         if (result != cudaSuccess) {
             cudaDestroyExternalMemory(memory);
             close_handle(exported.handle);
+#ifdef _WIN32
+            exported.handle = 0;
+#else
+            exported.handle = -1;
+#endif
             NSS_CUDA_CHECK(result);
         }
         close_handle(exported.handle);

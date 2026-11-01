@@ -12,6 +12,7 @@
 #include "vulkan/runtime/memory.hpp"
 #include "vulkan/runtime/pipeline.hpp"
 #include "vulkan/runtime/slot.hpp"
+#include "vulkan/runtime/timing.hpp"
 #include "vulkan/runtime/vs_api.hpp"
 
 #include <algorithm>
@@ -193,6 +194,7 @@ struct Driver : GroupFilterConfig {
     int cache_size = 1, cache_cap = 1;
     ChunkCache cache;
     PlanOrder order;
+    TimingStats timing;
 
     // GPU frames (VapourSynth's device), else null.
     std::unique_ptr<GpuFrames> gpu;
@@ -644,7 +646,7 @@ struct BatchBuffers {
 // channel 0) and filtered into `fixed`, batch after batch, recorded into
 // `commands` (compute). `write` names the channels filtered.
 void filter_center(Driver& d, VkCommandBuffer commands, const BatchBuffers& buffers, const Unit& u, const GroupPlane& p,
-                   int center, const StageIO& io, const FixedTarget& fixed, const bool* write) {
+                   int center, const StageIO& io, const FixedTarget& fixed, const bool* write, FrameTimer& timer) {
     MatchGeometry geometry{p.width, p.height, p.width, p.block, p.range, p.group};
     geometry.channels = d.shared_match ? 1 : u.channels;
     geometry.channel_step = static_cast<long long>(p.floats);
@@ -683,6 +685,7 @@ void filter_center(Driver& d, VkCommandBuffer commands, const BatchBuffers& buff
                                buffers.counts.address());
         }
         compute_barrier(*d.device, commands);
+        timer.match_end();
         GroupLaunch launch{};
         launch.commands = commands;
         launch.src = io.src;
@@ -700,6 +703,8 @@ void filter_center(Driver& d, VkCommandBuffer commands, const BatchBuffers& buff
         d.launch(launch);
         // The next batch's matches and scratch reuse the buffers.
         compute_barrier(*d.device, commands);
+        timer.filter_end();
+        timer.next_stage();
     }
 }
 
@@ -719,14 +724,14 @@ FixedTarget window_target(const Driver& d, const Buffer& num, const Buffer& den,
 // slot's sums, which then are finished (spatial) or turned into the fat
 // frame's slices (legacy) at `target` for the channels `write` names.
 void run_stage(Driver& d, GroupSlot& s, const Unit& u, const GroupPlane& p, int center, const StageIO& io,
-               VkDeviceAddress source, VkDeviceAddress target, const bool* write) {
+               VkDeviceAddress source, VkDeviceAddress target, const bool* write, FrameTimer& timer) {
     VkCommandBuffer commands = s.slot.commands(Slot::Compute);
     // The sums hold one unit; the clear waits for the previous unit's finish.
     const std::size_t cells = p.floats * static_cast<std::size_t>(u.channels) * d.ntemp;
     fixed_clear(*d.device, commands, s.num.get(), 0, cells * 8);
     fixed_clear(*d.device, commands, s.den.get(), 0, cells * 8);
     const FixedTarget fixed = window_target(d, s.num, s.den, p);
-    filter_center(d, commands, BatchBuffers{s.matches, s.counts, s.scratch}, u, p, center, io, fixed, write);
+    filter_center(d, commands, BatchBuffers{s.matches, s.counts, s.scratch}, u, p, center, io, fixed, write, timer);
     // A unit's channels lie p.floats * fat_slices floats apart in `target`.
     for (int c = 0; c < u.channels; ++c) {
         if (!write[c]) continue;
@@ -746,10 +751,12 @@ void run_stage(Driver& d, GroupSlot& s, const Unit& u, const GroupPlane& p, int 
             compute_barrier(*d.device, commands);
         }
     }
+    timer.aggregate_end();
+    timer.next_stage();
 }
 
 // Every unit of a spatial or legacy frame, on the slot's compute queue.
-void run_units(Driver& d, GroupSlot& s, int n) {
+void run_units(Driver& d, GroupSlot& s, int n, FrameTimer& timer) {
     VkCommandBuffer commands = s.slot.commands(Slot::Compute);
     const std::size_t nt = static_cast<std::size_t>(d.ntemp);
     for (std::size_t i = 0; i < d.units.size(); ++i) {
@@ -783,11 +790,11 @@ void run_units(Driver& d, GroupSlot& s, int n) {
                 StageIO first;
                 first.src = io.src;
                 first.match = source;
-                run_stage(d, s, u, b, n, first, source, estimate, d.basic_out);
+                run_stage(d, s, u, b, n, first, source, estimate, d.basic_out, timer);
             }
             io.match = estimate;
         }
-        run_stage(d, s, u, p, n, io, source, target, d.channel_out);
+        run_stage(d, s, u, p, n, io, source, target, d.channel_out, timer);
     }
 }
 
@@ -816,8 +823,9 @@ std::size_t row_bytes(const Driver& d, int plane) {
 // The results of a spatial or legacy frame of GPU frames, into the output
 // frame's planes on the device; a legacy plane the device leaves alone gets
 // its identity slices there too. Submits, publishes and waits.
-void gpu_results(Driver& d, GroupSlot& s, const VSFrame* src, VSFrame* dst) {
+void gpu_results(Driver& d, GroupSlot& s, const VSFrame* src, VSFrame* dst, FrameTimer& timer) {
     Slot& slot = s.slot;
+    timer.download_begin();
     const bool legacy = d.mode == GroupMode::Legacy;
     const int slices = fat_slices(d), nt = d.ntemp, radius = d.radius;
     for (int plane = 0; plane < d.vi.format.numPlanes; ++plane) {
@@ -839,11 +847,13 @@ void gpu_results(Driver& d, GroupSlot& s, const VSFrame* src, VSFrame* dst) {
             }
         }
     }
+    timer.download_end();
+    timer.upload_end();
     slot.submit();
     for (int plane = 0; plane < d.vi.format.numPlanes; ++plane) {
         if (legacy || written(d, plane)) d.gpu->publish(slot, dst, plane);
     }
-    slot.wait();
+    timer.wait();
 }
 
 // Spatial and legacy output: one frame per call.
@@ -884,6 +894,7 @@ const VSFrame* frame_output(Driver* d, int n, VSFrameContext* ctx, VSCore* core,
         nss::stamp_contribution(dst, radius, n, d->model, vsapi);
         GroupSlot& s = *lease;
         Slot& slot = s.slot;
+        FrameTimer timer(slot);
         // Uploads: a plane of an imported frame is copied from it, the others
         // are written into BAR memory or staging by the host.
         const auto put = [&](const VSFrame* frame, int plane, int region) {
@@ -913,14 +924,15 @@ const VSFrame* frame_output(Driver* d, int n, VSFrameContext* ctx, VSCore* core,
                 if (guide_clip(*d)) put(reff[static_cast<std::size_t>(t)], plane, t * clips(*d) + 1);
             }
         }
-        run_units(*d, s, n);
+        run_units(*d, s, n, timer);
         // Downloads: into the frame itself where it is imported, else into
         // the readback buffer (GPU frames: gpu_results). A legacy plane is
         // its 2R+1 num / den slice pairs one after the other, as in the fat
         // frame.
         if (d->gpu) {
-            gpu_results(*d, s, src, dst);
+            gpu_results(*d, s, src, dst, timer);
         } else {
+            timer.download_begin();
             VkCommandBuffer download = slot.commands(Slot::Download);
             std::array<bool, 3> direct{};
             bool retained = false;
@@ -940,8 +952,10 @@ const VSFrame* frame_output(Driver* d, int n, VSFrameContext* ctx, VSCore* core,
             }
             memory_barrier(*d->device, download, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                            VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_HOST_READ_BIT);
+            timer.download_end();
+            timer.upload_end();
             slot.submit();
-            slot.wait();
+            timer.wait();
             s.readback.invalidate();
             for (const int plane : planes) {
                 if (!written(*d, plane) || direct[static_cast<std::size_t>(plane)]) continue;
@@ -951,6 +965,7 @@ const VSFrame* frame_output(Driver* d, int n, VSFrameContext* ctx, VSCore* core,
                           bytes, nss::plane_height(d->vi, plane) * slices);
             }
         }
+        d->timing.add(timer.values());
     }
     // Legacy planes the device leaves alone: identity slices.
     for (int plane = 0; legacy && !d->gpu && plane < d->vi.format.numPlanes; ++plane) {
@@ -1228,6 +1243,7 @@ struct RollRun {
     const GroupPlane& b;
     const ChunkStore& store;
     VkCommandBuffer commands;
+    FrameTimer& timer;
     std::vector<std::uint64_t>& tables;
     int start;
 
@@ -1315,7 +1331,7 @@ struct RollRun {
         StageIO io = point(center, false);
         io.match = io.src;
         filter_center(d, commands, batches(), u, b, center, io, slices(target(r.basic_num, r.basic_den), center, next),
-                      d.basic_out);
+                      d.basic_out, timer);
     }
     void basic_frame(int frame) {
         bool copied = false;
@@ -1338,13 +1354,15 @@ struct RollRun {
         }
         if (copied) after_copies(*d.device, commands);
         clear_basic(frame % nt());  // the cell is the next frame's from here on
+        timer.aggregate_end();
+        timer.next_stage();
     }
     void center(int center, int next) {
         if (!d.two_stage) check(center);
         StageIO io = point(center, p.wiener);
         io.match = p.wiener ? io.guide : io.src;
         filter_center(d, commands, batches(), u, p, center, io, slices(target(r.num, r.den), center, next),
-                      d.channel_out);
+                      d.channel_out, timer);
     }
     void output(int frame) {
         const Buffer& source = r.src[static_cast<std::size_t>(frame % ring())];
@@ -1371,6 +1389,8 @@ struct RollRun {
             }
         }
         clear_sums(frame % nt());  // the slice is a later frame's from here on
+        timer.aggregate_end();
+        timer.next_stage();
     }
 };
 
@@ -1387,6 +1407,7 @@ void queue_units(Driver& d, const std::vector<RollTurn*>& turns, const std::vect
     std::pair<VkSemaphore, std::uint64_t> computed{};
     RollLane& lane = RollTurn::enter(turns, computed);
     RollSlot& s = *turns.front()->slot;
+    FrameTimer timer(lane.slot);
     // On an error before the submission, the lane back to idle (anything
     // submitted is waited for) and the slot to its next chunk.
     struct Settle {
@@ -1413,7 +1434,7 @@ void queue_units(Driver& d, const std::vector<RollTurn*>& turns, const std::vect
     for (std::size_t j = 0; j < turns.size(); ++j) {
         const Unit& u = *units[j];
         RollState& r = *turns[j]->state;
-        RollRun run{d, s, lane, r, u, d.planes[u.first], d.basic[u.first], store, commands, tables, start};
+        RollRun run{d, s, lane, r, u, d.planes[u.first], d.basic[u.first], store, commands, timer, tables, start};
         if (!turns[j]->carry) {
             for (int index = 0; index < d.ntemp; ++index) {
                 run.clear_basic(index);
@@ -1431,6 +1452,7 @@ void queue_units(Driver& d, const std::vector<RollTurn*>& turns, const std::vect
                                              reinterpret_cast<const std::uint8_t*>(tables.data()) + at);
         }
     }
+    timer.download_begin();
     if (d.roll_batch_out) {
         VkCommandBuffer download = lane.slot.commands(Slot::Download);
         for (const Unit* u : units) {
@@ -1453,12 +1475,14 @@ void queue_units(Driver& d, const std::vector<RollTurn*>& turns, const std::vect
     }
     // The imported frames the copies read stay referenced until the work is done.
     for (const VSFrame* f : held) lane.slot.retain(f, vsapi);
+    timer.download_end();
+    timer.upload_end();
     lane.slot.submit();
     settle.armed = false;
     RollTurn::release(d, s, lane, &lane.slot);
     for (RollTurn* turn : turns) turn->leave();
     try {
-        lane.slot.wait();
+        timer.wait();
     } catch (...) {
         // A failure that left the slot pending (a deferred download that
         // could not be submitted) must not leave the lane unusable.
@@ -1467,6 +1491,7 @@ void queue_units(Driver& d, const std::vector<RollTurn*>& turns, const std::vect
         RollTurn::free_lane(d, lane);
         throw;
     }
+    d.timing.add(timer.values());
     RollTurn::free_lane(d, lane);
 }
 
@@ -1617,11 +1642,13 @@ const VSFrame* gpu_rolling_output(Driver* d, int n, const ChunkStore& chunk, Slo
         d->gpu->write(slot, Slot::Compute, chunk.bytes.get(), chunk.bytes.address(), at, dst, plane, row_bytes(*d, plane),
                       nss::plane_height(d->vi, plane));
     }
+    FrameTimer timer(slot);
     slot.submit();
     for (int plane = 0; plane < d->vi.format.numPlanes; ++plane) {
         if (written(*d, plane)) d->gpu->publish(slot, dst, plane);
     }
-    slot.wait();
+    timer.wait();
+    d->timing.add(timer.values());
     frames.freeFrame(src);
     return frames.keep(dst);
 }
@@ -1678,7 +1705,9 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
 }
 
 void VS_CC freeFilter(void* instance, VSCore*, const VSAPI*) {
-    delete static_cast<Driver*>(instance);
+    auto* d = static_cast<Driver*>(instance);
+    if (timing_enabled()) d->timing.print("nss_vk." + d->name);
+    delete d;
 }
 
 }  // namespace
