@@ -95,6 +95,7 @@ struct WindowCache {
 
 struct TileSlot {
     Stream stream;
+    std::unique_ptr<GpuStream> gpu;
     std::array<DeviceBuffer, 3> out;
 };
 
@@ -534,7 +535,7 @@ void tile_frame(NlmData& d, int n, const Frames& srcf, const Frames& reff, const
             while (&window.slot(t) != uploads[i]) ++t;
             auto* staging = uploads[i]->staging.as<std::uint8_t>();
             const auto stage_in = [&](const VSFrame* frame, int plane, int region) {
-                if (d.frame_memory->pinned(frame, plane)) {
+                if (d.gpu || d.frame_memory->pinned(frame, plane)) {
                     direct_in[i][static_cast<std::size_t>(region)] = frame;
                     return;
                 }
@@ -548,7 +549,9 @@ void tile_frame(NlmData& d, int n, const Frames& srcf, const Frames& reff, const
         }
     }
     std::array<bool, 3> direct_out{};
-    for (int c = 0; c < nc; ++c) direct_out[c] = d.frame_memory->pinned(dst, d.first_plane + c);
+    if (!d.gpu) {
+        for (int c = 0; c < nc; ++c) direct_out[c] = d.frame_memory->pinned(dst, d.first_plane + c);
+    }
     window.wait_queued();
     auto* out = stage->bytes.as<std::uint8_t>();
     {
@@ -563,11 +566,14 @@ void tile_frame(NlmData& d, int n, const Frames& srcf, const Frames& reff, const
                 if (armed) cudaStreamSynchronize(stream);
             }
         } drain{s.stream};
+        if (s.gpu) s.gpu->begin();
         for (std::size_t i = 0; i < uploads.size(); ++i) {
             WindowFrame* f = uploads[i];
             auto* staging = f->staging.as<std::uint8_t>();
             const auto upload = [&](int plane, int region, void* device) {
-                if (const VSFrame* frame = direct_in[i][static_cast<std::size_t>(region)]) {
+                if (s.gpu) {
+                    s.gpu->read(direct_in[i][static_cast<std::size_t>(region)], plane, device, row_bytes, row_bytes, h);
+                } else if (const VSFrame* frame = direct_in[i][static_cast<std::size_t>(region)]) {
                     upload_direct(vsapi->getReadPtr(frame, plane), vsapi->getStride(frame, plane), row_bytes, h,
                                   device, row_bytes, s.stream);
                 } else {
@@ -608,11 +614,22 @@ void tile_frame(NlmData& d, int n, const Frames& srcf, const Frames& reff, const
         weights.queued(n);
         for (int c = 0; c < nc; ++c) {
             const int plane = d.first_plane + c;
-            if (direct_out[c]) {
+            if (s.gpu) {
+                s.gpu->write(s.out[c].get(), row_bytes, dst, plane, row_bytes, h);
+                s.gpu->publish(dst, &plane, 1);
+            } else if (direct_out[c]) {
                 download_direct(s.out[c].get(), row_bytes, row_bytes, h, vsapi->getWritePtr(dst, plane),
                                 vsapi->getStride(dst, plane), s.stream);
             } else {
                 begin_download(s.out[c].get(), row_bytes, row_bytes, h, out + d.plane_bytes * c, s.stream);
+            }
+        }
+        if (s.gpu) {
+            for (int plane = 0; plane < d.vi.format.numPlanes; ++plane) {
+                if (plane >= d.first_plane && plane < d.first_plane + nc) continue;
+                const std::size_t row = static_cast<std::size_t>(nss::plane_width(d.vi, plane)) * sizeof(float);
+                s.gpu->copy(srcf[d.d], plane, dst, plane, row, nss::plane_height(d.vi, plane));
+                s.gpu->publish(dst, &plane, 1);
             }
         }
         NSS_CUDA_CHECK(cudaEventRecord(stage->done.event, s.stream));
@@ -625,7 +642,7 @@ void tile_frame(NlmData& d, int n, const Frames& srcf, const Frames& reff, const
     }
     NSS_CUDA_RANGE("nlm.stage_out");
     for (int c = 0; c < nc; ++c) {
-        if (direct_out[c]) continue;  // the DMA wrote it
+        if (d.gpu || direct_out[c]) continue;
         const int plane = d.first_plane + c;
         // Three planes go out with non-temporal stores: RGB 1080p 236 -> 250 fps in three sessions, where
         // one plane lost 2% with them (docs/archive/cuda-head-r2-20261020.md).
@@ -784,7 +801,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
                                  stages * d->nc + weight_sets * span * span) +
                stages * output_bytes;
     };
-    d->tiles = !d->gpu && nlm_tile_supported(d->d, d->a, d->s);
+    d->tiles = nlm_tile_supported(d->d, d->a, d->s);
     if (d->tiles) {
         // Without num_streams: two (1080p YUV420 d = 1: 614 fps with one
         // stream, 758 with two or three), fewer where their weight maps or
@@ -826,6 +843,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         std::vector<std::unique_ptr<TileSlot>> slots;
         for (std::size_t i = 0; i < streams; ++i) {
             slots.push_back(std::make_unique<TileSlot>());
+            if (d->gpu) slots.back()->gpu = std::make_unique<GpuStream>(d->gpu, slots.back()->stream);
             for (int c = 0; c < d->nc; ++c) slots.back()->out[c] = DeviceBuffer(d->plane_bytes, d->budget);
         }
         d->tile_pool = std::make_unique<SlotPool<TileSlot>>(std::move(slots));

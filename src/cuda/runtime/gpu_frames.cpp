@@ -2,6 +2,7 @@
 #include "cuda/runtime/gpu_frames.hpp"
 
 #include "cuda/runtime/error.hpp"
+#include "cuda/runtime/gpu_fill.hpp"
 #include "cuda/runtime/vs_api.hpp"
 
 #include <algorithm>
@@ -102,10 +103,10 @@ std::string gpu_frames_status(VSCore* core, const VSAPI* vsapi) {
     return "no (built without CUDA GPU frames)";
 #else
     if (!vs_api::gpu_frames(vsapi)) return "no (VapourSynth API before 4.3)";
-    if (!requested()) return "off (NSS_CUDA_GPU_FRAMES=1 enables experimental NLM)";
+    if (!requested()) return "off (NSS_CUDA_GPU_FRAMES=1 enables experimental GPU frames)";
     const int release = core_release(core, vsapi);
-    if (release == kTestedCore) return "yes (R81, experimental NLM)";
-    return "downloaded (R" + std::to_string(release) + " untested; experimental NLM supports R81)";
+    if (release == kTestedCore) return "yes (R81, experimental, all filters)";
+    return "downloaded (R" + std::to_string(release) + " untested; experimental GPU frames support R81)";
 #endif
 }
 
@@ -246,6 +247,27 @@ const VSFrame* GpuFrames::get_frame(int n, VSNode* node, VSFrameContext* context
     (void)n, (void)node, (void)context, (void)frames;
     throw std::logic_error("nss_cuda: GPU frames were not built");
 #endif
+}
+
+GpuFrameCache::~GpuFrameCache() {
+    for (const auto& [key, frame] : frames_) api_->freeFrame(frame);
+}
+
+const VSFrame* GpuFrameCache::get(const GpuFrames& gpu, int n, VSNode* node, VSFrameContext* context,
+                                  nss::FrameScope& frames) {
+    const auto key = std::make_pair(node, n);
+    if (const auto found = frames_.find(key); found != frames_.end()) {
+        return frames.adoptInput(api_->addFrameRef(found->second));
+    }
+    const VSFrame* frame = gpu.get_frame(n, node, context, frames);
+    const VSFrame* cached = api_->addFrameRef(frame);
+    try {
+        frames_.emplace(key, cached);
+    } catch (...) {
+        api_->freeFrame(cached);
+        throw;
+    }
+    return frame;
 }
 
 VSFrame* GpuFrames::new_frame(nss::FrameScope& frames, const VSVideoFormat* format, int width, int height,
@@ -477,29 +499,54 @@ void GpuStream::read(const VSFrame* frame, int plane, void* device, std::size_t 
 
 void GpuStream::write(const void* device, std::size_t device_pitch, VSFrame* frame, int plane, std::size_t row_bytes,
                       int rows) {
+    write_rows(device, device_pitch, frame, plane, row_bytes, rows, 0);
+}
+
+void GpuStream::write_rows(const void* device, std::size_t device_pitch, VSFrame* frame, int plane,
+                           std::size_t row_bytes, int rows, int first_row) {
 #if NSS_CUDA_GPU_FRAMES
-    void* target = impl_->map_plane(frame, plane);
+    auto* target = static_cast<std::uint8_t*>(impl_->map_plane(frame, plane));
     const std::ptrdiff_t pitch = impl_->frames->vsapi()->getStride(frame, plane);
+    target += pitch * static_cast<std::ptrdiff_t>(first_row);
     NSS_CUDA_CHECK(cudaMemcpy2DAsync(target, static_cast<std::size_t>(pitch), device, device_pitch, row_bytes,
                                      static_cast<std::size_t>(rows), cudaMemcpyDeviceToDevice, impl_->stream));
 #else
-    (void)device, (void)device_pitch, (void)frame, (void)plane, (void)row_bytes, (void)rows;
+    (void)device, (void)device_pitch, (void)frame, (void)plane, (void)row_bytes, (void)rows, (void)first_row;
 #endif
 }
 
 void GpuStream::copy(const VSFrame* source, int source_plane, VSFrame* target, int target_plane, std::size_t row_bytes,
                      int rows) {
+    copy_rows(source, source_plane, 0, target, target_plane, 0, row_bytes, rows);
+}
+
+void GpuStream::copy_rows(const VSFrame* source, int source_plane, int source_first_row, VSFrame* target,
+                          int target_plane, int target_first_row, std::size_t row_bytes, int rows) {
 #if NSS_CUDA_GPU_FRAMES
     impl_->wait_input(source, source_plane);
-    const void* from = impl_->map_plane(source, source_plane);
-    void* to = impl_->map_plane(target, target_plane);
+    const auto* from = static_cast<const std::uint8_t*>(impl_->map_plane(source, source_plane));
+    auto* to = static_cast<std::uint8_t*>(impl_->map_plane(target, target_plane));
     const std::ptrdiff_t source_pitch = impl_->frames->vsapi()->getStride(source, source_plane);
     const std::ptrdiff_t target_pitch = impl_->frames->vsapi()->getStride(target, target_plane);
+    from += source_pitch * static_cast<std::ptrdiff_t>(source_first_row);
+    to += target_pitch * static_cast<std::ptrdiff_t>(target_first_row);
     NSS_CUDA_CHECK(cudaMemcpy2DAsync(to, static_cast<std::size_t>(target_pitch), from,
                                      static_cast<std::size_t>(source_pitch), row_bytes, static_cast<std::size_t>(rows),
                                      cudaMemcpyDeviceToDevice, impl_->stream));
 #else
-    (void)source, (void)source_plane, (void)target, (void)target_plane, (void)row_bytes, (void)rows;
+    (void)source, (void)source_plane, (void)source_first_row, (void)target, (void)target_plane, (void)target_first_row,
+    (void)row_bytes, (void)rows;
+#endif
+}
+
+void GpuStream::fill(VSFrame* frame, int plane, int first_row, int rows, std::uint32_t word) {
+#if NSS_CUDA_GPU_FRAMES
+    auto* target = static_cast<std::uint8_t*>(impl_->map_plane(frame, plane));
+    const std::ptrdiff_t pitch = impl_->frames->vsapi()->getStride(frame, plane);
+    target += pitch * static_cast<std::ptrdiff_t>(first_row);
+    gpu_fill(target, static_cast<std::size_t>(pitch), rows, word, impl_->stream);
+#else
+    (void)frame, (void)plane, (void)first_row, (void)rows, (void)word;
 #endif
 }
 

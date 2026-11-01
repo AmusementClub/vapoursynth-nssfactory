@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-only
-"""Experimental R81 GPU-frame frontend for nss_cuda.NLM.
+"""Experimental R81 GPU-frame frontend for all nss_cuda filters.
 
 The same plugin must keep plain vnode signatures before API 4.3. On R81, with
-NSS_CUDA_GPU_FRAMES=1, NLM takes and returns GPU frames and matches its
-CPU-frame path within NLM's numerical tolerance. Other cores explicitly download GPU inputs.
+NSS_CUDA_GPU_FRAMES=1, every filter takes and returns GPU frames and matches its
+CPU-frame path. Temporal, bypassed-plane, chained and concurrent-request paths
+are included. Other cores explicitly download GPU inputs.
 
 usage: test_cuda_gpu_frames.py --cuda PATH [--quick]
 """
@@ -87,13 +88,15 @@ def main():
     backend = core.nss_cuda.Backend()
     status = backend.get("gpu_frames", b"")
     status = status.decode() if isinstance(status, bytes) else status
+    filters = ("BM3D", "NLM", "WNNM", "MCWNNM", "NCSR", "NLH", "TWSC", "LSSC", "DA3D", "BM4D", "PNLM")
     if core.api_version.api_minor < 3:
-        bad = ":all" in functions["NLM"] or ":gpu" in functions["NLM"] or not status.startswith("no")
+        bad = any(":all" in functions[name] or ":gpu" in functions[name] for name in filters) or not status.startswith("no")
         print(f"cuda gpu frames: API R{core.api_version.api_major}.{core.api_version.api_minor}, "
               f"plain signatures {'OK' if not bad else 'FAIL'}")
         return int(bad)
-    if not functions["NLM"].startswith("clip:vnode:all;"):
-        print(f"FAIL: NLM signature is {functions['NLM']!r}")
+    wrong = [name for name in filters if not functions[name].startswith("clip:vnode:all;")]
+    if wrong:
+        print(f"FAIL: filters without GPU-node signatures: {wrong}")
         return 1
     if not backend.get("device_count", 0):
         print("cuda gpu frames SKIP: no CUDA device (signatures checked)")
@@ -148,6 +151,72 @@ def main():
         compare(f"NLM {core.get_video_format(fmt).name} {w}x{h} {kw}",
                 make_clip(core, fmt, w, h, i), lambda c, kw=kw: core.nss_cuda.NLM(c, **kw))
 
+    bm3d = [
+        (vs.GRAYS, 134, 112, dict(sigma=8)),
+        (vs.GRAYS, 134, 112, dict(sigma=8, final=1)),
+        (vs.YUV420PS, 134, 112, dict(sigma=[8, 0, 0])),
+        (vs.YUV444PS, 134, 112, dict(sigma=8, chroma=1)),
+        (vs.RGBS, 96, 80, dict(sigma=8, final=1)),
+        (vs.GRAYS, 134, 112, dict(sigma=8, radius=1, temporal_mode="legacy")),
+        (vs.YUV420PS, 134, 112, dict(sigma=[8, 0, 0], radius=1, temporal_mode="legacy")),
+        (vs.GRAYS, 134, 112, dict(sigma=8, radius=1)),
+        (vs.YUV420PS, 134, 112, dict(sigma=[8, 8, 0], radius=1)),
+        (vs.GRAYS, 134, 112, dict(sigma=8, radius=1, final=1)),
+        (vs.GRAYS, 128, 96, dict(sigma=8, radius=2, rolling_chunk=1)),
+        (vs.GRAYS, 128, 96, dict(sigma=8, radius=1, final=1, temporal_mode="legacy")),
+    ]
+    if not args.quick:
+        for i, (fmt, w, h, kw) in enumerate(bm3d):
+            compare(f"BM3D {core.get_video_format(fmt).name} {w}x{h} {kw}",
+                    make_clip(core, fmt, w, h, 100 + i), lambda c, kw=kw: core.nss_cuda.BM3D(c, **kw))
+
+    group_cases = [
+        ("WNNM", vs.GRAYS, dict(sigma=8, radius=0)),
+        ("WNNM", vs.GRAYS, dict(sigma=8, radius=1)),
+        ("MCWNNM", vs.RGBS, dict(sigma=8, radius=1, iters=2)),
+        ("NCSR", vs.GRAYS, dict(sigma=8, radius=1, iters=2)),
+        ("NLH", vs.GRAYS, dict(sigma=3, radius=0)),
+        ("NLH", vs.GRAYS, dict(sigma=3, radius=1)),
+        ("NLH", vs.YUV420PS, dict(sigma=[3, 0, 0], radius=1)),
+        ("NLH", vs.YUV420PS, dict(sigma=[3, 0, 0], radius=1, temporal_mode="legacy")),
+        ("TWSC", vs.GRAYS, dict(sigma=3, block_size=4, group_size=8, block_step=4, iters=2, radius=0)),
+        ("TWSC", vs.GRAYS, dict(sigma=3, block_size=4, group_size=8, block_step=4, iters=2, radius=1)),
+        ("LSSC", vs.GRAYS, dict(sigma=3)),
+        ("LSSC", vs.YUV420PS, dict(sigma=[6, 0, 4])),
+        ("LSSC", vs.RGBS, dict(sigma=8)),
+        ("BM4D", vs.GRAYS, dict(sigma=8)),
+        ("BM4D", vs.RGBS, dict(sigma=8)),
+        ("BM4D", vs.YUV420PS, dict(sigma=[8, 0, 4])),
+        ("PNLM", vs.GRAYS, dict(sigma=6)),
+        ("PNLM", vs.YUV420PS, dict(sigma=[6, 0, 4])),
+        ("PNLM", vs.RGBS, dict(sigma=8, d=1, a=5)),
+    ]
+    for i, (name, fmt, kw) in enumerate(group_cases):
+        compare(f"{name} {core.get_video_format(fmt).name} {kw}", make_clip(core, fmt, 134, 112, 200 + i),
+                lambda c, name=name, kw=kw: getattr(core.nss_cuda, name)(c, **kw))
+
+    if not args.quick:
+        stress_src = make_clip(core, vs.GRAYS, 64, 48, 250, length=72)
+        stress_gpu = core.nss_cuda.BM4D(stress_src.std.GPUUpload(), sigma=8).std.GPUDownload()
+        stress_order = [(i * 17) % stress_src.num_frames for i in range(2 * stress_src.num_frames)]
+        expected = digest(stress_gpu, stress_order)
+        requests = [stress_gpu.get_frame_async(n) for n in stress_order]
+        actual = hashlib.sha256()
+        try:
+            for request in requests:
+                f = request.result(timeout=120)
+                for p in range(f.format.num_planes):
+                    actual.update(np.asarray(f[p]).tobytes())
+                actual.update(repr(sorted((k, v) for k, v in f.props.items()
+                                          if not k.startswith("_NSSResource"))).encode())
+        except Exception as error:
+            failures.append(f"BM4D concurrent prefetch: {error}")
+        else:
+            same = actual.hexdigest() == expected
+            print(f"BM4D concurrent prefetch: {'OK' if same else 'MISMATCH'}")
+            if not same:
+                failures.append("BM4D concurrent prefetch differs from sequential output")
+
     src = make_clip(core, vs.GRAYS, 133, 111, 20)
     ref = make_clip(core, vs.GRAYS, 133, 111, 21)
     same, max_abs, psnr = numeric_match(core.nss_cuda.NLM(src, rclip=ref, d=1),
@@ -156,6 +225,22 @@ def main():
     if not same:
         failures.append("NLM rclip: GPU frames differ from CPU frames")
 
+    same, max_abs, psnr = numeric_match(core.nss_cuda.BM3D(src, ref=ref, sigma=8),
+                                       core.nss_cuda.BM3D(src.std.GPUUpload(), ref=ref.std.GPUUpload(), sigma=8).std.GPUDownload(), order)
+    print(f"BM3D ref: {'OK' if same else 'MISMATCH'} (max {max_abs:.3g}, {psnr:.2f} dB)")
+    if not same:
+        failures.append("BM3D ref: GPU frames differ from CPU frames")
+
+    for i, (fmt, kw) in enumerate([(vs.GRAYS, dict(sigma=3)), (vs.RGBS, dict(sigma=8)),
+                                  (vs.YUV420PS, dict(sigma=[6, 0, 4]))]):
+        guide = make_clip(core, fmt, 134, 112, 400 + i)
+        compare(f"DA3D {core.get_video_format(fmt).name} {kw}", make_clip(core, fmt, 134, 112, 300 + i),
+                lambda c, kw=kw, guide=guide: core.nss_cuda.DA3D(c, ref=guide.std.GPUUpload() if c.gpu_resident else guide, **kw))
+
+    compare("chain BM3D final -> NLM", src,
+            lambda c: core.nss_cuda.NLM(core.nss_cuda.BM3D(c, sigma=8, final=1), d=1))
+    compare("chain NLM -> BM3D rolling", src,
+            lambda c: core.nss_cuda.BM3D(core.nss_cuda.NLM(c, d=1), sigma=8, radius=1))
     compare("chain NLM -> NLM", src,
             lambda c: core.nss_cuda.NLM(core.nss_cuda.NLM(c, d=0), d=1, num_streams=2))
 
@@ -171,6 +256,19 @@ def main():
         print("mixed residency: error OK")
     else:
         failures.append("mixed residency: no error")
+
+    def poison(n, f):
+        out = f.copy()
+        np.asarray(out[0])[0, 0] = np.nan
+        return out
+    try:
+        core.nss_cuda.NLH(core.std.ModifyFrame(src, src, poison).std.GPUUpload(), sigma=3).std.GPUDownload().get_frame(0)
+    except vs.Error as error:
+        if "nonfinite source/reference sample" not in str(error):
+            failures.append(f"nonfinite input: unexpected error {error}")
+        print("nonfinite input: error OK")
+    else:
+        failures.append("nonfinite input: no error")
 
     print(f"cuda gpu frames: R{release}, {len(failures)} failures")
     for failure in failures:

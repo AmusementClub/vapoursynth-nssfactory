@@ -8,9 +8,11 @@
 #include "cuda/runtime/context.hpp"
 #include "cuda/runtime/frame_io.hpp"
 #include "cuda/runtime/frame_memory.hpp"
+#include "cuda/runtime/gpu_frames.hpp"
 #include "cuda/runtime/memory.hpp"
 #include "cuda/runtime/nvtx.hpp"
 #include "cuda/runtime/stream_pool.hpp"
+#include "cuda/runtime/vs_api.hpp"
 #include "frontend/lssc_args.hpp"
 #include "frontend/ownership.hpp"
 #include "frontend/validate.hpp"
@@ -68,6 +70,7 @@ private:
 // buffers (`coded`), and for the download before it rewrites `out`.
 struct Slot {
     Stream stream, copy, load;
+    std::unique_ptr<GpuStream> gpu, gpu_load;
     Stream front[kMaxDepth], side[kMaxDepth];
     Event downloaded;
     Event packed[kMaxDepth], dictionary[kMaxDepth], uploaded[kMaxDepth], coded[kMaxDepth];
@@ -120,6 +123,7 @@ struct LsscData : nss::LsscParams {
     std::unique_ptr<SlotPool<Staging>> staging;
     // Direct DMA to and from page-locked VS frame planes (vapoursynth-classic).
     std::unique_ptr<FrameMemory> frame_memory;
+    std::shared_ptr<GpuFrames> gpu;
 };
 
 // nss fill_dct_atoms: unit impulses through the orthonormal inverse 2D DCT,
@@ -234,8 +238,9 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
     DeviceGuard guard(d->device.index);
     nss::ResourceScope resource_scope(d->budget);
     nss::FrameScope frames(vsapi);
-    const VSFrame* src = frames.getFrameFilter(n, d->node, ctx);
-    VSFrame* dst = frames.newVideoFrame(&d->vi.format, d->vi.width, d->vi.height, src, core);
+    const VSFrame* src = d->gpu ? d->gpu->get_frame(n, d->node, ctx, frames) : frames.getFrameFilter(n, d->node, ctx);
+    VSFrame* dst = d->gpu ? d->gpu->new_frame(frames, &d->vi.format, d->vi.width, d->vi.height, src)
+                          : frames.newVideoFrame(&d->vi.format, d->vi.width, d->vi.height, src, core);
     const bool whole = d->regions == d->denoised;
     const auto region = [&](int r) {
         return g.bytes.as<std::uint8_t>() + static_cast<std::size_t>(r) * d->plane_floats * sizeof(float);
@@ -248,13 +253,17 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
     for (int plane = 0, r = 0; plane < d->vi.format.numPlanes; ++plane) {
         const PlaneShape& p = d->planes[plane];
         if (d->sigma[plane] == 0.f) {
-            vsh::bitblt(vsapi->getWritePtr(dst, plane), vsapi->getStride(dst, plane), vsapi->getReadPtr(src, plane),
-                        vsapi->getStride(src, plane), row_bytes(plane), p.height);
+            if (!d->gpu) {
+                vsh::bitblt(vsapi->getWritePtr(dst, plane), vsapi->getStride(dst, plane), vsapi->getReadPtr(src, plane),
+                            vsapi->getStride(src, plane), row_bytes(plane), p.height);
+            }
             continue;
         }
-        direct_in[plane] = d->frame_memory->pinned(src, plane);
-        direct_out[plane] = d->frame_memory->pinned(dst, plane);
-        if (whole && !direct_in[plane]) {
+        if (!d->gpu) {
+            direct_in[plane] = d->frame_memory->pinned(src, plane);
+            direct_out[plane] = d->frame_memory->pinned(dst, plane);
+        }
+        if (whole && !d->gpu && !direct_in[plane]) {
             stage_plane(vsapi->getReadPtr(src, plane), vsapi->getStride(src, plane), row_bytes(plane), p.height, region(r));
         }
         r += whole;
@@ -275,17 +284,28 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
                 }
             }
         } drain{s};
+        if (s.gpu) {
+            s.gpu->begin();
+            s.gpu_load->begin();
+            for (int plane = 0; plane < d->vi.format.numPlanes; ++plane) {
+                if (d->sigma[plane] != 0.f) continue;
+                s.gpu->copy(src, plane, dst, plane, row_bytes(plane), d->planes[plane].height);
+                s.gpu->publish(dst, &plane, 1);
+            }
+        }
         for (int plane = 0, r = 0; plane < d->vi.format.numPlanes; ++plane) {
             if (d->sigma[plane] == 0.f) continue;
             const PlaneShape& p = d->planes[plane];
             std::uint8_t* staged = region(whole ? r++ : 0);
-            if (!whole && !direct_in[plane]) {
+            if (!whole && !d->gpu && !direct_in[plane]) {
                 stage_plane(vsapi->getReadPtr(src, plane), vsapi->getStride(src, plane), row_bytes(plane), p.height, staged);
             }
             const int b = s.turn;
             s.turn = (s.turn + 1) % d->depth;
             NSS_CUDA_CHECK(cudaStreamWaitEvent(s.load, s.coded[b], 0));
-            if (direct_in[plane]) {
+            if (s.gpu) {
+                s.gpu_load->read(src, plane, s.input[b].get(), row_bytes(plane), row_bytes(plane), p.height);
+            } else if (direct_in[plane]) {
                 upload_direct(vsapi->getReadPtr(src, plane), vsapi->getStride(src, plane), row_bytes(plane), p.height,
                               s.input[b].get(), row_bytes(plane), s.load);
             } else {
@@ -297,7 +317,10 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
             // the same region takes the result.
             cudaStream_t out_stream = whole ? s.copy.get() : s.stream.get();
             if (whole) NSS_CUDA_CHECK(cudaStreamWaitEvent(s.copy, s.coded[b], 0));
-            if (direct_out[plane]) {
+            if (s.gpu) {
+                s.gpu->write(s.out.get(), row_bytes(plane), dst, plane, row_bytes(plane), p.height);
+                s.gpu->publish(dst, &plane, 1);
+            } else if (direct_out[plane]) {
                 download_direct(s.out.get(), row_bytes(plane), row_bytes(plane), p.height, vsapi->getWritePtr(dst, plane),
                                 vsapi->getStride(dst, plane), out_stream);
             } else {
@@ -307,7 +330,7 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
                 NSS_CUDA_CHECK(cudaEventRecord(s.downloaded, s.copy));
             } else {
                 s.stream.synchronize();
-                if (!direct_out[plane]) {
+                if (!s.gpu && !direct_out[plane]) {
                     finish_download(staged, row_bytes(plane), p.height, vsapi->getWritePtr(dst, plane),
                                     vsapi->getStride(dst, plane));
                 }
@@ -321,7 +344,7 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
         for (int plane = 0, r = 0; plane < d->vi.format.numPlanes; ++plane) {
             if (d->sigma[plane] == 0.f) continue;
             std::uint8_t* staged = region(r++);
-            if (direct_out[plane]) continue;  // the DMA wrote it
+            if (d->gpu || direct_out[plane]) continue;
             finish_download(staged, row_bytes(plane), d->planes[plane].height, vsapi->getWritePtr(dst, plane),
                             vsapi->getStride(dst, plane));
         }
@@ -344,6 +367,10 @@ void VS_CC freeFilter(void* instance, VSCore*, const VSAPI*) {
 
 std::unique_ptr<Slot> make_slot(const LsscData& d) {
     auto slot = std::make_unique<Slot>();
+    if (d.gpu) {
+        slot->gpu = std::make_unique<GpuStream>(d.gpu, slot->stream);
+        slot->gpu_load = std::make_unique<GpuStream>(d.gpu, slot->load);
+    }
     const std::size_t plane_bytes = d.plane_floats * sizeof(float);
     const std::size_t np = static_cast<std::size_t>(d.max_np), m = static_cast<std::size_t>(d.block_size) * d.block_size;
     const std::size_t atoms = std::min<std::size_t>(kAtoms, np);
@@ -391,9 +418,12 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     d.vi = *vsapi->getVideoInfo(d.node);
     static_cast<nss::LsscParams&>(d) = nss::frontend::parse_lssc(vsapi, in, d.vi, "nss_cuda");
     nss::validate_group_planes(d.vi, d.sigma, d.block_size);
+    const VSVULKANAPI* gpu_api = take_clips("LSSC", {{"clip", &d.node}}, core, vsapi);
     d.backend = parse_backend_args(vsapi, in, "LSSC");
-    d.device = acquire_device(d.backend.device_id, "LSSC", core, vsapi);
+    d.device = gpu_api ? acquire_core_device(d.backend, "LSSC", core, vsapi, gpu_api)
+                       : acquire_device(d.backend.device_id, "LSSC", core, vsapi);
     d.budget = nss::current_budget();
+    if (gpu_api) d.gpu = std::make_shared<GpuFrames>(core, gpu_api, vsapi);
     d.frame_memory = std::make_unique<FrameMemory>(core, vsapi);
     d.dct = dct_atoms(d.block_size);
     std::size_t frame_bytes = 0;
@@ -491,9 +521,10 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         d.pool = std::make_unique<SlotPool<Slot>>(std::move(slots));
         d.staging = std::make_unique<SlotPool<Staging>>(std::move(staging));
     }
+    if (d.gpu && d.budget) d.gpu->reserve(d.budget->snapshot().bytes[static_cast<std::size_t>(nss::ResourceKind::Workspace)]);
     VSFilterDependency deps[1]{{d.node, rpStrictSpatial}};
-    VSNode* node = vsapi->createVideoFilter2("LSSC", &d.vi, nss::checked_frame<getFrame>, freeFilter, fmParallel, deps, 1,
-                                            &d, core);
+    VSNode* node = vs_api::create_video_filter(vsapi, "LSSC", &d.vi, nss::checked_frame<getFrame>, freeFilter, fmParallel,
+                                               d.gpu != nullptr, deps, 1, &d, core);
     if (!node) {
         freeFilter(data.release(), core, vsapi);
         throw std::runtime_error("nss_cuda.LSSC: failed to create filter");
@@ -504,9 +535,10 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
 
 }  // namespace
 
-void register_lssc(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
-    static const std::string args = signature(nss::frontend::kLsscSignature);
-    vspapi->registerFunction("LSSC", args.c_str(), "clip:vnode;", nss::checked_create<create, kDefaultMemoryLimitMb>, nullptr, plugin);
+void register_lssc(VSPlugin* plugin, const VSPLUGINAPI* vspapi, bool gpu_frames) {
+    const std::string args = residency_args(signature(nss::frontend::kLsscSignature), gpu_frames);
+    vspapi->registerFunction("LSSC", args.c_str(), clip_return(gpu_frames), nss::checked_create<create, kDefaultMemoryLimitMb>,
+                             nullptr, plugin);
 }
 
 }  // namespace nss_cuda

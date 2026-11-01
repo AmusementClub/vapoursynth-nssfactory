@@ -4,6 +4,7 @@
 // kernel. rclip guides matching in the first outer round only. Temporal
 // output rolls on the device for any number of rounds.
 #include "cuda/common/group_driver.hpp"
+#include "cuda/runtime/gpu_frames.hpp"
 #include "cuda/mcwnnm/kernels.hpp"
 #include "frontend/mcwnnm_args.hpp"
 #include "frontend/validate.hpp"
@@ -38,8 +39,10 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     config.channels = 3;
     config.iters = p.iters;
     config.delta = p.delta;
+    config.gpu_api = take_clips("MCWNNM", {{"clip", &config.node}, {"rclip", &config.guide}}, core, vsapi);
     config.backend = parse_backend_args(vsapi, in, "MCWNNM");
-    config.device = acquire_device(config.backend.device_id, "MCWNNM", core, vsapi);
+    config.device = config.gpu_api ? acquire_core_device(config.backend, "MCWNNM", core, vsapi, config.gpu_api)
+                                   : acquire_device(config.backend.device_id, "MCWNNM", core, vsapi);
     for (int plane = 0; plane < 3; ++plane) {
         GroupPlane& g = config.planes[plane];
         g.sigma = p.sigma[plane] / 255.f;
@@ -81,9 +84,10 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
 
 }  // namespace
 
-void register_mcwnnm(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
-    static const std::string args = signature(nss::frontend::kMcwnnmSignature);
-    vspapi->registerFunction("MCWNNM", args.c_str(), "clip:vnode;", nss::checked_create<create, kDefaultMemoryLimitMb>, nullptr, plugin);
+void register_mcwnnm(VSPlugin* plugin, const VSPLUGINAPI* vspapi, bool gpu_frames) {
+    const std::string args = residency_args(signature(nss::frontend::kMcwnnmSignature), gpu_frames);
+    vspapi->registerFunction("MCWNNM", args.c_str(), clip_return(gpu_frames), nss::checked_create<create, kDefaultMemoryLimitMb>,
+                             nullptr, plugin);
 }
 
 }  // namespace nss_cuda

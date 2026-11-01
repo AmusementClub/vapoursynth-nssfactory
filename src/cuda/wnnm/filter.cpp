@@ -3,6 +3,7 @@
 // shared group driver and the WNNM group kernel. rclip guides matching only.
 #include "cuda/common/gram_group.hpp"
 #include "cuda/common/group_driver.hpp"
+#include "cuda/runtime/gpu_frames.hpp"
 #include "cuda/wnnm/kernels.hpp"
 #include "frontend/validate.hpp"
 #include "frontend/wnnm_args.hpp"
@@ -33,9 +34,11 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     config.radius = p.radius;
     config.mode = temporal.rolling ? GroupMode::Rolling : GroupMode::Legacy;
     config.rolling = temporal.params;
+    config.gpu_api = take_clips("WNNM", {{"clip", &config.node}, {"rclip", &config.guide}}, core, vsapi);
     config.backend = parse_backend_args(vsapi, in, "WNNM");
     config.direct_streams = 2;  // a third measured no faster
-    config.device = acquire_device(config.backend.device_id, "WNNM", core, vsapi);
+    config.device = config.gpu_api ? acquire_core_device(config.backend, "WNNM", core, vsapi, config.gpu_api)
+                                   : acquire_device(config.backend.device_id, "WNNM", core, vsapi);
     for (int plane = 0; plane < config.vi.format.numPlanes; ++plane) {
         GroupPlane& g = config.planes[plane];
         g.sigma = p.sigma[plane] / 255.f;
@@ -74,9 +77,10 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
 
 }  // namespace
 
-void register_wnnm(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
-    static const std::string args = signature(nss::frontend::kWnnmSignature);
-    vspapi->registerFunction("WNNM", args.c_str(), "clip:vnode;", nss::checked_create<create, kDefaultMemoryLimitMb>, nullptr, plugin);
+void register_wnnm(VSPlugin* plugin, const VSPLUGINAPI* vspapi, bool gpu_frames) {
+    const std::string args = residency_args(signature(nss::frontend::kWnnmSignature), gpu_frames);
+    vspapi->registerFunction("WNNM", args.c_str(), clip_return(gpu_frames), nss::checked_create<create, kDefaultMemoryLimitMb>,
+                             nullptr, plugin);
 }
 
 }  // namespace nss_cuda

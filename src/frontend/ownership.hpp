@@ -100,6 +100,7 @@ public:
         return bytes;
     }
     void freeFrame(const VSFrame* frame) noexcept { if (frame) { forget(frame); api_->freeFrame(frame); } }
+    void releaseFrame(const VSFrame* frame) noexcept { forget(frame); }
     template<class T> T* keep(T* frame) {
         if (current_budget()) {
             const auto stats = current_budget()->snapshot();

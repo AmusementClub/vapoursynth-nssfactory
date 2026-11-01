@@ -9,9 +9,11 @@
 #include "cuda/runtime/context.hpp"
 #include "cuda/runtime/frame_io.hpp"
 #include "cuda/runtime/frame_memory.hpp"
+#include "cuda/runtime/gpu_frames.hpp"
 #include "cuda/runtime/memory.hpp"
 #include "cuda/runtime/nvtx.hpp"
 #include "cuda/runtime/stream_pool.hpp"
+#include "cuda/runtime/vs_api.hpp"
 #include "frontend/bm4d_args.hpp"
 #include "frontend/ownership.hpp"
 #include "frontend/validate.hpp"
@@ -25,6 +27,7 @@
 #include <cstdint>
 #include <cstring>
 #include <list>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -41,7 +44,18 @@ constexpr int kVolumeFrames = nss::kBm4dChunk + 2 * nss::kBm4dChunkPad;
 
 struct ChunkStore {
     int first = 0, count = 0;
-    nss::ResourceVector<float> data;  // frame-major, then plane, rows of the plane's width
+    nss::ResourceVector<float> data;
+    DeviceBuffer device;
+    std::size_t frame_size = 0;
+    std::size_t plane_offset[3]{};
+    float* plane(int frame, int plane) {
+        if (device.get()) return device.as<float>() + frame * frame_size + plane_offset[plane];
+        return data.data() + frame * frame_size + plane_offset[plane];
+    }
+    const float* plane(int frame, int plane) const {
+        if (device.get()) return device.as<float>() + frame * frame_size + plane_offset[plane];
+        return data.data() + frame * frame_size + plane_offset[plane];
+    }
 };
 
 struct Bm4dData : nss::Bm4dParams {
@@ -62,6 +76,7 @@ struct Bm4dData : nss::Bm4dParams {
     struct Slot {
         std::mutex mu;  // held by the chunk using the slot
         std::unique_ptr<Stream> stream;  // uploads and downloads
+        std::unique_ptr<GpuStream> gpu;
         DeviceBuffer frames;   // kVolumeFrames planes of max_plane floats (the clip's frames if fewer)
         DeviceBuffer in_ptrs;
         PinnedBuffer staging;  // one plane
@@ -72,6 +87,7 @@ struct Bm4dData : nss::Bm4dParams {
     DeviceBuffer volume, filtered, work;
     DeviceBuffer outputs;  // kBm4dChunk planes (the clip's frames if fewer)
     std::unique_ptr<FrameMemory> frame_memory;  // direct DMA (vapoursynth-classic)
+    std::shared_ptr<GpuFrames> gpu;
     DeviceBuffer out_ptrs;
     // chunk cache
     static constexpr int kCacheLimit = 2;
@@ -119,9 +135,17 @@ struct Bm4dData : nss::Bm4dParams {
     // requests copy their frames out together: with two output permits 1080p
     // gray ran 10% slower.
     static constexpr int kComputers = 2, kOutputs = 8;
-    struct Permit {};
+    struct Permit {
+        Stream stream;
+        std::unique_ptr<GpuStream> gpu;
+    };
     std::unique_ptr<SlotPool<Permit>> computers, permits;
 };
+
+const VSFrame* take_gpu_frame(Bm4dData& d, GpuFrameCache& cache, VSNode* node, int fn, nss::FrameScope& frames,
+                              VSFrameContext* ctx, const VSAPI*) {
+    return cache.get(*d.gpu, fn, node, ctx, frames);
+}
 
 void chunk_window(const Bm4dData* d, int n, int* first, int* count, int* v0, int* v1) {
     *first = nss::bm4d_chunk_first(n);
@@ -183,8 +207,17 @@ std::shared_ptr<ChunkStore> compute_chunk(Bm4dData* d, int first, int count, int
     if (!store) store = std::allocate_shared<ChunkStore>(nss::ResourceAllocator<ChunkStore>{});
     store->first = first;
     store->count = count;
-    if (store->data.size() < d->frame_size * static_cast<std::size_t>(count))
-        store->data.resize(d->frame_size * static_cast<std::size_t>(std::min(nss::kBm4dChunk, d->vi.numFrames)));
+    store->frame_size = d->frame_size;
+    std::copy(std::begin(d->plane_offset), std::end(d->plane_offset), std::begin(store->plane_offset));
+    const std::size_t chunk_frames = static_cast<std::size_t>(std::min(nss::kBm4dChunk, d->vi.numFrames));
+    if (d->gpu) {
+        if (store->device.bytes() < d->frame_size * chunk_frames * sizeof(float)) {
+            store->device = DeviceBuffer(d->frame_size * chunk_frames * sizeof(float), d->budget);
+        }
+        store->data.clear();
+    } else if (store->data.size() < d->frame_size * static_cast<std::size_t>(count)) {
+        store->data.resize(d->frame_size * chunk_frames);
+    }
     const int depth = v1 - v0;
     Bm4dData::Slot& sl = d->slots[(first / nss::kBm4dChunk) & 1];
     std::lock_guard<std::mutex> slot_lock(sl.mu);
@@ -204,6 +237,7 @@ std::shared_ptr<ChunkStore> compute_chunk(Bm4dData* d, int first, int count, int
         }
     } running{d, first};
     cudaStream_t io = *sl.stream;
+    if (sl.gpu) sl.gpu->begin();
     // On an error the queued work must not outlive the frames (direct DMA
     // reads them; the caller frees them when this throws) or the slot (the
     // tiles read its frames): both streams are drained.
@@ -223,8 +257,11 @@ std::shared_ptr<ChunkStore> compute_chunk(Bm4dData* d, int first, int count, int
         if (d->sigma[plane] == 0.f) {
             for (int f = 0; f < count; ++f) {
                 const VSFrame* src = frames[static_cast<std::size_t>(first + f - v0)];
-                vsh::bitblt(store->data.data() + d->frame_size * f + d->plane_offset[plane], row, vsapi->getReadPtr(src, plane),
-                            vsapi->getStride(src, plane), row, ph);
+                if (sl.gpu) {
+                    sl.gpu->read(src, plane, store->plane(f, plane), row, row, ph);
+                } else {
+                    vsh::bitblt(store->plane(f, plane), row, vsapi->getReadPtr(src, plane), vsapi->getStride(src, plane), row, ph);
+                }
             }
             continue;
         }
@@ -236,6 +273,10 @@ std::shared_ptr<ChunkStore> compute_chunk(Bm4dData* d, int first, int count, int
             for (int z = 0; z < depth; ++z) {
                 const VSFrame* f = frames[static_cast<std::size_t>(z)];
                 float* device = sl.frames.as<float>() + static_cast<std::size_t>(z) * d->max_plane;
+                if (sl.gpu) {
+                    sl.gpu->read(f, plane, device, row, row, ph);
+                    continue;
+                }
                 if (d->frame_memory->pinned(f, plane)) {
                     upload_direct(vsapi->getReadPtr(f, plane), vsapi->getStride(f, plane), row, ph, device, row, io);
                     continue;
@@ -279,13 +320,18 @@ std::shared_ptr<ChunkStore> compute_chunk(Bm4dData* d, int first, int count, int
             }
             NSS_CUDA_RANGE("bm4d.download");
             for (int f = 0; f < count; ++f) {
-                begin_download(d->outputs.as<float>() + static_cast<std::size_t>(f) * d->max_plane, row, row, ph, staging, io);
-                sl.stream->synchronize();
-                finish_download(staging, row, ph, store->data.data() + d->frame_size * f + d->plane_offset[plane],
-                                static_cast<std::ptrdiff_t>(row));
+                const float* result = d->outputs.as<float>() + static_cast<std::size_t>(f) * d->max_plane;
+                if (sl.gpu) {
+                    NSS_CUDA_CHECK(cudaMemcpyAsync(store->plane(f, plane), result, row * ph, cudaMemcpyDeviceToDevice, io));
+                } else {
+                    begin_download(result, row, row, ph, staging, io);
+                    sl.stream->synchronize();
+                    finish_download(staging, row, ph, store->plane(f, plane), static_cast<std::ptrdiff_t>(row));
+                }
             }
         }
     }
+    if (sl.gpu) sl.stream->synchronize();
     drain.armed = false;
     return store;
 }
@@ -314,6 +360,11 @@ const VSFrame* getFrame(int n, int activation, void* instance, void** frame_data
     DeviceGuard guard(d->device.index);
     nss::ResourceScope resource_scope(d->budget);
     nss::FrameScope frames_owned(vsapi);
+    GpuFrameCache cache(vsapi);
+    const auto get = [&](int fn) {
+        return d->gpu ? take_gpu_frame(*d, cache, d->node, fn, frames_owned, ctx, vsapi)
+                      : frames_owned.getFrameFilter(fn, d->node, ctx);
+    };
     bool prefetch = false;
     if (lookahead) {  // a prefetch thread is reserved before the chunk is claimed: the plan counts kPrefetchers stores
         int busy = d->prefetching.load();
@@ -328,8 +379,15 @@ const VSFrame* getFrame(int n, int activation, void* instance, void** frame_data
     if (prefetch) {
         // the next chunk, on a thread of its own (before this frame waits for
         // its own chunk); its frames were asked for above
-        std::vector<const VSFrame*> next;
-        for (int i = nv0; i < nv1; ++i) next.push_back(vsapi->getFrameFilter(i, d->node, ctx));
+        auto next = std::shared_ptr<std::vector<const VSFrame*>>(new std::vector<const VSFrame*>,
+            [vsapi](std::vector<const VSFrame*>* frames) {
+                for (const VSFrame* f : *frames) vsapi->freeFrame(f);
+                delete frames;
+            });
+        for (int i = nv0; i < nv1; ++i) {
+            next->push_back(get(i));
+            frames_owned.releaseFrame(next->back());
+        }
         bool started = false;
         {
             std::lock_guard<std::mutex> launch(d->prefetch_mu);
@@ -346,11 +404,10 @@ const VSFrame* getFrame(int n, int activation, void* instance, void** frame_data
                     try {
                         DeviceGuard guard(d->device.index);
                         nss::ResourceScope scope(d->budget);
-                        store = compute_chunk(d, nfirst, ncount, nv0, nv1, next, vsapi);
+                        store = compute_chunk(d, nfirst, ncount, nv0, nv1, *next, vsapi);
                     } catch (...) {
                         store.reset();  // asked for again, the chunk is computed in place and reports the error
                     }
-                    for (const VSFrame* f : next) vsapi->freeFrame(f);
                     finish_chunk(d, nfirst, std::move(store));
                     --d->prefetching;
                     done->store(true);
@@ -361,7 +418,6 @@ const VSFrame* getFrame(int n, int activation, void* instance, void** frame_data
             }
         }
         if (!started) {  // no thread: the claim goes back, and the chunk is computed in place when asked for
-            for (const VSFrame* f : next) vsapi->freeFrame(f);
             finish_chunk(d, nfirst, nullptr);
             --d->prefetching;
         }
@@ -413,21 +469,30 @@ const VSFrame* getFrame(int n, int activation, void* instance, void** frame_data
             ~Finish() { finish_chunk(d, first, store); }
         } finish{d, first, store};
         std::vector<const VSFrame*> frames;
-        for (int i = v0; i < v1; ++i) frames.push_back(frames_owned.getFrameFilter(i, d->node, ctx));
+        for (int i = v0; i < v1; ++i) frames.push_back(get(i));
         store = compute_chunk(d, first, count, v0, v1, frames, vsapi);
         for (const VSFrame* f : frames) frames_owned.freeFrame(f);
         result = store;
     }
     auto permit = d->permits->acquire();  // for the output frame, until it is returned
-    const VSFrame* src = frames_owned.getFrameFilter(n, d->node, ctx);
-    VSFrame* dst = frames_owned.newVideoFrame(&d->vi.format, d->vi.width, d->vi.height, src, core);
-    frames_owned.freeFrame(src);
-    const float* local = result->data.data() + d->frame_size * static_cast<std::size_t>(n - result->first);
+    const VSFrame* src = get(n);
+    VSFrame* dst = d->gpu ? d->gpu->new_frame(frames_owned, &d->vi.format, d->vi.width, d->vi.height, src)
+                          : frames_owned.newVideoFrame(&d->vi.format, d->vi.width, d->vi.height, src, core);
+    if (permit->gpu) permit->gpu->begin();
     for (int plane = 0; plane < d->vi.format.numPlanes; ++plane) {
         const int pw = nss::plane_width(d->vi, plane), ph = nss::plane_height(d->vi, plane);
-        vsh::bitblt(vsapi->getWritePtr(dst, plane), vsapi->getStride(dst, plane), local + d->plane_offset[plane],
-                    static_cast<std::ptrdiff_t>(pw) * sizeof(float), static_cast<std::size_t>(pw) * sizeof(float), ph);
+        const std::size_t row = static_cast<std::size_t>(pw) * sizeof(float);
+        const float* local = result->plane(n - result->first, plane);
+        if (permit->gpu) {
+            permit->gpu->write(local, row, dst, plane, row, ph);
+            permit->gpu->publish(dst, &plane, 1);
+        } else {
+            vsh::bitblt(vsapi->getWritePtr(dst, plane), vsapi->getStride(dst, plane), local,
+                        static_cast<std::ptrdiff_t>(row), row, ph);
+        }
     }
+    if (permit->gpu) permit->stream.synchronize();
+    frames_owned.freeFrame(src);
     return frames_owned.keep(dst);
 }
 
@@ -437,8 +502,13 @@ void VS_CC freeFilter(void* instance, VSCore*, const VSAPI*) {
         if (p.thread.joinable()) p.thread.join();
     {
         DeviceGuard guard(d->device.index);
+        d->computers.reset();
+        d->permits.reset();
+        d->cache.clear();
+        d->spare.clear();
         d->stream.reset();
         for (auto& sl : d->slots) {
+            sl.gpu.reset();
             sl.stream.reset();
             sl.frames.reset();
             sl.in_ptrs.reset();
@@ -460,9 +530,12 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     d.node = nss::get_node(vsapi, in, "clip", 0, nullptr);
     d.vi = *vsapi->getVideoInfo(d.node);
     static_cast<nss::Bm4dParams&>(d) = nss::frontend::parse_bm4d(vsapi, in, d.vi, "nss_cuda");
+    const VSVULKANAPI* gpu_api = take_clips("BM4D", {{"clip", &d.node}}, core, vsapi);
     d.backend = parse_backend_args(vsapi, in, "BM4D");
-    d.device = acquire_device(d.backend.device_id, "BM4D", core, vsapi);
+    d.device = gpu_api ? acquire_core_device(d.backend, "BM4D", core, vsapi, gpu_api)
+                       : acquire_device(d.backend.device_id, "BM4D", core, vsapi);
     d.budget = nss::current_budget();
+    if (gpu_api) d.gpu = std::make_shared<GpuFrames>(core, gpu_api, vsapi);
     d.frame_memory = std::make_unique<FrameMemory>(core, vsapi);
     std::size_t max_volume = 0, work = 0;
     for (int plane = 0; plane < d.vi.format.numPlanes; ++plane) {
@@ -507,9 +580,13 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     {
         DeviceGuard guard(d.device.index);
         d.stream = std::make_unique<Stream>();
-        const auto pool = [](int count) {
+        const auto pool = [&d](int count) {
             std::vector<std::unique_ptr<Bm4dData::Permit>> permits;
-            for (int i = 0; i < count; ++i) permits.push_back(std::make_unique<Bm4dData::Permit>());
+            for (int i = 0; i < count; ++i) {
+                auto permit = std::make_unique<Bm4dData::Permit>();
+                if (d.gpu) permit->gpu = std::make_unique<GpuStream>(d.gpu, permit->stream);
+                permits.push_back(std::move(permit));
+            }
             return std::make_unique<SlotPool<Bm4dData::Permit>>(std::move(permits));
         };
         d.computers = pool(Bm4dData::kComputers);
@@ -526,6 +603,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
             for (int i = 0; i < slot_count; ++i) {
                 Bm4dData::Slot& sl = d.slots[i];
                 sl.stream = std::make_unique<Stream>();
+                if (d.gpu) sl.gpu = std::make_unique<GpuStream>(d.gpu, *sl.stream);
                 sl.frames = DeviceBuffer(volume_frames * plane_bytes, d.budget);
                 std::vector<const float*> in_ptrs(volume_frames);
                 for (int z = 0; z < volume_frames; ++z) in_ptrs[z] = sl.frames.as<float>() + static_cast<std::size_t>(z) * d.max_plane;
@@ -543,9 +621,12 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
             NSS_CUDA_CHECK(cudaDeviceSynchronize());
         }
     }
+    if (d.gpu && d.budget) {
+        d.gpu->reserve(d.budget->snapshot().bytes[static_cast<std::size_t>(nss::ResourceKind::Workspace)] + stores * store_bytes);
+    }
     VSFilterDependency deps[1]{{d.node, rpGeneral}};
-    VSNode* node =
-        vsapi->createVideoFilter2("BM4D", &d.vi, nss::checked_frame<getFrame>, freeFilter, fmParallel, deps, 1, &d, core);
+    VSNode* node = vs_api::create_video_filter(vsapi, "BM4D", &d.vi, nss::checked_frame<getFrame>, freeFilter, fmParallel,
+                                               d.gpu != nullptr, deps, 1, &d, core);
     if (!node) {
         freeFilter(data.release(), core, vsapi);
         throw std::runtime_error("nss_cuda.BM4D: failed to create filter");
@@ -556,10 +637,10 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
 
 }  // namespace
 
-void register_bm4d(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
-    static const std::string args = signature(nss::frontend::kBm4dSignature);
-    vspapi->registerFunction("BM4D", args.c_str(), "clip:vnode;", nss::checked_create<create, kDefaultMemoryLimitMb>, nullptr,
-                             plugin);
+void register_bm4d(VSPlugin* plugin, const VSPLUGINAPI* vspapi, bool gpu_frames) {
+    const std::string args = residency_args(signature(nss::frontend::kBm4dSignature), gpu_frames);
+    vspapi->registerFunction("BM4D", args.c_str(), clip_return(gpu_frames), nss::checked_create<create, kDefaultMemoryLimitMb>,
+                             nullptr, plugin);
 }
 
 }  // namespace nss_cuda

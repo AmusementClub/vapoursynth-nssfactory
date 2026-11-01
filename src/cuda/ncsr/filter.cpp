@@ -5,6 +5,7 @@
 // on the device for any number of rounds.
 #include "cuda/common/gram_group.hpp"
 #include "cuda/common/group_driver.hpp"
+#include "cuda/runtime/gpu_frames.hpp"
 #include "cuda/ncsr/kernels.hpp"
 #include "frontend/validate.hpp"
 #include "frontend/ncsr_args.hpp"
@@ -37,8 +38,10 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     config.rolling = temporal.params;
     config.iters = p.iters;
     config.delta = p.delta;
+    config.gpu_api = take_clips("NCSR", {{"clip", &config.node}, {"rclip", &config.guide}}, core, vsapi);
     config.backend = parse_backend_args(vsapi, in, "NCSR");
-    config.device = acquire_device(config.backend.device_id, "NCSR", core, vsapi);
+    config.device = config.gpu_api ? acquire_core_device(config.backend, "NCSR", core, vsapi, config.gpu_api)
+                                   : acquire_device(config.backend.device_id, "NCSR", core, vsapi);
     // Frames in flight pay even with staging (1080p YUV420: 390 fps with one
     // stream, 430 with two, 420 with three; the other group filters 0.99x).
     config.default_streams = 2;
@@ -77,9 +80,10 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
 
 }  // namespace
 
-void register_ncsr(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
-    static const std::string args = signature(nss::frontend::kNcsrSignature);
-    vspapi->registerFunction("NCSR", args.c_str(), "clip:vnode;", nss::checked_create<create, kDefaultMemoryLimitMb>, nullptr, plugin);
+void register_ncsr(VSPlugin* plugin, const VSPLUGINAPI* vspapi, bool gpu_frames) {
+    const std::string args = residency_args(signature(nss::frontend::kNcsrSignature), gpu_frames);
+    vspapi->registerFunction("NCSR", args.c_str(), clip_return(gpu_frames), nss::checked_create<create, kDefaultMemoryLimitMb>,
+                             nullptr, plugin);
 }
 
 }  // namespace nss_cuda
