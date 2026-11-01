@@ -444,10 +444,9 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     const std::size_t slot_bytes = kParamsStride * 3 + std::max<std::size_t>(est, 4) + d->keys_bytes +
                                    frame_bytes(*d) * (d->gpu ? 1 : 2);
     const std::size_t limit = d->budget ? d->budget->snapshot().limit : SIZE_MAX;
-    // Without num_streams: three for d <= 1, one beyond (1080p gray, R78,
-    // fps with one / two / three: defaults 690 / 736 / 809, YUV420 439 / 510 /
-    // 527, RGB 228 / 247 / 267; d = 2, a = 2: 841 / 779 / 700).
-    if (!d->backend.streams_explicit) d->backend.num_streams = d->d <= 1 ? 3 : 1;
+    // Without num_streams: three for d <= 1, two beyond (fewer where the
+    // limit does not hold them).
+    if (!d->backend.streams_explicit) d->backend.num_streams = d->d <= 1 ? 3 : 2;
     const std::size_t streams = static_cast<std::size_t>(d->backend.num_streams);
     std::size_t slots = streams + kExtraSlots, extra_outputs = kExtraOutputs, cached = window + slots;
     const auto plan_bytes = [&] {

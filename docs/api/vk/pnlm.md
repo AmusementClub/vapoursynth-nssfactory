@@ -25,7 +25,7 @@ core.nss_vk.PNLM(clip clip[, float[] sigma = 3.0, int d = 1, int a = 2,
 On VapourSynth R80+ `clip` takes CPU or GPU frames (`vnode:all`;
 [GPU frames](README.md#gpu-frames-vapoursynth-r80)). A plane with `sigma=0`
 is the source's (shared, not copied). `num_streams` defaults to 3 for `d` up
-to 1 and to 1 beyond (measured: more streams slow `d=2` down).
+to 1 and to 2 beyond, matching `nss_cuda` (fewer where the memory limit requires).
 
 ## Speed
 

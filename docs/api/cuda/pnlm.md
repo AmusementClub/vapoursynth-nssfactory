@@ -72,9 +72,9 @@ core.nss_cuda.PNLM(clip clip[, float[] sigma = 3.0, int d = 1, int a = 2,
                    int device_id = 0, int num_streams])
 ```
 
-`num_streams`: frames in flight. Default 3, fewer where the memory limit
-requires (1080p `d=1`, one / two / three streams: gray 452 / 513 / 536 fps,
-YUV420 304 / 344 / 357, RGB 157 / 174 / 182).
+`num_streams`: frames in flight. Default 3 for `d` up to 1 and 2 beyond,
+fewer where the memory limit requires (1080p `d=1`, one / two / three streams:
+gray 452 / 513 / 536 fps, YUV420 304 / 344 / 357, RGB 157 / 174 / 182).
 
 ## Notes
 

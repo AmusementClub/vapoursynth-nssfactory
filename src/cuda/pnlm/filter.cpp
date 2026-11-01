@@ -412,12 +412,11 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     const auto plan_bytes = [&](std::size_t streams, std::size_t stages, std::size_t cached) {
         return streams * stream_bytes + stages * stage_bytes + cached * cached_bytes;
     };
-    // Without num_streams: three (fewer where the limit does not hold them;
-    // 1080p d = 1, R78: gray 452 / 513 / 536 fps with one, two, three
-    // streams, YUV420 304 / 344 / 357, RGB 157 / 174 / 182).
-    // kExtraStages more stages, and a cache of the window and a frame for
-    // each stage (down to one stage a stream and the window under a limit).
-    std::size_t streams = d.backend.streams_explicit ? static_cast<std::size_t>(d.backend.num_streams) : 3;
+    // Without num_streams: three for d <= 1, two beyond (fewer where the
+    // limit does not hold them). kExtraStages more stages, and a cache of the
+    // window and a frame for each stage (down to one stage a stream and the
+    // window under a limit).
+    std::size_t streams = d.backend.streams_explicit ? static_cast<std::size_t>(d.backend.num_streams) : (d.d <= 1 ? 3 : 2);
     while (!d.backend.streams_explicit && streams > 1 && plan_bytes(streams, streams, window) > limit) --streams;
     std::size_t stages = streams + kExtraStages, cached = window + stages;
     while (stages > streams && plan_bytes(streams, stages, cached) > limit) cached = window + --stages;
