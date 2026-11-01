@@ -173,8 +173,10 @@ void write_frame(PnlmData& d, const WindowFrame& f, const VSFrame* frame, const 
     }
 }
 
-void record_uploads(const PnlmData& d, const std::vector<PlaneUpload>& uploads, Slot& slot, const VSAPI* vsapi) {
+void record_uploads(const PnlmData& d, const std::vector<PlaneUpload>& uploads, Slot& slot, const VSAPI* vsapi,
+                    FrameTimer& timer) {
     const PlaneStore& store = d.window.store;
+    timer.upload_begin();
     VkCommandBuffer commands = slot.commands(Slot::Upload);
     for (const PlaneUpload& u : uploads) {
         const std::size_t offset = d.offset[u.c] * sizeof(float);
@@ -248,13 +250,14 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
     }
     if (staged) {
         for (const auto& [semaphore, value] : window.previous_uses()) slot.wait_for(Slot::Upload, semaphore, value);
-        record_uploads(*d, uploads, slot, vsapi);
+        record_uploads(*d, uploads, slot, vsapi, timer);
     }
     for (WindowFrame* f : window.pinned()) {
         if (!window.uploads(f)) slot.wait_for(Slot::Compute, f->ready, f->ready_value);
     }
 
     // Every plane's parameters, then its kernels.
+    timer.compute_begin();
     VkCommandBuffer commands = slot.commands(Slot::Compute);
     const int q = d->block / 2;
     std::array<int, 3> blocks{};
@@ -305,12 +308,13 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
             const MatchPush match{block, keys, counts, s.est.address()};
             d->match.dispatch(commands, &match, static_cast<std::uint32_t>(blocks[static_cast<std::size_t>(c)]));
             compute_barrier(*d->device, commands);
-            if (d->count == 1) timer.match_end();
+            timer.match_end();
             if (!d->fused) {
                 const int per = 256 / nss::pnlm_lanes(d->block * d->block);
                 const WeightPush weight{block, keys, counts, s.est.address(), static_cast<std::int32_t>(refs), 0};
                 d->weight.dispatch(commands, &weight, static_cast<std::uint32_t>((refs + per - 1) / per));
                 compute_barrier(*d->device, commands);
+                timer.filter_end();
             }
         }
         const GatherPush gather{s.est.address(), s.out.address() + d->offset[c] * sizeof(float), b.nx, b.ny,
@@ -319,7 +323,8 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
                            static_cast<std::uint32_t>((b.height + 7) / 8));
         // The next plane's matcher overwrites the estimates.
         compute_barrier(*d->device, commands);
-        if (d->count == 1) timer.filter_end();
+        timer.aggregate_end();
+        timer.next_stage();
     }
 
     // Results: into the GPU frame or the imported frame, else the readback buffer.

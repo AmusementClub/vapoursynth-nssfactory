@@ -207,6 +207,13 @@ path to avoid the initial GPU-node plane-path regression. `Backend()["gpu_frames
 reports the mode. The normal Vulkan GPU-chain implementation remains
 [`nss_vk`'s](../vk/README.md#gpu-frames-vapoursynth-r80).
 
+For repeatable import-cache measurements, `tests/cuda/import_cache_sweep.py`
+runs 4/8/16 with JSONL output and optional Nsight Systems reports. It covers
+all three filters' light/default/heavy cases, NLM at `num_streams=1/2/3`, and
+two concurrent NLM instances (including per-instance failures and memory).
+`tests/cuda/run_ncu.py` runs Nsight Compute with the real Python executable and
+`--target-processes all`, then exports the details page.
+
 ### Driver and GPU support
 
 - The release packages are built with CUDA 13.3 and need an NVIDIA driver of

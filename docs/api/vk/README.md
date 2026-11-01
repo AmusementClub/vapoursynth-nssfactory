@@ -190,3 +190,8 @@ most half the core's frame cache is imported.
 | `NSS_VK_WAIT_TIMEOUT_MS` | How long a frame may take on the device before it is an error (default 60000). |
 | `NSS_VK_REBAR=0`, `NSS_VK_COPY_QUEUES=0/1/2` | Diagnostics: no resizable BAR uploads; fewer copy queues. |
 | `NSS_VK_TIMES` | `1`: record per-slot timestamps and print aggregate upload/match/filter/aggregate/download/wait/submit statistics when a filter is freed. Disabled by default. |
+
+Times are compared only within each stage queue. Stages with no commands are not
+submitted. NLM's fused tile has no separate match or aggregate stage; its plane
+path times match as distance/weight accumulation and aggregate as finish. PNLM's
+gather is its aggregate stage.

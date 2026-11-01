@@ -757,6 +757,7 @@ void run_stage(Driver& d, GroupSlot& s, const Unit& u, const GroupPlane& p, int 
 
 // Every unit of a spatial or legacy frame, on the slot's compute queue.
 void run_units(Driver& d, GroupSlot& s, int n, FrameTimer& timer) {
+    timer.compute_begin();
     VkCommandBuffer commands = s.slot.commands(Slot::Compute);
     const std::size_t nt = static_cast<std::size_t>(d.ntemp);
     for (std::size_t i = 0; i < d.units.size(); ++i) {
@@ -902,6 +903,7 @@ const VSFrame* frame_output(Driver* d, int n, VSFrameContext* ctx, VSCore* core,
             const int height = nss::plane_height(d->vi, plane);
             const std::size_t offset = d->plane_offset[static_cast<std::size_t>(plane)] * sizeof(float);
             if (d->gpu) {
+                timer.upload_begin();
                 d->gpu->read(slot, Slot::Upload, frame, plane, s.inputs.buffer(), s.inputs.address(),
                              s.inputs.region_bytes() * static_cast<std::size_t>(region) + offset, bytes, height);
                 return;
@@ -910,13 +912,17 @@ const VSFrame* frame_output(Driver* d, int n, VSFrameContext* ctx, VSCore* core,
             const std::ptrdiff_t stride = vsapi->getStride(frame, plane);
             // The upload stage only where there are copies (BAR writes need none).
             if (const HostPlane imported = d->frame_memory->pinned(frame, plane, data, stride, bytes)) {
+                timer.upload_begin();
                 slot.retain(frame, vsapi);
                 s.inputs.record_upload(slot.commands(Slot::Upload), region, offset, bytes * height, imported.buffer,
                                        imported.offset);
                 return;
             }
             s.inputs.write(region, offset, data, stride, bytes, height, bytes);
-            if (s.inputs.needs_copy()) s.inputs.record_upload(slot.commands(Slot::Upload), region, offset, bytes * height);
+            if (s.inputs.needs_copy()) {
+                timer.upload_begin();
+                s.inputs.record_upload(slot.commands(Slot::Upload), region, offset, bytes * height);
+            }
         };
         for (int t = 0; t < nt; ++t) {
             for (const int plane : planes) {
@@ -1426,8 +1432,10 @@ void queue_units(Driver& d, const std::vector<RollTurn*>& turns, const std::vect
     if (wait_upload) lane.slot.wait_for(Slot::Upload, computed.first, computed.second);
     for (std::size_t j = 0; j < turns.size(); ++j) {
         if (turns[j]->uploads.empty()) continue;
+        timer.upload_begin();
         record_uploads(d, lane.slot, *turns[j]->state, *turns[j], *units[j], staging, *direct[j]);
     }
+    timer.compute_begin();
     lane.slot.wait_for(Slot::Compute, computed.first, computed.second);
     VkCommandBuffer commands = lane.slot.commands(Slot::Compute);
     std::vector<std::uint64_t> tables;
@@ -1445,6 +1453,7 @@ void queue_units(Driver& d, const std::vector<RollTurn*>& turns, const std::vect
     }
     if (!tables.empty()) {
         // The window tables, before the kernels (the stages chain).
+        timer.upload_begin();
         VkCommandBuffer upload = lane.slot.commands(Slot::Upload);
         const std::size_t bytes = tables.size() * sizeof(std::uint64_t);
         for (std::size_t at = 0; at < bytes; at += 65536) {
@@ -1452,8 +1461,8 @@ void queue_units(Driver& d, const std::vector<RollTurn*>& turns, const std::vect
                                              reinterpret_cast<const std::uint8_t*>(tables.data()) + at);
         }
     }
-    timer.download_begin();
     if (d.roll_batch_out) {
+        timer.download_begin();
         VkCommandBuffer download = lane.slot.commands(Slot::Download);
         for (const Unit* u : units) {
             for (int i = 0; i < count; ++i) {
@@ -1632,6 +1641,8 @@ const VSFrame* gpu_rolling_output(Driver* d, int n, const ChunkStore& chunk, Slo
     VSFrame* dst = shared ? frames.newVideoFrame2(&d->vi.format, d->vi.width, d->vi.height, from, from_plane, src, core)
                           : d->gpu->new_frame(frames, &d->vi.format, d->vi.width, d->vi.height, src, core);
     nss::stamp_contribution(dst, 0, n, d->model, vsapi);
+    FrameTimer timer(slot);
+    timer.compute_begin();
     memory_barrier(*d->device, slot.commands(Slot::Compute), VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                    VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                    VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
@@ -1642,7 +1653,6 @@ const VSFrame* gpu_rolling_output(Driver* d, int n, const ChunkStore& chunk, Slo
         d->gpu->write(slot, Slot::Compute, chunk.bytes.get(), chunk.bytes.address(), at, dst, plane, row_bytes(*d, plane),
                       nss::plane_height(d->vi, plane));
     }
-    FrameTimer timer(slot);
     slot.submit();
     for (int plane = 0; plane < d->vi.format.numPlanes; ++plane) {
         if (written(*d, plane)) d->gpu->publish(slot, dst, plane);
