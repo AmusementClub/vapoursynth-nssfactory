@@ -39,16 +39,17 @@ int core_release(VSCore* core, const VSAPI* vsapi) {
 
 #if NSS_CUDA_GPU_FRAMES
 constexpr int kTestedCore = 81;
+constexpr std::size_t kDefaultMemoryImports = 8;
 constexpr std::size_t kMaxMemoryImports = 16;
 constexpr std::size_t kMaxSemaphoreImports = 16;
 
 std::size_t memory_import_limit() {
     const char* value = std::getenv("NSS_CUDA_GPU_IMPORT_CACHE");
-    if (!value || !*value) return kMaxMemoryImports;
+    if (!value || !*value) return kDefaultMemoryImports;
     char* end = nullptr;
     const long parsed = std::strtol(value, &end, 10);
     return end == value || parsed < 1 || parsed > static_cast<long>(kMaxMemoryImports)
-               ? kMaxMemoryImports
+               ? kDefaultMemoryImports
                : static_cast<std::size_t>(parsed);
 }
 
