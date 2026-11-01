@@ -6,6 +6,7 @@
 // clip: it drives matching and supplies the Wiener reference cube.
 #include "cuda/bm3d/kernels.hpp"
 #include "cuda/common/group_driver.hpp"
+#include "cuda/runtime/gpu_frames.hpp"
 #include "frontend/bm3d_args.hpp"
 #include "frontend/temporal_args.hpp"
 #include "frontend/validate.hpp"
@@ -31,6 +32,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     if (err) config.guide = nullptr;
     const VSVideoInfo* ref_vi = config.guide ? vsapi->getVideoInfo(config.guide) : nullptr;
     const nss::Bm3dParams p = nss::frontend::parse_bm3d(vsapi, in, config.vi, ref_vi, "nss_cuda");
+    config.gpu_api = take_clips("BM3D", {{"clip", &config.node}, {"ref", &config.guide}}, core, vsapi);
     if (rolling) config.rolling = nss::frontend::parse_rolling(vsapi, in, p.radius, "BM3D", "nss_cuda", kRollingCache);
     // final: the driver keeps the first stage's estimate on the device for
     // spatial and rolling output. The legacy intermediate chains two nodes.
@@ -43,7 +45,8 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     config.mode = rolling ? GroupMode::Rolling : GroupMode::Legacy;
     config.backend = parse_backend_args(vsapi, in, "BM3D");
     config.direct_streams = 2;  // a third measured no faster
-    config.device = acquire_device(config.backend.device_id, "BM3D", core, vsapi);
+    config.device = config.gpu_api ? acquire_core_device(config.backend, "BM3D", core, vsapi, config.gpu_api)
+                                   : acquire_device(config.backend.device_id, "BM3D", core, vsapi);
     for (int plane = 0; plane < config.vi.format.numPlanes; ++plane) {
         GroupPlane& g = config.planes[plane];
         g.sigma = p.sigma[plane];
@@ -112,9 +115,10 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
 
 }  // namespace
 
-void register_bm3d(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
-    static const std::string args = signature(nss::frontend::kBm3dSignature);
-    vspapi->registerFunction("BM3D", args.c_str(), "clip:vnode;", nss::checked_create<create, kDefaultMemoryLimitMb>, nullptr, plugin);
+void register_bm3d(VSPlugin* plugin, const VSPLUGINAPI* vspapi, bool gpu_frames) {
+    const std::string args = residency_args(signature(nss::frontend::kBm3dSignature), gpu_frames);
+    vspapi->registerFunction("BM3D", args.c_str(), clip_return(gpu_frames), nss::checked_create<create, kDefaultMemoryLimitMb>,
+                             nullptr, plugin);
 }
 
 }  // namespace nss_cuda

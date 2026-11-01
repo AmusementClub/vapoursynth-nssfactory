@@ -21,15 +21,18 @@
 #include "cuda/common/aggregate.hpp"
 #include "cuda/common/chunk_cache.hpp"
 #include "cuda/common/match.hpp"
+#include "cuda/common/nonfinite.hpp"
 #include "cuda/nlh/kernels.hpp"
 #include "cuda/twsc/kernels.hpp"
 #include "cuda/runtime/context.hpp"
 #include "cuda/runtime/frame_io.hpp"
 #include "cuda/runtime/frame_memory.hpp"
+#include "cuda/runtime/gpu_frames.hpp"
 #include "cuda/runtime/memory.hpp"
 #include "cuda/runtime/pointer_table.hpp"
 #include "cuda/runtime/nvtx.hpp"
 #include "cuda/runtime/stream_pool.hpp"
+#include "cuda/runtime/vs_api.hpp"
 #include "frontend/contribution.hpp"
 #include "frontend/full_image_args.hpp"
 #include "frontend/ownership.hpp"
@@ -45,6 +48,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <cstring>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -97,6 +101,7 @@ std::size_t twsc_group_bytes(int block, int group, int nch) {
 
 struct Slot {
     Stream stream;
+    std::unique_ptr<GpuStream> gpu;
     DeviceBuffer input, basic, reference, resized, num, den;  // planes of `plane_floats`
     DeviceBuffer fixed_num, fixed_den;  // NLH accumulators: 64-bit sums per plane, 32-bit counts per geometry
     DeviceBuffer guide_ptrs, data_ptrs, basic_ptrs;           // device pointer arrays
@@ -155,7 +160,10 @@ struct ImageData : nss::FullImageParams {
     // computes its chunk holds no permit meanwhile and keeps its staging set
     // until its frame is out: the plan counts a chunk store per set, and the
     // cache may drop that chunk in the meantime.
-    struct OutputPermit {};
+    struct OutputPermit {
+        Stream stream;
+        std::unique_ptr<GpuStream> gpu;
+    };
     std::unique_ptr<SlotPool<OutputPermit>> outputs;
     // Rolling (temporal_mode="rolling" with a radius): chunks run on the
     // slots by turn instead of from the pool.
@@ -170,9 +178,15 @@ struct ImageData : nss::FullImageParams {
     ChunkCache cache;
     // Direct DMA from and to page-locked VS frame planes (vapoursynth-classic).
     std::unique_ptr<FrameMemory> frame_memory;
+    std::shared_ptr<GpuFrames> gpu;
     int radius() const { return model == nss::Model::TWSC ? twsc.radius : nlh.radius; }
     const char* name() const { return model == nss::Model::TWSC ? "TWSC" : "NLH"; }
 };
+
+const VSFrame* take_gpu_frame(ImageData& d, GpuFrameCache& cache, VSNode* node, int fn, nss::FrameScope& frames,
+                              VSFrameContext* ctx, const VSAPI*) {
+    return cache.get(*d.gpu, fn, node, ctx, frames);
+}
 
 // Per-frame state on one slot.
 struct Frame {
@@ -915,7 +929,8 @@ private:
 // `staging` takes the staging set, which the caller keeps until its frame is
 // copied out (see ImageData::outputs).
 std::shared_ptr<ChunkStore> compute_chunk(ImageData& d, std::optional<SlotPool<Staging>::Lease>& staging, int start,
-                                          int count, VSFrameContext* ctx, const VSAPI* api) {
+                                          int count, VSFrameContext* ctx, const VSAPI* api,
+                                          nss::FrameScope& owned, GpuFrameCache& cache) {
     d.order.wait_for_previous(start, d.roll.rolling_chunk, d.cache);
     {
         NSS_CUDA_RANGE("image.staging");
@@ -923,8 +938,10 @@ std::shared_ptr<ChunkStore> compute_chunk(ImageData& d, std::optional<SlotPool<S
     }
     Staging& g = **staging;
     DeviceGuard guard(d.device.index);
-    nss::FrameScope owned(api);
     auto store = d.cache.make_store(start, count);
+    const auto get = [&](VSNode* node, int fn) {
+        return d.gpu ? take_gpu_frame(d, cache, node, fn, owned, ctx, api) : owned.getFrameFilter(fn, node, ctx);
+    };
     const int radius = d.radius(), nframes = d.vi.numFrames;
     const std::size_t per_frame = static_cast<std::size_t>(d.planes + d.reference_planes);
     const auto region = [&](std::size_t upload, int k) {
@@ -939,7 +956,7 @@ std::shared_ptr<ChunkStore> compute_chunk(ImageData& d, std::optional<SlotPool<S
     {
         NSS_CUDA_RANGE("image.stage_in");
         const auto stage = [&](std::size_t i, const VSFrame* frame, int c, int k) {
-            if (stage_checked(d, api, frame, c, region(i, k))) direct[i][static_cast<std::size_t>(k)] = frame;
+            if (d.gpu || stage_checked(d, api, frame, c, region(i, k))) direct[i][static_cast<std::size_t>(k)] = frame;
         };
         const auto keep = [&](std::size_t i, const VSFrame* frame, int k0, int planes) {
             bool used = false;
@@ -951,11 +968,11 @@ std::shared_ptr<ChunkStore> compute_chunk(ImageData& d, std::optional<SlotPool<S
             }
         };
         for (std::size_t i = 0; i < turn.uploads.size(); ++i) {
-            const VSFrame* frame = owned.getFrameFilter(turn.uploads[i], d.node, ctx);
+            const VSFrame* frame = get(d.node, turn.uploads[i]);
             for (int c = 0; c < d.planes; ++c) stage(i, frame, c, c);
             keep(i, frame, 0, d.planes);
             if (d.reference) {
-                const VSFrame* ref = owned.getFrameFilter(turn.uploads[i], d.reference, ctx);
+                const VSFrame* ref = get(d.reference, turn.uploads[i]);
                 for (int c = 0; c < d.reference_planes; ++c) stage(i, ref, c, d.planes + c);
                 keep(i, ref, d.planes, d.reference_planes);
             }
@@ -964,6 +981,7 @@ std::shared_ptr<ChunkStore> compute_chunk(ImageData& d, std::optional<SlotPool<S
     NSS_CUDA_RANGE("image.queue");
     turn.enter();
     Slot& s = *turn.slot;
+    if (s.gpu) s.gpu->begin();
     struct Drain {
         cudaStream_t stream;
         bool armed = true;
@@ -980,8 +998,15 @@ std::shared_ptr<ChunkStore> compute_chunk(ImageData& d, std::optional<SlotPool<S
             const int frame = turn.uploads[uploaded];
             const auto upload = [&](int k, int c, float* device) {
                 if (const VSFrame* f = direct[uploaded][static_cast<std::size_t>(k)]) {
-                    upload_direct(api->getReadPtr(f, c), api->getStride(f, c), row_bytes(c), d.height[c], device,
-                                  row_bytes(c), s.stream);
+                    if (s.gpu) {
+                        s.gpu->read(f, c, device, row_bytes(c), row_bytes(c), d.height[c]);
+                        if (nonfinite_any(device, row_bytes(c) / sizeof(float) * d.height[c], s.stream)) {
+                            throw std::invalid_argument("nss: nonfinite source/reference sample");
+                        }
+                    } else {
+                        upload_direct(api->getReadPtr(f, c), api->getStride(f, c), row_bytes(c), d.height[c], device,
+                                      row_bytes(c), s.stream);
+                    }
                 } else {
                     upload_staged(region(uploaded, k), row_bytes(c), d.height[c], device, row_bytes(c), s.stream);
                 }
@@ -998,7 +1023,12 @@ std::shared_ptr<ChunkStore> compute_chunk(ImageData& d, std::optional<SlotPool<S
             float* result = s.out.as<float>() + static_cast<std::size_t>(c) * d.plane_floats;
             aggregate_finish(roll_num(d, s, frame, c), roll_den(d, s, frame, c), ring_plane(d, s, frame, c), d.width[c],
                              d.height[c], d.width[c], result, s.stream);
-            begin_download(result, row_bytes(c), row_bytes(c), d.height[c], store->plane(frame - start, c), s.stream);
+            if (d.gpu) {
+                NSS_CUDA_CHECK(cudaMemcpyAsync(store->plane(frame - start, c), result, row_bytes(c) * d.height[c],
+                                               cudaMemcpyDeviceToDevice, s.stream));
+            } else {
+                begin_download(result, row_bytes(c), row_bytes(c), d.height[c], store->plane(frame - start, c), s.stream);
+            }
             NSS_CUDA_CHECK(cudaMemsetAsync(roll_num(d, s, frame, c), 0, floats(c) * sizeof(float), s.stream));
             NSS_CUDA_CHECK(cudaMemsetAsync(roll_den(d, s, frame, c), 0, floats(c) * sizeof(float), s.stream));
         }
@@ -1059,19 +1089,28 @@ const VSFrame* rolling_frame(ImageData& d, int n, VSFrameContext* ctx, VSCore* c
     // The chunk, then the permit for the output frame (see ImageData::outputs); a chunk this request computes
     // keeps its staging set until the frame is out.
     std::optional<SlotPool<Staging>::Lease> staging;
-    auto chunk = d.cache.get(start, [&] { return compute_chunk(d, staging, start, count, ctx, api); });
-    auto permit = d.outputs->acquire();
     nss::ResourceScope scope(d.budget);
     nss::FrameScope owned(api);
-    const VSFrame* src = owned.getFrameFilter(n, d.node, ctx);
-    VSFrame* dst = owned.newVideoFrame(&d.vi.format, d.vi.width, d.vi.height, src, core);
+    GpuFrameCache cache(api);
+    auto chunk = d.cache.get(start, [&] { return compute_chunk(d, staging, start, count, ctx, api, owned, cache); });
+    auto permit = d.outputs->acquire();
+    const VSFrame* src = d.gpu ? take_gpu_frame(d, cache, d.node, n, owned, ctx, api) : owned.getFrameFilter(n, d.node, ctx);
+    VSFrame* dst = d.gpu ? d.gpu->new_frame(owned, &d.vi.format, d.vi.width, d.vi.height, src)
+                         : owned.newVideoFrame(&d.vi.format, d.vi.width, d.vi.height, src, core);
     nss::stamp_contribution(dst, 0, n, d.model, api);
-    owned.freeFrame(src);
+    if (permit->gpu) permit->gpu->begin();
     for (int c = 0; c < d.planes; ++c) {
         const std::size_t row_bytes = static_cast<std::size_t>(d.width[c]) * sizeof(float);
-        copy_to_frame(chunk->plane(n - chunk->start, c), static_cast<std::ptrdiff_t>(row_bytes), api->getWritePtr(dst, c),
-                      api->getStride(dst, c), row_bytes, d.height[c]);
+        if (permit->gpu) {
+            permit->gpu->write(chunk->plane(n - chunk->start, c), row_bytes, dst, c, row_bytes, d.height[c]);
+            permit->gpu->publish(dst, &c, 1);
+        } else {
+            copy_to_frame(chunk->plane(n - chunk->start, c), static_cast<std::ptrdiff_t>(row_bytes), api->getWritePtr(dst, c),
+                          api->getStride(dst, c), row_bytes, d.height[c]);
+        }
     }
+    if (permit->gpu) permit->stream.synchronize();
+    owned.freeFrame(src);
     return owned.keep(dst);
 }
 
@@ -1080,6 +1119,7 @@ const VSFrame* rolling_frame(ImageData& d, int n, VSFrameContext* ctx, VSCore* c
 struct Output {
     const VSAPI* api;
     VSFrame* frame;
+    GpuStream* gpu = nullptr;
     bool direct[3]{};
     // Rows of slice k (k * the plane's height on) of plane c.
     void* rows(int c, int k, int height) const {
@@ -1098,7 +1138,9 @@ void queue_downloads(const ImageData& d, Frame& f, Slot& s, int n, int first, in
     // Slice k of plane c, from the device rows at `device`.
     const auto download = [&](const float* device, int c, int k) {
         const std::size_t row_bytes = static_cast<std::size_t>(d.width[c]) * sizeof(float);
-        if (target.direct[c]) {
+        if (target.gpu) {
+            target.gpu->write_rows(device, row_bytes, target.frame, c, row_bytes, d.height[c], k * d.height[c]);
+        } else if (target.direct[c]) {
             download_direct(device, row_bytes, row_bytes, d.height[c], target.rows(c, k, d.height[c]),
                             target.api->getStride(target.frame, c), s.stream);
         } else {
@@ -1168,6 +1210,32 @@ void write_plane(const ImageData& d, Frame& f, const VSAPI* api, VSFrame* dst, c
     }
 }
 
+void write_plane_gpu(const ImageData& d, Frame& f, GpuStream& gpu, VSFrame* dst, const VSFrame* source, int c,
+                     bool filtered, int n, int first, int rows) {
+    const int radius = d.radius();
+    const std::size_t row_bytes = static_cast<std::size_t>(d.width[c]) * sizeof(float);
+    if (!filtered) {
+        if (!radius) {
+            gpu.copy(source, c, dst, c, row_bytes, d.height[c]);
+        } else {
+            for (int sl = 0; sl < 2 * radius + 1; ++sl) {
+                if (sl == radius) {
+                    gpu.copy_rows(source, c, 0, dst, c, 2 * sl * d.height[c], row_bytes, d.height[c]);
+                    gpu.fill(dst, c, (2 * sl + 1) * d.height[c], d.height[c], 0x3f800000);
+                } else {
+                    gpu.fill(dst, c, 2 * sl * d.height[c], d.height[c], 0);
+                    gpu.fill(dst, c, (2 * sl + 1) * d.height[c], d.height[c], 0);
+                }
+            }
+        }
+    }
+    for (int k = 0; k < rows; ++k) {
+        const int t = n - radius + k / 2 - first;
+        if (radius && (t < 0 || t >= f.count)) gpu.fill(dst, c, k * d.height[c], d.height[c], 0);
+    }
+    gpu.publish(dst, &c, 1);
+}
+
 // The resolved values and statistics as _NSS* frame properties (as the CPU
 // plugin stamps them; the device has no double-precision SVD and no
 // Sylvester residual).
@@ -1234,18 +1302,22 @@ const VSFrame* window_frame(ImageData& d, int n, int first, int last, VSFrameCon
     std::vector<Upload> uploads;
     std::vector<const VSFrame*> source(count), references;
     int regions = 0;
+    GpuFrameCache cache(api);
+    const auto get = [&](VSNode* node, int fn) {
+        return d.gpu ? take_gpu_frame(d, cache, node, fn, owned, ctx, api) : owned.getFrameFilter(fn, node, ctx);
+    };
     const auto stage = [&](const VSFrame* frame, int t, int c, bool reference) {
-        if (stage_checked(d, api, frame, c, region_at(regions))) {
+        if (d.gpu || stage_checked(d, api, frame, c, region_at(regions))) {
             uploads.push_back({-1, t, c, reference, frame});
         } else {
             uploads.push_back({regions++, t, c, reference, nullptr});
         }
     };
     for (int t = 0; t < count; ++t) {
-        source[t] = owned.getFrameFilter(first + t, d.node, ctx);
+        source[t] = get(d.node, first + t);
         for (int c = 0; c < d.planes; ++c) stage(source[t], t, c, false);
         if (d.reference) {
-            const VSFrame* frame = owned.getFrameFilter(first + t, d.reference, ctx);
+            const VSFrame* frame = get(d.reference, first + t);
             for (int c = 0; c < d.reference_planes; ++c) stage(frame, t, c, true);
             references.push_back(frame);
         }
@@ -1265,11 +1337,17 @@ const VSFrame* window_frame(ImageData& d, int n, int first, int last, VSFrameCon
             if (armed) cudaStreamSynchronize(stream);
         }
     } drain{s.stream};
+    if (s.gpu) s.gpu->begin();
     Frame f{d, s, g, count, n - first};
     for (const Upload& u : uploads) {
         const std::size_t row_bytes = static_cast<std::size_t>(d.width[u.c]) * sizeof(float);
         float* device = f.plane(u.reference ? s.reference : s.input, u.t, u.c);
-        if (u.direct) {
+        if (s.gpu) {
+            s.gpu->read(u.direct, u.c, device, row_bytes, row_bytes, d.height[u.c]);
+            if (nonfinite_any(device, row_bytes / sizeof(float) * d.height[u.c], s.stream)) {
+                throw std::invalid_argument("nss: nonfinite source/reference sample");
+            }
+        } else if (u.direct) {
             upload_direct(api->getReadPtr(u.direct, u.c), api->getStride(u.direct, u.c), row_bytes, d.height[u.c], device,
                           row_bytes, s.stream);
         } else {
@@ -1278,20 +1356,31 @@ const VSFrame* window_frame(ImageData& d, int n, int first, int last, VSFrameCon
     }
     const int downloads = regions;
     const int rows = d.radius() ? 2 * (2 * d.radius() + 1) : 1;
-    VSFrame* dst = owned.newVideoFrame(&d.output.format, d.output.width, d.output.height, source[f.center], core);
+    VSFrame* dst = d.gpu ? d.gpu->new_frame(owned, &d.output.format, d.output.width, d.output.height, source[f.center])
+                         : owned.newVideoFrame(&d.output.format, d.output.width, d.output.height, source[f.center], core);
     nss::stamp_contribution(dst, d.radius(), n, d.model, api);
     // Output planes page-locked for direct DMA take the downloads themselves.
-    Output target{api, dst};
-    for (int c = 0; c < d.planes; ++c) target.direct[c] = d.frame_memory->pinned(dst, c);
+    Output target{api, dst, s.gpu.get()};
+    if (!d.gpu) {
+        for (int c = 0; c < d.planes; ++c) target.direct[c] = d.frame_memory->pinned(dst, c);
+    }
     const CenterWork work = run_center(f);
     if (!work.bypass) queue_downloads(d, f, s, n, first, downloads, rows, target);
+    if (d.gpu) {
+        for (int c = 0; c < d.planes; ++c) {
+            const bool filtered = !work.bypass && (d.estimate || d.sigma[c] != 0);
+            write_plane_gpu(d, f, *s.gpu, dst, source[f.center], c, filtered, n, first, rows);
+        }
+    }
     NSS_CUDA_CHECK(cudaEventRecord(g.done, s.stream));
     drain.armed = false;
     slot.reset();
     NSS_CUDA_CHECK(cudaEventSynchronize(g.done));
-    for (int c = 0; c < d.planes; ++c) {
-        const bool filtered = !work.bypass && (d.estimate || d.sigma[c] != 0);
-        write_plane(d, f, api, dst, source[f.center], c, filtered, n, first, downloads, rows, target.direct[c]);
+    if (!d.gpu) {
+        for (int c = 0; c < d.planes; ++c) {
+            const bool filtered = !work.bypass && (d.estimate || d.sigma[c] != 0);
+            write_plane(d, f, api, dst, source[f.center], c, filtered, n, first, downloads, rows, target.direct[c]);
+        }
     }
     stamp_diagnostics(d, f, work.o, dst, api);
     for (const VSFrame* frame : source) owned.freeFrame(frame);
@@ -1343,6 +1432,7 @@ bool twsc_micro_tiles(const ImageData& d) { return d.model == nss::Model::TWSC &
 
 std::unique_ptr<Slot> make_slot(const ImageData& d) {
     auto slot = std::make_unique<Slot>();
+    if (d.gpu) slot->gpu = std::make_unique<GpuStream>(d.gpu, slot->stream);
     const std::size_t window = static_cast<std::size_t>(d.max_frames) * d.plane_floats * sizeof(float);
     slot->input = DeviceBuffer(window * 3, d.budget);
     slot->basic = DeviceBuffer(window * 3, d.budget);
@@ -1549,7 +1639,7 @@ void allocate(ImageData& d, const MemoryPlan& plan) {
     for (const auto& slot : slots) d.slots.push_back(slot.get());
     if (d.rolling) {
         d.cache.configure(d.roll.rolling_chunk, d.frame_bytes, d.plane_offset, d.roll.cache_chunks, plan.cache_cap,
-                        pinned_blocks(d.budget));
+                        chunk_blocks(d.budget, d.gpu != nullptr));
     }
     std::vector<std::unique_ptr<Staging>> sets;
     for (int i = 0; i < plan.staging_sets; ++i) {
@@ -1562,7 +1652,11 @@ void allocate(ImageData& d, const MemoryPlan& plan) {
     d.pool = std::make_unique<SlotPool<Slot>>(std::move(slots));
     if (d.rolling) {
         std::vector<std::unique_ptr<ImageData::OutputPermit>> permits;
-        for (int i = 0; i < std::max(plan.staging_sets, 1); ++i) permits.push_back(std::make_unique<ImageData::OutputPermit>());
+        for (int i = 0; i < std::max(plan.staging_sets, 1); ++i) {
+            auto permit = std::make_unique<ImageData::OutputPermit>();
+            if (d.gpu) permit->gpu = std::make_unique<GpuStream>(d.gpu, permit->stream);
+            permits.push_back(std::move(permit));
+        }
         d.outputs = std::make_unique<SlotPool<ImageData::OutputPermit>>(std::move(permits));
     }
 }
@@ -1592,9 +1686,12 @@ void create(const VSMap* in, VSMap* out, VSCore* core, const VSAPI* api, nss::Mo
     d.roll = temporal.params;
     d.output = d.vi;
     if (d.radius() && !d.rolling) d.output.height = nss::checked_fat_height(d.vi.height, d.radius());
+    const VSVULKANAPI* gpu_api = take_clips(d.name(), {{"clip", &d.node}, {"rclip", &d.reference}}, core, api);
     d.backend = parse_backend_args(api, in, d.name());
-    d.device = acquire_device(d.backend.device_id, d.name(), core, api);
+    d.device = gpu_api ? acquire_core_device(d.backend, d.name(), core, api, gpu_api)
+                       : acquire_device(d.backend.device_id, d.name(), core, api);
     d.budget = nss::current_budget();
+    if (gpu_api) d.gpu = std::make_shared<GpuFrames>(core, gpu_api, api);
     d.frame_memory = std::make_unique<FrameMemory>(core, api);
     const bool twsc = model == nss::Model::TWSC;
     d.rgb = !twsc && d.vi.format.colorFamily == cfRGB;  // NLH works in YUV
@@ -1602,10 +1699,14 @@ void create(const VSMap* in, VSMap* out, VSCore* core, const VSAPI* api, nss::Mo
     describe_planes(d);
     const MemoryPlan plan = plan_memory(d);
     allocate(d, plan);
+    if (d.gpu && d.budget) {
+        d.gpu->reserve(d.budget->snapshot().bytes[static_cast<std::size_t>(nss::ResourceKind::Workspace)] +
+                       d.frame_bytes * static_cast<std::size_t>(plan.cache_cap));
+    }
     const auto pattern = d.radius() ? rpGeneral : rpStrictSpatial;
     VSFilterDependency deps[2]{{d.node, pattern}, {d.reference, pattern}};
-    VSNode* node = api->createVideoFilter2(d.name(), &d.output, nss::checked_frame<getFrame>, freeFilter, fmParallel, deps,
-                                          d.reference ? 2 : 1, &d, core);
+    VSNode* node = vs_api::create_video_filter(api, d.name(), &d.output, nss::checked_frame<getFrame>, freeFilter,
+                                               fmParallel, d.gpu != nullptr, deps, d.reference ? 2 : 1, &d, core);
     if (!node) {
         freeFilter(data.release(), core, api);
         throw std::runtime_error("nss_cuda: failed to create full image filter");
@@ -1623,14 +1724,16 @@ void VS_CC create_twsc(const VSMap* in, VSMap* out, void*, VSCore* core, const V
 
 }  // namespace
 
-void register_nlh(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
-    static const std::string args = signature(nss::frontend::kNlhSignature);
-    vspapi->registerFunction("NLH", args.c_str(), "clip:vnode;", nss::checked_create<create_nlh, kDefaultMemoryLimitMb>, nullptr, plugin);
+void register_nlh(VSPlugin* plugin, const VSPLUGINAPI* vspapi, bool gpu_frames) {
+    const std::string args = residency_args(signature(nss::frontend::kNlhSignature), gpu_frames);
+    vspapi->registerFunction("NLH", args.c_str(), clip_return(gpu_frames), nss::checked_create<create_nlh, kDefaultMemoryLimitMb>,
+                             nullptr, plugin);
 }
 
-void register_twsc(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
-    static const std::string args = signature(nss::frontend::kTwscSignature);
-    vspapi->registerFunction("TWSC", args.c_str(), "clip:vnode;", nss::checked_create<create_twsc, kDefaultMemoryLimitMb>, nullptr, plugin);
+void register_twsc(VSPlugin* plugin, const VSPLUGINAPI* vspapi, bool gpu_frames) {
+    const std::string args = residency_args(signature(nss::frontend::kTwscSignature), gpu_frames);
+    vspapi->registerFunction("TWSC", args.c_str(), clip_return(gpu_frames), nss::checked_create<create_twsc, kDefaultMemoryLimitMb>,
+                             nullptr, plugin);
 }
 
 }  // namespace nss_cuda

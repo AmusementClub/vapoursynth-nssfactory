@@ -14,17 +14,17 @@
 #include <string>
 
 namespace nss_cuda {
-void register_bm3d(VSPlugin* plugin, const VSPLUGINAPI* vspapi);
+void register_bm3d(VSPlugin* plugin, const VSPLUGINAPI* vspapi, bool gpu_frames);
 void register_nlm(VSPlugin* plugin, const VSPLUGINAPI* vspapi, bool gpu_frames);
-void register_wnnm(VSPlugin* plugin, const VSPLUGINAPI* vspapi);
-void register_mcwnnm(VSPlugin* plugin, const VSPLUGINAPI* vspapi);
-void register_ncsr(VSPlugin* plugin, const VSPLUGINAPI* vspapi);
-void register_nlh(VSPlugin* plugin, const VSPLUGINAPI* vspapi);
-void register_twsc(VSPlugin* plugin, const VSPLUGINAPI* vspapi);
-void register_lssc(VSPlugin* plugin, const VSPLUGINAPI* vspapi);
-void register_da3d(VSPlugin* plugin, const VSPLUGINAPI* vspapi);
-void register_bm4d(VSPlugin* plugin, const VSPLUGINAPI* vspapi);
-void register_pnlm(VSPlugin* plugin, const VSPLUGINAPI* vspapi);
+void register_wnnm(VSPlugin* plugin, const VSPLUGINAPI* vspapi, bool gpu_frames);
+void register_mcwnnm(VSPlugin* plugin, const VSPLUGINAPI* vspapi, bool gpu_frames);
+void register_ncsr(VSPlugin* plugin, const VSPLUGINAPI* vspapi, bool gpu_frames);
+void register_nlh(VSPlugin* plugin, const VSPLUGINAPI* vspapi, bool gpu_frames);
+void register_twsc(VSPlugin* plugin, const VSPLUGINAPI* vspapi, bool gpu_frames);
+void register_lssc(VSPlugin* plugin, const VSPLUGINAPI* vspapi, bool gpu_frames);
+void register_da3d(VSPlugin* plugin, const VSPLUGINAPI* vspapi, bool gpu_frames);
+void register_bm4d(VSPlugin* plugin, const VSPLUGINAPI* vspapi, bool gpu_frames);
+void register_pnlm(VSPlugin* plugin, const VSPLUGINAPI* vspapi, bool gpu_frames);
 }  // namespace nss_cuda
 
 namespace {
@@ -84,15 +84,15 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin* plugin, const VSPLUGINAPI
         "multiprocessors:int:opt;probe_ok:int:opt;probe_ms:float:opt;probe_error:data:opt;",
         backendCreate, nullptr, plugin);
     const bool gpu_frames = nss_cuda::gpu_frames_registration(vspapi);
-    nss_cuda::register_bm3d(plugin, vspapi);
+    nss_cuda::register_bm3d(plugin, vspapi, gpu_frames);
     nss_cuda::register_nlm(plugin, vspapi, gpu_frames);
-    nss_cuda::register_wnnm(plugin, vspapi);
-    nss_cuda::register_mcwnnm(plugin, vspapi);
-    nss_cuda::register_ncsr(plugin, vspapi);
-    nss_cuda::register_nlh(plugin, vspapi);
-    nss_cuda::register_twsc(plugin, vspapi);
-    nss_cuda::register_lssc(plugin, vspapi);
-    nss_cuda::register_da3d(plugin, vspapi);
-    nss_cuda::register_bm4d(plugin, vspapi);
-    nss_cuda::register_pnlm(plugin, vspapi);
+    nss_cuda::register_wnnm(plugin, vspapi, gpu_frames);
+    nss_cuda::register_mcwnnm(plugin, vspapi, gpu_frames);
+    nss_cuda::register_ncsr(plugin, vspapi, gpu_frames);
+    nss_cuda::register_nlh(plugin, vspapi, gpu_frames);
+    nss_cuda::register_twsc(plugin, vspapi, gpu_frames);
+    nss_cuda::register_lssc(plugin, vspapi, gpu_frames);
+    nss_cuda::register_da3d(plugin, vspapi, gpu_frames);
+    nss_cuda::register_bm4d(plugin, vspapi, gpu_frames);
+    nss_cuda::register_pnlm(plugin, vspapi, gpu_frames);
 }

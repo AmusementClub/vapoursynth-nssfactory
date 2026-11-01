@@ -90,11 +90,13 @@ set(NSS_CUDA_IEEE_SOURCES
   common/match.cu
   common/match_column.cu
   common/match_square.cu
+  common/nonfinite.cu
   lssc/kernels.cu
   mcwnnm/kernels.cu
   ncsr/kernels.cu
   nlh/kernels.cu
   nlm/kernels.cu
+  runtime/gpu_fill.cu
   runtime/pointer_table.cu
   runtime/probe.cu
   twsc/kernels.cu
@@ -145,7 +147,7 @@ set(NSS_CUDA_RUNTIME_SOURCES
   runtime/vs_api43.cpp
 )
 
-option(NSS_CUDA_GPU_FRAMES "Build the experimental R81 GPU-frame frontend for nss_cuda.NLM" OFF)
+option(NSS_CUDA_GPU_FRAMES "Build the experimental R81 GPU-frame frontend for all nss_cuda filters" OFF)
 if(NSS_CUDA_GPU_FRAMES)
   find_file(NSS_CUDA_VSVULKAN_HEADER VSVulkan4.h PATHS "${VapourSynth_INCLUDE_DIR}" NO_DEFAULT_PATH NO_CACHE)
   if(NOT NSS_CUDA_VSVULKAN_HEADER)
@@ -161,7 +163,7 @@ if(NSS_CUDA_GPU_FRAMES)
     message(FATAL_ERROR "NSS_CUDA_GPU_FRAMES requires Vulkan headers (set NSS_CUDA_VULKAN_INCLUDE_DIR or VULKAN_SDK)")
   endif()
   set_source_files_properties(runtime/vs_api43.cpp PROPERTIES COMPILE_DEFINITIONS VS_USE_API_43)
-  message(STATUS "NSSFactory CUDA: experimental R81 GPU-frame frontend for NLM")
+  message(STATUS "NSSFactory CUDA: experimental R81 GPU-frame frontend for all filters")
 endif()
 
 # Optional cuSolverDx (MathDx package root, the directory holding include/

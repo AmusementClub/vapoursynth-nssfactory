@@ -6,10 +6,12 @@
 #include "cuda/common/match.hpp"
 #include "cuda/runtime/frame_io.hpp"
 #include "cuda/runtime/frame_memory.hpp"
+#include "cuda/runtime/gpu_frames.hpp"
 #include "cuda/runtime/memory.hpp"
 #include "cuda/runtime/nvtx.hpp"
 #include "cuda/runtime/pointer_table.hpp"
 #include "cuda/runtime/stream_pool.hpp"
+#include "cuda/runtime/vs_api.hpp"
 #include "frontend/contribution.hpp"
 #include "frontend/ownership.hpp"
 #include "frontend/temporal.hpp"
@@ -22,6 +24,7 @@
 #include <array>
 #include <condition_variable>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -88,11 +91,13 @@ struct RollState {
 
 struct Slot {
     Stream stream;
+    std::unique_ptr<GpuStream> gpu;
     // Rolling: the source frames go up on `up`, a chunk's finished frames
     // come down together on `down` (out_free behind them, which the next
     // chunk waits for before it finishes a frame into `out`); `computed`
     // marks the end of a chunk's kernels for the download.
     Stream up, down;
+    std::unique_ptr<GpuStream> gpu_up;
     Event out_free, computed;
     bool in_use = false;  // rolling: guarded by Driver::roll_mu
     std::vector<RollState> roll;
@@ -159,11 +164,15 @@ struct Driver : GroupFilterConfig {
     // cache may drop that chunk in the meantime. (A permit taken before the
     // chunk let the cache drop a chunk the requests for its other frames were
     // about to read: they computed it again, rolling ran at half speed.)
-    struct OutputPermit {};
+    struct OutputPermit {
+        Stream stream;
+        std::unique_ptr<GpuStream> gpu;
+    };
     std::unique_ptr<SlotPool<OutputPermit>> outputs;
     // Spatial and legacy frames: direct DMA to and from page-locked VS frame
     // planes where the host allows it (vapoursynth-classic VSFrameMemory.h).
     std::unique_ptr<FrameMemory> frame_memory;
+    std::shared_ptr<GpuFrames> gpu;
     // Rolling takes its slots by turn (see RollState) instead of from the pool.
     std::vector<Slot*> slots;
     std::vector<int> roll_state;  // plane -> index in Slot::roll
@@ -209,6 +218,11 @@ bool iterative(const Driver& d) { return (d.channels > 1 && !d.shared_match) || 
 // Patch record arrays per batch: one, or one per channel of a shared_match unit.
 std::size_t patch_sets(const Driver& d) { return d.shared_match ? static_cast<std::size_t>(d.channels) : 1; }
 std::string prefix(const Driver& d) { return "nss_cuda." + d.name + ": "; }
+
+const VSFrame* take_gpu_frame(Driver& d, GpuFrameCache& cache, VSNode* node, int fn, nss::FrameScope& frames,
+                              VSFrameContext* ctx, const VSAPI*) {
+    return cache.get(*d.gpu, fn, node, ctx, frames);
+}
 
 std::size_t scratch_floats(const Driver& d, const GroupPlane& p) {
     return d.scratch_floats ? d.scratch_floats(p, p.wiener) : 0;
@@ -601,6 +615,10 @@ std::unique_ptr<Staging> make_staging(const Driver& d) {
 
 std::unique_ptr<Slot> make_slot(const Driver& d) {
     auto slot = std::make_unique<Slot>();
+    if (d.gpu) {
+        slot->gpu = std::make_unique<GpuStream>(d.gpu, slot->stream);
+        if (d.mode == GroupMode::Rolling) slot->gpu_up = std::make_unique<GpuStream>(d.gpu, slot->up);
+    }
     const bool w = has_guide(d);
     const std::size_t plane_bytes = d.plane_floats * sizeof(float);
     const std::size_t unit_bytes = plane_bytes * d.channels;
@@ -1079,6 +1097,99 @@ const VSFrame* frame_output(Driver* d, int n, VSFrameContext* ctx, VSCore* core,
     return frames.keep(dst);
 }
 
+const VSFrame* frame_output_gpu(Driver* d, int n, VSFrameContext* ctx, VSCore* core, const VSAPI* vsapi) {
+    auto staging = d->staging->acquire();
+    Staging& g = *staging;
+    DeviceGuard guard(d->device.index);
+    nss::ResourceScope resource_scope(d->budget);
+    nss::FrameScope frames(vsapi);
+    const int radius = d->radius;
+    const bool w = guide_clip(*d);
+    std::vector<const VSFrame*> srcf(d->ntemp), reff(d->ntemp, nullptr);
+    const auto take = [&](VSNode* node, std::vector<const VSFrame*>& out, int t, int fn) {
+        for (int u = 0; u < t; ++u) {
+            if (out[u] && temporal_slot_frame(n, u, radius, d->vi.numFrames) == fn) {
+                return frames.adoptInput(vsapi->addFrameRef(out[u]));
+            }
+        }
+        return d->gpu->get_frame(fn, node, ctx, frames);
+    };
+    for (int t = 0; t < d->ntemp; ++t) {
+        const int fn = temporal_slot_frame(n, t, radius, d->vi.numFrames);
+        srcf[t] = take(d->node, srcf, t, fn);
+        if (w) reff[t] = take(d->guide, reff, t, fn);
+    }
+    const VSFrame* src0 = srcf[radius];
+    VSFrame* dst = d->gpu->new_frame(frames, &d->vi_out.format, d->vi_out.width, d->vi_out.height, src0);
+    nss::stamp_contribution(dst, radius, n, d->model, vsapi);
+
+    const int channels = d->channels;
+    for (int unit = 0; unit < (channels > 1 ? 1 : d->vi.format.numPlanes); ++unit) {
+        const GroupPlane& p = d->planes[unit];
+        const std::size_t row_bytes = static_cast<std::size_t>(p.width) * sizeof(float);
+        auto slot = d->pool->acquire();
+        Slot& s = *slot;
+        s.gpu->begin();
+        struct Drain {
+            cudaStream_t stream;
+            bool armed = true;
+            ~Drain() {
+                if (armed) cudaStreamSynchronize(stream);
+            }
+        } drain{s.stream};
+        const auto identity = [&](int plane) {
+            if (!radius) {
+                s.gpu->copy(src0, plane, dst, plane, row_bytes, p.height);
+                return;
+            }
+            for (int sl = 0; sl < d->ntemp; ++sl) {
+                if (sl == radius) {
+                    s.gpu->copy_rows(src0, plane, 0, dst, plane, 2 * sl * p.height, row_bytes, p.height);
+                    s.gpu->fill(dst, plane, (2 * sl + 1) * p.height, p.height, 0x3f800000);
+                } else {
+                    s.gpu->fill(dst, plane, 2 * sl * p.height, p.height, 0);
+                    s.gpu->fill(dst, plane, (2 * sl + 1) * p.height, p.height, 0);
+                }
+            }
+        };
+        if (p.active) {
+            for (int t = 0; t < d->ntemp; ++t) {
+                for (int c = 0; c < channels; ++c) {
+                    s.gpu->read(srcf[t], unit + c, s.src_frames[t].as<float>() + c * p.floats, row_bytes, row_bytes,
+                                p.height);
+                    if (w) {
+                        s.gpu->read(reff[t], unit + c, s.ref_frames[t].as<float>() + c * p.floats, row_bytes, row_bytes,
+                                    p.height);
+                    }
+                }
+            }
+            const std::size_t unit_floats = p.floats * channels;
+            for (int t = 0; t < d->ntemp && d->iters > 1; ++t) {
+                NSS_CUDA_CHECK(cudaMemcpyAsync(s.noisy_frames[t].get(), s.src_frames[t].get(), unit_floats * sizeof(float),
+                                               cudaMemcpyDeviceToDevice, s.stream));
+            }
+            if (d->two_stage) run_first_stage(*d, s, unit, n);
+            run_rounds(*d, s, p, n);
+            queue_downloads(*d, s, p, [&](int c, int k, const float* device) {
+                s.gpu->write_rows(device, row_bytes, dst, unit + c, row_bytes, p.height, k * p.height);
+            });
+        }
+        for (int c = 0; c < channels; ++c) {
+            const int plane = unit + c;
+            if (!p.active || !d->channel_out[c]) identity(plane);
+            s.gpu->publish(dst, &plane, 1);
+        }
+        NSS_CUDA_CHECK(cudaEventRecord(g.done, s.stream));
+        NSS_CUDA_CHECK(cudaEventSynchronize(g.done));
+        drain.armed = false;
+    }
+    for (int t = 0; t < d->ntemp; ++t) {
+        frames.freeFrame(srcf[t]);
+        if (reff[t]) frames.freeFrame(reff[t]);
+    }
+    return frames.keep(dst);
+}
+
 // The work of a chunk, in the order the stream runs it: its centers, and
 // every chunk frame as soon as its last center has run (the source ring
 // still holds it then, and its slice of the sums is free for a later frame).
@@ -1309,8 +1420,12 @@ struct PlaneRun {
             }
             const auto put = [&](int clip, int c, float* device) {
                 if (const VSFrame* f = direct[staged][static_cast<std::size_t>(clip * channels + c)]) {
-                    upload_direct(vsapi->getReadPtr(f, plane + c), vsapi->getStride(f, plane + c), row_bytes, p.height,
-                                  device, row_bytes, s.up);
+                    if (d.gpu) {
+                        s.gpu_up->read(f, plane + c, device, row_bytes, row_bytes, p.height);
+                    } else {
+                        upload_direct(vsapi->getReadPtr(f, plane + c), vsapi->getStride(f, plane + c), row_bytes, p.height,
+                                      device, row_bytes, s.up);
+                    }
                 } else {
                     upload_staged(base + ((staged * clips + clip) * channels + c) * step, row_bytes, p.height, device,
                                   row_bytes, s.up);
@@ -1456,7 +1571,12 @@ struct PlaneRun {
                 aggregate_finish(acc_num + cell, acc_den + cell, source, p.width, p.height, p.width, result, s.stream);
             }
             if (!d.roll_batch_out) {
-                begin_download(result, row_bytes, row_bytes, p.height, store.plane(frame - start, plane + c), s.stream);
+                if (d.gpu) {
+                    NSS_CUDA_CHECK(cudaMemcpyAsync(store.plane(frame - start, plane + c), result, row_bytes * p.height,
+                                                   cudaMemcpyDeviceToDevice, s.stream));
+                } else {
+                    begin_download(result, row_bytes, row_bytes, p.height, store.plane(frame - start, plane + c), s.stream);
+                }
             }
         }
         clear_sums(frame % nt);  // the slice is a later frame's from here on
@@ -1480,6 +1600,7 @@ void queue_plane(Driver& d, RollTurn& turn, int plane, int start, int count, Chu
     NSS_CUDA_RANGE("group.queue");
     turn.enter();
     Slot& s = *turn.slot;
+    if (s.gpu_up) s.gpu_up->begin();
     RollState& r = *turn.state;
     struct Drain {
         const Slot& s;
@@ -1523,8 +1644,13 @@ void queue_plane(Driver& d, RollTurn& turn, int plane, int start, int count, Chu
         for (int i = 0; i < count; ++i) {
             for (int c = 0; c < channels; ++c) {
                 if (!d.channel_out[c]) continue;
-                begin_download(s.out.as<float>() + (static_cast<std::size_t>(i) * channels + c) * p.floats, row_bytes,
-                               row_bytes, p.height, store.plane(i, plane + c), s.down);
+                const float* result = s.out.as<float>() + (static_cast<std::size_t>(i) * channels + c) * p.floats;
+                if (d.gpu) {
+                    NSS_CUDA_CHECK(cudaMemcpyAsync(store.plane(i, plane + c), result, row_bytes * p.height,
+                                                   cudaMemcpyDeviceToDevice, s.down));
+                } else {
+                    begin_download(result, row_bytes, row_bytes, p.height, store.plane(i, plane + c), s.down);
+                }
             }
         }
         NSS_CUDA_CHECK(cudaEventRecord(s.out_free.event, s.down));
@@ -1542,7 +1668,8 @@ void queue_plane(Driver& d, RollTurn& turn, int plane, int start, int count, Chu
 // `staging` takes the staging set, which the caller keeps until its frame is
 // copied out (see Driver::outputs).
 std::shared_ptr<ChunkStore> compute_chunk(Driver* d, std::optional<SlotPool<Staging>::Lease>& staging, int start,
-                                          int count, VSFrameContext* ctx, const VSAPI* vsapi) {
+                                          int count, VSFrameContext* ctx, const VSAPI* vsapi,
+                                          nss::FrameScope& frames, GpuFrameCache& cache) {
     d->order.wait_for_previous(start, d->rolling.rolling_chunk, d->cache);
     {
         NSS_CUDA_RANGE("group.staging");
@@ -1551,8 +1678,10 @@ std::shared_ptr<ChunkStore> compute_chunk(Driver* d, std::optional<SlotPool<Stag
     Staging& g = **staging;
     DeviceGuard guard(d->device.index);
     const bool w = guide_clip(*d);
-    nss::FrameScope frames(vsapi);
     auto store = d->cache.make_store(start, count);
+    const auto get = [&](VSNode* node, int fn) {
+        return d->gpu ? take_gpu_frame(*d, cache, node, fn, frames, ctx, vsapi) : frames.getFrameFilter(fn, node, ctx);
+    };
 
     const int clips = w ? 2 : 1;
     // A unit of several channels is planes[0]; its channels that are not
@@ -1563,9 +1692,10 @@ std::shared_ptr<ChunkStore> compute_chunk(Driver* d, std::optional<SlotPool<Stag
         const GroupPlane& p = d->planes[plane];
         if (p.active && !(unit && plane > 0)) active.push_back(plane);
         if (unit ? d->planes[0].active && d->channel_out[plane] : p.active) continue;
+        if (d->gpu) continue;
         const std::size_t row_bytes = static_cast<std::size_t>(p.width) * sizeof(float);
         for (int i = 0; i < count; ++i) {
-            const VSFrame* f = frames.getFrameFilter(start + i, d->node, ctx);
+            const VSFrame* f = get(d->node, start + i);
             vsh::bitblt(store->plane(i, plane), row_bytes, vsapi->getReadPtr(f, plane), vsapi->getStride(f, plane),
                         row_bytes, p.height);
             frames.freeFrame(f);
@@ -1611,7 +1741,7 @@ std::shared_ptr<ChunkStore> compute_chunk(Driver* d, std::optional<SlotPool<Stag
                 const auto stage = [&](std::size_t i, int clip, const VSFrame* f) {
                     bool used = false;
                     for (std::size_t c = 0; c < channels; ++c) {
-                        if (d->frame_memory->pinned(f, plane + static_cast<int>(c))) {
+                        if (d->gpu || d->frame_memory->pinned(f, plane + static_cast<int>(c))) {
                             direct[j][i][clip * channels + c] = f;
                             used = true;
                         } else {
@@ -1627,8 +1757,8 @@ std::shared_ptr<ChunkStore> compute_chunk(Driver* d, std::optional<SlotPool<Stag
                 };
                 for (std::size_t i = 0; i < turn.uploads.size(); ++i) {
                     const int fn = turn.uploads[i];
-                    stage(i, 0, frames.getFrameFilter(fn, d->node, ctx));
-                    if (w) stage(i, 1, frames.getFrameFilter(fn, d->guide, ctx));
+                    stage(i, 0, get(d->node, fn));
+                    if (w) stage(i, 1, get(d->guide, fn));
                 }
             }
         }
@@ -1652,8 +1782,8 @@ std::shared_ptr<ChunkStore> compute_chunk(Driver* d, std::optional<SlotPool<Stag
 }
 
 ChunkCache::Chunk rolling_chunk(Driver* d, std::optional<SlotPool<Staging>::Lease>& staging, int start, int count,
-                               VSFrameContext* ctx, const VSAPI* vsapi) {
-    return d->cache.get(start, [&] { return compute_chunk(d, staging, start, count, ctx, vsapi); });
+                               VSFrameContext* ctx, const VSAPI* vsapi, nss::FrameScope& frames, GpuFrameCache& cache) {
+    return d->cache.get(start, [&] { return compute_chunk(d, staging, start, count, ctx, vsapi, frames, cache); });
 }
 
 const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameContext* ctx, VSCore* core,
@@ -1681,27 +1811,42 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
     }
     if (activation != arAllFramesReady) return nullptr;
     NSS_CUDA_RANGE("group.frame");
-    if (d->mode != GroupMode::Rolling) return frame_output(d, n, ctx, core, vsapi);
+    if (d->mode != GroupMode::Rolling) return d->gpu ? frame_output_gpu(d, n, ctx, core, vsapi) : frame_output(d, n, ctx, core, vsapi);
 
     const int start = n / d->rolling.rolling_chunk * d->rolling.rolling_chunk;
     const int count = std::min(d->rolling.rolling_chunk, nframes - start);
     // The chunk, then the permit for the output frame (see Driver::outputs); a chunk this request computes
     // keeps its staging set until the frame is out.
     std::optional<SlotPool<Staging>::Lease> staging;
-    auto chunk = rolling_chunk(d, staging, start, count, ctx, vsapi);
-    auto permit = d->outputs->acquire();
     nss::ResourceScope resource_scope(d->budget);
     nss::FrameScope frames(vsapi);
-    const VSFrame* src = frames.getFrameFilter(n, d->node, ctx);
-    VSFrame* dst = frames.newVideoFrame(&d->vi.format, d->vi.width, d->vi.height, src, core);
+    GpuFrameCache cache(vsapi);
+    auto chunk = rolling_chunk(d, staging, start, count, ctx, vsapi, frames, cache);
+    auto permit = d->outputs->acquire();
+    const VSFrame* src = d->gpu ? take_gpu_frame(*d, cache, d->node, n, frames, ctx, vsapi)
+                                : frames.getFrameFilter(n, d->node, ctx);
+    VSFrame* dst = d->gpu ? d->gpu->new_frame(frames, &d->vi.format, d->vi.width, d->vi.height, src)
+                          : frames.newVideoFrame(&d->vi.format, d->vi.width, d->vi.height, src, core);
     nss::stamp_contribution(dst, 0, n, d->model, vsapi);
-    frames.freeFrame(src);
+    if (permit->gpu) permit->gpu->begin();
     for (int plane = 0; plane < d->vi.format.numPlanes; ++plane) {
         const GroupPlane& p = d->planes[plane];
         const std::size_t row_bytes = static_cast<std::size_t>(p.width) * sizeof(float);
-        copy_to_frame(chunk->plane(n - chunk->start, plane), static_cast<std::ptrdiff_t>(row_bytes),
-                      vsapi->getWritePtr(dst, plane), vsapi->getStride(dst, plane), row_bytes, p.height);
+        if (permit->gpu) {
+            const bool written = d->channels > 1 ? d->planes[0].active && d->channel_out[plane] : p.active;
+            if (written) {
+                permit->gpu->write(chunk->plane(n - chunk->start, plane), row_bytes, dst, plane, row_bytes, p.height);
+            } else {
+                permit->gpu->copy(src, plane, dst, plane, row_bytes, p.height);
+            }
+            permit->gpu->publish(dst, &plane, 1);
+        } else {
+            copy_to_frame(chunk->plane(n - chunk->start, plane), static_cast<std::ptrdiff_t>(row_bytes),
+                          vsapi->getWritePtr(dst, plane), vsapi->getStride(dst, plane), row_bytes, p.height);
+        }
     }
+    if (permit->gpu) permit->stream.synchronize();
+    frames.freeFrame(src);
     return frames.keep(dst);
 }
 
@@ -1767,11 +1912,16 @@ void group_filter_install(GroupFilterConfig&& config, VSMap* out, VSCore* core, 
             d->basic[1].active = d->basic[2].active = false;
         }
     }
+    if (d->gpu_api) d->gpu = std::make_shared<GpuFrames>(core, d->gpu_api, vsapi);
     DeviceGuard guard(d->device.index);
     d->frame_memory = std::make_unique<FrameMemory>(core, vsapi);
     plan_planes(*d);
     d->cache.configure(d->rolling.rolling_chunk, d->frame_bytes, d->plane_offset, d->cache_size, d->cache_cap,
-                       pinned_blocks(d->budget));
+                       chunk_blocks(d->budget, d->gpu != nullptr));
+    if (d->gpu && d->budget) {
+        d->gpu->reserve(d->budget->snapshot().bytes[static_cast<std::size_t>(nss::ResourceKind::Workspace)] +
+                        d->frame_bytes * static_cast<std::size_t>(d->cache_cap));
+    }
     std::vector<std::unique_ptr<Slot>> slots;
     for (int i = 0; i < d->backend.num_streams; ++i) slots.push_back(make_slot(*d));
     for (auto& slot : slots) d->slots.push_back(slot.get());
@@ -1783,15 +1933,20 @@ void group_filter_install(GroupFilterConfig&& config, VSMap* out, VSCore* core, 
     }
     if (d->mode == GroupMode::Rolling) {
         std::vector<std::unique_ptr<Driver::OutputPermit>> permits;
-        for (int i = 0; i < std::max(d->staging_sets, 1); ++i) permits.push_back(std::make_unique<Driver::OutputPermit>());
+        for (int i = 0; i < std::max(d->staging_sets, 1); ++i) {
+            auto permit = std::make_unique<Driver::OutputPermit>();
+            if (d->gpu) permit->gpu = std::make_unique<GpuStream>(d->gpu, permit->stream);
+            permits.push_back(std::move(permit));
+        }
         d->outputs = std::make_unique<SlotPool<Driver::OutputPermit>>(std::move(permits));
     }
 
     const auto pattern = d->mode == GroupMode::Spatial ? rpStrictSpatial : rpGeneral;
     VSFilterDependency deps[2]{{d->node, pattern}, {d->guide, pattern}};
     Driver* raw = d.get();
-    VSNode* node = vsapi->createVideoFilter2(raw->name.c_str(), &raw->vi_out, nss::checked_frame<getFrame>, freeFilter,
-                                            fmParallel, deps, d->guide ? 2 : 1, raw, core);
+    VSNode* node = vs_api::create_video_filter(vsapi, raw->name.c_str(), &raw->vi_out, nss::checked_frame<getFrame>,
+                                               freeFilter, fmParallel, raw->gpu != nullptr, deps, d->guide ? 2 : 1, raw,
+                                               core);
     if (!node) throw std::runtime_error(prefix(*d) + "failed to create filter");
     d.release();
     vsapi->mapConsumeNode(out, "clip", node, maAppend);

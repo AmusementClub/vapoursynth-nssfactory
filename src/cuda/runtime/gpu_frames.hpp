@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -57,6 +58,21 @@ private:
     std::int64_t reserved_ = 0;
 };
 
+class GpuFrameCache {
+public:
+    explicit GpuFrameCache(const VSAPI* api) : api_(api) {}
+    ~GpuFrameCache();
+    GpuFrameCache(const GpuFrameCache&) = delete;
+    GpuFrameCache& operator=(const GpuFrameCache&) = delete;
+
+    const VSFrame* get(const GpuFrames& gpu, int n, VSNode* node, VSFrameContext* context,
+                       nss::FrameScope& frames);
+
+private:
+    const VSAPI* api_;
+    std::map<std::pair<VSNode*, int>, const VSFrame*> frames_;
+};
+
 class GpuStream {
 public:
     GpuStream(std::shared_ptr<GpuFrames> frames, cudaStream_t stream);
@@ -69,8 +85,13 @@ public:
               int rows);
     void write(const void* device, std::size_t device_pitch, VSFrame* frame, int plane, std::size_t row_bytes,
                int rows);
+    void write_rows(const void* device, std::size_t device_pitch, VSFrame* frame, int plane, std::size_t row_bytes,
+                    int rows, int first_row);
     void copy(const VSFrame* source, int source_plane, VSFrame* target, int target_plane, std::size_t row_bytes,
               int rows);
+    void copy_rows(const VSFrame* source, int source_plane, int source_first_row, VSFrame* target, int target_plane,
+                   int target_first_row, std::size_t row_bytes, int rows);
+    void fill(VSFrame* frame, int plane, int first_row, int rows, std::uint32_t word);
     void publish(VSFrame* frame, const int* planes, std::size_t count);
 
 private:

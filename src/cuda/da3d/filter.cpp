@@ -6,9 +6,11 @@
 #include "cuda/runtime/context.hpp"
 #include "cuda/runtime/frame_io.hpp"
 #include "cuda/runtime/frame_memory.hpp"
+#include "cuda/runtime/gpu_frames.hpp"
 #include "cuda/runtime/memory.hpp"
 #include "cuda/runtime/nvtx.hpp"
 #include "cuda/runtime/stream_pool.hpp"
+#include "cuda/runtime/vs_api.hpp"
 #include "frontend/da3d_args.hpp"
 #include "frontend/ownership.hpp"
 #include "frontend/validate.hpp"
@@ -27,6 +29,7 @@ namespace {
 
 struct Slot {
     Stream stream;
+    std::unique_ptr<GpuStream> gpu;
     DeviceBuffer noisy, guide, out, transformed, work, stats;
     PinnedBuffer staging;  // noisy, guide and out: frame_floats each
     PinnedBuffer stats_host;
@@ -45,6 +48,7 @@ struct Da3dData : nss::Da3dParams {
     DeviceBuffer tables;
     std::unique_ptr<SlotPool<Slot>> pool;
     std::unique_ptr<FrameMemory> frame_memory;  // direct DMA (vapoursynth-classic)
+    std::shared_ptr<GpuFrames> gpu;
 };
 
 const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameContext* ctx, VSCore* core,
@@ -60,8 +64,8 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
     DeviceGuard guard(d->device.index);
     nss::ResourceScope resource_scope(d->budget);
     nss::FrameScope frames(vsapi);
-    const VSFrame* noisy = frames.getFrameFilter(n, d->node, ctx);
-    const VSFrame* guide = frames.getFrameFilter(n, d->ref, ctx);
+    const VSFrame* noisy = d->gpu ? d->gpu->get_frame(n, d->node, ctx, frames) : frames.getFrameFilter(n, d->node, ctx);
+    const VSFrame* guide = d->gpu ? d->gpu->get_frame(n, d->ref, ctx, frames) : frames.getFrameFilter(n, d->ref, ctx);
     VSFrame* dst = nullptr;
     unsigned long long patches = 0, guide_only = 0;
     // The plan counts an output frame per stream: the slot is held from before
@@ -69,7 +73,9 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
     auto slot = d->pool->acquire();
     {
         Slot& s = *slot;
-        dst = frames.newVideoFrame(&d->vi.format, d->vi.width, d->vi.height, noisy, core);
+        if (s.gpu) s.gpu->begin();
+        dst = d->gpu ? d->gpu->new_frame(frames, &d->vi.format, d->vi.width, d->vi.height, noisy)
+                     : frames.newVideoFrame(&d->vi.format, d->vi.width, d->vi.height, noisy, core);
         struct Drain {
             const Slot& s;
             ~Drain() { cudaStreamSynchronize(s.stream.get()); }
@@ -94,7 +100,9 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
             // A page-locked plane goes straight to the device (direct DMA); the frames are held until the
             // stream has synchronized below.
             const auto upload = [&](const VSFrame* f, std::size_t region, float* device) {
-                if (d->frame_memory->pinned(f, plane)) {
+                if (s.gpu) {
+                    s.gpu->read(f, plane, device, row, row, h);
+                } else if (d->frame_memory->pinned(f, plane)) {
                     upload_direct(vsapi->getReadPtr(f, plane), vsapi->getStride(f, plane), row, h, device, row, s.stream);
                 } else {
                     upload_plane(vsapi->getReadPtr(f, plane), vsapi->getStride(f, plane), row, h,
@@ -124,10 +132,16 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
         } else {
             for (int plane = 0; plane < d->vi.format.numPlanes; ++plane) {
                 if (d->sigma[plane] == 0.f) {
-                    vsh::bitblt(vsapi->getWritePtr(dst, plane), vsapi->getStride(dst, plane), vsapi->getReadPtr(guide, plane),
-                                vsapi->getStride(guide, plane),
-                                static_cast<std::size_t>(nss::plane_width(d->vi, plane)) * sizeof(float),
-                                nss::plane_height(d->vi, plane));
+                    if (s.gpu) {
+                        const std::size_t row = static_cast<std::size_t>(nss::plane_width(d->vi, plane)) * sizeof(float);
+                        s.gpu->copy(guide, plane, dst, plane, row, nss::plane_height(d->vi, plane));
+                        s.gpu->publish(dst, &plane, 1);
+                    } else {
+                        vsh::bitblt(vsapi->getWritePtr(dst, plane), vsapi->getStride(dst, plane), vsapi->getReadPtr(guide, plane),
+                                    vsapi->getStride(guide, plane),
+                                    static_cast<std::size_t>(nss::plane_width(d->vi, plane)) * sizeof(float),
+                                    nss::plane_height(d->vi, plane));
+                    }
                     continue;
                 }
                 units[count] = unit_of(plane, d->sigma[plane]);
@@ -142,6 +156,11 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
             for (int c = 0; c < outputs; ++c) {
                 const int plane = planes[c];
                 const std::size_t row = static_cast<std::size_t>(nss::plane_width(d->vi, plane)) * sizeof(float);
+                if (s.gpu) {
+                    s.gpu->write(s.out.as<float>() + offset[c], row, dst, plane, row, nss::plane_height(d->vi, plane));
+                    s.gpu->publish(dst, &plane, 1);
+                    continue;
+                }
                 direct_out[c] = d->frame_memory->pinned(dst, plane);
                 if (direct_out[c]) {
                     download_direct(s.out.as<float>() + offset[c], row, row, nss::plane_height(d->vi, plane),
@@ -155,7 +174,7 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
                                            cudaMemcpyDeviceToHost, s.stream));
             s.stream.synchronize();
             for (int c = 0; c < outputs; ++c) {
-                if (direct_out[c]) continue;  // the DMA wrote it
+                if (s.gpu || direct_out[c]) continue;
                 const int plane = planes[c];
                 const std::size_t row = static_cast<std::size_t>(nss::plane_width(d->vi, plane)) * sizeof(float);
                 finish_download(staging + (2 * frame + offset[c]) * sizeof(float), row, nss::plane_height(d->vi, plane),
@@ -194,9 +213,12 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     if (!nss::same_video(d.vi, *vsapi->getVideoInfo(d.ref)))
         throw std::invalid_argument("nss_cuda.DA3D: ref must have the clip's format, size and length");
     d.joint = nss::frontend::da3d_joint_rgb(d.vi, d);
+    const VSVULKANAPI* gpu_api = take_clips("DA3D", {{"clip", &d.node}, {"ref", &d.ref}}, core, vsapi);
     d.backend = parse_backend_args(vsapi, in, "DA3D");
-    d.device = acquire_device(d.backend.device_id, "DA3D", core, vsapi);
+    d.device = gpu_api ? acquire_core_device(d.backend, "DA3D", core, vsapi, gpu_api)
+                       : acquire_device(d.backend.device_id, "DA3D", core, vsapi);
     d.budget = nss::current_budget();
+    if (gpu_api) d.gpu = std::make_shared<GpuFrames>(core, gpu_api, vsapi);
     d.frame_memory = std::make_unique<FrameMemory>(core, vsapi);
     d.unit_channels = d.joint ? 3 : 1;
     std::size_t work = 0;  // a joint unit's, or the sum of the planes' (one launch)
@@ -248,6 +270,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         std::vector<std::unique_ptr<Slot>> slots;
         for (int i = 0; i < d.backend.num_streams; ++i) {
             auto s = std::make_unique<Slot>();
+            if (d.gpu) s->gpu = std::make_unique<GpuStream>(d.gpu, s->stream);
             s->noisy = DeviceBuffer(frame_bytes, d.budget);
             s->guide = DeviceBuffer(frame_bytes, d.budget);
             s->out = DeviceBuffer(frame_bytes, d.budget);
@@ -260,9 +283,10 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         }
         d.pool = std::make_unique<SlotPool<Slot>>(std::move(slots));
     }
+    if (d.gpu && d.budget) d.gpu->reserve(d.budget->snapshot().bytes[static_cast<std::size_t>(nss::ResourceKind::Workspace)]);
     VSFilterDependency deps[2]{{d.node, rpStrictSpatial}, {d.ref, rpStrictSpatial}};
-    VSNode* node =
-        vsapi->createVideoFilter2("DA3D", &d.vi, nss::checked_frame<getFrame>, freeFilter, fmParallel, deps, 2, &d, core);
+    VSNode* node = vs_api::create_video_filter(vsapi, "DA3D", &d.vi, nss::checked_frame<getFrame>, freeFilter, fmParallel,
+                                               d.gpu != nullptr, deps, 2, &d, core);
     if (!node) {
         freeFilter(data.release(), core, vsapi);
         throw std::runtime_error("nss_cuda.DA3D: failed to create filter");
@@ -273,10 +297,10 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
 
 }  // namespace
 
-void register_da3d(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
-    static const std::string args = signature(nss::frontend::kDa3dSignature);
-    vspapi->registerFunction("DA3D", args.c_str(), "clip:vnode;", nss::checked_create<create, kDefaultMemoryLimitMb>, nullptr,
-                             plugin);
+void register_da3d(VSPlugin* plugin, const VSPLUGINAPI* vspapi, bool gpu_frames) {
+    const std::string args = residency_args(signature(nss::frontend::kDa3dSignature), gpu_frames);
+    vspapi->registerFunction("DA3D", args.c_str(), clip_return(gpu_frames), nss::checked_create<create, kDefaultMemoryLimitMb>,
+                             nullptr, plugin);
 }
 
 }  // namespace nss_cuda

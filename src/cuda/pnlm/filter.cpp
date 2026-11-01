@@ -16,9 +16,11 @@
 #include "cuda/runtime/context.hpp"
 #include "cuda/runtime/frame_io.hpp"
 #include "cuda/runtime/frame_memory.hpp"
+#include "cuda/runtime/gpu_frames.hpp"
 #include "cuda/runtime/memory.hpp"
 #include "cuda/runtime/nvtx.hpp"
 #include "cuda/runtime/stream_pool.hpp"
+#include "cuda/runtime/vs_api.hpp"
 #include "frontend/ownership.hpp"
 #include "frontend/pnlm_args.hpp"
 #include "frontend/validate.hpp"
@@ -28,6 +30,7 @@
 #include <algorithm>
 #include <condition_variable>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -161,6 +164,7 @@ private:
 
 struct Slot {
     Stream stream;
+    std::unique_ptr<GpuStream> gpu;
     DeviceBuffer out, est, keys;
 };
 
@@ -187,7 +191,13 @@ struct PnlmData : nss::PnlmParams {
     std::unique_ptr<SlotPool<Stage>> stages;
     std::unique_ptr<SlotPool<Slot>> pool;
     std::unique_ptr<FrameMemory> frame_memory;  // direct DMA (vapoursynth-classic)
+    std::shared_ptr<GpuFrames> gpu;
 };
+
+const VSFrame* take_gpu_frame(PnlmData& d, GpuFrameCache& cache, VSNode* node, int fn, nss::FrameScope& frames,
+                              VSFrameContext* ctx, const VSAPI*) {
+    return cache.get(*d.gpu, fn, node, ctx, frames);
+}
 
 const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameContext* ctx, VSCore* core,
                         const VSAPI* vsapi) {
@@ -203,8 +213,12 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
     DeviceGuard guard(d->device.index);
     nss::ResourceScope resource_scope(d->budget);
     nss::FrameScope frames(vsapi);
+    GpuFrameCache cache(vsapi);
+    const auto get = [&](int fn) {
+        return d->gpu ? take_gpu_frame(*d, cache, d->node, fn, frames, ctx, vsapi) : frames.getFrameFilter(fn, d->node, ctx);
+    };
     std::vector<const VSFrame*> sources;
-    for (int i = first; i <= last; ++i) sources.push_back(frames.getFrameFilter(i, d->node, ctx));
+    for (int i = first; i <= last; ++i) sources.push_back(get(i));
     const int count = static_cast<int>(sources.size()), center = n - first;
     const VSFrame* src = sources[static_cast<std::size_t>(center)];
     // Stages and streams go to the waiting requests in frame order: windows
@@ -224,7 +238,7 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
             for (int c = 0; c < d->count; ++c) {
                 const int plane = d->planes[c];
                 const VSFrame* frame = sources[static_cast<std::size_t>(t)];
-                if (d->frame_memory->pinned(frame, plane)) {
+                if (d->gpu || d->frame_memory->pinned(frame, plane)) {
                     direct_in[static_cast<std::size_t>(t)][static_cast<std::size_t>(c)] = true;
                     continue;
                 }
@@ -234,15 +248,20 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
             }
         }
     }
-    VSFrame* dst = frames.newVideoFrame(&d->vi.format, d->vi.width, d->vi.height, src, core);
-    for (int plane = 0; plane < d->vi.format.numPlanes; ++plane) {
-        if (d->sigma[plane] != 0.f) continue;
-        vsh::bitblt(vsapi->getWritePtr(dst, plane), vsapi->getStride(dst, plane), vsapi->getReadPtr(src, plane),
-                    vsapi->getStride(src, plane), static_cast<std::size_t>(nss::plane_width(d->vi, plane)) * sizeof(float),
-                    nss::plane_height(d->vi, plane));
+    VSFrame* dst = d->gpu ? d->gpu->new_frame(frames, &d->vi.format, d->vi.width, d->vi.height, src)
+                          : frames.newVideoFrame(&d->vi.format, d->vi.width, d->vi.height, src, core);
+    if (!d->gpu) {
+        for (int plane = 0; plane < d->vi.format.numPlanes; ++plane) {
+            if (d->sigma[plane] != 0.f) continue;
+            vsh::bitblt(vsapi->getWritePtr(dst, plane), vsapi->getStride(dst, plane), vsapi->getReadPtr(src, plane),
+                        vsapi->getStride(src, plane), static_cast<std::size_t>(nss::plane_width(d->vi, plane)) * sizeof(float),
+                        nss::plane_height(d->vi, plane));
+        }
     }
     bool direct_out[3]{};
-    for (int c = 0; c < d->count; ++c) direct_out[c] = d->frame_memory->pinned(dst, d->planes[c]);
+    if (!d->gpu) {
+        for (int c = 0; c < d->count; ++c) direct_out[c] = d->frame_memory->pinned(dst, d->planes[c]);
+    }
     window.wait_queued();
     auto* out_bytes = stage->bytes.as<std::uint8_t>();
     // On an error the queued copies must not outlive the pins, the frames and the stage.
@@ -256,6 +275,15 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
     {
         auto slot = d->pool->acquire(n);
         Slot& s = *slot;
+        if (s.gpu) {
+            s.gpu->begin();
+            for (int plane = 0; plane < d->vi.format.numPlanes; ++plane) {
+                if (d->sigma[plane] != 0.f) continue;
+                const std::size_t row = static_cast<std::size_t>(nss::plane_width(d->vi, plane)) * sizeof(float);
+                s.gpu->copy(src, plane, dst, plane, row, nss::plane_height(d->vi, plane));
+                s.gpu->publish(dst, &plane, 1);
+            }
+        }
         for (int t = 0; t < count; ++t) {
             CachedFrame* f = window.frames()[static_cast<std::size_t>(t)];
             if (!window.uploads(f)) continue;
@@ -266,8 +294,12 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
                 float* device = f->planes.as<float>() + d->offset[c];
                 if (direct_in[static_cast<std::size_t>(t)][static_cast<std::size_t>(c)]) {
                     const VSFrame* frame = sources[static_cast<std::size_t>(t)];
-                    upload_direct(vsapi->getReadPtr(frame, plane), vsapi->getStride(frame, plane), row, h, device, row,
-                                  s.stream);
+                    if (s.gpu) {
+                        s.gpu->read(frame, plane, device, row, row, h);
+                    } else {
+                        upload_direct(vsapi->getReadPtr(frame, plane), vsapi->getStride(frame, plane), row, h, device, row,
+                                      s.stream);
+                    }
                 } else {
                     upload_staged(f->staging.as<float>() + d->offset[c], row, h, device, row, s.stream);
                 }
@@ -297,7 +329,10 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
             pl.group = d->group;
             float* out = s.out.as<float>() + d->offset[c];
             pnlm_run(pl, s.est.as<float>(), s.keys.get(), out, s.stream);
-            if (direct_out[c]) {
+            if (s.gpu) {
+                s.gpu->write(out, row, dst, plane, row, h);
+                s.gpu->publish(dst, &plane, 1);
+            } else if (direct_out[c]) {
                 download_direct(out, row, row, h, vsapi->getWritePtr(dst, plane), vsapi->getStride(dst, plane), s.stream);
             } else {
                 begin_download(out, row, row, h, out_bytes + d->offset[c] * sizeof(float), s.stream);
@@ -312,7 +347,7 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
         NSS_CUDA_CHECK(cudaEventSynchronize(stage->done.event));
     }
     for (int c = 0; c < d->count; ++c) {
-        if (direct_out[c]) continue;  // the DMA wrote it
+        if (d->gpu || direct_out[c]) continue;
         const int plane = d->planes[c];
         const std::size_t row = static_cast<std::size_t>(nss::plane_width(d->vi, plane)) * sizeof(float);
         finish_download(out_bytes + d->offset[c] * sizeof(float), row, nss::plane_height(d->vi, plane),
@@ -340,9 +375,12 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     d.node = nss::get_node(vsapi, in, "clip", 0, nullptr);
     d.vi = *vsapi->getVideoInfo(d.node);
     static_cast<nss::PnlmParams&>(d) = nss::frontend::parse_pnlm(vsapi, in, d.vi, "nss_cuda");
+    const VSVULKANAPI* gpu_api = take_clips("PNLM", {{"clip", &d.node}}, core, vsapi);
     d.backend = parse_backend_args(vsapi, in, "PNLM");
-    d.device = acquire_device(d.backend.device_id, "PNLM", core, vsapi);
+    d.device = gpu_api ? acquire_core_device(d.backend, "PNLM", core, vsapi, gpu_api)
+                       : acquire_device(d.backend.device_id, "PNLM", core, vsapi);
     d.budget = nss::current_budget();
+    if (gpu_api) d.gpu = std::make_shared<GpuFrames>(core, gpu_api, vsapi);
     d.frame_memory = std::make_unique<FrameMemory>(core, vsapi);
     std::size_t est = 0, keys = 0;
     for (int plane = 0; plane < d.vi.format.numPlanes; ++plane) {
@@ -400,6 +438,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         std::vector<std::unique_ptr<Slot>> slots;
         for (std::size_t i = 0; i < streams; ++i) {
             auto s = std::make_unique<Slot>();
+            if (d.gpu) s->gpu = std::make_unique<GpuStream>(d.gpu, s->stream);
             s->out = DeviceBuffer(frame_bytes, d.budget);
             s->est = DeviceBuffer(std::max<std::size_t>(est, 1), d.budget);
             if (keys) s->keys = DeviceBuffer(keys, d.budget);
@@ -413,9 +452,10 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         }
         d.stages = std::make_unique<SlotPool<Stage>>(std::move(staged));
     }
+    if (d.gpu && d.budget) d.gpu->reserve(d.budget->snapshot().bytes[static_cast<std::size_t>(nss::ResourceKind::Workspace)]);
     VSFilterDependency deps[1]{{d.node, d.d == 0 ? rpStrictSpatial : rpGeneral}};
-    VSNode* node =
-        vsapi->createVideoFilter2("PNLM", &d.vi, nss::checked_frame<getFrame>, freeFilter, fmParallel, deps, 1, &d, core);
+    VSNode* node = vs_api::create_video_filter(vsapi, "PNLM", &d.vi, nss::checked_frame<getFrame>, freeFilter, fmParallel,
+                                               d.gpu != nullptr, deps, 1, &d, core);
     if (!node) {
         freeFilter(data.release(), core, vsapi);
         throw std::runtime_error("nss_cuda.PNLM: failed to create filter");
@@ -426,10 +466,10 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
 
 }  // namespace
 
-void register_pnlm(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
-    static const std::string args = signature(nss::frontend::kPnlmSignature);
-    vspapi->registerFunction("PNLM", args.c_str(), "clip:vnode;", nss::checked_create<create, kDefaultMemoryLimitMb>, nullptr,
-                             plugin);
+void register_pnlm(VSPlugin* plugin, const VSPLUGINAPI* vspapi, bool gpu_frames) {
+    const std::string args = residency_args(signature(nss::frontend::kPnlmSignature), gpu_frames);
+    vspapi->registerFunction("PNLM", args.c_str(), clip_return(gpu_frames), nss::checked_create<create, kDefaultMemoryLimitMb>,
+                             nullptr, plugin);
 }
 
 }  // namespace nss_cuda

@@ -25,6 +25,8 @@
 #include <memory>
 #include <string>
 
+struct VSVULKANAPI;
+
 namespace nss_cuda {
 
 enum class GroupMode { Spatial, Legacy, Rolling };
@@ -81,6 +83,7 @@ struct GroupFilterConfig {
     std::shared_ptr<nss::ResourceBudget> budget;
     BackendArgs backend;
     DeviceInfo device;
+    const VSVULKANAPI* gpu_api = nullptr;
     // Streams without num_streams (fewer where memory_limit_mb requires) for
     // spatial and legacy output, and where their frames move by direct DMA
     // (under a host with VSFrameMemory.h). Rolling output, not measured,
