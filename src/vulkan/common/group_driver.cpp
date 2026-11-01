@@ -668,9 +668,11 @@ void filter_center(Driver& d, VkCommandBuffer commands, const BatchBuffers& buff
         if (square_seeded) {
             d.square_matcher->temporal(commands, io.match, window.t0, geometry, p.grid, begin, count,
                                        buffers.matches.address(), buffers.counts.address());
+            timer.square_end();
             compute_barrier(*d.device, commands);
             d.matcher->predictive(commands, geometry, window, p.grid, begin, count, buffers.matches.address(),
                                   buffers.counts.address(), true);
+            timer.predictive_end();
         } else if (d.radius > 0) {
             d.matcher->predictive(commands, geometry, window, p.grid, begin, count, buffers.matches.address(),
                                   buffers.counts.address());

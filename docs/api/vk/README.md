@@ -192,6 +192,10 @@ most half the core's frame cache is imported.
 | `NSS_VK_TIMES` | `1`: record per-slot timestamps and print aggregate upload/match/filter/aggregate/download/wait/submit statistics when a filter is freed. Disabled by default. |
 
 Times are compared only within each stage queue. Stages with no commands are not
-submitted. NLM's fused tile has no separate match or aggregate stage; its plane
-path times match as distance/weight accumulation and aggregate as finish. PNLM's
-gather is its aggregate stage.
+submitted. Each rolling stage starts at the previous stage's last timestamp;
+`_NSSVkComputeWallNs` covers the marked compute interval, and the three stage
+sums do not exceed it. `_NSSVkSquareNs` and `_NSSVkPredictiveNs` split BM3D's
+temporal matcher. `_NSSVkTimingOverflow` counts submissions whose stage detail
+was dropped after the query capacity was reached. NLM's fused tile has no
+separate match or aggregate stage; its plane path times match as distance/weight
+accumulation and aggregate as finish. PNLM's gather is its aggregate stage.

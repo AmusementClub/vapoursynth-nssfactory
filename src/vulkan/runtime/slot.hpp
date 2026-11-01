@@ -25,7 +25,8 @@ struct VSGPUTimeline;
 namespace nss_vk {
 
 bool timing_enabled();
-constexpr std::uint32_t kTimingQueryCount = 256;
+constexpr std::uint32_t kTimingStageQueryCount = 256;
+constexpr std::uint32_t kTimingQueryCount = 2 * kTimingStageQueryCount;
 
 class Slot {
 public:
