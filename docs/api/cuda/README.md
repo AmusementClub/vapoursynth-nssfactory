@@ -201,7 +201,8 @@ loading the plugin. Filters then accept CPU or GPU frames (`vnode:all`) and
 keep GPU input and output resident. R80 and untested newer cores explicitly
 download GPU input instead. The frontend uses per-stream CUDA / Vulkan timeline
 semaphores, bounded external-memory import caches, and the existing host wait
-per frame. Temporal rolling chunks stay on the device, and NLM uses its tile
+per frame. `NSS_CUDA_GPU_IMPORT_CACHE=1..16` selects the per-stream memory-import
+cache capacity (default 16). Temporal rolling chunks stay on the device, and NLM uses its tile
 path to avoid the initial GPU-node plane-path regression. `Backend()["gpu_frames"]`
 reports the mode. The normal Vulkan GPU-chain implementation remains
 [`nss_vk`'s](../vk/README.md#gpu-frames-vapoursynth-r80).

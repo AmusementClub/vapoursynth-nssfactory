@@ -29,6 +29,7 @@
 #include "vulkan/runtime/memory.hpp"
 #include "vulkan/runtime/pipeline.hpp"
 #include "vulkan/runtime/slot.hpp"
+#include "vulkan/runtime/timing.hpp"
 #include "vulkan/runtime/vs_api.hpp"
 
 #include <VSHelper4.h>
@@ -257,6 +258,7 @@ struct NlmData : nss::NlmParams {
         void settle() noexcept {}
     };
     std::unique_ptr<SlotPool<OutputPermit>> outputs;
+    TimingStats timing;
     // GPU frames (VapourSynth's device), else null.
     std::unique_ptr<GpuFrames> gpu;
     // Last: destroyed first, so that its imports go before the device can.
@@ -408,6 +410,7 @@ void plane_frame(NlmData& d, const Frames& srcf, const Frames& reff, const MakeO
     const DirectOut direct = direct_out(d, dst, vsapi);
     PlaneSlot& p = *lease;
     Slot& slot = p.slot;
+    FrameTimer timer(slot);
     const int w = d.width, h = d.height;
     const std::uint32_t count = static_cast<std::uint32_t>(w) * static_cast<std::uint32_t>(h);
     const std::uint32_t ff = frame_floats(d), ro = ref_offset(d);
@@ -455,13 +458,18 @@ void plane_frame(NlmData& d, const Frames& srcf, const Frames& reff, const MakeO
         if (i == 0) {
             const FinishPush push{frames, p.sums.address(), p.out.address(), center, count, d.wref};
             d.finish.dispatch(commands, &push, (count + 255) / 256);
+            timer.filter_end();
+            timer.download_begin();
             record_result(d, p.out, direct, dst, slot, vsapi);
+            timer.download_end();
         }
+        timer.upload_end();
         slot.submit();
         if (i == 0) publish_result(d, slot, dst);
-        slot.wait();
+        timer.wait();
     }
     read_result(d, p.out, direct, dst, vsapi);
+    d.timing.add(timer.values());
 }
 
 void tile_frame(NlmData& d, int n, const Frames& srcf, const Frames& reff, const MakeOutput& make_output,
@@ -493,6 +501,7 @@ void tile_frame(NlmData& d, int n, const Frames& srcf, const Frames& reff, const
     VSFrame* dst = make_output();
     const DirectOut direct = direct_out(d, dst, vsapi);
     Slot& slot = lease->slot;
+    FrameTimer timer(slot);
     if (staged) {
         for (const auto& [semaphore, value] : window.previous_uses()) slot.wait_for(Slot::Upload, semaphore, value);
         record_uploads(d, store, uploads, slot, vsapi);
@@ -524,7 +533,11 @@ void tile_frame(NlmData& d, int n, const Frames& srcf, const Frames& reff, const
     d.tile.dispatch(slot.commands(Slot::Compute), &push, static_cast<std::uint32_t>((d.width + kTileWidth - 1) / kTileWidth),
                     static_cast<std::uint32_t>((d.height + kTileHeight - 1) / kTileHeight));
     slot.end_label(Slot::Compute);
+    timer.filter_end();
+    timer.download_begin();
     record_result(d, lease->out, direct, dst, slot, vsapi);
+    timer.download_end();
+    timer.upload_end();
     slot.submit();
     publish_result(d, slot, dst);
     weights.submitted(n, slot);
@@ -533,8 +546,9 @@ void tile_frame(NlmData& d, int n, const Frames& srcf, const Frames& reff, const
         window.mark_queued(uploaded.first, uploaded.second);
     }
     window.read_by(slot.done(Slot::Compute));
-    slot.wait();
+    timer.wait();
     read_result(d, lease->out, direct, dst, vsapi);
+    d.timing.add(timer.values());
 }
 
 const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameContext* ctx, VSCore* core,
@@ -590,7 +604,9 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
 }
 
 void VS_CC freeFilter(void* instance, VSCore*, const VSAPI*) {
-    delete static_cast<NlmData*>(instance);
+    auto* d = static_cast<NlmData*>(instance);
+    if (timing_enabled()) d->timing.print("nss_vk.NLM");
+    delete d;
 }
 
 std::vector<std::uint32_t> constants(const NlmData& d) {

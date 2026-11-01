@@ -869,7 +869,11 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         for (int i = 0; i < d->backend.num_streams; ++i) slots.push_back(make_slot(*d));
         d->pool = std::make_unique<SlotPool<Slot>>(std::move(slots));
     }
-    if (d->gpu && d->budget) d->gpu->reserve(d->budget->snapshot().bytes[static_cast<std::size_t>(nss::ResourceKind::Workspace)]);
+    if (d->gpu && d->budget) {
+        std::size_t reserved = d->budget->snapshot().bytes[static_cast<std::size_t>(nss::ResourceKind::Workspace)];
+        if (!d->tiles) reserved += slot_device_bytes(*d) * static_cast<std::size_t>(d->backend.num_streams);
+        d->gpu->reserve(reserved);
+    }
 
     const auto pattern = d->d == 0 ? rpStrictSpatial : rpGeneral;
     VSFilterDependency deps[2]{{d->node, pattern}, {d->rclip, pattern}};
