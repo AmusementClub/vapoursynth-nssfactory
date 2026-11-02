@@ -7,6 +7,38 @@ and is identical from run to run on a given GPU, driver and build. Each page
 below describes every argument of one function; the papers and the reasoning
 behind the defaults are on the CPU pages.
 
+## Speed
+
+What each filter costs: frames per second at 1920x1080 YUV420 (MCWNNM: RGB)
+with noise of sigma 3, on an RTX 5080, with the frames already on the GPU
+(VapourSynth R81 [GPU frames](#gpu-frames), an experimental build option
+here), so copies to and from host memory are not counted. **Default** is the
+filter's default arguments, **heavy** the slower arguments nearer its paper
+(see [Closer to the papers](#closer-to-the-papers)). Take them as cost tiers:
+they scale with the pixel count and differ between GPUs.
+
+| Filter | Default | Heavy |
+|---|---:|---:|
+| [BM3D](bm3d.md) | 1570 | 29 |
+| [NLM](nlm.md) | 880 | 140 |
+| [PNLM](pnlm.md) | 780 | 290 |
+| [WNNM](wnnm.md) | 1080 | 9.3 |
+| [MCWNNM](mcwnnm.md) (RGB) | 270 | 0.42 |
+| [NCSR](ncsr.md) | 660 | 37 |
+| [LSSC](lssc.md) | 370 | 250 |
+| [TWSC](twsc.md) | 86 | 0.71 |
+| [NLH](nlh.md) | 63 | — |
+| [BM4D](bm4d.md) | 28 | — |
+| [DA3D](da3d.md) | 60 | — |
+
+- NLM filters luma only at its defaults; PNLM filters every plane.
+- NLH's defaults are its paper's preset already; BM4D and DA3D have no
+  heavier settings. DA3D is timed after its guide (`BM3D(final=1)`), which is
+  not counted; its cost grows as the noise falls.
+- With CPU frames the copies set the pace of the fastest filters;
+  [direct transfers](#direct-transfers-with-vapoursynth-classic) on
+  vapoursynth-classic take part of that cost away.
+
 ## Performance notes
 
 - The defaults are fast settings. Every filter page lists which arguments

@@ -9,21 +9,33 @@ pitfalls. The GPU plugins have the same filters and arguments; see the
 
 ## Choosing a filter
 
-Relative cost at the default arguments, from the cheapest; VapourSynth runs
-frames in parallel on more cores, and the GPU plugins are far faster for all
-of them.
+What each filter costs: frames per second at 1920x1080 YUV420 (MCWNNM: RGB)
+with noise of sigma 3, on a Ryzen 9 5950X (16 cores, VapourSynth's default
+threads). **Default** is the filter's default arguments, **heavy** the slower
+arguments nearer its paper (see
+[Closer to the papers](cuda/README.md#closer-to-the-papers)). Take them as
+cost tiers: they scale with the pixel count and the cores. The GPU plugins
+are far faster: [CUDA](cuda/README.md#speed), [Vulkan](vk/README.md#speed).
 
-| Filter | Cost | Temporal | Good for |
-|---|---|---|---|
-| [BM3D](bm3d.md) | low | yes | General use; the fastest |
-| [NLM](nlm.md) | low | yes (`d`) | Light noise |
-| [WNNM](wnnm.md) | low | yes | Texture and edge retention |
-| [PNLM](pnlm.md) | low | yes (`d`) | Light noise; edges and line art; large windows and several frames |
-| [NCSR](ncsr.md) | medium | yes | Sparse-coding quality at moderate cost |
-| [LSSC](lssc.md) | medium | no | Structured noise, film grain, text |
-| [TWSC](twsc.md) | high | yes | Real-world noise |
-| [MCWNNM](mcwnnm.md) | high | yes | RGB color noise |
-| [NLH](nlh.md) | very high | yes | Real-world noise of unknown level |
+| Filter | Default | Heavy | Temporal | Good for |
+|---|---:|---:|---|---|
+| [BM3D](bm3d.md) | 148 | 1.3 | yes | General use; the fastest |
+| [WNNM](wnnm.md) | 81 | 0.56 | yes | Texture and edge retention |
+| [NLM](nlm.md) | 74 | 12.8 | yes (`d`) | Light noise |
+| [LSSC](lssc.md) | 66 | 40 | no | Structured noise, film grain, text |
+| [PNLM](pnlm.md) | 47 | 5.7 | yes (`d`) | Light noise; edges and line art; large windows and several frames |
+| [NCSR](ncsr.md) | 34 | 1.2 | yes | Sparse-coding quality at moderate cost |
+| [MCWNNM](mcwnnm.md) (RGB) | 6.7 | 0.018 | yes | RGB color noise |
+| [TWSC](twsc.md) | 5.7 | ~0.05\* | yes | Real-world noise |
+| [DA3D](da3d.md) | 4.5 | — | no | Refining another filter's output |
+| [NLH](nlh.md) | 1.8 | — | yes | Real-world noise of unknown level |
+| [BM4D](bm4d.md) | 0.46 | — | yes | Still and slowly moving content |
+
+- NLM filters luma only at its defaults; PNLM filters every plane.
+- NLH's defaults are its paper's preset already; BM4D and DA3D have no
+  heavier settings. DA3D is timed after its guide (`BM3D(final=1)`), which is
+  not counted; its cost grows as the noise falls.
+- \* Estimated from the CUDA plugin's default-to-heavy ratio, not measured.
 
 [BM4D](bm4d.md) (temporal by construction) treats the clip as a volume of 3D
 cubes; it beats temporal BM3D on still and slowly moving content, and is the

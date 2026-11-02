@@ -10,6 +10,24 @@ build. On VapourSynth R80 and later it also processes frames that are already
 on the GPU ([GPU frames](#gpu-frames-vapoursynth-r80)), so a chain of GPU
 filters keeps its frames in video memory.
 
+## Speed
+
+What each filter costs: frames per second at 1920x1080 YUV420 with noise of
+sigma 3, on an RTX 5080, with the frames already on the GPU (VapourSynth R81
+[GPU frames](#gpu-frames-vapoursynth-r80)), so copies to and from host memory
+are not counted. **Default** is the filter's default arguments, **heavy** the
+slower arguments nearer its paper (as in
+[`nss_cuda`'s table](../cuda/README.md#speed)). Take them as cost tiers: they
+scale with the pixel count and differ between GPUs.
+
+| Filter | Default | Heavy |
+|---|---:|---:|
+| [BM3D](bm3d.md) | 1130 | 24 |
+| [NLM](nlm.md) | 820 | 135 |
+| [PNLM](pnlm.md) | 990 | 216 |
+
+- NLM filters luma only at its defaults; PNLM filters every plane.
+
 ## Performance notes
 
 - **Frames.** CPU frames are uploaded through resizable BAR memory (or
