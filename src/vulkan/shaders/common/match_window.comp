@@ -48,9 +48,6 @@
 #define TEMPORAL 0
 #endif
 #define WARPS 4
-#define TILE 33
-#define MAX_ROWS (TILE + B - 1)
-#define MAX_PITCH (MAX_ROWS | 1)
 #if MODE == 1
 #define SLOTS 2
 #else
@@ -75,7 +72,11 @@
 #endif
 
 layout(local_size_x = 32 * WARPS) in;
-shared float region[WARPS * MAX_ROWS * MAX_PITCH];
+// A warp's region in floats, set per pipeline for its tile: (tile_h + B - 1)
+// rows of pitch (tile_w + B - 1) | 1. A region sized for the largest tile (33)
+// cost a fifth of BM3D's default speed (side 19): fewer workgroups an SM.
+layout(constant_id = 0) const int REGION_FLOATS = 1;
+shared float region[WARPS * REGION_FLOATS];
 
 struct Match {
     int x;
@@ -164,7 +165,7 @@ void main() {
     if (r >= pc.ref_count) return;  // the whole subgroup: no workgroup barriers here
     const int side = pc.lo + pc.hi + 1;
     const int pitch = (pc.tile_w + B - 1) | 1;
-    const int base = warp * MAX_ROWS * MAX_PITCH;
+    const int base = warp * REGION_FLOATS;
     const int at_ref = pc.ref_begin + r;
     const int cx = min((at_ref % pc.nx) * pc.step, pc.max_x), cy = min((at_ref / pc.nx) * pc.step, pc.max_y);
     const int x_lo = cx - pc.lo, y_lo = cy - pc.lo;

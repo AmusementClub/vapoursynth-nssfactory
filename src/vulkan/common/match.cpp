@@ -191,9 +191,15 @@ const Pipeline& Matcher::window_pipeline(const MatchGeometry& g, bool temporal) 
                            (split ? std::string(g.group <= 9 ? "_pair" : "_cols") : std::string()) + "_ny" +
                            std::to_string(window_rows(tile, g.block, split ? 2 : 1, split ? 4 : 6)) +
                            (temporal ? "_t" : "");
+    // The shared region is sized for the tile (specialization constant 0).
+    const int span = tile + g.block - 1;
+    const auto region_floats = static_cast<std::uint32_t>(span * (span | 1));
+    const std::string key = id + "_r" + std::to_string(region_floats);
     std::lock_guard lock(mutex_);
-    auto it = pipelines_.find(id);
-    if (it == pipelines_.end()) it = pipelines_.emplace(id, Pipeline(device_, {id, sizeof(WindowPush), 32, {}})).first;
+    auto it = pipelines_.find(key);
+    if (it == pipelines_.end()) {
+        it = pipelines_.emplace(key, Pipeline(device_, {id, sizeof(WindowPush), 32, {region_floats}})).first;
+    }
     return it->second;
 }
 

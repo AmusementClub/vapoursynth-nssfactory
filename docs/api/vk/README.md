@@ -22,7 +22,7 @@ scale with the pixel count and differ between GPUs.
 
 | Filter | Default | Heavy |
 |---|---:|---:|
-| [BM3D](bm3d.md) | 1130 | 24 |
+| [BM3D](bm3d.md) | 1440 | 24 |
 | [NLM](nlm.md) | 820 | 135 |
 | [PNLM](pnlm.md) | 990 | 216 |
 
