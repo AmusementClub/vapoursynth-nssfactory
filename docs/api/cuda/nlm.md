@@ -66,9 +66,8 @@ core.nss_cuda.NLM(clip clip[, int d = 1, int a = 2, int s = 4, float h = 1.2,
 
 ## Notes
 
-- **R81 GPU frames (experimental).** With the build- and run-time switches in
-  [GPU frames](README.md#gpu-frames), NLM accepts and returns GPU-resident
-  frames. The tile path, its window cache and weight-map reuse all work on
+- **R81 GPU frames.** On VapourSynth R81 ([GPU frames](README.md#gpu-frames))
+  NLM accepts and returns GPU-resident frames. The tile path, its window cache and weight-map reuse all work on
   resident frames; output uses fresh planes with device-to-device copies.
 - **Accuracy.** Above 144 dB against the CPU plugin (it is the same model with
   exact box sums); identical from run to run.
