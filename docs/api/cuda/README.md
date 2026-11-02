@@ -151,7 +151,7 @@ GPU. NLM is temporal through `d`; LSSC has no temporal mode.
 | Parameter | Default | Range | Meaning |
 |---|---|---|---|
 | `temporal_mode` | `"rolling"` | rolling / legacy | `"rolling"` returns finished frames; `"legacy"` returns the CPU plugin's intermediate, for `core.nss.VAggregate`. |
-| `rolling_chunk` | 4 | [1, 64] | Frames computed together. |
+| `rolling_chunk` | 1 | [1, 64] | Frames computed together. The CPU plugin's default is 4; here every frame of a chunk holds a VapourSynth thread until the chunk is done, so larger chunks need many more threads (about four per frame of the chunk) to keep the GPU busy. |
 | `rolling_cache_chunks` | 1 | [1, 64] | Finished chunks kept for later frame requests at first. |
 | `rolling_cache_limit` | 16 | [1, 64], >= `rolling_cache_chunks` | What the cache may grow to when requests come back to chunks it dropped. (On the CPU the two arguments name one fixed size.) |
 
