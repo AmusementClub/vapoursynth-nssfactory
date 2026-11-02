@@ -9,27 +9,21 @@ out = core.nss_cuda.MCWNNM(rgb_clip, sigma=[25, 25, 25])   # defaults
 quick = core.nss_cuda.MCWNNM(rgb_clip, sigma=25, iters=1)
 ```
 
-## Speed
+## Cost
 
-1080p, default arguments, RTX 5080, one instance; median over nine test images
-(see the [overview](README.md#speed)).
-
-| Call | YUV420 | RGB |
-|---|---:|---:|
-| default | — | 200 |
-| `radius=1` | — | 135 |
-
-`iters=1` (one round instead of two) is about 50% faster at `radius=1`.
+`iters=1` (one round instead of two) saves about a third of the time at
+`radius=1`. Matching is joint over the three channels and takes the general
+search.
 
 ## Closer to the papers
 
-The defaults are fast settings. Settings closer to the paper, with their quality and cost. Measured on one 1080p RGB frame (an anime credits frame with its own film grain) with Gaussian noise added, against the frame without it; the noisy input is 24.97 dB at sigma 15 and 20.98 dB at sigma 25. One image: take these as starting points, not tuned presets. σ is the standard deviation of the noise in 8-bit units; speed at 1080p on an RTX 5080 (the second row's on the test frame).
+The defaults are fast settings. Settings closer to the paper, with their quality; they are much slower than the defaults. Measured on one 1080p RGB frame (an anime credits frame with its own film grain) with Gaussian noise added, against the frame without it; the noisy input is 24.97 dB at sigma 15 and 20.98 dB at sigma 25. One image: take these as starting points, not tuned presets. σ is the standard deviation of the noise in 8-bit units.
 
-| Arguments | PSNR, sigma 15 | PSNR, sigma 25 | fps YUV420 / RGB |
-|---|---:|---:|---:|
-| defaults, `sigma=σ` | 25.62 dB | 21.63 dB | — / 200 |
-| defaults, `sigma=2.5 σ` | 33.65 dB | 30.71 dB | — / 200 |
-| `block_step=4, group_size=32, iters=4, sigma=σ` | 33.68 dB | 30.93 dB | — / 0.38 |
+| Arguments | PSNR, sigma 15 | PSNR, sigma 25 |
+|---|---:|---:|
+| defaults, `sigma=σ` | 25.62 dB | 21.63 dB |
+| defaults, `sigma=2.5 σ` | 33.65 dB | 30.71 dB |
+| `block_step=4, group_size=32, iters=4, sigma=σ` | 33.68 dB | 30.93 dB |
 
 - With σ as is, the default geometry (group 8, 2 rounds) barely denoises; about 2.5 σ is best (9 anime frames, σ 1 to 20, within 0.1 dB of the best at every σ). The factor falls as the group and the rounds grow: about 1.3 σ is best at the geometry below on those frames.
 - The outer rounds matter: with `iters=1` the same geometry gives 25.99 dB at sigma 15.
@@ -58,7 +52,7 @@ core.nss_cuda.MCWNNM(clip clip[, float[] sigma = 3.0, int block_size = 8,
 | `block_step` | 8 | [1, block] | Reference-patch stride; positions scale as `1/step^2`. |
 | `group_size` | 8 | [1, 32] | Matched patches per group. |
 | `bm_range` | 7 | [1, 64] | Search window radius. |
-| `iters` | 2 | [1, 64] | Outer re-estimation rounds (re-match on the current estimate). Round 2 costs ~another full pass; reduce to 1 for a ~2x speedup when quality allows. |
+| `iters` | 2 | [1, 64] | Outer re-estimation rounds (re-match on the current estimate). Round 2 costs about another full pass; reduce to 1 when quality allows. |
 | `radius` | 0 | [0, 16] | Temporal radius. >0 makes the filter temporal: finished, normal-height frames by default (`temporal_mode`, below). |
 | `rclip` | none | clip | Reference clip guiding matching. |
 
@@ -85,18 +79,12 @@ core.nss_cuda.MCWNNM(clip clip[, float[] sigma = 3.0, int block_size = 8,
 
 - **Accuracy.** 135–142 dB against the CPU plugin on the reference set;
   identical from run to run. Channels with the same `sigma` iterate as one, so
-  different values per channel cost up to a quarter of the speed.
+  different values per channel cost more.
 - **Temporal output** runs every round on the GPU and agrees with the legacy
   intermediate reduced by `VAggregate` to 148 dB.
 - **Memory.** At RGB 1080p `radius=1` an instance takes about 920 MiB of GPU
   memory; the smallest accepted `memory_limit_mb` is 1183 MiB (827 with
   `iters=1`, 1752 at `radius=2`).
-
-## Speed
-
-RGB 1080p, RTX 5080 with a Ryzen 5950X, one stream: default 178 fps,
-`radius=1` 113 (`iters=1`: 169), `radius=2` 90. Before the rolling mode ran on the
-device (legacy + reduction on the host) `radius=1` took 39 fps (`iters=1`: 40).
 
 ## Pitfalls
 

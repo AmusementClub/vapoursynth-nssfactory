@@ -33,25 +33,39 @@ bool pair2_fast(const MatchGeometry& g, int ps_num) {
 }
 
 // The window kernel (match_window.comp): four 32-invocation subgroups a
-// workgroup, a reference each; window sides 15 (below, the lane kernels are
-// as fast) to 33 (its shared region).
+// workgroup, a reference each; blocks 2 to 8, window sides from
+// window_min_side (below, the lane kernels are as fast: nss_cuda's
+// match_window.cu measurements) to 33 (its shared region).
 struct WindowPush {
     VkDeviceAddress source, matches, counts;
     std::int32_t width, height, pitch, group;
     std::int32_t lo, hi, nx, step;
     std::int32_t max_x, max_y, ref_begin, ref_count;
+    std::int32_t frame, pad;
 };
-static_assert(sizeof(WindowPush) == 72, "matches the push block of shaders/common/match_window.comp");
-constexpr int kWindowWarps = 4, kWindowMinSide = 15, kWindowMaxSide = 33, kWindowMaxRows = 6;
+static_assert(sizeof(WindowPush) == 80, "matches the push block of shaders/common/match_window.comp");
+constexpr int kWindowWarps = 4, kWindowMaxSide = 33, kWindowMaxRows = 6;
+// The smallest window side per block where the kernel beat the lane kernels
+// on NVIDIA (resident 1080p gray BM3D, RTX 5080: block 8 from side 15, block 4
+// from 25, below 0.71-0.91x; block 2 0.60-0.95x up to side 33). Blocks without
+// a measurement (3, 5, 6, 7: no ported filter takes them) keep the lanes.
+int window_min_side(int block) {
+    constexpr int kOff = 1 << 30;
+    constexpr int kSide[9] = {kOff, kOff, kOff, kOff, 25, kOff, kOff, kOff, 15};
+    return block >= 0 && block <= 8 ? kSide[block] : kOff;
+}
+// Seeding a temporal search pays from a larger window (the extra dispatch and
+// barrier): four more than the spatial minimum.
+constexpr int kWindowSeedMargin = 4;
 
 // Rows an item takes for a window side, as nss_cuda's match_window.cu: the
 // fewest instructions by a rough count an invocation makes.
-int window_rows(int side) {
+int window_rows(int side, int block) {
     int best = 2;
     long long best_cost = -1;
     for (int ny = 2; ny <= kWindowMaxRows; ++ny) {
         const long long rounds = (static_cast<long long>(side) * ((side + ny - 1) / ny) + 31) / 32;
-        const long long cost = rounds * (ny * 128 + (ny + 7) * 8 + 40);
+        const long long cost = rounds * (ny * 2 * block * block + (ny + block - 1) * block + 40);
         if (best_cost < 0 || cost < best_cost) best = ny, best_cost = cost;
     }
     return best;
@@ -109,24 +123,30 @@ const Pipeline& Matcher::pipeline(const MatchGeometry& g, bool predictive, int p
 
 void Matcher::prepare(const MatchGeometry& g, bool predictive, int ps_num, bool seeded, int radius) {
     if (!predictive && window(g)) {
-        window_pipeline(g);
+        window_pipeline(g, false);
         return;
     }
+    if (predictive && seeded && window_seeds(g, ps_num)) window_pipeline(g, true);
     pipeline(g, predictive, ps_num, seeded, predictive && radius == 1 && pair2_fast(g, ps_num));
 }
 
 bool Matcher::window(const MatchGeometry& g) const {
     const int side = g.lo() + g.hi() + 1;
     const DeviceCaps& caps = device_->caps();
-    return !force_emulation_ && !disable_window_ && g.channels == 1 && g.block == 8 && g.group >= 2 &&
-           g.group <= 32 && side >= kWindowMinSide && side <= kWindowMaxSide && g.width >= 8 && g.height >= 8 &&
+    return !force_emulation_ && !disable_window_ && g.channels == 1 && g.group >= 2 && g.group <= 32 &&
+           side >= window_min_side(g.block) && side <= kWindowMaxSide && g.width >= g.block && g.height >= g.block &&
            g.width <= kLaneMaxCoordinate && g.height <= kLaneMaxCoordinate &&
            static_cast<long long>(g.pitch) * g.height < (1LL << 31) && device_->support().native_lanes >= 32 &&
            caps.min_subgroup_size <= 32 && caps.max_subgroup_size >= 32;
 }
 
-const Pipeline& Matcher::window_pipeline(const MatchGeometry& g) {
-    const std::string id = "match_window_ny" + std::to_string(window_rows(g.lo() + g.hi() + 1));
+bool Matcher::window_seeds(const MatchGeometry& g, int ps_num) const {
+    return window(g) && lanes(g, ps_num) && g.lo() + g.hi() + 1 >= window_min_side(g.block) + kWindowSeedMargin;
+}
+
+const Pipeline& Matcher::window_pipeline(const MatchGeometry& g, bool temporal) {
+    const std::string id = "match_window_b" + std::to_string(g.block) + "_ny" +
+                           std::to_string(window_rows(g.lo() + g.hi() + 1, g.block)) + (temporal ? "_t" : "");
     std::lock_guard lock(mutex_);
     auto it = pipelines_.find(id);
     if (it == pipelines_.end()) it = pipelines_.emplace(id, Pipeline(device_, {id, sizeof(WindowPush), 32, {}})).first;
@@ -179,21 +199,38 @@ void Matcher::spatial(VkCommandBuffer commands, VkDeviceAddress plane, const Mat
                       int ref_begin, int ref_count, VkDeviceAddress matches, VkDeviceAddress counts) {
     if (ref_count <= 0) return;
     if (window(g)) {
-        if (static_cast<long long>(ref_count) * g.group >= (1LL << 31)) {
-            throw std::logic_error("nss_vk: match batch beyond 32-bit indices");
-        }
-        const WindowPush p{plane,      matches,     counts,      g.width,     g.height,  g.pitch,   g.group,
-                           g.lo(),     g.hi(),      grid.nx,     grid.step,   grid.max_x, grid.max_y, ref_begin,
-                           ref_count};
-        const int groups = (ref_count + kWindowWarps - 1) / kWindowWarps;
-        const int x = std::min(groups, max_groups_x_);
-        window_pipeline(g).dispatch(commands, &p, static_cast<std::uint32_t>(x),
-                                    static_cast<std::uint32_t>((groups + x - 1) / x));
+        dispatch_window(commands, plane, -1, g, grid, ref_begin, ref_count, matches, counts);
         return;
     }
     Push p = push_of(g, grid, ref_begin, ref_count, matches, counts);
     p.source = plane;
     dispatch(commands, g, false, 0, &p, ref_count);
+}
+
+void Matcher::dispatch_window(VkCommandBuffer commands, VkDeviceAddress source, int frame, const MatchGeometry& g,
+                              const RasterGrid& grid, int ref_begin, int ref_count, VkDeviceAddress matches,
+                              VkDeviceAddress counts) {
+    if (static_cast<long long>(ref_count) * g.group >= (1LL << 31)) {
+        throw std::logic_error("nss_vk: match batch beyond 32-bit indices");
+    }
+    const WindowPush p{source,     matches,    counts,     g.width,   g.height, g.pitch,
+                       g.group,    g.lo(),     g.hi(),     grid.nx,   grid.step, grid.max_x,
+                       grid.max_y, ref_begin,  ref_count,  std::max(frame, 0), 0};
+    const int groups = (ref_count + kWindowWarps - 1) / kWindowWarps;
+    const int x = std::min(groups, max_groups_x_);
+    window_pipeline(g, frame >= 0).dispatch(commands, &p, static_cast<std::uint32_t>(x),
+                                            static_cast<std::uint32_t>((groups + x - 1) / x));
+}
+
+bool Matcher::predictive_window(VkCommandBuffer commands, const MatchGeometry& g, const TemporalWindow& window,
+                                const RasterGrid& grid, int ref_begin, int ref_count, VkDeviceAddress matches,
+                                VkDeviceAddress counts) {
+    if (!window_seeds(g, window.ps_num)) return false;
+    if (ref_count <= 0) return true;
+    dispatch_window(commands, window.frames, window.t0, g, grid, ref_begin, ref_count, matches, counts);
+    compute_barrier(*device_, commands);
+    predictive(commands, g, window, grid, ref_begin, ref_count, matches, counts, true);
+    return true;
 }
 
 void Matcher::predictive(VkCommandBuffer commands, const MatchGeometry& g, const TemporalWindow& window,

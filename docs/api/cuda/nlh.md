@@ -11,26 +11,18 @@ awgn = core.nss_cuda.NLH(clip, sigma=25)               # explicit sigma
 custom = core.nss_cuda.NLH(clip, sigma=25, block_size=[6, 9], block_step=[3, 6])
 ```
 
-## Speed
-
-1080p, default arguments, RTX 5080, one instance; median over nine test images
-(see the [overview](README.md#speed)).
-
-| Call | YUV420 | RGB |
-|---|---:|---:|
-| default (blind sigma) | 37 | 31 |
-| `radius=1` | 13 | 11 |
+## Cost
 
 The blind estimate is a matching pass per frame; give `sigma` when it is known.
 
 ## Closer to the papers
 
-The defaults are fast settings. Settings closer to the paper, with their quality and cost. Measured on one 1080p RGB frame (an anime credits frame with its own film grain) with Gaussian noise added, against the frame without it; the noisy input is 24.97 dB at sigma 15 and 20.98 dB at sigma 25. One image: take these as starting points, not tuned presets. σ is the standard deviation of the noise in 8-bit units; speed at 1080p on an RTX 5080 (the second row's on the test frame).
+The defaults are fast settings. Settings closer to the paper, with their quality; they are much slower than the defaults. Measured on one 1080p RGB frame (an anime credits frame with its own film grain) with Gaussian noise added, against the frame without it; the noisy input is 24.97 dB at sigma 15 and 20.98 dB at sigma 25. One image: take these as starting points, not tuned presets. σ is the standard deviation of the noise in 8-bit units.
 
-| Arguments | PSNR, sigma 15 | PSNR, sigma 25 | fps YUV420 / RGB |
-|---|---:|---:|---:|
-| defaults (blind estimate) | 35.64 dB | 33.01 dB | 37 / 31 |
-| defaults with `sigma=σ` | 35.58 dB | 32.95 dB | 37 / 31 |
+| Arguments | PSNR, sigma 15 | PSNR, sigma 25 |
+|---|---:|---:|
+| defaults (blind estimate) | 35.64 dB | 33.01 dB |
+| defaults with `sigma=σ` | 35.58 dB | 32.95 dB |
 
 - The default preset is the paper's low-noise configuration; nothing to change for Gaussian noise. Since model version 7 the blind estimate reads Gaussian chroma noise to within a few percent (version 6 read it about 40% high: 35.21 / 32.28 dB here). At low noise it still reads textured luma high: on 8 images a given sigma was worth 1.3 to 2.4 dB at sigma 5 and 4.6 to 5.9 dB at sigma 2. The blind estimate also counts a frame's own grain as noise: give sigma to keep grain.
 

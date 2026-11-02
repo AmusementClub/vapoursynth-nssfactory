@@ -2,49 +2,38 @@
 
 `libnss` is the CPU plugin (namespace `nss`). Each page documents one filter:
 its signature, the parameters (the ones you usually touch first), the paper
-and where this implementation departs from it, the defaults, speed and
+and where this implementation departs from it, the defaults, cost and
 pitfalls. The GPU plugins have the same filters and arguments; see the
 [CUDA reference](cuda/README.md) and the [Vulkan reference](vk/README.md)
 (a preview: BM3D, NLM and PNLM so far, with VapourSynth R80+ GPU frames).
 
 ## Choosing a filter
 
-One CPU core (Emerald Rapids), 1920x1080 gray, sigma 3, default arguments
-(MCWNNM: all three planes of an RGB clip). Treat the numbers as cost tiers:
-they scale with the pixel count, and VapourSynth runs frames in parallel on
-more cores.
+Relative cost at the default arguments, from the cheapest; VapourSynth runs
+frames in parallel on more cores, and the GPU plugins are far faster for all
+of them.
 
-| Filter | fps | Temporal | Good for |
-|---|---:|---|---|
-| [BM3D](bm3d.md) | ~17† | yes | General use; the fastest |
-| [NLM](nlm.md) | ~7.6 | yes (`d`) | Light noise |
-| [PNLM](pnlm.md) | ~4.0§ | yes (`d`) | Light noise; edges and line art |
-| [WNNM](wnnm.md) | ~7.6 | yes | Texture and edge retention |
-| [NCSR](ncsr.md) | ~3.7 | yes | Sparse-coding quality at moderate cost |
-| [LSSC](lssc.md) | ~2.7‡ | no | Structured noise, film grain, text |
-| [TWSC](twsc.md) | ~0.75 | yes | Real-world noise |
-| [NLH](nlh.md) | ~0.15* | yes | Real-world noise of unknown level |
-| [MCWNNM](mcwnnm.md) | ~0.43 | yes | RGB color noise |
+| Filter | Cost | Temporal | Good for |
+|---|---|---|---|
+| [BM3D](bm3d.md) | low | yes | General use; the fastest |
+| [NLM](nlm.md) | low | yes (`d`) | Light noise |
+| [WNNM](wnnm.md) | low | yes | Texture and edge retention |
+| [PNLM](pnlm.md) | low | yes (`d`) | Light noise; edges and line art; large windows and several frames |
+| [NCSR](ncsr.md) | medium | yes | Sparse-coding quality at moderate cost |
+| [LSSC](lssc.md) | medium | no | Structured noise, film grain, text |
+| [TWSC](twsc.md) | high | yes | Real-world noise |
+| [MCWNNM](mcwnnm.md) | high | yes | RGB color noise |
+| [NLH](nlh.md) | very high | yes | Real-world noise of unknown level |
 
-[BM4D](bm4d.md) (about 0.15 fps, temporal by construction) treats the
-clip as a volume of 3D cubes; it beats temporal BM3D on still and slowly
-moving content, and is the slowest. [DA3D](da3d.md) is not a denoiser on its own: it takes the noisy clip and
-another filter's output and returns a refined result (see its page for its
-gain and cost).
+[BM4D](bm4d.md) (temporal by construction) treats the clip as a volume of 3D
+cubes; it beats temporal BM3D on still and slowly moving content, and is the
+slowest. [DA3D](da3d.md) is not a denoiser on its own: it takes the noisy clip
+and another filter's output and returns a refined result (see its page for
+its gain and cost).
 
-\* NLH measured with `block_size=8, block_step=8` in both stages and a given
-sigma; its default (smaller steps, blind estimation) is much heavier (see its
-page).
-
-† BM3D measured with `bm_range=7`; the current default is 9, about 1.6x the
-candidates of the matching step.
-
-§ PNLM measured on a Ryzen 9 5950X core: NLM 8.8 fps; spatial (`d=0`) PNLM
-7.4 fps against NLM's 35.7. On the GPU it is the faster of the two from `a=2` up.
-
-‡ LSSC measured with model version 3 at `block_step=8`. Version 4 at its
-default `block_step=4` took about 7% less time at sigma 3 and about half at
-sigma 25 on a Ryzen 9 5950X core.
+Some argument combinations have faster paths on the GPU plugins: see
+[BM3D's optimized search shapes](cuda/bm3d.md#optimized-search-shapes) (also
+WNNM and NCSR) and [PNLM against NLM](cuda/pnlm.md#cost).
 
 ## Conventions
 

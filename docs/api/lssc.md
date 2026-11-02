@@ -90,14 +90,12 @@ outputs of the two versions are told apart only by the plugin build.
 
 ## Defaults rationale and performance
 
-`block=8, step=4, sigma=3`. About 3.2 fps at sigma 3, 5.0 at sigma 10 and
-6.3 at sigma 25 for a 1080p gray plane on one Ryzen 9 5950X core (patches need
-fewer atoms as the noise grows); version 3 ran at 3.0 fps at its default step 8
-and 0.63 at step 4. A denser step costs about `1/step^2`: on
+`block=8, step=4, sigma=3`. Higher sigma is cheaper (patches need fewer atoms
+as the noise grows). A denser step costs about `1/step^2`: on
 frames small enough for it, `block_step=2` added about 1 dB at sigma 3 in the
 evaluation above.
 
-Settings closer to the paper, with their measured quality and GPU speed, are on the [CUDA page](cuda/lssc.md#closer-to-the-papers); the CPU takes the same arguments.
+Settings closer to the paper, with their measured quality, are on the [CUDA page](cuda/lssc.md#closer-to-the-papers); the CPU takes the same arguments.
 
 ## Pitfalls
 

@@ -148,8 +148,9 @@ foreach(_nss_c 1 3)
     endforeach()
   endforeach()
 endforeach()
-# Square-center seeding for every block = 2 * step shape served by the lane
-# matcher. PS1 keeps its no-dedupe specialization; B16 PS2 has its own below.
+# Seeded predictive lanes: the centre frame's matches come from the square
+# matcher (block = 2 * step) or the window matcher (blocks 4 and 8). PS1 keeps
+# its no-dedupe specialization; B16 PS2 has its own below.
 foreach(_nss_b 2 4 8 12 16)
   foreach(_nss_l 8 16 32)
     foreach(_nss_emu 0 1)
@@ -229,10 +230,17 @@ foreach(_nss_b 12 16)
                       DEFINES B=${_nss_b} K=7 CPT=${_nss_cpt})
   endforeach()
 endforeach()
-# Exact candidate-parallel matching of one-channel block-8 windows (sides 15
-# to 33), NY candidates an item.
-foreach(_nss_ny 2 3 4 5 6)
-  nss_vk_add_shader(NSS_VK_SPIRV_SOURCES match_window_ny${_nss_ny} common/match_window.comp DEFINES NY=${_nss_ny})
+# Exact candidate-parallel matching of one-channel windows of blocks 4 and 8
+# (the blocks where it beat the lane kernels on NVIDIA; match.cpp's
+# window_min_side), NY candidates an item; _t reads a frame table (the centre
+# of a predictive search, whose lane kernels it seeds).
+foreach(_nss_b 4 8)
+  foreach(_nss_ny 2 3 4 5 6)
+    nss_vk_add_shader(NSS_VK_SPIRV_SOURCES match_window_b${_nss_b}_ny${_nss_ny} common/match_window.comp
+                      DEFINES B=${_nss_b} NY=${_nss_ny})
+    nss_vk_add_shader(NSS_VK_SPIRV_SOURCES match_window_b${_nss_b}_ny${_nss_ny}_t common/match_window.comp
+                      DEFINES B=${_nss_b} NY=${_nss_ny} TEMPORAL=1)
+  endforeach()
 endforeach()
 # BM3D square matching (block = RQ at step Q), with its own reduction order.
 set(_nss_square_shapes 2_1 2_2 2_4 2_6 2_8 4_3 3_4 4_4 4_2)

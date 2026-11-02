@@ -49,10 +49,11 @@ document — the model is the paper's.
 ## Defaults rationale and performance
 
 Defaults (`d=1, a=2, s=4, h=1.2`) are the classic mild-denoise configuration.
-About 7.6 fps at 1080p gray on a single Emerald Rapids core.
+For large windows or several frames, consider [PNLM](pnlm.md), whose cost grows
+far more slowly with `a` and `d`.
 Cost scales with `(2a+1)^2 * (2d+1)`; `s` has a smaller linear effect.
 
-Settings closer to the paper, with their measured quality and GPU speed, are on the [CUDA page](cuda/nlm.md#closer-to-the-papers); the CPU takes the same arguments.
+Settings closer to the paper, with their measured quality, are on the [CUDA page](cuda/nlm.md#closer-to-the-papers); the CPU takes the same arguments.
 
 ## Pitfalls
 

@@ -17,118 +17,61 @@ fat = core.nss_cuda.BM3D(clip, sigma=25, radius=1, temporal_mode="legacy")
 temporal = core.nss.VAggregate(fat, clip, radius=1)       # the CPU plugin's VAggregate
 ```
 
-## Speed
+## Optimized search shapes
 
-1080p, default arguments, RTX 5080, one instance; median over nine test images
-(see the [overview](README.md#speed)).
+Block matching is most of BM3D's work, and some search shapes have faster
+dedicated paths. They give the same matches as the general search (or the same
+up to near ties, where noted), so choosing one of these shapes changes speed,
+not quality. When the shape is up to you, consider one of them:
 
-| Call | YUV420 | RGB |
-|---|---:|---:|
-| default | 495 | 280 |
-| `radius=1` | 455 | 230 |
+- **Window search**, the same matches: one match channel, `group_size` up to
+  32, and a window side (`2*bm_range + 1`) of at most 33 and at least 9 for
+  `block_size=4`, 13 for `block_size=2`, 15 for `block_size=8`. In
+  `bm_range` terms: block 8 with `bm_range` 7 to 16 (the default 9
+  included), block 4 with 4 to 16, block 2 with 6 to 16. Any `block_step`.
+- **Column search**, the same matches: one match channel, `block_step` 1 to 3
+  and `group_size` 8, 16 or 32 at these block sizes:
 
-Against [BM3DCUDA](https://github.com/WolframRhodium/VapourSynth-BM3DCUDA) with
-the same search, at 1080p gray: about 25% faster spatial, and 170% / 230%
-faster at `radius=1` / `2` when frames are rendered in order. With `chroma=1`
-at YUV444: 243 fps against its 200.
+  | `block_size` | `block_step` | `group_size` |
+  |---|---|---|
+  | 4 | 1, 3 | 8, 16, 32 |
+  | 8 | 1, 2, 3 | 8, 16, 32 |
+  | 12 | 1, 2, 3 | 8, 16, 32 |
+  | 16 | 1, 2 | 8, 16 |
+  | 16 | 3 | 16 |
 
-For spatial, single-channel, symmetric-window searches, the exact column
-matcher reuses vertical distances across references on each grid row and
-returns bit-identical matches to the lane matcher.
+- **Square search** (Davy & Ehret, *GPU acceleration of NL-means, BM3D and
+  VBM3D*, JRTIP 2021), the same matches up to near ties and the same quality:
+  `block_size` twice `block_step` (2 / 1, 4 / 2, 8 / 4, 12 / 6, 16 / 8, so
+  `block_size=16` at its default step), and 12 / 3, 12 / 4, 16 / 4, 8 / 2;
+  `group_size` 2 to 32. Very small windows and planes too small to fill the
+  GPU keep the general search.
+- **Tensor-core search**, the same matches: `bm_range` 20 or more, block 8,
+  `group_size` up to 16, GPUs of compute capability 8.0 or newer.
 
-| `block_size` | `block_step` | `group_size` |
-|---|---|---|
-| 4 | 1, 3 | 8, 16, 32 |
-| 8 | 1, 2, 3 | 8, 16, 32 |
-| 12 | 1, 2, 3 | 8, 16, 32 |
-| 16 | 1, 2 | 8, 16 |
-| 16 | 3 | 16 |
-
-Other shapes keep their existing matcher: block 4 step 2 uses square; block 16
-with group 32, and block 16 / group 8 at step 3, use lane. Block 32 and
-temporal searches do not use column. On an RTX 5080, the 20 new 4/12/16 shapes
-measured **11–54% faster** in paired 1080p Gray runs with identical output.
-
-Other spatial, single-channel searches with `block_size=8`, a window side
-(`2*bm_range + 1`) of 15 to 33 and groups up to 32 — the default
-`block_step=8, bm_range=9` among them — take an exact candidate-parallel
-matcher: each GPU thread computes whole candidate distances in the per-reference
-search's own arithmetic, so the matches are bit-identical to it. On an RTX 5080
-at 1080p gray the default search took 157 µs per frame instead of 270 µs
-(1.6–2.1x for sides 19 to 33 and groups 2 to 32); windows below side 15 keep
-the per-reference search, which is as fast there.
-
-When `block_size` is twice `block_step` (2 / 1, 4 / 2, 8 / 4, 12 / 6, 16 / 8:
-`block_size=16` at its default step is one) the spatial search shares work
-between references (the square matcher of Davy & Ehret, *GPU acceleration of
-NL-means, BM3D and VBM3D*, JRTIP 2021): each block is four quarters of the
-step's side, each the corner of a neighbouring reference, so every quarter
-distance is computed once. Same matches up to near ties (distances differ in
-the last bits), same quality (the same PSNR to three decimals in every case
-below, under 1.5% of samples differing, by at most 0.015). 1080p gray, sigma
-25, against the per-reference search:
-
-| Shape | Arguments | Speed |
-|---|---|---:|
-| 8 / 4 | `final=1, group_size=8, bm_range=10` | 1.40x |
-| | `group_size=16` | 1.26x |
-| | `final=1, group_size=32, group_size_basic=16, bm_range=19` | 1.57x |
-| | RGB, `final=1, group_size=8, bm_range=10` / the same with `chroma=1` | 1.42x / 1.17x |
-| 4 / 2 | `group_size=16` (gray / RGB) | 1.38x / 1.40x |
-| | `group_size=16, bm_range=16` | 1.88x |
-| | `final=1, group_size=16` | 1.41x |
-| | `group_size=8, bm_range=4` | 1.15x |
-| 2 / 1 | `group_size=8, bm_range=4` | 1.11x |
-| 12 / 6 | `group_size=16` / with `bm_range=16` | 1.20x / 1.47x |
-| 16 / 8 | `group_size=16` / with `bm_range=20` | 1.14x / 1.55x |
-| | `final=1, group_size=32, group_size_basic=16, bm_range=16` | 1.04x |
-
-The generalized square matcher also covers 12 / 4 and 16 / 4, sharing each
-step-sized tile among 3 x 3 or 4 x 4 references. In paired 1080p Gray runs at
-sigma 10 on an RTX 5080, 12 / 4 was 1.48x / 1.41x / 1.32x for groups 8 / 16 /
-32, and 16 / 4 was 1.44x / 1.35x for groups 8 / 16. Groups 2 and 4 also win.
-At 12 / 3 and 8 / 2 the exact column matcher remains preferable; 16 / 4 with
-group 32 keeps its existing path.
-
-The per-reference search stays where it is faster: windows of radius 1 with
-groups of 4 to 16 and of radius 2 with groups of 8 to 16 (except at 12 / 6),
-radii of 40 or more at 8 / 4 (the tensor-core search), and batches of
-references too small to fill the GPU: fewer tiles of 15 x 15 references than
-it has SMs (on an RTX 5080, 84: planes under about 1.2 megapixels at 16 / 8,
-720p included, 0.7 at 12 / 6, 0.3 at 8 / 4), and the second stage of
-`final=1` with large blocks and groups, which runs in batches of a few rows.
-
-With `radius > 0` the centre frame's window is searched this way under the
-same rules, and the predictive search of the other frames starts from its
-matches (the same search up to near ties: the same PSNR to three decimals,
-under 1.6% of samples differing, by at most 0.018). Gray 1800 x 1080 panned
-1 px a frame, sigma 25, against the per-reference search:
-
-| Shape | Arguments | Speed |
-|---|---|---:|
-| 8 / 4 | `radius=1, group_size=16` / with `bm_range=16` | 1.12x / 1.31x |
-| | `radius=1, final=1, group_size=16` | 1.14x |
-| | `radius=2, group_size=16` / `radius=3` | 1.08x / 1.07x |
-| | `radius=1, group_size=16, temporal_mode="legacy"` with `VAggregate` | 1.02x |
-| 4 / 2 | `radius=1, group_size=16` | 1.14x |
-| 12 / 6 | `radius=1, group_size=16` | 1.12x |
-| 16 / 8 | `radius=1, group_size=16` | 1.05x |
-
-The other frames' searches are unchanged and take most of the time at larger
-radii.
+These apply to spatial searches. With `radius > 0` the square search, and the
+window search from a slightly larger window (`bm_range` 9 or more at block 8,
+6 at block 4, 8 at block 2), also cover the centre frame, and the other frames
+are searched from its matches as usual. `chroma=1` matches on one plane, so it qualifies too.
 
 ## Closer to the papers
 
-The defaults are fast settings. Settings closer to the paper, with their quality and cost. Measured on one 1080p RGB frame (an anime credits frame with its own film grain) with Gaussian noise added, against the frame without it; the noisy input is 24.97 dB at sigma 15 and 20.98 dB at sigma 25. One image: take these as starting points, not tuned presets. σ is the standard deviation of the noise in 8-bit units; speed at 1080p on an RTX 5080 (the second row's on the test frame).
+The defaults are fast settings. Settings closer to the paper are much slower
+(denser references, larger groups and windows, two stages) and give better
+quality. One 1080p RGB frame (an anime credits frame with its own film grain)
+with Gaussian noise added, against the frame without it; the noisy input is
+24.97 dB at sigma 15 and 20.98 dB at sigma 25. One image: take these as
+starting points, not tuned presets. σ is the standard deviation of the noise
+in 8-bit units.
 
-| Arguments | PSNR, sigma 15 | PSNR, sigma 25 | fps YUV420 / RGB |
-|---|---:|---:|---:|
-| defaults, `sigma=σ` | 31.50 dB | 27.88 dB | 495 / 280 |
-| `final=1, block_step=3, group_size=32, group_size_basic=16, bm_range=19, sigma=4/3 σ` | 34.35 dB | 31.28 dB | 21.7 / 10.9 |
+| Arguments | PSNR, sigma 15 | PSNR, sigma 25 |
+|---|---:|---:|
+| defaults, `sigma=σ` | 31.50 dB | 27.88 dB |
+| `final=1, block_step=3, group_size=32, group_size_basic=16, bm_range=19, sigma=4/3 σ` | 34.35 dB | 31.28 dB |
 
 - The paper's normal profile: both stages, step 3, groups of 16 (basic) and 32 (Wiener), a 39 x 39 window.
 - Pass 4/3 of the noise's sigma: the plugin's sigma follows bm3dcpu's convention (the noise profile multiplies it by 0.75), so the true sigma under-filters by 1.4 dB here.
-- Measured with BM3D model 2 (DCT along the group). Model 3 (Haar along the group) adds about +0.03 to +0.07 dB at the paper's settings on our 1080p test frames (σ 15 to 40), and its speed is the same.
+- Measured with BM3D model 2 (DCT along the group). Model 3 (Haar along the group) adds about +0.03 to +0.07 dB at the paper's settings on our 1080p test frames (σ 15 to 40).
 
 ## Signature
 
@@ -155,7 +98,7 @@ Omitted `block_step` adapts to `min(8, block_size)` per plane; omitted
 | `block_size` | 8 | {1,2,4,8,12,16,32} | Patch edge. 8 is the general default; 12 exists for high-noise DCT profiles. Larger blocks cost quadratically per patch. |
 | `block_step` | min(8, block) | [1, block] | Stride between reference patches. Halving it roughly quadruples positions (2D) — the main quality/speed trade. |
 | `group_size` | 8 | {1,2,4,8,16,32,64} | Maximum patches per 3D stack. More matches help at high noise; marginal at low noise. |
-| `bm_range` | 9 | [1, 64] | Search window radius (`window = 2*bm_range + 1`). Cost grows quadratically; motion/texture may justify a larger window. With `bm_range` 20 or more, spatial matching of one channel runs on tensor cores on GPUs of compute capability 8.0+ (block 8, group at most 16): the same matches, a workspace of one plane per stream (about 24 MiB at 1080p); BM3D gray 1080p `bm_range=30` 1.6x. |
+| `bm_range` | 9 | [1, 64] | Search window radius (`window = 2*bm_range + 1`). Cost grows quadratically; motion/texture may justify a larger window. With `bm_range` 20 or more, spatial matching of one channel runs on tensor cores on GPUs of compute capability 8.0+ (block 8, group at most 16): the same matches, a workspace of one plane per stream (about 24 MiB at 1080p). See [optimized search shapes](#optimized-search-shapes). |
 | `radius` | 0 | [0, 16] | Temporal radius in frames. >0 makes the filter temporal: finished, normal-height frames by default (`temporal_mode`, below). |
 | `ref` | none | clip | External reference clip guiding both stages' matching (paper-style two-stage usage). |
 | `chroma` | 0 | {0, 1} | CBM3D for YUV 4:4:4 clips: groups are matched on plane 0 only (of `ref` when given) and all three planes are filtered with them. See "Color (CBM3D)". |
@@ -216,8 +159,7 @@ and each plane is collaboratively filtered with those same groups.
 - Plane 0 is filtered exactly as without `chroma`; planes 1 and 2 differ.
 - `radius > 0`, `ref` and both temporal modes work as usual.
 
-It matches once instead of three times, so it is also faster wherever the
-matching is a large part of the work.
+It matches once instead of three times, which also saves time.
 
 ## Device and temporal parameters
 

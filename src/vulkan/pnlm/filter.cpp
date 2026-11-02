@@ -444,10 +444,12 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     const std::size_t slot_bytes = kParamsStride * 3 + std::max<std::size_t>(est, 4) + d->keys_bytes +
                                    frame_bytes(*d) * (d->gpu ? 1 : 2);
     const std::size_t limit = d->budget ? d->budget->snapshot().limit : SIZE_MAX;
-    // Without num_streams: three for d <= 1, two beyond, fewer where the
-    // limit does not hold them even without the extras.
+    // Without num_streams: three for d <= 1, one beyond (1080p gray R81, d =
+    // 2, a = 2, one / two / three streams: GPU frames 1207 / 1205 / 1200 fps,
+    // CPU frames 775 / 751; d = 2, a = 8 two within 0.3% of one), fewer where
+    // the limit does not hold them even without the extras.
     std::size_t streams = d->backend.streams_explicit ? static_cast<std::size_t>(d->backend.num_streams)
-                                                      : (d->d <= 1 ? 3 : 2);
+                                                      : (d->d <= 1 ? 3 : 1);
     std::size_t slots = 0, extra_outputs = 0, cached = 0;
     const auto plan_bytes = [&] {
         return frame_bytes(*d) * cached * (staged ? 2 : 1) + slot_bytes * slots + (slots + extra_outputs) * output_bytes;

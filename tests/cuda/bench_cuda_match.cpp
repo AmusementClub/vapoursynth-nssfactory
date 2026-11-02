@@ -7,6 +7,7 @@
 #include "cuda/runtime/error.hpp"
 #include "cuda/runtime/memory.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -46,12 +47,24 @@ int main(int argc, char** argv) {
         int block, step, range, group;
     };
     std::vector<Shape> shapes;
-    for (const int range : {4, 6, 9, 12, 16}) shapes.push_back({8, 8, range, 8});
-    for (const int group : {2, 4, 16, 32}) shapes.push_back({8, 8, 9, group});
-    for (const int step : {1, 2, 3, 4, 5, 6, 7}) shapes.push_back({8, step, 9, 8});
-    for (const int step : {1, 3, 4, 6}) shapes.push_back({8, step, 9, 16});
-    shapes.push_back({8, 4, 16, 16});
-    shapes.push_back({8, 3, 7, 16});
+    const char* sweep = std::getenv("NSS_BENCH_SWEEP");
+    if (sweep && *sweep == '1') {
+        // Admission sweep: every block, sparse and dense steps, sides 5 to 33.
+        for (int block = 2; block <= 8; ++block) {
+            for (const int range : {2, 3, 4, 5, 6, 7, 9, 12, 16}) {
+                shapes.push_back({block, block, range, 8});
+                shapes.push_back({block, std::max(1, block / 2), range, 16});
+            }
+        }
+    } else {
+        for (const int range : {4, 6, 9, 12, 16}) shapes.push_back({8, 8, range, 8});
+        for (const int group : {2, 4, 16, 32}) shapes.push_back({8, 8, 9, group});
+        for (const int step : {1, 2, 3, 4, 5, 6, 7}) shapes.push_back({8, step, 9, 8});
+        for (const int step : {1, 3, 4, 6}) shapes.push_back({8, step, 9, 16});
+        shapes.push_back({8, 4, 16, 16});
+        shapes.push_back({8, 3, 7, 16});
+        for (const int block : {4, 5, 6, 7}) shapes.push_back({block, block, 9, 16});
+    }
     cudaEvent_t start, stop;
     NSS_CUDA_CHECK(cudaEventCreate(&start));
     NSS_CUDA_CHECK(cudaEventCreate(&stop));
@@ -101,6 +114,63 @@ int main(int argc, char** argv) {
         }
         std::printf("%5d %4d %5d %5d %6d | %8.1f %9.1f %9.1f | %6.3f %s\n", s.block, s.step, s.range, s.group, n, us[0],
                     us[1], us[2], us[0] > 0 && us[1] > 0 ? us[0] / us[1] : 0.0, same ? "yes" : "NO");
+    }
+    // Temporal: the predictive search (radius 1, ps_num 2, ps_range 4) with
+    // its centre by the lane kernels, and seeded by the window matcher.
+    std::vector<nss_cuda::DeviceBuffer> frames;
+    std::vector<const float*> pointers;
+    for (int t = 0; t < 3; ++t) {
+        frames.emplace_back(plane.size() * sizeof(float));
+        NSS_CUDA_CHECK(cudaMemcpy(frames.back().get(), plane.data() + t * 3, (plane.size() - t * 3) * sizeof(float),
+                                  cudaMemcpyHostToDevice));
+        NSS_CUDA_CHECK(cudaMemcpy(frames.back().as<float>() + plane.size() - t * 3, plane.data(), t * 3 * sizeof(float),
+                                  cudaMemcpyHostToDevice));
+        pointers.push_back(frames.back().as<float>());
+    }
+    nss_cuda::DeviceBuffer table(pointers.size() * sizeof(const float*));
+    NSS_CUDA_CHECK(cudaMemcpy(table.get(), pointers.data(), table.bytes(), cudaMemcpyHostToDevice));
+    const nss_cuda::TemporalWindow tw{table.as<const float*>(), 3, 1, 1, 0, 3, 2, 4};
+    std::printf("temporal block step range group refs | lanes_us window_seeded_us | speed same\n");
+    for (const Shape& s : std::vector<Shape>{{8, 8, 9, 8}, {8, 8, 7, 8}, {8, 6, 9, 16}, {8, 8, 12, 16}, {6, 6, 9, 16}}) {
+        const auto grid = nss_cuda::make_raster_grid(width, height, s.block, s.step);
+        const nss_cuda::MatchGeometry g{width, height, width, s.block, s.range, s.group};
+        const int n = grid.count();
+        std::vector<nss_cuda::DeviceMatch> host[2];
+        std::vector<int> host_counts[2];
+        double us[2]{-1, -1};
+        for (int p = 0; p < 2; ++p) {
+            nss_cuda::DeviceBuffer o(static_cast<std::size_t>(n) * s.group * sizeof(nss_cuda::DeviceMatch));
+            nss_cuda::DeviceBuffer c(n * sizeof(int));
+            const auto run = [&] {
+                if (p == 0) {
+                    nss_cuda::predictive_match(g, tw, grid, 0, n, o.as<nss_cuda::DeviceMatch>(), c.as<int>(), nullptr);
+                    return true;
+                }
+                return nss_cuda::predictive_match_window(g, tw, grid, 0, n, o.as<nss_cuda::DeviceMatch>(), c.as<int>(),
+                                                         nullptr);
+            };
+            if (!run()) continue;
+            NSS_CUDA_CHECK(cudaEventRecord(start));
+            for (int i = 0; i < reps; ++i) run();
+            NSS_CUDA_CHECK(cudaEventRecord(stop));
+            NSS_CUDA_CHECK(cudaEventSynchronize(stop));
+            float ms = 0.f;
+            NSS_CUDA_CHECK(cudaEventElapsedTime(&ms, start, stop));
+            us[p] = 1000.0 * ms / reps;
+            host[p].resize(static_cast<std::size_t>(n) * s.group);
+            host_counts[p].resize(n);
+            NSS_CUDA_CHECK(cudaMemcpy(host[p].data(), o.get(), o.bytes(), cudaMemcpyDeviceToHost));
+            NSS_CUDA_CHECK(cudaMemcpy(host_counts[p].data(), c.get(), c.bytes(), cudaMemcpyDeviceToHost));
+        }
+        bool same = us[1] >= 0;
+        for (int r = 0; same && r < n; ++r) {
+            same = host_counts[0][r] == host_counts[1][r] &&
+                   !std::memcmp(host[0].data() + static_cast<std::size_t>(r) * s.group,
+                                host[1].data() + static_cast<std::size_t>(r) * s.group,
+                                sizeof(nss_cuda::DeviceMatch) * host_counts[0][r]);
+        }
+        std::printf("%8d %4d %5d %5d %6d | %8.1f %16.1f | %6.3f %s\n", s.block, s.step, s.range, s.group, n, us[0],
+                    us[1], us[1] > 0 ? us[0] / us[1] : 0.0, same ? "yes" : "NO");
     }
     return 0;
 }

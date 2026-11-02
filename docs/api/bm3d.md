@@ -101,8 +101,7 @@ and each plane is collaboratively filtered with those same groups.
 - Plane 0 is filtered exactly as without `chroma`; planes 1 and 2 differ.
 - `radius > 0`, `ref` and both temporal modes work as usual.
 
-It matches once instead of three times, so it is also faster wherever the
-matching is a large part of the work.
+It matches once instead of three times, which also saves time.
 
 ## Algorithm and paper
 
@@ -124,13 +123,12 @@ repository's calibration matrix; `bm_range` was 7 there and is now 9
 (BM3DCUDA's default as well). Over nine 1080p test images, gray and
 RGB, the wider window gains 0.04 to 0.17 dB PSNR at sigma 3 to 25 (mean +0.06
 at sigma 3, +0.12 at 10, +0.14 at 25) and never loses; 12 and 16 gain about
-twice that with 1.7x and 3.0x the candidates of 9. About 17 fps per 1080p
-GRAYS frame on a single Emerald Rapids core (measured with
-`bm_range=7`) — the fastest filter here. The dominant cost driver is
+twice that with 1.7x and 3.0x the candidates of 9. BM3D is the fastest filter
+here. The dominant cost driver is
 `block_step` (positions scale as `1/step^2`), then `bm_range` and
 `group_size`.
 
-Settings closer to the paper, with their measured quality and GPU speed, are on the [CUDA page](cuda/bm3d.md#closer-to-the-papers); the CPU takes the same arguments.
+Settings closer to the paper, with their measured quality, are on the [CUDA page](cuda/bm3d.md#closer-to-the-papers); the CPU takes the same arguments.
 
 ## Pitfalls
 

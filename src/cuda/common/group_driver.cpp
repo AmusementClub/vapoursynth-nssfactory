@@ -795,10 +795,13 @@ void filter_center(const Driver& d, Slot& s, const GroupPlane& p, int center, bo
         {
             NSS_CUDA_RANGE("group.match");
             if (radius > 0) {
-                // The centre frame by the square matcher where it takes it.
+                // The centre frame by the square matcher where it takes it,
+                // else by the window matcher (the lane kernels' matches).
                 if (!(d.square_match &&
                       predictive_match_square(geometry, window, p.grid, begin, count, s.matches.as<DeviceMatch>(),
-                                              s.counts.as<int>(), stream))) {
+                                              s.counts.as<int>(), stream)) &&
+                    !predictive_match_window(geometry, window, p.grid, begin, count, s.matches.as<DeviceMatch>(),
+                                             s.counts.as<int>(), stream)) {
                     predictive_match(geometry, window, p.grid, begin, count, s.matches.as<DeviceMatch>(),
                                      s.counts.as<int>(), stream);
                 }

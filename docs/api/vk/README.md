@@ -10,30 +10,23 @@ build. On VapourSynth R80 and later it also processes frames that are already
 on the GPU ([GPU frames](#gpu-frames-vapoursynth-r80)), so a chain of GPU
 filters keeps its frames in video memory.
 
-## Speed
+## Performance notes
 
-Frames per second at 1080p, default arguments (BM3D `sigma=3`), on an RTX 5080
-(Ryzen 9 5950X host, driver 595.91.07), one instance, frames requested in
-order and not read back by the consumer, median of three runs:
-
-| Filter | VapourSynth R81, CPU frames (gray / YUV420 / RGB) | vapoursynth-classic, [direct transfers](#direct-transfers-with-vapoursynth-classic) | R81, [GPU frames](#gpu-frames-vapoursynth-r80) |
-|---|---:|---:|---:|
-| [BM3D](bm3d.md) | 730 / 485 / 245 | 1165 / 756 / 375 | 1703 / 1051 / 586 |
-| [NLM](nlm.md) | 804 / 710 / 209 | 851 / 836 / 381 | 841 / 839 / 505 |
-| [PNLM](pnlm.md) (`sigma=3`) | 735 / 487 / 260 | 1134 / 771 / 382 | 1729 / 1085 / 600 |
-
-- **CPU frames** are uploaded through resizable BAR memory (or staging) and
-  downloaded through host memory on nss_vk's own device; that is also the path
-  on R78 and older. **GPU frames** were made on the GPU (a noisy frame
-  uploaded once, or `std.BlankClip(gpu=1)`), so the column is the filter alone:
-  BM3D is then bound by its kernels (the GPU is 97% busy).
+- **Frames.** CPU frames are uploaded through resizable BAR memory (or
+  staging) and downloaded through host memory; that is also the path on R78
+  and older. On vapoursynth-classic,
+  [direct transfers](#direct-transfers-with-vapoursynth-classic) skip the host
+  staging copies. On R80+, [GPU frames](#gpu-frames-vapoursynth-r80) let a
+  chain of GPU filters keep its frames in video memory: the fastest way to run
+  BM3D and PNLM, which are otherwise bound by their transfers.
 - A single filter between `std.GPUUpload` and `std.GPUDownload` runs at about
-  the speed of its CPU-frame path (BM3D 843 / 544 / 279, NLM 840 / 560 / 276):
-  the upload and download cost what the filter's own transfers did. The gain
-  of GPU frames is in chains ([below](#when-gpu-frames-pay)).
-- Against `nss_cuda` (the same host): BM3D 1.03–1.07× on classic with direct
-  transfers and 1.19–1.27× on R78; NLM 0.87–1.03× on classic; PNLM 1.38–1.41×
-  on R78 at its defaults, 0.92× at `a=8, d=2`.
+  the speed of its CPU-frame path: the upload and download cost what the
+  filter's own transfers did. The gain of GPU frames is in chains
+  ([below](#when-gpu-frames-pay)).
+- **Search shapes.** BM3D's block matching has faster dedicated paths for some
+  shapes, the defaults among them; see
+  [BM3D's matching notes](bm3d.md#notes). For large NLM windows or several
+  frames, consider [PNLM](pnlm.md).
 
 ## Functions
 
@@ -155,8 +148,7 @@ core. `Backend()["gpu_frames"]` says which applies:
 - **Chains on the GPU.** Frames stay in video memory between GPU filters
   (`nss_vk`, the core's GPU filters, other GPU plugins): one upload at the
   head of the chain and one download at the end, instead of one each per
-  filter. A resident BM3D runs at 1703 fps (gray 1080p) against 730 on CPU
-  frames.
+  filter.
 - **Not a single filter.** Between `std.GPUUpload` and `std.GPUDownload`
   alone, a filter runs at about its CPU-frame speed: the core's transfers
   replace the filter's own.

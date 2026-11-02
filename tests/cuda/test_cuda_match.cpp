@@ -162,17 +162,17 @@ void column_case(int block, int width, int height, int group, int step, int rang
 // and the CPU, in uneven batches that do not start on grid rows. range_hi >=
 // 0 makes the window asymmetric (the lane kernels take those too).
 void window_case(int width, int height, int group, int step, int range, int range_hi, int batches, bool flat,
-                 Stats& stats) {
+                 Stats& stats, int block = 8) {
     const auto plane = make_plane(width, height, 23u + group + step + range, flat);
     nss_cuda::DeviceBuffer d_plane(plane.size() * sizeof(float));
     NSS_CUDA_CHECK(cudaMemcpy(d_plane.get(), plane.data(), plane.size() * sizeof(float), cudaMemcpyHostToDevice));
-    const auto grid = nss_cuda::make_raster_grid(width, height, 8, step);
+    const auto grid = nss_cuda::make_raster_grid(width, height, block, step);
     const int n = grid.count();
-    nss_cuda::MatchGeometry g{width, height, width, 8, range, group};
+    nss_cuda::MatchGeometry g{width, height, width, block, range, group};
     g.range_hi = range_hi;
     char label[128];
-    std::snprintf(label, sizeof label, "window %dx%d g%d s%d r%d/%d batches %d%s", width, height, group, step, range,
-                  range_hi, batches, flat ? " flat" : "");
+    std::snprintf(label, sizeof label, "window %dx%d b%d g%d s%d r%d/%d batches %d%s", width, height, block, group, step,
+                  range, range_hi, batches, flat ? " flat" : "");
     CHECK(nss_cuda::spatial_match_window_takes(g, grid), "%s: not taken", label);
     std::vector<nss_cuda::DeviceMatch> out[2];
     std::vector<int> counts[2];
@@ -206,8 +206,8 @@ void window_case(int width, int height, int group, int step, int range, int rang
               "%s ref %d: lane and window results differ", label, ref);
         if (range_hi >= 0) continue;  // the CPU's spatial_match is symmetric
         nss::Match cpu[nss_cuda::kMaxGroup];
-        const int m = nss::spatial_match(plane.data(), width, width, height, grid.x(ref), grid.y(ref), 8, range, group,
-                                         cpu);
+        const int m = nss::spatial_match(plane.data(), width, width, height, grid.x(ref), grid.y(ref), block, range,
+                                         group, cpu);
         compare_group(cpu, m, out[1].data() + static_cast<std::size_t>(ref) * group, counts[1][ref], flat, stats, label,
                       ref);
     }
@@ -253,8 +253,10 @@ void square_case(int q, int width, int height, int group, int range, int batches
     }
 }
 
+// window: the centre seeded by the window matcher (predictive_match_window),
+// also compared bit for bit with the lane kernels' predictive_match.
 void temporal_case(int width, int height, int block, int group, int step, int range, int radius, int center,
-                   int frame_count, bool flat, Stats& stats, bool square = false) {
+                   int frame_count, bool flat, Stats& stats, bool square = false, bool window = false) {
     const int ntemp = 2 * radius + 1;
     std::vector<std::vector<float>> frames;
     std::vector<nss_cuda::DeviceBuffer> d_frames;
@@ -292,6 +294,26 @@ void temporal_case(int width, int height, int block, int group, int step, int ra
         CHECK(nss_cuda::predictive_match_square(g, w, grid, 0, grid.count(), d_out.as<nss_cuda::DeviceMatch>(),
                                                 d_counts.as<int>(), nullptr, true),
               "square temporal %dx%d b%d s%d not taken", width, height, block, step);
+    } else if (window) {
+        CHECK(nss_cuda::predictive_match_window(g, w, grid, 0, grid.count(), d_out.as<nss_cuda::DeviceMatch>(),
+                                                d_counts.as<int>(), nullptr),
+              "window temporal %dx%d b%d s%d r%d not taken", width, height, block, step, range);
+        nss_cuda::DeviceBuffer l_out(d_out.bytes()), l_counts(d_counts.bytes());
+        nss_cuda::predictive_match(g, w, grid, 0, grid.count(), l_out.as<nss_cuda::DeviceMatch>(), l_counts.as<int>(),
+                                   nullptr);
+        std::vector<nss_cuda::DeviceMatch> a(static_cast<std::size_t>(grid.count()) * group), b(a.size());
+        std::vector<int> ca(grid.count()), cb(grid.count());
+        NSS_CUDA_CHECK(cudaMemcpy(a.data(), d_out.get(), d_out.bytes(), cudaMemcpyDeviceToHost));
+        NSS_CUDA_CHECK(cudaMemcpy(b.data(), l_out.get(), l_out.bytes(), cudaMemcpyDeviceToHost));
+        NSS_CUDA_CHECK(cudaMemcpy(ca.data(), d_counts.get(), d_counts.bytes(), cudaMemcpyDeviceToHost));
+        NSS_CUDA_CHECK(cudaMemcpy(cb.data(), l_counts.get(), l_counts.bytes(), cudaMemcpyDeviceToHost));
+        for (int ref = 0; ref < grid.count(); ++ref) {
+            CHECK(ca[ref] == cb[ref] && std::memcmp(a.data() + static_cast<std::size_t>(ref) * group,
+                                                    b.data() + static_cast<std::size_t>(ref) * group,
+                                                    sizeof(nss_cuda::DeviceMatch) * ca[ref]) == 0,
+                  "window temporal %dx%d b%d s%d r%d R%d ref %d: differs from the lane kernels", width, height, block,
+                  step, range, radius, ref);
+        }
     } else {
         nss_cuda::predictive_match(g, w, grid, 0, grid.count(), d_out.as<nss_cuda::DeviceMatch>(), d_counts.as<int>(),
                                    nullptr);
@@ -566,16 +588,42 @@ int main() {
         window_case(8, 8, 32, 1, 16, -1, 1, flat, stats);
         window_case(1920 / 8, 1080 / 8, 8, 8, 9, -1, 2, flat, stats);
     }
+    // Temporal searches whose centre frame the window matcher seeds: the
+    // lane kernels' predictive matches bit for bit, and the CPU's.
+    for (const bool flat : {false, true}) {
+        for (const int radius : {1, 2}) {
+            temporal_case(97, 83, 8, 8, 8, 9, radius, radius, 2 * radius + 1, flat, stats, false, true);
+            temporal_case(97, 83, 8, 16, 6, 10, radius, 0, 9, flat, stats, false, true);  // clip start
+            temporal_case(71, 66, 6, 32, 6, 9, radius, 8, 9, flat, stats, false, true);   // clip end
+            temporal_case(71, 66, 4, 2, 4, 6, radius, radius, 2 * radius + 1, flat, stats, false, true);
+        }
+    }
+    // Other blocks (2 to 7) at and above their smallest admitted sides.
+    for (const bool flat : {false, true}) {
+        for (const auto& shape : {std::pair<int, int>{2, 6}, {3, 4}, {4, 4}, {5, 4}, {6, 4}, {7, 5}, {7, 9}, {5, 16}}) {
+            const int block = shape.first, range = shape.second;
+            for (const int group : {2, 8, 17, 32}) {
+                window_case(97, 83, group, block, range, -1, 2, flat, stats, block);
+                window_case(61, 58, group, std::max(1, block / 2), range, -1, 1, flat, stats, block);
+            }
+        }
+        window_case(9, 7, 8, 1, 6, -1, 1, flat, stats, 6);
+    }
     {
         const auto grid = nss_cuda::make_raster_grid(97, 83, 8, 8);
         nss_cuda::MatchGeometry g{97, 83, 97, 8, 17, 8};
         CHECK(!nss_cuda::spatial_match_window_takes(g, grid), "side 35 taken by the window matcher");
         g = nss_cuda::MatchGeometry{97, 83, 97, 8, 6, 8};
         CHECK(!nss_cuda::spatial_match_window_takes(g, grid), "side 13 taken by the window matcher");
+        g = nss_cuda::MatchGeometry{97, 83, 97, 8, 7, 8};
+        CHECK(nss_cuda::spatial_match_window_takes(g, grid) && !nss_cuda::predictive_match_window_takes(g, grid),
+              "block 8 side 15: spatial window only");
         g = nss_cuda::MatchGeometry{97, 83, 97, 8, 9, 33};
         CHECK(!nss_cuda::spatial_match_window_takes(g, grid), "group 33 taken by the window matcher");
-        g = nss_cuda::MatchGeometry{97, 83, 97, 4, 9, 8};
-        CHECK(!nss_cuda::spatial_match_window_takes(g, grid), "block 4 taken by the window matcher");
+        g = nss_cuda::MatchGeometry{97, 83, 97, 4, 3, 8};
+        CHECK(!nss_cuda::spatial_match_window_takes(g, grid), "block 4 side 7 taken by the window matcher");
+        g = nss_cuda::MatchGeometry{97, 83, 97, 9, 9, 8};
+        CHECK(!nss_cuda::spatial_match_window_takes(g, grid), "block 9 taken by the window matcher");
     }
     // Square matcher, every quarter side: regular grids (max_x, max_y
     // multiples of q), a clamped last column, row or both, a single

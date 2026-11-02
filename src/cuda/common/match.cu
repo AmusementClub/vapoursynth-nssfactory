@@ -1704,6 +1704,17 @@ void predictive_match(const MatchGeometry& geometry, const TemporalWindow& windo
     NSS_CUDA_CHECK_LAUNCH();
 }
 
+bool predictive_match_window(const MatchGeometry& geometry, const TemporalWindow& window, const RasterGrid& grid,
+                             int ref_begin, int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream) {
+    if (lane_group(geometry, window.ps_num) == 0 || !predictive_match_window_takes(geometry, grid)) return false;
+    if (ref_count <= 0) return true;
+    spatial_match_window_frame(window.frames, window.t0, geometry, grid, ref_begin, ref_count, out, counts, stream);
+    if (!launch_lanes(nullptr, geometry, &window, grid, ref_begin, ref_count, out, counts, stream, true)) {
+        throw std::logic_error("predictive_match_window: lane kernel missing after the window search");
+    }
+    return true;
+}
+
 bool predictive_match_square(const MatchGeometry& geometry, const TemporalWindow& window, const RasterGrid& grid,
                              int ref_begin, int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream,
                              bool any_shape) {

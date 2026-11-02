@@ -38,13 +38,18 @@ using nss::gpuhost::make_raster_grid;
 void spatial_match(const float* plane, const MatchGeometry& geometry, const RasterGrid& grid, int ref_begin,
                    int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream, const void* scratch = nullptr);
 
-// Exact candidate-parallel matching of one-channel block-8 windows up to a
-// side of 33 and groups up to 32 (match_window.cu): the lane kernels'
-// distances and keys, bit for bit, with a lane per candidate instead of eight.
-// spatial_match takes it ahead of the lane kernels.
+// Exact candidate-parallel matching of one-channel windows of blocks 2 to 8,
+// sides up to 33 and groups up to 32 (match_window.cu; the smallest side
+// admitted depends on the block): the lane kernels' distances and keys, bit
+// for bit, with a lane per candidate. spatial_match takes it ahead of the lane
+// kernels.
 bool spatial_match_window_takes(const MatchGeometry& geometry, const RasterGrid& grid);
 bool spatial_match_window(const float* plane, const MatchGeometry& geometry, const RasterGrid& grid, int ref_begin,
                           int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream);
+// The same on frame `frame` of a device table of frames.
+bool spatial_match_window_frame(const float* const* frames, int frame, const MatchGeometry& geometry,
+                                const RasterGrid& grid, int ref_begin, int ref_count, DeviceMatch* out, int* counts,
+                                cudaStream_t stream);
 // The lane kernels alone, where they take the search (tests and benchmarks:
 // the reference of the exact matchers). Returns false where they do not.
 bool spatial_match_lanes(const float* plane, const MatchGeometry& geometry, const RasterGrid& grid, int ref_begin,
@@ -107,6 +112,17 @@ struct TemporalWindow {
 
 void predictive_match(const MatchGeometry& geometry, const TemporalWindow& window, const RasterGrid& grid,
                       int ref_begin, int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream);
+
+// The predictive search with its centre frame by the window matcher (the
+// lane kernels' centre matches, bit for bit), then the seeded lane kernels:
+// the predictive lane search's matches. Returns false (and does nothing)
+// where either does not take the geometry.
+bool predictive_match_window(const MatchGeometry& geometry, const TemporalWindow& window, const RasterGrid& grid,
+                             int ref_begin, int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream);
+// Whether predictive_match_window takes the geometry's centre (a window four
+// wider than the spatial minimum; the seeded lane kernels must also serve it).
+bool predictive_match_window_takes(const MatchGeometry& geometry, const RasterGrid& grid);
+
 
 // The predictive search with its centre frame by the square matcher: the
 // centre window's matches as spatial_match_square finds them (the same keys

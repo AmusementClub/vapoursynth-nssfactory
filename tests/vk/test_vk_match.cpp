@@ -252,7 +252,14 @@ void temporal_case(const std::shared_ptr<Device>& device, Matcher& matcher, int 
                                      if (f->needs_copy()) f->record_upload(slot.commands(Slot::Upload));
                                  }
                                  if (table.needs_copy()) table.record_upload(slot.commands(Slot::Upload));
-                                 matcher.predictive(slot.commands(Slot::Compute), g, w, grid, 0, grid.count(), out, counts);
+                                 // As the group driver: the window kernel seeds the centre
+                                 // where it takes the search (native passes; the emulated pass
+                                 // runs the lane kernels alone, compared bit for bit).
+                                 if (!matcher.predictive_window(slot.commands(Slot::Compute), g, w, grid, 0, grid.count(),
+                                                                out, counts)) {
+                                     matcher.predictive(slot.commands(Slot::Compute), g, w, grid, 0, grid.count(), out,
+                                                        counts);
+                                 }
                              },
                              label);
     for (int ref = 0; ref < grid.count(); ++ref) {
@@ -476,6 +483,20 @@ int main(int argc, char** argv) {
             spatial_case(device, matcher, 77, 61, 8, 16, 4, range, flat, stats);
         }
         for (const int step : {1, 3, 5, 6, 7}) spatial_case(device, matcher, 97, 83, 8, 8, step, 9, flat, stats);
+        // Block 4 at and above its smallest window side (12: side 25), and
+        // blocks the window kernel does not take here (the lane kernels).
+        for (const auto& shape : {std::pair<int, int>{4, 12}, {4, 16}, {4, 9}, {2, 9}, {6, 6}}) {
+            for (const int group : {2, 8, 17, 32}) {
+                spatial_case(device, matcher, 97, 83, shape.first, group, shape.first, shape.second, flat, stats);
+            }
+        }
+        // Temporal searches seeded by the window kernel (default BM3D shape,
+        // clip start and end, other blocks, ps_num 1 and the B8/L8 PS2 pair).
+        temporal_case(device, matcher, 97, 83, 8, 8, 8, 9, 1, 1, 3, flat, stats);
+        temporal_case(device, matcher, 97, 83, 8, 16, 6, 9, 2, 0, 9, flat, stats);
+        temporal_case(device, matcher, 71, 66, 6, 32, 6, 9, 1, 8, 9, flat, stats);
+        temporal_case(device, matcher, 71, 66, 4, 8, 4, 14, 2, 2, 5, flat, stats, 1);
+        temporal_case(device, matcher, 71, 66, 8, 8, 8, 7, 1, 1, 3, flat, stats, 4);  // side 15: lanes alone
         spatial_case(device, matcher, 12, 10, 8, 8, 1, 9, flat, stats);
         spatial_case(device, matcher, 8, 8, 8, 32, 1, 16, flat, stats);
         spatial_case(device, matcher, 240, 135, 8, 8, 8, 9, flat, stats, 0, true);

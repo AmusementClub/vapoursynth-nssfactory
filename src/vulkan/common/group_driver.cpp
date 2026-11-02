@@ -674,8 +674,13 @@ void filter_center(Driver& d, VkCommandBuffer commands, const BatchBuffers& buff
                                   buffers.counts.address(), true);
             timer.predictive_end();
         } else if (d.radius > 0) {
-            d.matcher->predictive(commands, geometry, window, p.grid, begin, count, buffers.matches.address(),
-                                  buffers.counts.address());
+            // The centre frame by the window kernel where it takes it (the
+            // lane kernels' matches), else by the lane kernels themselves.
+            if (!d.matcher->predictive_window(commands, geometry, window, p.grid, begin, count,
+                                              buffers.matches.address(), buffers.counts.address())) {
+                d.matcher->predictive(commands, geometry, window, p.grid, begin, count, buffers.matches.address(),
+                                      buffers.counts.address());
+            }
         } else if (d.column_matcher && spatial_match_column_takes(geometry, p.grid)) {
             d.column_matcher->spatial(commands, io.match, geometry, p.grid, begin, count, buffers.matches.address(),
                                        buffers.counts.address());
@@ -1784,7 +1789,8 @@ void group_filter_install(GroupFilterConfig&& config, VSMap* out, VSCore* core, 
         if (!d->matcher->supports(g, ps_num)) throw std::logic_error(prefix(*d) + "no matcher for this search");
         const bool square_seeded = d->radius > 0 && d->square_matcher && d->matcher->lanes(g, ps_num) &&
                                    spatial_match_square_takes(g, p->grid);
-        d->matcher->prepare(g, d->radius > 0, ps_num, square_seeded, d->radius);
+        const bool window_seeded = d->radius > 0 && !square_seeded && d->matcher->window_seeds(g, ps_num);
+        d->matcher->prepare(g, d->radius > 0, ps_num, square_seeded || window_seeded, d->radius);
         if (d->column_matcher && d->radius == 0) d->column_matcher->prepare(g, p->grid);
         if (d->square_matcher) d->square_matcher->prepare(g, p->grid, square_seeded);
         if (d->prepare) d->prepare(*p, p->wiener);

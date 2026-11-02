@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-only
-// Candidate-parallel exact matcher for one-channel block-8 spatial searches,
-// as nss_cuda's match_window.cu: a 32-invocation subgroup takes one
+// Candidate-parallel exact matcher for one-channel spatial searches of blocks
+// 2 to 8, as nss_cuda's match_window.cu: a 32-invocation subgroup takes one
 // reference, stages its search region in shared memory, and each invocation
 // computes whole candidates, NY vertically adjacent ones of one column at a
-// time, from the region rows that item reads once. A candidate keeps eight
+// time, from the region rows that item reads once. A candidate keeps B
 // column chains, added row by row from the top as the lane kernel's lane j
-// adds column j, and totals them in the lane kernel's xor-tree order: the
-// distance and key are match_lane.comp's (B = 8), bit for bit. Keys are unique
+// adds column j, and totals them in the lane kernel's xor-tree order over the
+// block width rounded up to a power of two (its idle lanes add exact zeros,
+// left out here): the distance and key are match_lane.comp's, bit for bit. Keys are unique
 // within a window, so the K smallest form the same set in any order: the
 // subgroup holds them as the lane kernels do (invocation i the i-th), and each
 // round inserts the keys below the K-th, smallest first.
@@ -14,7 +15,8 @@
 // Requires a full subgroup of exactly 32 (the pipeline's required size); no
 // emulated layer (devices without one keep the lane kernels).
 //
-// Defines: NY (2 to 6).
+// Defines: B (2 to 8), NY (2 to 6), TEMPORAL (the plane is frame `frame` of
+// a device table of frame addresses: the centre of a predictive search).
 #version 460
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
@@ -25,7 +27,12 @@
 #extension GL_KHR_shader_subgroup_shuffle : require
 #extension GL_KHR_shader_subgroup_arithmetic : require
 
+#ifndef B
 #define B 8
+#endif
+#ifndef TEMPORAL
+#define TEMPORAL 0
+#endif
 #define WARPS 4
 #define MAX_ROWS 40   // window side 33 + B - 1
 #define MAX_PITCH 41  // odd
@@ -40,6 +47,7 @@ struct Match {
     float dist;
 };
 layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer Plane { float v[]; };
+layout(buffer_reference, std430, buffer_reference_align = 8) readonly buffer Table { uint64_t p[]; };
 layout(buffer_reference, std430, buffer_reference_align = 16) writeonly buffer Matches { Match m[]; };
 layout(buffer_reference, std430, buffer_reference_align = 4) writeonly buffer Counts { int c[]; };
 
@@ -48,6 +56,7 @@ layout(push_constant) uniform Push {
     int width, height, pitch, group;
     int lo, hi, nx, step;
     int max_x, max_y, ref_begin, ref_count;
+    int frame, pad;
 } pc;
 
 const uint64_t EMPTY = 0xffffffffffffffffUL;
@@ -58,6 +67,25 @@ const uint INF_BITS = 0x7f800000u;
 uint64_t shfl64(uint64_t x, uint src) {
     const uvec2 h = unpackUint2x32(x);
     return packUint2x32(uvec2(subgroupShuffle(h.x, src), subgroupShuffle(h.y, src)));
+}
+
+// The lane kernel's xor tree over the B column sums.
+precise float column_tree(float c[B]) {
+#if B == 2
+    return c[0] + c[1];
+#elif B == 3
+    return (c[0] + c[1]) + c[2];
+#elif B == 4
+    return (c[0] + c[1]) + (c[2] + c[3]);
+#elif B == 5
+    return ((c[0] + c[1]) + (c[2] + c[3])) + c[4];
+#elif B == 6
+    return ((c[0] + c[1]) + (c[2] + c[3])) + (c[4] + c[5]);
+#elif B == 7
+    return ((c[0] + c[1]) + (c[2] + c[3])) + ((c[4] + c[5]) + c[6]);
+#else
+    return ((c[0] + c[1]) + (c[2] + c[3])) + ((c[4] + c[5]) + (c[6] + c[7]));
+#endif
 }
 
 void order(inout uint64_t a, inout uint64_t b) {
@@ -76,13 +104,18 @@ void main() {
     const int at_ref = pc.ref_begin + r;
     const int cx = min((at_ref % pc.nx) * pc.step, pc.max_x), cy = min((at_ref / pc.nx) * pc.step, pc.max_y);
     const int x_lo = cx - pc.lo, y_lo = cy - pc.lo;
+#if TEMPORAL
+    const uint64_t source = Table(pc.source).p[pc.frame];
+#else
+    const uint64_t source = pc.source;
+#endif
     const int last_col = pc.width - 1, last_row = pc.height - 1;
     // The search region, clamped at the plane's edges (only positions
     // outside the plane read the clamped values, and they never enter).
     for (int rx = int(lane); rx < rows; rx += 32) {
         const int x = clamp(x_lo + rx, 0, last_col);
         for (int ry = 0; ry < rows; ++ry) {
-            region[base + ry * pitch + rx] = Plane(pc.source).v[clamp(y_lo + ry, 0, last_row) * pc.pitch + x];
+            region[base + ry * pitch + rx] = Plane(source).v[clamp(y_lo + ry, 0, last_row) * pc.pitch + x];
         }
     }
     subgroupMemoryBarrierShared();
@@ -122,8 +155,9 @@ void main() {
         }
         uint64_t key[NY];
         [[unroll]] for (int k = 0; k < NY; ++k) {
-            precise float sum = ((acc[k][0] + acc[k][1]) + (acc[k][2] + acc[k][3])) +
-                                ((acc[k][4] + acc[k][5]) + (acc[k][6] + acc[k][7]));
+            float columns[B];
+            [[unroll]] for (int c = 0; c < B; ++c) columns[c] = acc[k][c];
+            precise float sum = column_tree(columns);
             const int x = x_lo + col, y = y_lo + y0 + k;
             const uint at = uint(y) << 16 | uint(x);
             const bool ok = live && y0 + k < side && x >= 0 && x <= max_x && y >= 0 && y <= max_y && at != self;

@@ -5,7 +5,7 @@ volume (frames as the third dimension); similar 4 x 4 x 4 (then 5 x 5 x 5)
 cubes, searched up to 7 pixels and 7 frames away, are stacked into groups and
 filtered together in two stages, hard thresholding then Wiener. Held frames
 and still or slowly moving content are where it gains most. Heavy on the CPU;
-[`nss_cuda.BM4D`](cuda/bm4d.md) gives the same quality (PSNR) about 40 times faster.
+[`nss_cuda.BM4D`](cuda/bm4d.md) gives the same quality (PSNR) far faster.
 
 ```python
 out = core.nss.BM4D(clip, sigma=5)        # the noise's true sigma
@@ -80,10 +80,10 @@ On the pixels that move, BM4D gains as well, except in fast action and in
 one nearly still segment with a small moving object (-0.7 / -0.3 dB). Use
 temporal BM3D for fast action.
 
-## Speed and memory
+## Cost and memory
 
-1080p gray, one Ryzen 9 5950X with 16 threads: 1.2 frames per second (about
-6.6 s of one core per frame). YUV420 adds half for the chroma planes. Each
+BM4D is the slowest filter here; YUV420 adds about half for the chroma
+planes. Each
 worker thread holds about 100 MB, and the filter keeps up to two finished
 chunks (32 frames each) plus the 48 input frames of the chunk being
 computed: about 2 GB at 1080p with 16 threads.
@@ -94,4 +94,4 @@ computed: about 2 GB at 1080p with 16 threads.
 - The first frame of each chunk takes the whole chunk's time; later frames of
   the chunk are immediate.
 - Fast action loses to temporal BM3D (see Quality).
-- On the GPU, [`nss_cuda.BM4D`](cuda/bm4d.md) gives the same quality (1080p gray 40 fps on an RTX 5080).
+- On the GPU, [`nss_cuda.BM4D`](cuda/bm4d.md) gives the same quality, far faster.
