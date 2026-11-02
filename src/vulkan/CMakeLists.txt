@@ -202,7 +202,7 @@ endforeach()
 # Exact column-reuse matching for one-channel spatial searches. CPT is step + 1,
 # the number of 128-reference segments a thread covers. B12/B16 group 8 uses
 # the paired layout of the eight-lane matcher; B4 step 2, B12 step 3 and B16
-# group 32 stay out (B16 group 8 step 3 also uses square).
+# group 32 stay out (B16 group 8 step 3 also uses square), and get no shaders.
 foreach(_nss_b 4 8 12 16)
   foreach(_nss_k 7 15 31)
     if((_nss_b EQUAL 12 OR _nss_b EQUAL 16) AND _nss_k EQUAL 7)
@@ -212,7 +212,7 @@ foreach(_nss_b 4 8 12 16)
       continue()
     endif()
     foreach(_nss_cpt 2 3 4)
-      if(_nss_b EQUAL 4 AND _nss_cpt EQUAL 3)
+      if((_nss_b EQUAL 4 AND _nss_cpt EQUAL 3) OR (_nss_b EQUAL 12 AND _nss_cpt EQUAL 4))
         continue()
       endif()
       nss_vk_add_shader(NSS_VK_SPIRV_SOURCES match_column_b${_nss_b}_k${_nss_k}_c${_nss_cpt} common/match_column.comp
@@ -222,12 +222,17 @@ foreach(_nss_b 4 8 12 16)
 endforeach()
 foreach(_nss_b 12 16)
   foreach(_nss_cpt 2 3 4)
-    if(_nss_b EQUAL 16 AND _nss_cpt EQUAL 4)
+    if(_nss_cpt EQUAL 4)
       continue()
     endif()
     nss_vk_add_shader(NSS_VK_SPIRV_SOURCES match_column_pair8_b${_nss_b}_c${_nss_cpt} common/match_column_pair8.comp
                       DEFINES B=${_nss_b} K=7 CPT=${_nss_cpt})
   endforeach()
+endforeach()
+# Exact candidate-parallel matching of one-channel block-8 windows (sides 15
+# to 33), NY candidates an item.
+foreach(_nss_ny 2 3 4 5 6)
+  nss_vk_add_shader(NSS_VK_SPIRV_SOURCES match_window_ny${_nss_ny} common/match_window.comp DEFINES NY=${_nss_ny})
 endforeach()
 # BM3D square matching (block = RQ at step Q), with its own reduction order.
 set(_nss_square_shapes 2_1 2_2 2_4 2_6 2_8 4_3 3_4 4_4 4_2)

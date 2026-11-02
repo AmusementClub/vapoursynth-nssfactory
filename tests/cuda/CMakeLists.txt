@@ -11,6 +11,11 @@ if(TARGET nss_cpu)
   set_tests_properties(test_cuda_match PROPERTIES LABELS cuda SKIP_RETURN_CODE 77)
 endif()
 
+# Kernel timing of the exact spatial matchers (not a test).
+add_executable(bench_cuda_match bench_cuda_match.cpp)
+target_link_libraries(bench_cuda_match PRIVATE nss_cuda_core)
+target_include_directories(bench_cuda_match PRIVATE "${PROJECT_SOURCE_DIR}/src")
+
 foreach(test test_cuda_aggregate test_cuda_runtime test_cuda_slot_pool)
   add_executable(${test} ${test}.cpp)
   target_link_libraries(${test} PRIVATE nss_cuda_core)

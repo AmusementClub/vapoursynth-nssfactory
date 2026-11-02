@@ -147,7 +147,7 @@ They pay where those leave the GPU idle, and not where the kernels dominate.
 | NLM | 2 | 1.23× (YUV420, d = 1); with direct transfers 1.06–1.50× (three: no faster) | 529 → 759 MiB (gray, d = 1) |
 | PNLM | 3 for d ≤ 1; 2 beyond | 1.19× (gray, d = 1; two streams 1.13×) | 182 → 325 MiB (gray, d = 1) |
 | TWSC | 3 | 1.22× (gray; two streams: 1.03×) | 385 → 1084 MiB |
-| NCSR | 2; 3 with direct transfers | 1.10× (YUV420); with direct transfers 1.38–1.52× | 170 → 258 MiB (three: 346 MiB) |
+| NCSR | 2; 3 with direct transfers; 1 on GPU frames | 1.10× (YUV420); with direct transfers 1.38–1.52× | 170 → 258 MiB (three: 346 MiB) |
 | BM3D, WNNM | 1; 2 with direct transfers | 0.99× staged; with direct transfers 1.01–1.14× (three streams; two equal them on YUV420) | YUV420 150 / 162 MiB, plus about 68 / 80 MiB per stream |
 | MCWNNM | 1; 3 with direct transfers | 0.99× staged; with direct transfers 1.46× (RGB) | 478 → 1009 MiB |
 | DA3D | 3; 2 for joint RGB | see [da3d.md](da3d.md) | |
@@ -157,6 +157,10 @@ They pay where those leave the GPU idle, and not where the kernels dominate.
 - "Direct transfers" means vapoursynth-classic's frame memory extension (see
   [below](#direct-transfers-with-vapoursynth-classic)), with spatial output or
   `temporal_mode="legacy"`.
+- GPU frames (the R81 frontend below) keep one stream for BM3D, WNNM, MCWNNM
+  and NCSR: a frame gives its stream back once its work is queued, so the next
+  frame's work follows it on the device. One stream measured fastest (two:
+  BM3D 0.97×, WNNM 0.94×, NCSR 0.95×, MCWNNM RGB 1.04× within the spread).
 - Rolling temporal output keeps one stream; it has not been measured with
   more.
 - The NLM default applies to its tile kernels (`a`, `s` and `d` within their
@@ -201,7 +205,7 @@ loading the plugin. Filters then accept CPU or GPU frames (`vnode:all`) and
 keep GPU input and output resident. R80 and untested newer cores explicitly
 download GPU input instead. The frontend uses per-stream CUDA / Vulkan timeline
 semaphores, bounded external-memory import caches, and the existing host wait
-per frame. `NSS_CUDA_GPU_IMPORT_CACHE=1..16` selects the per-stream memory-import
+per frame. `NSS_CUDA_GPU_IMPORT_CACHE=2..16` selects the per-stream memory-import
 cache capacity (default 8). Temporal rolling chunks stay on the device, and NLM uses its tile
 path to avoid the initial GPU-node plane-path regression. `Backend()["gpu_frames"]`
 reports the mode. The normal Vulkan GPU-chain implementation remains

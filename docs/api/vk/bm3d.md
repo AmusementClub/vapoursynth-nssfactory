@@ -49,11 +49,21 @@ final=1` on classic: 478 fps against `nss_cuda`'s 640).
   legacy intermediate reduced by `VAggregate` to rounding.
 - **Model.** BM3D model 3 (orthonormal Haar along the group), as the CPU and
   CUDA plugins.
-- **Matching.** Spatial search uses the square matcher for `block=2/step=1`,
-  `4/2`, `8/4`, `12/6` and `16/8`, with groups 2–32 and one match channel.
-  Other spatial shapes keep their existing matcher; temporal search always
-  uses the predictive lane matcher, with a no-dedupe variant for `ps_num=1`.
-  The tensor-core matcher is not ported.
+- **Matching.** One-channel spatial searches use, in this order: the exact
+  column matcher (blocks 4/8/12/16 at steps 1–3, groups 8/16/32, except
+  block 4 step 2, block 12 step 3, block 16 group 32 and block 16 / group 8
+  step 3); the square matcher for `block = 2 x step` (2/1, 4/2, 8/4, 12/6,
+  16/8) and the generalized 12/3, 12/4, 16/4 and 8/2, groups 2–32; and, for
+  `block_size=8` with a window side (`2*bm_range + 1`) of 15 to 33 and groups
+  up to 32 on a device with 32-wide subgroups, an exact candidate-parallel
+  matcher (the default `block_step=8, bm_range=9` among them). Column and
+  candidate-parallel give the per-reference lane matcher's matches bit for
+  bit; square matches agree up to near ties. Everything else keeps the lane
+  matcher. Temporal search matches the centre frame with the square matcher
+  where it applies, then searches the other frames predictively from those
+  matches (a no-dedupe variant for `ps_num=1`). The tensor-core matcher is
+  not ported. RTX 5080, R81 GPU frames, 1080p gray default: 2052 fps against
+  1681 with the lane matcher (match stage 88 against 125 µs a submission).
 - **Memory.** Peak device memory at 1080p `radius=1` (eight threads): gray
   566 MiB, YUV420 839 MiB, RGB 1657 MiB; RGB legacy 1226 MiB.
 

@@ -464,6 +464,21 @@ int main(int argc, char** argv) {
                 spatial_case(device, matcher, 97, 83, block, group, 2, 7, flat, stats, 13, true, &column);
             }
         }
+        // The exact window kernel (block 8, sides 15 to 33): its native pass
+        // against the emulated lane kernels bit for bit (run_both), and the
+        // CPU; every group class, sparse and dense steps, padded rows, split
+        // batches, planes smaller than the window, and BM3D's default.
+        for (const int group : {2, 3, 8, 9, 16, 17, 32}) {
+            spatial_case(device, matcher, 97, 83, 8, group, 8, 9, flat, stats, 0, group == 8);
+        }
+        for (const int range : {7, 8, 12, 16}) {
+            spatial_case(device, matcher, 101, 76, 8, 8, 8, range, flat, stats, 5, true);
+            spatial_case(device, matcher, 77, 61, 8, 16, 4, range, flat, stats);
+        }
+        for (const int step : {1, 3, 5, 6, 7}) spatial_case(device, matcher, 97, 83, 8, 8, step, 9, flat, stats);
+        spatial_case(device, matcher, 12, 10, 8, 8, 1, 9, flat, stats);
+        spatial_case(device, matcher, 8, 8, 8, 32, 1, 16, flat, stats);
+        spatial_case(device, matcher, 240, 135, 8, 8, 8, 9, flat, stats, 0, true);
         // The block fallback: groups beyond the lanes (BM3D's 64), one top-K
         // chunk exceeded (window 81 x 81), and block 32 with group 64.
         spatial_case(device, matcher, 97, 83, 8, 64, 3, 7, flat, stats);

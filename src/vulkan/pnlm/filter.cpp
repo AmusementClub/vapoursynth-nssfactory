@@ -444,17 +444,25 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     const std::size_t slot_bytes = kParamsStride * 3 + std::max<std::size_t>(est, 4) + d->keys_bytes +
                                    frame_bytes(*d) * (d->gpu ? 1 : 2);
     const std::size_t limit = d->budget ? d->budget->snapshot().limit : SIZE_MAX;
-    // Without num_streams: three for d <= 1, two beyond (fewer where the
-    // limit does not hold them).
-    if (!d->backend.streams_explicit) d->backend.num_streams = d->d <= 1 ? 3 : 2;
-    const std::size_t streams = static_cast<std::size_t>(d->backend.num_streams);
-    std::size_t slots = streams + kExtraSlots, extra_outputs = kExtraOutputs, cached = window + slots;
+    // Without num_streams: three for d <= 1, two beyond, fewer where the
+    // limit does not hold them even without the extras.
+    std::size_t streams = d->backend.streams_explicit ? static_cast<std::size_t>(d->backend.num_streams)
+                                                      : (d->d <= 1 ? 3 : 2);
+    std::size_t slots = 0, extra_outputs = 0, cached = 0;
     const auto plan_bytes = [&] {
         return frame_bytes(*d) * cached * (staged ? 2 : 1) + slot_bytes * slots + (slots + extra_outputs) * output_bytes;
     };
-    if (plan_bytes() > limit) extra_outputs = 0;
-    while (plan_bytes() > limit && slots > streams) cached = window + --slots;
-    while (plan_bytes() > limit && cached > window) --cached;
+    const auto fit = [&] {
+        slots = streams + kExtraSlots;
+        extra_outputs = kExtraOutputs;
+        cached = window + slots;
+        if (plan_bytes() > limit) extra_outputs = 0;
+        while (plan_bytes() > limit && slots > streams) cached = window + --slots;
+        while (plan_bytes() > limit && cached > window) --cached;
+        return plan_bytes() <= limit;
+    };
+    while (!fit() && !d->backend.streams_explicit && streams > 1) --streams;
+    d->backend.num_streams = static_cast<int>(streams);
     if (plan_bytes() > limit) {
         throw std::invalid_argument("nss_vk.PNLM: memory_limit_mb is too small for this clip: it needs at least " +
                                     std::to_string((plan_bytes() >> 20) + 1) + " MiB");

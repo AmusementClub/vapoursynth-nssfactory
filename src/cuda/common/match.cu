@@ -1641,6 +1641,7 @@ void spatial_match(const float* plane, const MatchGeometry& geometry, const Rast
                    int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream, const void* scratch) {
     if (ref_count <= 0) return;
     if (launch_tensor(plane, geometry, grid, ref_begin, ref_count, out, counts, scratch, stream)) return;
+    if (spatial_match_window(plane, geometry, grid, ref_begin, ref_count, out, counts, stream)) return;
     if (launch_lanes(plane, geometry, nullptr, grid, ref_begin, ref_count, out, counts, stream)) return;
     const int span = geometry.lo() + geometry.hi();
     const int candidates = (span + 1) * (span + 1);
@@ -1669,6 +1670,12 @@ void spatial_match(const float* plane, const MatchGeometry& geometry, const Rast
         launch_spatial<1024>(plane, geometry, grid, ref_begin, ref_count, out, counts, stream);
     }
     NSS_CUDA_CHECK_LAUNCH();
+}
+
+bool spatial_match_lanes(const float* plane, const MatchGeometry& geometry, const RasterGrid& grid, int ref_begin,
+                         int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream) {
+    if (ref_count <= 0) return true;
+    return launch_lanes(plane, geometry, nullptr, grid, ref_begin, ref_count, out, counts, stream);
 }
 
 void predictive_match(const MatchGeometry& geometry, const TemporalWindow& window, const RasterGrid& grid,

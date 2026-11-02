@@ -90,6 +90,7 @@ set(NSS_CUDA_IEEE_SOURCES
   common/match.cu
   common/match_column.cu
   common/match_square.cu
+  common/match_window.cu
   common/nonfinite.cu
   lssc/kernels.cu
   mcwnnm/kernels.cu

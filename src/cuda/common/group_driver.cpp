@@ -464,9 +464,13 @@ void choose_roll_layout(Driver& d, const SlotPlan& sp, std::size_t limit) {
 // keeps up; direct DMA takes them out, and further streams then fill the
 // gaps a frame's transfers leave between its kernels (1080p: BM3D YUV420
 // 500 to 570 fps with two or three streams, MCWNNM RGB 184 to 237 with two
-// and 269 with three; without direct DMA 0.99x for both).
+// and 269 with three; without direct DMA 0.99x for both). GPU frames keep
+// one: frame_output_gpu gives its stream back before it waits, so the next
+// frame queues behind it (R81 resident 1080p, one / two streams: BM3D gray
+// default 2023 / 1956 fps, bm_range 4 1984 / 1918, RGB 496 / 487, WNNM 2050 /
+// 1927, NCSR 1074 / 1019 (three 1016), MCWNNM RGB 273 / 283 (three 259)).
 std::size_t implicit_streams(const Driver& d) {
-    if (d.mode == GroupMode::Rolling) return kDefaultStreams;
+    if (d.mode == GroupMode::Rolling || d.gpu) return kDefaultStreams;
     const bool direct = d.frame_memory && d.frame_memory->available();
     return static_cast<std::size_t>(direct ? d.direct_streams : d.default_streams);
 }
@@ -1127,61 +1131,66 @@ const VSFrame* frame_output_gpu(Driver* d, int n, VSFrameContext* ctx, VSCore* c
     for (int unit = 0; unit < (channels > 1 ? 1 : d->vi.format.numPlanes); ++unit) {
         const GroupPlane& p = d->planes[unit];
         const std::size_t row_bytes = static_cast<std::size_t>(p.width) * sizeof(float);
-        auto slot = d->pool->acquire();
-        Slot& s = *slot;
-        s.gpu->begin();
-        struct Drain {
-            cudaStream_t stream;
-            bool armed = true;
-            ~Drain() {
-                if (armed) cudaStreamSynchronize(stream);
-            }
-        } drain{s.stream};
-        const auto identity = [&](int plane) {
-            if (!radius) {
-                s.gpu->copy(src0, plane, dst, plane, row_bytes, p.height);
-                return;
-            }
-            for (int sl = 0; sl < d->ntemp; ++sl) {
-                if (sl == radius) {
-                    s.gpu->copy_rows(src0, plane, 0, dst, plane, 2 * sl * p.height, row_bytes, p.height);
-                    s.gpu->fill(dst, plane, (2 * sl + 1) * p.height, p.height, 0x3f800000);
-                } else {
-                    s.gpu->fill(dst, plane, 2 * sl * p.height, p.height, 0);
-                    s.gpu->fill(dst, plane, (2 * sl + 1) * p.height, p.height, 0);
+        // As frame_output: the slot is held only while this unit's work is
+        // queued (the next frame's work on its stream runs after it, and the
+        // input frames stay referenced until the event below has passed).
+        {
+            auto slot = d->pool->acquire();
+            Slot& s = *slot;
+            s.gpu->begin();
+            struct Drain {
+                cudaStream_t stream;
+                bool armed = true;
+                ~Drain() {
+                    if (armed) cudaStreamSynchronize(stream);
                 }
-            }
-        };
-        if (p.active) {
-            for (int t = 0; t < d->ntemp; ++t) {
-                for (int c = 0; c < channels; ++c) {
-                    s.gpu->read(srcf[t], unit + c, s.src_frames[t].as<float>() + c * p.floats, row_bytes, row_bytes,
-                                p.height);
-                    if (w) {
-                        s.gpu->read(reff[t], unit + c, s.ref_frames[t].as<float>() + c * p.floats, row_bytes, row_bytes,
-                                    p.height);
+            } drain{s.stream};
+            const auto identity = [&](int plane) {
+                if (!radius) {
+                    s.gpu->copy(src0, plane, dst, plane, row_bytes, p.height);
+                    return;
+                }
+                for (int sl = 0; sl < d->ntemp; ++sl) {
+                    if (sl == radius) {
+                        s.gpu->copy_rows(src0, plane, 0, dst, plane, 2 * sl * p.height, row_bytes, p.height);
+                        s.gpu->fill(dst, plane, (2 * sl + 1) * p.height, p.height, 0x3f800000);
+                    } else {
+                        s.gpu->fill(dst, plane, 2 * sl * p.height, p.height, 0);
+                        s.gpu->fill(dst, plane, (2 * sl + 1) * p.height, p.height, 0);
                     }
                 }
+            };
+            if (p.active) {
+                for (int t = 0; t < d->ntemp; ++t) {
+                    for (int c = 0; c < channels; ++c) {
+                        s.gpu->read(srcf[t], unit + c, s.src_frames[t].as<float>() + c * p.floats, row_bytes, row_bytes,
+                                    p.height);
+                        if (w) {
+                            s.gpu->read(reff[t], unit + c, s.ref_frames[t].as<float>() + c * p.floats, row_bytes, row_bytes,
+                                        p.height);
+                        }
+                    }
+                }
+                const std::size_t unit_floats = p.floats * channels;
+                for (int t = 0; t < d->ntemp && d->iters > 1; ++t) {
+                    NSS_CUDA_CHECK(cudaMemcpyAsync(s.noisy_frames[t].get(), s.src_frames[t].get(), unit_floats * sizeof(float),
+                                                   cudaMemcpyDeviceToDevice, s.stream));
+                }
+                if (d->two_stage) run_first_stage(*d, s, unit, n);
+                run_rounds(*d, s, p, n);
+                queue_downloads(*d, s, p, [&](int c, int k, const float* device) {
+                    s.gpu->write_rows(device, row_bytes, dst, unit + c, row_bytes, p.height, k * p.height);
+                });
             }
-            const std::size_t unit_floats = p.floats * channels;
-            for (int t = 0; t < d->ntemp && d->iters > 1; ++t) {
-                NSS_CUDA_CHECK(cudaMemcpyAsync(s.noisy_frames[t].get(), s.src_frames[t].get(), unit_floats * sizeof(float),
-                                               cudaMemcpyDeviceToDevice, s.stream));
+            for (int c = 0; c < channels; ++c) {
+                const int plane = unit + c;
+                if (!p.active || !d->channel_out[c]) identity(plane);
+                s.gpu->publish(dst, &plane, 1);
             }
-            if (d->two_stage) run_first_stage(*d, s, unit, n);
-            run_rounds(*d, s, p, n);
-            queue_downloads(*d, s, p, [&](int c, int k, const float* device) {
-                s.gpu->write_rows(device, row_bytes, dst, unit + c, row_bytes, p.height, k * p.height);
-            });
+            NSS_CUDA_CHECK(cudaEventRecord(g.done, s.stream));
+            drain.armed = false;
         }
-        for (int c = 0; c < channels; ++c) {
-            const int plane = unit + c;
-            if (!p.active || !d->channel_out[c]) identity(plane);
-            s.gpu->publish(dst, &plane, 1);
-        }
-        NSS_CUDA_CHECK(cudaEventRecord(g.done, s.stream));
         NSS_CUDA_CHECK(cudaEventSynchronize(g.done));
-        drain.armed = false;
     }
     for (int t = 0; t < d->ntemp; ++t) {
         frames.freeFrame(srcf[t]);

@@ -49,6 +49,15 @@ with group 32, and block 16 / group 8 at step 3, use lane. Block 32 and
 temporal searches do not use column. On an RTX 5080, the 20 new 4/12/16 shapes
 measured **11–54% faster** in paired 1080p Gray runs with identical output.
 
+Other spatial, single-channel searches with `block_size=8`, a window side
+(`2*bm_range + 1`) of 15 to 33 and groups up to 32 — the default
+`block_step=8, bm_range=9` among them — take an exact candidate-parallel
+matcher: each GPU thread computes whole candidate distances in the per-reference
+search's own arithmetic, so the matches are bit-identical to it. On an RTX 5080
+at 1080p gray the default search took 157 µs per frame instead of 270 µs
+(1.6–2.1x for sides 19 to 33 and groups 2 to 32); windows below side 15 keep
+the per-reference search, which is as fast there.
+
 When `block_size` is twice `block_step` (2 / 1, 4 / 2, 8 / 4, 12 / 6, 16 / 8:
 `block_size=16` at its default step is one) the spatial search shares work
 between references (the square matcher of Davy & Ehret, *GPU acceleration of

@@ -38,6 +38,18 @@ using nss::gpuhost::make_raster_grid;
 void spatial_match(const float* plane, const MatchGeometry& geometry, const RasterGrid& grid, int ref_begin,
                    int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream, const void* scratch = nullptr);
 
+// Exact candidate-parallel matching of one-channel block-8 windows up to a
+// side of 33 and groups up to 32 (match_window.cu): the lane kernels'
+// distances and keys, bit for bit, with a lane per candidate instead of eight.
+// spatial_match takes it ahead of the lane kernels.
+bool spatial_match_window_takes(const MatchGeometry& geometry, const RasterGrid& grid);
+bool spatial_match_window(const float* plane, const MatchGeometry& geometry, const RasterGrid& grid, int ref_begin,
+                          int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream);
+// The lane kernels alone, where they take the search (tests and benchmarks:
+// the reference of the exact matchers). Returns false where they do not.
+bool spatial_match_lanes(const float* plane, const MatchGeometry& geometry, const RasterGrid& grid, int ref_begin,
+                         int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream);
+
 // Exact column-reuse matching for BM3D: one channel, blocks 4, 8, 12 and 16,
 // steps 1 to 3, groups 8, 16 and 32, symmetric windows. Distances and keys are
 // identical to the lane kernels. Measured exclusions keep their existing path:

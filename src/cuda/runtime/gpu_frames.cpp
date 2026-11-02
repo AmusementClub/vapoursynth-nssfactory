@@ -40,6 +40,9 @@ int core_release(VSCore* core, const VSAPI* vsapi) {
 #if NSS_CUDA_GPU_FRAMES
 constexpr int kTestedCore = 81;
 constexpr std::size_t kDefaultMemoryImports = 8;
+// copy_rows holds the source's mapping while it maps the target: a cache of
+// one would evict (and unmap) the source before the copy is queued.
+constexpr std::size_t kMinMemoryImports = 2;
 constexpr std::size_t kMaxMemoryImports = 16;
 constexpr std::size_t kMaxSemaphoreImports = 16;
 
@@ -48,7 +51,7 @@ std::size_t memory_import_limit() {
     if (!value || !*value) return kDefaultMemoryImports;
     char* end = nullptr;
     const long parsed = std::strtol(value, &end, 10);
-    return end == value || parsed < 1 || parsed > static_cast<long>(kMaxMemoryImports)
+    return end == value || parsed < static_cast<long>(kMinMemoryImports) || parsed > static_cast<long>(kMaxMemoryImports)
                ? kDefaultMemoryImports
                : static_cast<std::size_t>(parsed);
 }
@@ -306,8 +309,7 @@ struct GpuStream::Impl {
 
     const std::size_t import_limit = memory_import_limit();
 
-    Impl(std::shared_ptr<GpuFrames> frames_, cudaStream_t stream_)
-        : frames(std::move(frames_)), stream(stream_), import_limit(memory_import_limit()) {
+    Impl(std::shared_ptr<GpuFrames> frames_, cudaStream_t stream_) : frames(std::move(frames_)), stream(stream_) {
         imports.reserve(import_limit);
         semaphores.reserve(kMaxSemaphoreImports);
         char error[256] = {};
