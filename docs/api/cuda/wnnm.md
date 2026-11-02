@@ -13,14 +13,13 @@ temporal = core.nss_cuda.WNNM(clip, sigma=25, radius=1)      # finished frames
 ## Cost
 
 Groups above 8 patches cost much more (an eigendecomposition per group), and
-`block_step` sets the number of groups (`1/step^2`). Spatial searches of some
+`block_step` sets the number of groups (`1/step^2`). Spatial searches of many
 shapes take faster dedicated matchers with the same matches (one match
-channel, `group_size` up to 32): the window search for `bm_range` up to 16 and
-at least 7 at block 8 (the default 7 included), 4 at blocks 3 to 6, 5 at block
-7 and 6 at block 2, any `block_step`; and the column search at `block_step` 1
-to 3; see [BM3D's optimized search shapes](bm3d.md#optimized-search-shapes).
-With `radius > 0` the window search also covers the centre frame from
-`bm_range` 9 at block 8.
+channel): the window search for `bm_range` 7 and more at block 8 (the default
+7 included), groups 34 to 64 at any `bm_range`, and other blocks from smaller
+or larger windows; and the column search at `block_step` 1 to 3; see [BM3D's
+optimized search shapes](bm3d.md#optimized-search-shapes). With `radius > 0`
+the window search also covers the centre frame from `bm_range` 9 at block 8.
 
 ## Closer to the papers
 
@@ -57,7 +56,7 @@ core.nss_cuda.WNNM(clip clip[, float[] sigma = 3.0, int block_size = 8,
 | `block_size` | 8 | [1, 16] | Patch edge. 8 is the balanced default; larger blocks raise SVD cost steeply. |
 | `block_step` | 8 | [1, block] | Reference-patch stride. The main quality/speed trade: positions scale as `1/step^2`. |
 | `group_size` | 8 | [1, 32] | Matched patches per group (SVD matrix columns). |
-| `bm_range` | 7 | [1, 64] | Search window radius (`2r+1`). With `bm_range` 20 or more, spatial matching of one channel runs on tensor cores on GPUs of compute capability 8.0+ (block 8, group at most 16): the same matches, a workspace of one plane per stream (about 24 MiB at 1080p). |
+| `bm_range` | 7 | [1, 64] | Search window radius (`2r+1`). With `bm_range` 25 or more, spatial matching of one channel runs on tensor cores on GPUs of compute capability 8.0+ (block 8, group at most 16): the same matches, a workspace of one plane per stream (about 24 MiB at 1080p). |
 | `radius` | 0 | [0, 16] | Temporal radius. >0 makes the filter temporal: finished, normal-height frames by default (`temporal_mode`, below). |
 | `rclip` | none | clip | Reference clip guiding matching. |
 

@@ -24,11 +24,13 @@ dedicated paths. They give the same matches as the general search (or the same
 up to near ties, where noted), so choosing one of these shapes changes speed,
 not quality. When the shape is up to you, consider one of them:
 
-- **Window search**, the same matches: one match channel, `group_size` up to
-  32, and a window side (`2*bm_range + 1`) of at most 33 and at least 9 for
-  `block_size=4`, 13 for `block_size=2`, 15 for `block_size=8`. In
-  `bm_range` terms: block 8 with `bm_range` 7 to 16 (the default 9
-  included), block 4 with 4 to 16, block 2 with 6 to 16. Any `block_step`.
+- **Window search**, the same matches: one match channel and `bm_range` up to
+  64, with any `block_step`:
+  - `group_size` up to 33: block 8 with `bm_range` 7 or more (the default 9
+    included), block 4 with 4 or more, block 2 with 6 or more;
+  - `group_size` 34 to 64 at blocks 2, 4 and 8: every `bm_range`;
+  - `group_size` up to 33 at block 12 with `bm_range` 9 or more, and at block
+    16 with `bm_range` 12 or more (24 or more for `group_size` up to 9).
 - **Column search**, the same matches: one match channel, `block_step` 1 to 3
   and `group_size` 8, 16 or 32 at these block sizes:
 
@@ -46,12 +48,14 @@ not quality. When the shape is up to you, consider one of them:
   `block_size=16` at its default step), and 12 / 3, 12 / 4, 16 / 4, 8 / 2;
   `group_size` 2 to 32. Very small windows and planes too small to fill the
   GPU keep the general search.
-- **Tensor-core search**, the same matches: `bm_range` 20 or more, block 8,
-  `group_size` up to 16, GPUs of compute capability 8.0 or newer.
+- **Tensor-core search**, the same matches: block 8, `group_size` up to 16,
+  GPUs of compute capability 8.0 or newer, `bm_range` 25 or more (from 20 to
+  24 the window search is faster and takes it).
 
 These apply to spatial searches. With `radius > 0` the square search, and the
 window search from a slightly larger window (`bm_range` 9 or more at block 8,
-6 at block 4, 8 at block 2), also cover the centre frame, and the other frames
+6 at block 4, 8 at block 2; `group_size` up to 33), also cover the centre
+frame, and the other frames
 are searched from its matches as usual. `chroma=1` matches on one plane, so it qualifies too.
 
 ## Closer to the papers
@@ -98,7 +102,7 @@ Omitted `block_step` adapts to `min(8, block_size)` per plane; omitted
 | `block_size` | 8 | {1,2,4,8,12,16,32} | Patch edge. 8 is the general default; 12 exists for high-noise DCT profiles. Larger blocks cost quadratically per patch. |
 | `block_step` | min(8, block) | [1, block] | Stride between reference patches. Halving it roughly quadruples positions (2D) — the main quality/speed trade. |
 | `group_size` | 8 | {1,2,4,8,16,32,64} | Maximum patches per 3D stack. More matches help at high noise; marginal at low noise. |
-| `bm_range` | 9 | [1, 64] | Search window radius (`window = 2*bm_range + 1`). Cost grows quadratically; motion/texture may justify a larger window. With `bm_range` 20 or more, spatial matching of one channel runs on tensor cores on GPUs of compute capability 8.0+ (block 8, group at most 16): the same matches, a workspace of one plane per stream (about 24 MiB at 1080p). See [optimized search shapes](#optimized-search-shapes). |
+| `bm_range` | 9 | [1, 64] | Search window radius (`window = 2*bm_range + 1`). Cost grows quadratically; motion/texture may justify a larger window. With `bm_range` 25 or more, spatial matching of one channel runs on tensor cores on GPUs of compute capability 8.0+ (block 8, group at most 16): the same matches, a workspace of one plane per stream (about 24 MiB at 1080p). See [optimized search shapes](#optimized-search-shapes). |
 | `radius` | 0 | [0, 16] | Temporal radius in frames. >0 makes the filter temporal: finished, normal-height frames by default (`temporal_mode`, below). |
 | `ref` | none | clip | External reference clip guiding both stages' matching (paper-style two-stage usage). |
 | `chroma` | 0 | {0, 1} | CBM3D for YUV 4:4:4 clips: groups are matched on plane 0 only (of `ref` when given) and all three planes are filtered with them. See "Color (CBM3D)". |

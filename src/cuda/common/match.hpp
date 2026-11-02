@@ -38,18 +38,30 @@ using nss::gpuhost::make_raster_grid;
 void spatial_match(const float* plane, const MatchGeometry& geometry, const RasterGrid& grid, int ref_begin,
                    int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream, const void* scratch = nullptr);
 
-// Exact candidate-parallel matching of one-channel windows of blocks 2 to 8,
-// sides up to 33 and groups up to 32 (match_window.cu; the smallest side
-// admitted depends on the block): the lane kernels' distances and keys, bit
-// for bit, with a lane per candidate. spatial_match takes it ahead of the lane
-// kernels.
+// Exact candidate-parallel matching of one-channel windows up to a side of
+// 129 (match_window.cu): blocks 2 to 8 with groups up to 33 (the lane
+// kernels' distances and keys, bit for bit) and 34 to 64 (the select and
+// block top-K kernels'), blocks 12 and 16 with groups up to 33 (the lane
+// kernels'), each from the smallest side where it measured faster.
+// spatial_match takes it ahead of the lane and other per-reference kernels,
+// and ahead of the tensor-core matcher where
+// spatial_match_window_over_tensor holds.
 bool spatial_match_window_takes(const MatchGeometry& geometry, const RasterGrid& grid);
+bool spatial_match_window_over_tensor(const MatchGeometry& geometry, const RasterGrid& grid);
 bool spatial_match_window(const float* plane, const MatchGeometry& geometry, const RasterGrid& grid, int ref_begin,
                           int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream);
 // The same on frame `frame` of a device table of frames.
 bool spatial_match_window_frame(const float* const* frames, int frame, const MatchGeometry& geometry,
                                 const RasterGrid& grid, int ref_begin, int ref_count, DeviceMatch* out, int* counts,
                                 cudaStream_t stream);
+// spatial_match without the window matcher (tests and benchmarks: the
+// reference of every exact path; no tensor-core workspace).
+void spatial_match_general(const float* plane, const MatchGeometry& geometry, const RasterGrid& grid, int ref_begin,
+                           int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream);
+// The tensor-core matcher alone (tests): false where it does not take the
+// search or has no prepared workspace.
+bool spatial_match_tensor_only(const float* plane, const MatchGeometry& geometry, const RasterGrid& grid, int ref_begin,
+                               int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream, const void* scratch);
 // The lane kernels alone, where they take the search (tests and benchmarks:
 // the reference of the exact matchers). Returns false where they do not.
 bool spatial_match_lanes(const float* plane, const MatchGeometry& geometry, const RasterGrid& grid, int ref_begin,

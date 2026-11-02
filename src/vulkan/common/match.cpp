@@ -33,39 +33,73 @@ bool pair2_fast(const MatchGeometry& g, int ps_num) {
 }
 
 // The window kernel (match_window.comp): four 32-invocation subgroups a
-// workgroup, a reference each; blocks 2 to 8, window sides from
-// window_min_side (below, the lane kernels are as fast: nss_cuda's
-// match_window.cu measurements) to 33 (its shared region).
+// workgroup, a reference each, the window in tiles of at most 33 x 33
+// candidates. Modes as nss_cuda's match_window.cu: tree (blocks up to 8,
+// groups up to 33: the lane kernels' arithmetic), chain (groups 34 to 64:
+// match_block.comp's), split (blocks 12 and 16, groups up to 33).
 struct WindowPush {
     VkDeviceAddress source, matches, counts;
     std::int32_t width, height, pitch, group;
     std::int32_t lo, hi, nx, step;
     std::int32_t max_x, max_y, ref_begin, ref_count;
-    std::int32_t frame, pad;
+    std::int32_t frame, tile_w, tile_h, tile_cols;
 };
-static_assert(sizeof(WindowPush) == 80, "matches the push block of shaders/common/match_window.comp");
-constexpr int kWindowWarps = 4, kWindowMaxSide = 33, kWindowMaxRows = 6;
-// The smallest window side per block where the kernel beat the lane kernels
-// on NVIDIA (resident 1080p gray BM3D, RTX 5080: block 8 from side 15, block 4
-// from 25, below 0.71-0.91x; block 2 0.60-0.95x up to side 33). Blocks without
-// a measurement (3, 5, 6, 7: no ported filter takes them) keep the lanes.
-int window_min_side(int block) {
+static_assert(sizeof(WindowPush) == 88, "matches the push block of shaders/common/match_window.comp");
+constexpr int kWindowWarps = 4, kWindowTile = 33, kWindowMaxSide = 129;
+enum class WindowMode { none, tree, chain, split };
+
+// The mode of a search, among the variants this build has (CMakeLists.txt).
+WindowMode window_mode(const MatchGeometry& g) {
+    if (g.channels != 1 || g.group < 2 || g.group > 64) return WindowMode::none;
+    if (g.group <= 33 && (g.block == 4 || g.block == 8)) return WindowMode::tree;
+    if (g.group > 33 && (g.block == 2 || g.block == 4 || g.block == 8)) return WindowMode::chain;
+    if ((g.block == 12 || g.block == 16) && g.group <= 33) return WindowMode::split;
+    return WindowMode::none;
+}
+
+// The smallest window side where the kernel beat the kernel it replaces on
+// NVIDIA (resident 1080p gray BM3D, RTX 5080, against the plugin without it):
+// - tree: block 8 from side 15, block 4 from 25 (below 0.71-0.91x; 1.2-1.8x
+//   from them up to side 97), block 2 0.60-0.95x up to side 33; blocks 3, 5,
+//   6 and 7 (no ported filter takes them) have no variant;
+// - chain: 1.7-3.3x at every side measured (9 to 65, blocks 4 and 8);
+// - split: blocks 12 and 16, both layouts, 0.82-0.87x at sides 9 to 13,
+//   0.99-1.03x at 19, 1.03-1.09x at 25, 1.12-1.32x at 33 and 49.
+// NSS_VK_WINDOW_ALL (a measurement build) takes every side.
+int window_min_side(WindowMode m, int block) {
+#ifdef NSS_VK_WINDOW_ALL
+    (void)m, (void)block;
+    return 1;
+#else
     constexpr int kOff = 1 << 30;
-    constexpr int kSide[9] = {kOff, kOff, kOff, kOff, 25, kOff, kOff, kOff, 15};
-    return block >= 0 && block <= 8 ? kSide[block] : kOff;
+    switch (m) {
+    case WindowMode::tree: return block == 8 ? 15 : block == 4 ? 25 : kOff;
+    case WindowMode::chain: return 1;
+    case WindowMode::split: return 25;
+    default: return kOff;
+    }
+#endif
 }
 // Seeding a temporal search pays from a larger window (the extra dispatch and
-// barrier): four more than the spatial minimum.
+// barrier): four more than the spatial minimum; tree mode only (the split
+// layout follows the predictive lane kernels' lane count, which ps_num can
+// raise).
 constexpr int kWindowSeedMargin = 4;
 
-// Rows an item takes for a window side, as nss_cuda's match_window.cu: the
+int window_tile(int side) {
+    const int cols = (side + kWindowTile - 1) / kWindowTile;
+    return (side + cols - 1) / cols;
+}
+
+// Rows an item takes for a tile side, as nss_cuda's match_window.cu: the
 // fewest instructions by a rough count an invocation makes.
-int window_rows(int side, int block) {
+int window_rows(int tile, int block, int lanes_per, int max_ny) {
+    const int per_round = 32 / lanes_per, cols = block / lanes_per;
     int best = 2;
     long long best_cost = -1;
-    for (int ny = 2; ny <= kWindowMaxRows; ++ny) {
-        const long long rounds = (static_cast<long long>(side) * ((side + ny - 1) / ny) + 31) / 32;
-        const long long cost = rounds * (ny * 2 * block * block + (ny + block - 1) * block + 40);
+    for (int ny = 2; ny <= max_ny; ++ny) {
+        const long long rounds = (static_cast<long long>(tile) * ((tile + ny - 1) / ny) + per_round - 1) / per_round;
+        const long long cost = rounds * (ny * 2 * block * cols + (ny + block - 1) * cols + 40);
         if (best_cost < 0 || cost < best_cost) best = ny, best_cost = cost;
     }
     return best;
@@ -131,22 +165,32 @@ void Matcher::prepare(const MatchGeometry& g, bool predictive, int ps_num, bool 
 }
 
 bool Matcher::window(const MatchGeometry& g) const {
+    const WindowMode m = window_mode(g);
     const int side = g.lo() + g.hi() + 1;
     const DeviceCaps& caps = device_->caps();
-    return !force_emulation_ && !disable_window_ && g.channels == 1 && g.group >= 2 && g.group <= 32 &&
-           side >= window_min_side(g.block) && side <= kWindowMaxSide && g.width >= g.block && g.height >= g.block &&
-           g.width <= kLaneMaxCoordinate && g.height <= kLaneMaxCoordinate &&
+    return m != WindowMode::none && !force_emulation_ && !disable_window_ &&
+           side >= window_min_side(m, g.block) && side <= kWindowMaxSide && g.width >= g.block &&
+           g.height >= g.block && g.width <= kLaneMaxCoordinate && g.height <= kLaneMaxCoordinate &&
            static_cast<long long>(g.pitch) * g.height < (1LL << 31) && device_->support().native_lanes >= 32 &&
            caps.min_subgroup_size <= 32 && caps.max_subgroup_size >= 32;
 }
 
 bool Matcher::window_seeds(const MatchGeometry& g, int ps_num) const {
-    return window(g) && lanes(g, ps_num) && g.lo() + g.hi() + 1 >= window_min_side(g.block) + kWindowSeedMargin;
+    const WindowMode m = window_mode(g);
+    return m == WindowMode::tree && window(g) && lanes(g, ps_num) &&
+           g.lo() + g.hi() + 1 >= window_min_side(m, g.block) + kWindowSeedMargin;
 }
 
 const Pipeline& Matcher::window_pipeline(const MatchGeometry& g, bool temporal) {
-    const std::string id = "match_window_b" + std::to_string(g.block) + "_ny" +
-                           std::to_string(window_rows(g.lo() + g.hi() + 1, g.block)) + (temporal ? "_t" : "");
+    const WindowMode m = window_mode(g);
+    const int tile = window_tile(g.lo() + g.hi() + 1);
+    const bool split = m == WindowMode::split;
+    const std::string id = "match_window_" +
+                           std::string(m == WindowMode::tree ? "tree" : m == WindowMode::chain ? "chain" : "split") +
+                           "_b" + std::to_string(g.block) +
+                           (split ? std::string(g.group <= 9 ? "_pair" : "_cols") : std::string()) + "_ny" +
+                           std::to_string(window_rows(tile, g.block, split ? 2 : 1, split ? 4 : 6)) +
+                           (temporal ? "_t" : "");
     std::lock_guard lock(mutex_);
     auto it = pipelines_.find(id);
     if (it == pipelines_.end()) it = pipelines_.emplace(id, Pipeline(device_, {id, sizeof(WindowPush), 32, {}})).first;
@@ -213,9 +257,11 @@ void Matcher::dispatch_window(VkCommandBuffer commands, VkDeviceAddress source, 
     if (static_cast<long long>(ref_count) * g.group >= (1LL << 31)) {
         throw std::logic_error("nss_vk: match batch beyond 32-bit indices");
     }
-    const WindowPush p{source,     matches,    counts,     g.width,   g.height, g.pitch,
-                       g.group,    g.lo(),     g.hi(),     grid.nx,   grid.step, grid.max_x,
-                       grid.max_y, ref_begin,  ref_count,  std::max(frame, 0), 0};
+    const int side = g.lo() + g.hi() + 1, tile = window_tile(side);
+    const WindowPush p{source,     matches,   counts,    g.width,   g.height,           g.pitch,
+                       g.group,    g.lo(),    g.hi(),    grid.nx,   grid.step,          grid.max_x,
+                       grid.max_y, ref_begin, ref_count, std::max(frame, 0), tile,     tile,
+                       (side + tile - 1) / tile};
     const int groups = (ref_count + kWindowWarps - 1) / kWindowWarps;
     const int x = std::min(groups, max_groups_x_);
     window_pipeline(g, frame >= 0).dispatch(commands, &p, static_cast<std::uint32_t>(x),

@@ -40,7 +40,11 @@ int main(int argc, char** argv) {
     }
     nss_cuda::DeviceBuffer d_plane(plane.size() * sizeof(float));
     NSS_CUDA_CHECK(cudaMemcpy(d_plane.get(), plane.data(), d_plane.bytes(), cudaMemcpyHostToDevice));
-    const Path lanes = nss_cuda::spatial_match_lanes;
+    const Path lanes = [](const float* plane, const nss_cuda::MatchGeometry& g, const nss_cuda::RasterGrid& grid,
+                          int begin, int count, nss_cuda::DeviceMatch* out, int* counts, cudaStream_t stream) {
+        nss_cuda::spatial_match_general(plane, g, grid, begin, count, out, counts, stream);
+        return true;
+    };
     const Path window = nss_cuda::spatial_match_window;
     const Path column = nss_cuda::spatial_match_column;
     struct Shape {
@@ -48,7 +52,28 @@ int main(int argc, char** argv) {
     };
     std::vector<Shape> shapes;
     const char* sweep = std::getenv("NSS_BENCH_SWEEP");
-    if (sweep && *sweep == '1') {
+    if (sweep && *sweep == '2') {
+        // Generalization sweep: wide windows (tree), groups 34 to 64
+        // (chain), blocks 12 and 16 at steps the column and square matchers
+        // leave (split).
+        for (const int range : {16, 17, 20, 24, 32, 48, 64}) {
+            shapes.push_back({8, 8, range, 8});
+            shapes.push_back({8, 8, range, 16});
+            shapes.push_back({4, 4, range, 16});
+        }
+        for (const int group : {34, 48, 64}) {
+            for (const int range : {2, 4, 6, 9, 12, 16, 24, 32, 48, 64}) {
+                shapes.push_back({8, 8, range, group});
+                if (group == 64) shapes.push_back({4, 4, range, group});
+            }
+        }
+        for (const int range : {2, 4, 6, 9, 12, 16, 24}) {
+            for (const int group : {8, 16, 32}) {
+                shapes.push_back({12, 8, range, group});
+                shapes.push_back({16, 6, range, group});
+            }
+        }
+    } else if (sweep && *sweep == '1') {
         // Admission sweep: every block, sparse and dense steps, sides 5 to 33.
         for (int block = 2; block <= 8; ++block) {
             for (const int range : {2, 3, 4, 5, 6, 7, 9, 12, 16}) {
@@ -68,7 +93,7 @@ int main(int argc, char** argv) {
     cudaEvent_t start, stop;
     NSS_CUDA_CHECK(cudaEventCreate(&start));
     NSS_CUDA_CHECK(cudaEventCreate(&stop));
-    std::printf("block step range group refs | lanes_us window_us column_us | window/lanes same\n");
+    std::printf("block step range group refs | general_us window_us column_us | window/general same\n");
     for (const Shape& s : shapes) {
         const auto grid = nss_cuda::make_raster_grid(width, height, s.block, s.step);
         const nss_cuda::MatchGeometry g{width, height, width, s.block, s.range, s.group};
@@ -114,6 +139,49 @@ int main(int argc, char** argv) {
         }
         std::printf("%5d %4d %5d %5d %6d | %8.1f %9.1f %9.1f | %6.3f %s\n", s.block, s.step, s.range, s.group, n, us[0],
                     us[1], us[2], us[0] > 0 && us[1] > 0 ? us[0] / us[1] : 0.0, same ? "yes" : "NO");
+    }
+    // Wide windows where the tensor-core matcher also applies (sm_80+, block
+    // 8, group <= 16, side 40-129): tensor against window (both exact).
+    if (sweep && *sweep == '2') {
+        std::printf("tensor block step range group | tensor_us window_us | window/tensor same\n");
+        nss_cuda::DeviceBuffer scratch(nss_cuda::spatial_match_scratch_bytes(width, height));
+        for (const int range : {20, 24, 32, 48, 64}) {
+            for (const int group : {8, 16}) {
+                const auto grid = nss_cuda::make_raster_grid(width, height, 8, 8);
+                const nss_cuda::MatchGeometry g{width, height, width, 8, range, group};
+                if (!nss_cuda::spatial_match_tensor(g, grid)) continue;
+                const int n = grid.count();
+                double us[2]{};
+                std::vector<nss_cuda::DeviceMatch> host[2];
+                for (int p = 0; p < 2; ++p) {
+                    nss_cuda::DeviceBuffer o(static_cast<std::size_t>(n) * group * sizeof(nss_cuda::DeviceMatch));
+                    nss_cuda::DeviceBuffer c(n * sizeof(int));
+                    const auto run = [&] {
+                        if (p == 0) {
+                            nss_cuda::spatial_match_prepare(d_plane.as<float>(), g, scratch.get(), nullptr);
+                            nss_cuda::spatial_match(d_plane.as<float>(), g, grid, 0, n, o.as<nss_cuda::DeviceMatch>(),
+                                                    c.as<int>(), nullptr, scratch.get());
+                        } else {
+                            nss_cuda::spatial_match_window(d_plane.as<float>(), g, grid, 0, n,
+                                                           o.as<nss_cuda::DeviceMatch>(), c.as<int>(), nullptr);
+                        }
+                    };
+                    run();
+                    NSS_CUDA_CHECK(cudaEventRecord(start));
+                    for (int i = 0; i < reps; ++i) run();
+                    NSS_CUDA_CHECK(cudaEventRecord(stop));
+                    NSS_CUDA_CHECK(cudaEventSynchronize(stop));
+                    float ms = 0.f;
+                    NSS_CUDA_CHECK(cudaEventElapsedTime(&ms, start, stop));
+                    us[p] = 1000.0 * ms / reps;
+                    host[p].resize(static_cast<std::size_t>(n) * group);
+                    NSS_CUDA_CHECK(cudaMemcpy(host[p].data(), o.get(), o.bytes(), cudaMemcpyDeviceToHost));
+                }
+                const bool same = !std::memcmp(host[0].data(), host[1].data(), host[0].size() * sizeof(nss_cuda::DeviceMatch));
+                std::printf("%6d %4d %5d %5d | %9.1f %9.1f | %6.3f %s\n", 8, 8, range, group, us[0], us[1],
+                            us[0] / us[1], same ? "yes" : "NO");
+            }
+        }
     }
     // Temporal: the predictive search (radius 1, ps_num 2, ps_range 4) with
     // its centre by the lane kernels, and seeded by the window matcher.

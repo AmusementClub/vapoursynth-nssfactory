@@ -230,16 +230,30 @@ foreach(_nss_b 12 16)
                       DEFINES B=${_nss_b} K=7 CPT=${_nss_cpt})
   endforeach()
 endforeach()
-# Exact candidate-parallel matching of one-channel windows of blocks 4 and 8
-# (the blocks where it beat the lane kernels on NVIDIA; match.cpp's
-# window_min_side), NY candidates an item; _t reads a frame table (the centre
-# of a predictive search, whose lane kernels it seeds).
-foreach(_nss_b 4 8)
-  foreach(_nss_ny 2 3 4 5 6)
-    nss_vk_add_shader(NSS_VK_SPIRV_SOURCES match_window_b${_nss_b}_ny${_nss_ny} common/match_window.comp
-                      DEFINES B=${_nss_b} NY=${_nss_ny})
-    nss_vk_add_shader(NSS_VK_SPIRV_SOURCES match_window_b${_nss_b}_ny${_nss_ny}_t common/match_window.comp
-                      DEFINES B=${_nss_b} NY=${_nss_ny} TEMPORAL=1)
+# Exact candidate-parallel matching (match_window.comp), NY candidates an
+# item: tree (the lane kernels' arithmetic; blocks 4 and 8, where it beat them
+# on NVIDIA; _t reads a frame table, the centre of a predictive search whose
+# lane kernels it seeds), chain (groups 34 to 64, match_block.comp's
+# arithmetic; blocks 2, 4 and 8, BM3D's below 12) and split (blocks 12 and
+# 16; _pair the lane kernels' eight-lane layout).
+foreach(_nss_ny 2 3 4 5 6)
+  foreach(_nss_b 4 8)
+    nss_vk_add_shader(NSS_VK_SPIRV_SOURCES match_window_tree_b${_nss_b}_ny${_nss_ny} common/match_window.comp
+                      DEFINES B=${_nss_b} NY=${_nss_ny} MODE=0)
+    nss_vk_add_shader(NSS_VK_SPIRV_SOURCES match_window_tree_b${_nss_b}_ny${_nss_ny}_t common/match_window.comp
+                      DEFINES B=${_nss_b} NY=${_nss_ny} MODE=0 TEMPORAL=1)
+  endforeach()
+  foreach(_nss_b 2 4 8)
+    nss_vk_add_shader(NSS_VK_SPIRV_SOURCES match_window_chain_b${_nss_b}_ny${_nss_ny} common/match_window.comp
+                      DEFINES B=${_nss_b} NY=${_nss_ny} MODE=1)
+  endforeach()
+endforeach()
+foreach(_nss_ny 2 3 4)
+  foreach(_nss_b 12 16)
+    nss_vk_add_shader(NSS_VK_SPIRV_SOURCES match_window_split_b${_nss_b}_pair_ny${_nss_ny} common/match_window.comp
+                      DEFINES B=${_nss_b} NY=${_nss_ny} MODE=2 PAIR=1)
+    nss_vk_add_shader(NSS_VK_SPIRV_SOURCES match_window_split_b${_nss_b}_cols_ny${_nss_ny} common/match_window.comp
+                      DEFINES B=${_nss_b} NY=${_nss_ny} MODE=2 PAIR=0)
   endforeach()
 endforeach()
 # BM3D square matching (block = RQ at step Q), with its own reduction order.

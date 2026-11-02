@@ -161,9 +161,15 @@ void column_case(int block, int width, int height, int group, int step, int rang
 // The exact window matcher (block 8) against the lane kernels, bit for bit,
 // and the CPU, in uneven batches that do not start on grid rows. range_hi >=
 // 0 makes the window asymmetric (the lane kernels take those too).
+// kind: 0 as `flat` says, 2 a NaN, 3 a value FP16 cannot hold (the CPU
+// comparison is skipped for 2 and 3). The reference is spatial_match without
+// the window matcher: the lane kernels, or the select / top-K kernels for
+// groups above 33.
 void window_case(int width, int height, int group, int step, int range, int range_hi, int batches, bool flat,
-                 Stats& stats, int block = 8) {
-    const auto plane = make_plane(width, height, 23u + group + step + range, flat);
+                 Stats& stats, int block = 8, int kind = 0) {
+    auto plane = make_plane(width, height, 23u + group + step + range, flat);
+    if (kind == 2) plane[static_cast<std::size_t>(height / 2) * width + width / 3] = std::nanf("");
+    if (kind == 3) plane[static_cast<std::size_t>(height / 3) * width + width / 2] = 1.0e6f;
     nss_cuda::DeviceBuffer d_plane(plane.size() * sizeof(float));
     NSS_CUDA_CHECK(cudaMemcpy(d_plane.get(), plane.data(), plane.size() * sizeof(float), cudaMemcpyHostToDevice));
     const auto grid = nss_cuda::make_raster_grid(width, height, block, step);
@@ -185,11 +191,14 @@ void window_case(int width, int height, int group, int step, int range, int rang
             const int begin = static_cast<int>(static_cast<long long>(n) * b * b / (batches * batches));
             const int end = static_cast<int>(static_cast<long long>(n) * (b + 1) * (b + 1) / (batches * batches));
             auto* dst = d_out.as<nss_cuda::DeviceMatch>() + static_cast<std::size_t>(begin) * group;
-            const bool taken = path ? nss_cuda::spatial_match_window(d_plane.as<float>(), g, grid, begin, end - begin, dst,
-                                                                     d_counts.as<int>() + begin, nullptr)
-                                    : nss_cuda::spatial_match_lanes(d_plane.as<float>(), g, grid, begin, end - begin, dst,
-                                                                    d_counts.as<int>() + begin, nullptr);
-            CHECK(taken, "%s: path %d declined a batch", label, path);
+            if (path) {
+                CHECK(nss_cuda::spatial_match_window(d_plane.as<float>(), g, grid, begin, end - begin, dst,
+                                                     d_counts.as<int>() + begin, nullptr),
+                      "%s: the window matcher declined a batch", label);
+            } else {
+                nss_cuda::spatial_match_general(d_plane.as<float>(), g, grid, begin, end - begin, dst,
+                                                d_counts.as<int>() + begin, nullptr);
+            }
         }
         out[path].resize(static_cast<std::size_t>(n) * group);
         counts[path].resize(n);
@@ -203,8 +212,8 @@ void window_case(int width, int height, int group, int step, int range, int rang
         CHECK(std::memcmp(out[0].data() + static_cast<std::size_t>(ref) * group,
                           out[1].data() + static_cast<std::size_t>(ref) * group,
                           sizeof(nss_cuda::DeviceMatch) * count) == 0,
-              "%s ref %d: lane and window results differ", label, ref);
-        if (range_hi >= 0) continue;  // the CPU's spatial_match is symmetric
+              "%s ref %d: general and window results differ", label, ref);
+        if (range_hi >= 0 || kind != 0) continue;  // the CPU's spatial_match is symmetric
         nss::Match cpu[nss_cuda::kMaxGroup];
         const int m = nss::spatial_match(plane.data(), width, width, height, grid.x(ref), grid.y(ref), block, range,
                                          group, cpu);
@@ -431,9 +440,15 @@ void tensor_case(int width, int height, int group, int step, int lo, int hi, int
             NSS_CUDA_CHECK(cudaMemset(d_counts.get(), 0, d_counts.bytes()));
             for (int begin = start; begin < n; begin += batch) {
                 const int count = std::min(batch, n - begin);
-                nss_cuda::spatial_match(d_plane.as<float>(), g, grid, begin, count,
-                                        d_out.as<nss_cuda::DeviceMatch>() + static_cast<std::size_t>(begin) * group,
-                                        d_counts.as<int>() + begin, nullptr, path ? scratch.get() : nullptr);
+                auto* dst = d_out.as<nss_cuda::DeviceMatch>() + static_cast<std::size_t>(begin) * group;
+                if (path) {
+                    CHECK(nss_cuda::spatial_match_tensor_only(d_plane.as<float>(), g, grid, begin, count, dst,
+                                                              d_counts.as<int>() + begin, nullptr, scratch.get()),
+                          "tensor %dx%d: batch declined", width, height);
+                } else {
+                    nss_cuda::spatial_match_general(d_plane.as<float>(), g, grid, begin, count, dst,
+                                                    d_counts.as<int>() + begin, nullptr);
+                }
             }
             out[path].resize(matches);
             counts[path].resize(n);
@@ -588,6 +603,34 @@ int main() {
         window_case(8, 8, 32, 1, 16, -1, 1, flat, stats);
         window_case(1920 / 8, 1080 / 8, 8, 8, 9, -1, 2, flat, stats);
     }
+    // Generalized window matcher: wide windows (tiles of up to 33 x 33
+    // candidates), groups 34 to 64 (one row-major chain, two list slots),
+    // blocks 12 and 16 (two lanes a candidate, both lane-kernel layouts),
+    // NaN and FP16-overflowing samples.
+    for (const bool flat : {false, true}) {
+        window_case(150, 120, 8, 8, 20, -1, 2, flat, stats);
+        window_case(150, 120, 16, 4, 24, -1, 1, flat, stats);
+        window_case(150, 120, 32, 8, 40, -1, 2, flat, stats);
+        window_case(100, 90, 8, 8, 64, -1, 1, flat, stats);  // windows wider than the plane
+        window_case(150, 120, 33, 4, 17, 30, 2, flat, stats, 4);
+        for (const int group : {34, 40, 48, 64}) {
+            window_case(97, 83, group, 8, 4, -1, 2, flat, stats);
+            window_case(97, 83, group, 5, 9, -1, 1, flat, stats, 6);
+            window_case(120, 100, group, 4, 24, -1, 2, flat, stats, 4);
+            window_case(61, 58, group, 2, 2, 7, 1, flat, stats, 3);
+        }
+        for (const int group : {2, 8, 9, 10, 16, 33}) {
+            window_case(97, 83, group, 8, 9, -1, 2, flat, stats, 12);
+            window_case(97, 83, group, 6, group <= 9 ? 24 : 12, -1, 2, flat, stats, 16);
+            window_case(70, 66, group, 5, 20, 12, 1, flat, stats, 12);
+        }
+    }
+    for (const int kind : {2, 3}) {
+        window_case(97, 83, 8, 8, 9, -1, 2, false, stats, 8, kind);
+        window_case(97, 83, 64, 8, 9, -1, 2, false, stats, 8, kind);
+        window_case(97, 83, 16, 6, 12, -1, 2, false, stats, 16, kind);
+        window_case(120, 100, 16, 8, 30, -1, 1, false, stats, 8, kind);
+    }
     // Temporal searches whose centre frame the window matcher seeds: the
     // lane kernels' predictive matches bit for bit, and the CPU's.
     for (const bool flat : {false, true}) {
@@ -611,15 +654,13 @@ int main() {
     }
     {
         const auto grid = nss_cuda::make_raster_grid(97, 83, 8, 8);
-        nss_cuda::MatchGeometry g{97, 83, 97, 8, 17, 8};
-        CHECK(!nss_cuda::spatial_match_window_takes(g, grid), "side 35 taken by the window matcher");
+        nss_cuda::MatchGeometry g{97, 83, 97, 8, 65, 8};
+        CHECK(!nss_cuda::spatial_match_window_takes(g, grid), "side 131 taken by the window matcher");
         g = nss_cuda::MatchGeometry{97, 83, 97, 8, 6, 8};
         CHECK(!nss_cuda::spatial_match_window_takes(g, grid), "side 13 taken by the window matcher");
         g = nss_cuda::MatchGeometry{97, 83, 97, 8, 7, 8};
         CHECK(nss_cuda::spatial_match_window_takes(g, grid) && !nss_cuda::predictive_match_window_takes(g, grid),
               "block 8 side 15: spatial window only");
-        g = nss_cuda::MatchGeometry{97, 83, 97, 8, 9, 33};
-        CHECK(!nss_cuda::spatial_match_window_takes(g, grid), "group 33 taken by the window matcher");
         g = nss_cuda::MatchGeometry{97, 83, 97, 4, 3, 8};
         CHECK(!nss_cuda::spatial_match_window_takes(g, grid), "block 4 side 7 taken by the window matcher");
         g = nss_cuda::MatchGeometry{97, 83, 97, 9, 9, 8};

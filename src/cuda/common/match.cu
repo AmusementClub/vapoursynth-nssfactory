@@ -1637,11 +1637,15 @@ void spatial_match_prepare(const float* plane, const MatchGeometry& g, void* scr
     NSS_CUDA_CHECK_LAUNCH();
 }
 
-void spatial_match(const float* plane, const MatchGeometry& geometry, const RasterGrid& grid, int ref_begin,
-                   int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream, const void* scratch) {
+namespace {
+
+void spatial_match_paths(const float* plane, const MatchGeometry& geometry, const RasterGrid& grid, int ref_begin,
+                         int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream, const void* scratch,
+                         bool window) {
     if (ref_count <= 0) return;
-    if (launch_tensor(plane, geometry, grid, ref_begin, ref_count, out, counts, scratch, stream)) return;
-    if (spatial_match_window(plane, geometry, grid, ref_begin, ref_count, out, counts, stream)) return;
+    const bool window_first = window && spatial_match_window_over_tensor(geometry, grid);
+    if (!window_first && launch_tensor(plane, geometry, grid, ref_begin, ref_count, out, counts, scratch, stream)) return;
+    if (window && spatial_match_window(plane, geometry, grid, ref_begin, ref_count, out, counts, stream)) return;
     if (launch_lanes(plane, geometry, nullptr, grid, ref_begin, ref_count, out, counts, stream)) return;
     const int span = geometry.lo() + geometry.hi();
     const int candidates = (span + 1) * (span + 1);
@@ -1670,6 +1674,24 @@ void spatial_match(const float* plane, const MatchGeometry& geometry, const Rast
         launch_spatial<1024>(plane, geometry, grid, ref_begin, ref_count, out, counts, stream);
     }
     NSS_CUDA_CHECK_LAUNCH();
+}
+
+}  // namespace
+
+void spatial_match(const float* plane, const MatchGeometry& geometry, const RasterGrid& grid, int ref_begin,
+                   int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream, const void* scratch) {
+    spatial_match_paths(plane, geometry, grid, ref_begin, ref_count, out, counts, stream, scratch, true);
+}
+
+bool spatial_match_tensor_only(const float* plane, const MatchGeometry& geometry, const RasterGrid& grid, int ref_begin,
+                               int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream, const void* scratch) {
+    if (ref_count <= 0) return true;
+    return launch_tensor(plane, geometry, grid, ref_begin, ref_count, out, counts, scratch, stream);
+}
+
+void spatial_match_general(const float* plane, const MatchGeometry& geometry, const RasterGrid& grid, int ref_begin,
+                           int ref_count, DeviceMatch* out, int* counts, cudaStream_t stream) {
+    spatial_match_paths(plane, geometry, grid, ref_begin, ref_count, out, counts, stream, nullptr, false);
 }
 
 bool spatial_match_lanes(const float* plane, const MatchGeometry& geometry, const RasterGrid& grid, int ref_begin,

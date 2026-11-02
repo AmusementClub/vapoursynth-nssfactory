@@ -1,22 +1,30 @@
 // SPDX-License-Identifier: GPL-2.0-only
-// Candidate-parallel exact matcher for one-channel spatial searches of blocks
-// 2 to 8, as nss_cuda's match_window.cu: a 32-invocation subgroup takes one
-// reference, stages its search region in shared memory, and each invocation
-// computes whole candidates, NY vertically adjacent ones of one column at a
-// time, from the region rows that item reads once. A candidate keeps B
-// column chains, added row by row from the top as the lane kernel's lane j
-// adds column j, and totals them in the lane kernel's xor-tree order over the
-// block width rounded up to a power of two (its idle lanes add exact zeros,
-// left out here): the distance and key are match_lane.comp's, bit for bit. Keys are unique
-// within a window, so the K smallest form the same set in any order: the
-// subgroup holds them as the lane kernels do (invocation i the i-th), and each
-// round inserts the keys below the K-th, smallest first.
+// Candidate-parallel exact matcher for one-channel spatial searches, as
+// nss_cuda's match_window.cu (which explains the modes): a 32-invocation
+// subgroup takes one reference and stages its search window in shared memory
+// a tile of at most 33 x 33 candidates at a time; each invocation (two in
+// MODE 2) computes whole candidates, NY vertically adjacent ones of one
+// column at a time, from the region rows that item reads once.
+// - MODE 0, tree (blocks up to 8, groups up to 33): match_lane.comp's
+//   column chains and xor tree over the block width rounded up to a power of
+//   two (its idle lanes add exact zeros, left out here).
+// - MODE 1, chain (blocks up to 8, groups 34 to 64): match_block.comp's
+//   row-major chain; the list holds two keys an invocation.
+// - MODE 2, split (blocks 12 and 16, groups up to 33): two invocations a
+//   candidate, eight block columns each; PAIR the lane kernels' eight-lane
+//   layout (column j chained with j + 8), else one chain a column and a
+//   16-wide tree. The halves add by one shuffle, the tree's last step.
+// Keys are unique within a window, so the K smallest form the same set in any
+// order: the subgroup holds them as the lane kernels do (rank r on invocation
+// r % 32, slot r / 32), and each round inserts the keys below the K-th,
+// smallest first.
 //
 // Requires a full subgroup of exactly 32 (the pipeline's required size); no
-// emulated layer (devices without one keep the lane kernels).
+// emulated layer (devices without one keep the other kernels).
 //
-// Defines: B (2 to 8), NY (2 to 6), TEMPORAL (the plane is frame `frame` of
-// a device table of frame addresses: the centre of a predictive search).
+// Defines: B, NY, MODE (0, 1, 2), PAIR (MODE 2), TEMPORAL (the plane is frame
+// `frame` of a device table of frame addresses: the centre of a predictive
+// search).
 #version 460
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
@@ -30,12 +38,41 @@
 #ifndef B
 #define B 8
 #endif
+#ifndef MODE
+#define MODE 0
+#endif
+#ifndef PAIR
+#define PAIR 0
+#endif
 #ifndef TEMPORAL
 #define TEMPORAL 0
 #endif
 #define WARPS 4
-#define MAX_ROWS 40   // window side 33 + B - 1
-#define MAX_PITCH 41  // odd
+#define TILE 33
+#define MAX_ROWS (TILE + B - 1)
+#define MAX_PITCH (MAX_ROWS | 1)
+#if MODE == 1
+#define SLOTS 2
+#else
+#define SLOTS 1
+#endif
+#if MODE == 2
+#define LANES 2  // invocations a candidate
+#define COLS 8   // block columns an invocation
+#if PAIR != 0
+#define CHAINS 4
+#else
+#define CHAINS 8
+#endif
+#else
+#define LANES 1
+#define COLS B
+#if MODE == 0
+#define CHAINS B
+#else
+#define CHAINS 1
+#endif
+#endif
 
 layout(local_size_x = 32 * WARPS) in;
 shared float region[WARPS * MAX_ROWS * MAX_PITCH];
@@ -56,7 +93,7 @@ layout(push_constant) uniform Push {
     int width, height, pitch, group;
     int lo, hi, nx, step;
     int max_x, max_y, ref_begin, ref_count;
-    int frame, pad;
+    int frame, tile_w, tile_h, tile_cols;
 } pc;
 
 const uint64_t EMPTY = 0xffffffffffffffffUL;
@@ -69,6 +106,13 @@ uint64_t shfl64(uint64_t x, uint src) {
     return packUint2x32(uvec2(subgroupShuffle(h.x, src), subgroupShuffle(h.y, src)));
 }
 
+void order(inout uint64_t a, inout uint64_t b) {
+    const uint64_t low = a < b ? a : b;
+    b = a < b ? b : a;
+    a = low;
+}
+
+#if MODE == 0
 // The lane kernel's xor tree over the B column sums.
 precise float column_tree(float c[B]) {
 #if B == 2
@@ -87,11 +131,30 @@ precise float column_tree(float c[B]) {
     return ((c[0] + c[1]) + (c[2] + c[3])) + ((c[4] + c[5]) + (c[6] + c[7]));
 #endif
 }
+#endif
 
-void order(inout uint64_t a, inout uint64_t b) {
-    const uint64_t low = a < b ? a : b;
-    b = a < b ? b : a;
-    a = low;
+uint64_t held[SLOTS];
+
+// Every invocation: the key of rank `rank`.
+uint64_t held_at(int rank) {
+#if SLOTS > 1
+    const uint64_t v = rank >= 32 ? held[1] : held[0];
+#else
+    const uint64_t v = held[0];
+#endif
+    return shfl64(v, uint(rank & 31));
+}
+
+// Every invocation, the same `next`: the entries from its rank on move up one.
+void held_insert(uint64_t next, uint lane) {
+    const uint64_t pre0 = shfl64(held[0], max(lane, 1u) - 1u);
+#if SLOTS > 1
+    const uint64_t top0 = shfl64(held[0], 31u);
+    const uint64_t up1 = shfl64(held[1], max(lane, 1u) - 1u);
+    const uint64_t pre1 = lane == 0u ? top0 : up1;
+    if (next < held[1]) held[1] = !(next < pre1) ? next : pre1;
+#endif
+    if (next < held[0]) held[0] = (lane == 0u || !(next < pre0)) ? next : pre0;
 }
 
 void main() {
@@ -99,99 +162,157 @@ void main() {
     const int warp = int(gl_SubgroupID);
     const int r = int(gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x) * WARPS + warp;
     if (r >= pc.ref_count) return;  // the whole subgroup: no workgroup barriers here
-    const int side = pc.lo + pc.hi + 1, rows = side + B - 1, pitch = rows | 1;
+    const int side = pc.lo + pc.hi + 1;
+    const int pitch = (pc.tile_w + B - 1) | 1;
     const int base = warp * MAX_ROWS * MAX_PITCH;
     const int at_ref = pc.ref_begin + r;
     const int cx = min((at_ref % pc.nx) * pc.step, pc.max_x), cy = min((at_ref / pc.nx) * pc.step, pc.max_y);
     const int x_lo = cx - pc.lo, y_lo = cy - pc.lo;
+    const int last_col = pc.width - 1, last_row = pc.height - 1;
 #if TEMPORAL
     const uint64_t source = Table(pc.source).p[pc.frame];
 #else
     const uint64_t source = pc.source;
 #endif
-    const int last_col = pc.width - 1, last_row = pc.height - 1;
-    // The search region, clamped at the plane's edges (only positions
-    // outside the plane read the clamped values, and they never enter).
-    for (int rx = int(lane); rx < rows; rx += 32) {
-        const int x = clamp(x_lo + rx, 0, last_col);
-        for (int ry = 0; ry < rows; ++ry) {
-            region[base + ry * pitch + rx] = Plane(source).v[clamp(y_lo + ry, 0, last_row) * pc.pitch + x];
-        }
+    // The invocation's block columns (MODE 2: see the file comment; columns
+    // at or past B are absent).
+    int column[COLS];
+    bool has[COLS];
+    [[unroll]] for (int q = 0; q < COLS; ++q) {
+#if MODE == 2
+        const int part_of = int(lane & 1u);
+#if PAIR != 0
+        column[q] = 4 * part_of + (q & 3) + (q < 4 ? 0 : 8);
+#else
+        column[q] = 8 * part_of + q;
+#endif
+#else
+        column[q] = q;
+#endif
+        has[q] = column[q] < B;
+        column[q] = has[q] ? column[q] : 0;
     }
-    subgroupMemoryBarrierShared();
-    subgroupBarrier();
-    float ref[B][B];
+    float ref[B][COLS];
     [[unroll]] for (int y = 0; y < B; ++y) {
-        [[unroll]] for (int c = 0; c < B; ++c) ref[y][c] = region[base + (pc.lo + y) * pitch + pc.lo + c];
+        [[unroll]] for (int q = 0; q < COLS; ++q) ref[y][q] = Plane(source).v[(cy + y) * pc.pitch + cx + column[q]];
     }
 
     const int max_x = pc.width - B, max_y = pc.height - B;
     const uint self = uint(cy) << 16 | uint(cx);
-    const uint wanted = uint(min(pc.group, 32) - 1);  // the list's length
-    const int bands = (side + NY - 1) / NY, items = side * bands;
-    uint64_t held = EMPTY;
-    for (int first = 0; first < items; first += 32) {
-        const int item = first + int(lane);
-        const bool live = item < items;
-        const int col = live ? item % side : 0, band = live ? item / side : 0;
-        const int y0 = band * NY;
-        precise float acc[NY][B];
-        [[unroll]] for (int k = 0; k < NY; ++k) {
-            [[unroll]] for (int c = 0; c < B; ++c) acc[k][c] = 0.0;
-        }
-        // Region row y0 + i is row i - k of candidate k's block.
-        [[unroll]] for (int i = 0; i < NY + B - 1; ++i) {
-            const int row = base + min(y0 + i, rows - 1) * pitch + col;
-            float v[B];
-            [[unroll]] for (int c = 0; c < B; ++c) v[c] = region[row + c];
-            [[unroll]] for (int k = 0; k < NY; ++k) {
-                const int y = i - k;
-                if (y < 0 || y >= B) continue;
-                [[unroll]] for (int c = 0; c < B; ++c) {
-                    precise float d = ref[y][c] - v[c];
-                    acc[k][c] = fma(d, d, acc[k][c]);
+    const int wanted = min(pc.group, 32 * SLOTS + 1) - 1;  // the list's length
+    [[unroll]] for (int s = 0; s < SLOTS; ++s) held[s] = EMPTY;
+    const int tile_rows = (side + pc.tile_h - 1) / pc.tile_h;
+    for (int ty = 0; ty < tile_rows; ++ty) {
+        const int oy = ty * pc.tile_h, ch = min(pc.tile_h, side - oy);
+        for (int tx = 0; tx < pc.tile_cols; ++tx) {
+            const int ox = tx * pc.tile_w, cw = min(pc.tile_w, side - ox);
+            const int rows = ch + B - 1, width = cw + B - 1;
+            // The tile's region, clamped at the plane's edges (only positions
+            // outside the plane read the clamped values, and they never enter).
+            subgroupMemoryBarrierShared();
+            subgroupBarrier();
+            for (int rx = int(lane); rx < width; rx += 32) {
+                const int x = clamp(x_lo + ox + rx, 0, last_col);
+                for (int ry = 0; ry < rows; ++ry) {
+                    region[base + ry * pitch + rx] = Plane(source).v[clamp(y_lo + oy + ry, 0, last_row) * pc.pitch + x];
+                }
+            }
+            subgroupMemoryBarrierShared();
+            subgroupBarrier();
+            const int bands = (ch + NY - 1) / NY, items = cw * bands;
+            for (int first = 0; first < items; first += 32 / LANES) {
+                const int item = first + int(lane) / LANES;
+                const bool live = item < items;
+                const int col = live ? item % cw : 0, band = live ? item / cw : 0;
+                const int y0 = band * NY;
+                precise float acc[NY][CHAINS];
+                [[unroll]] for (int k = 0; k < NY; ++k) {
+                    [[unroll]] for (int c = 0; c < CHAINS; ++c) acc[k][c] = 0.0;
+                }
+                // Region row y0 + i is row i - k of candidate k's block.
+                [[unroll]] for (int i = 0; i < NY + B - 1; ++i) {
+                    const int row = base + min(y0 + i, rows - 1) * pitch + col;
+                    float v[COLS];
+                    [[unroll]] for (int q = 0; q < COLS; ++q) v[q] = region[row + column[q]];
+                    [[unroll]] for (int k = 0; k < NY; ++k) {
+                        const int y = i - k;
+                        if (y < 0 || y >= B) continue;
+                        [[unroll]] for (int q = 0; q < COLS; ++q) {
+                            if (!has[q]) continue;
+                            precise float d = ref[y][q] - v[q];
+#if MODE == 0
+                            acc[k][q] = fma(d, d, acc[k][q]);
+#elif MODE == 1
+                            acc[k][0] = fma(d, d, acc[k][0]);
+#elif PAIR != 0
+                            acc[k][q & 3] = fma(d, d, acc[k][q & 3]);
+#else
+                            acc[k][q] = fma(d, d, acc[k][q]);
+#endif
+                        }
+                    }
+                }
+                uint64_t key[NY];
+                [[unroll]] for (int k = 0; k < NY; ++k) {
+#if MODE == 0
+                    float columns[B];
+                    [[unroll]] for (int c = 0; c < B; ++c) columns[c] = acc[k][c];
+                    precise float sum = column_tree(columns);
+                    const bool mine = true;
+#elif MODE == 1
+                    precise float sum = acc[k][0];
+                    const bool mine = true;
+#else
+#if PAIR != 0
+                    precise float part = (acc[k][0] + acc[k][1]) + (acc[k][2] + acc[k][3]);
+#else
+                    precise float part = ((acc[k][0] + acc[k][1]) + (acc[k][2] + acc[k][3])) +
+                                         ((acc[k][4] + acc[k][5]) + (acc[k][6] + acc[k][7]));
+#endif
+                    const float other = subgroupShuffleXor(part, 1u);
+                    precise float sum = part + other;
+                    const bool mine = (lane & 1u) == 0u;
+#endif
+                    const int x = x_lo + ox + col, y = y_lo + oy + y0 + k;
+                    const uint at = uint(y) << 16 | uint(x);
+                    const bool ok = mine && live && y0 + k < ch && x >= 0 && x <= max_x && y >= 0 && y <= max_y &&
+                                    at != self;
+                    key[k] = ok ? (uint64_t(min(floatBitsToUint(sum), INF_BITS)) << 32 | uint64_t(at)) : EMPTY;
+                }
+                // The invocation's keys in ascending order (a transposition network).
+                [[unroll]] for (int pass = 0; pass < NY - 1; ++pass) {
+                    [[unroll]] for (int k = 0; k + 1 < NY - pass; ++k) order(key[k], key[k + 1]);
+                }
+                // Insert the round's keys below the list's last, smallest
+                // first: the invocation with the smallest head gives it up.
+                uint64_t bound = held_at(wanted - 1);
+                while (true) {
+                    const bool enters = key[0] < bound;
+                    if (!subgroupAny(enters)) break;
+                    const uint head_hi = uint(key[0] >> 32);
+                    const uint top = subgroupMin(enters ? head_hi : 0xffffffffu);
+                    const uint low = subgroupMin(enters && head_hi == top ? uint(key[0]) : 0xffffffffu);
+                    const uint64_t next = packUint2x32(uvec2(low, top));
+                    held_insert(next, lane);
+                    if (key[0] == next) {
+                        [[unroll]] for (int k = 0; k < NY - 1; ++k) key[k] = key[k + 1];
+                        key[NY - 1] = EMPTY;
+                    }
+                    bound = held_at(wanted - 1);
                 }
             }
         }
-        uint64_t key[NY];
-        [[unroll]] for (int k = 0; k < NY; ++k) {
-            float columns[B];
-            [[unroll]] for (int c = 0; c < B; ++c) columns[c] = acc[k][c];
-            precise float sum = column_tree(columns);
-            const int x = x_lo + col, y = y_lo + y0 + k;
-            const uint at = uint(y) << 16 | uint(x);
-            const bool ok = live && y0 + k < side && x >= 0 && x <= max_x && y >= 0 && y <= max_y && at != self;
-            key[k] = ok ? (uint64_t(min(floatBitsToUint(sum), INF_BITS)) << 32 | uint64_t(at)) : EMPTY;
-        }
-        // The invocation's keys in ascending order (a transposition network).
-        [[unroll]] for (int pass = 0; pass < NY - 1; ++pass) {
-            [[unroll]] for (int k = 0; k + 1 < NY - pass; ++k) order(key[k], key[k + 1]);
-        }
-        // Insert the round's keys below the list's last, smallest first: the
-        // invocation with the smallest head gives it up and moves on.
-        uint64_t bound = shfl64(held, wanted - 1u);
-        while (true) {
-            const bool enters = key[0] < bound;
-            if (!subgroupAny(enters)) break;
-            const uint head_hi = uint(key[0] >> 32);
-            const uint top = subgroupMin(enters ? head_hi : 0xffffffffu);
-            const uint low = subgroupMin(enters && head_hi == top ? uint(key[0]) : 0xffffffffu);
-            const uint64_t next = packUint2x32(uvec2(low, top));
-            const uint64_t pre = shfl64(held, max(lane, 1u) - 1u);
-            if (next < held) held = (lane == 0u || !(next < pre)) ? next : pre;
-            if (key[0] == next) {
-                [[unroll]] for (int k = 0; k < NY - 1; ++k) key[k] = key[k + 1];
-                key[NY - 1] = EMPTY;
-            }
-            bound = shfl64(held, wanted - 1u);
-        }
     }
-    const bool mine = lane < wanted && held != EMPTY;
-    const int filled = int(subgroupBallotBitCount(subgroupBallot(mine)));
     const int dst = r * pc.group;
-    if (mine) {
-        const uint at = uint(held), bits = uint(held >> 32);
-        Matches(pc.matches).m[dst + 1 + int(lane)] = Match(int(at & 0xffffu), int(at >> 16), 0, uintBitsToFloat(bits));
+    int filled = 0;
+    [[unroll]] for (int s = 0; s < SLOTS; ++s) {
+        const int rank = 32 * s + int(lane);
+        const bool mine = rank < wanted && held[s] != EMPTY;
+        filled += int(subgroupBallotBitCount(subgroupBallot(mine)));
+        if (mine) {
+            const uint at = uint(held[s]), bits = uint(held[s] >> 32);
+            Matches(pc.matches).m[dst + 1 + rank] = Match(int(at & 0xffffu), int(at >> 16), 0, uintBitsToFloat(bits));
+        }
     }
     if (lane == 0u) {
         Matches(pc.matches).m[dst] = Match(cx, cy, 0, 0.0);

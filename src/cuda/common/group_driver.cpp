@@ -561,6 +561,7 @@ std::size_t tensor_scratch_bytes(const Driver& d) {
         MatchGeometry g{p->width, p->height, p->width, p->block, p->range, p->group};
         g.channels = d.shared_match ? 1 : d.channels;
         if (d.column_match && spatial_match_column_takes(g, p->grid)) continue;
+        if (spatial_match_window_over_tensor(g, p->grid)) continue;
         if (d.square_match && spatial_match_square_takes(g, p->grid) && g.lo() < kSquareTensorRadius) continue;
         if (spatial_match_tensor(g, p->grid)) width = std::max(width, p->width), height = std::max(height, p->height);
     }
@@ -784,7 +785,8 @@ void filter_center(const Driver& d, Slot& s, const GroupPlane& p, int center, bo
     const float* match_plane = radius > 0 ? nullptr : match_guide ? s.host_ref_ptrs[0] : s.host_src_ptrs[0];
     // The column or square matcher where it applies, except for the large
     // windows the tensor-core matcher takes (when this device and plan have it).
-    const bool tensor_ok = radius == 0 && s.match_scratch.get() && spatial_match_tensor(geometry, p.grid);
+    const bool tensor_ok = radius == 0 && s.match_scratch.get() && spatial_match_tensor(geometry, p.grid) &&
+                           !spatial_match_window_over_tensor(geometry, p.grid);
     const bool column = radius == 0 && d.column_match && spatial_match_column_takes(geometry, p.grid);
     const bool square = radius == 0 && d.square_match && spatial_match_square_takes(geometry, p.grid) &&
                         !(tensor_ok && geometry.lo() >= kSquareTensorRadius);

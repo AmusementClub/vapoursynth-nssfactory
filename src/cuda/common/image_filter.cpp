@@ -60,6 +60,13 @@
 namespace nss_cuda {
 namespace {
 
+// Whether a search takes the tensor-core matcher (its workspace and prepare):
+// not where the window matcher is preferred (spatial_match takes that first).
+bool tensor_matching(const MatchGeometry& g, const RasterGrid& grid) {
+    return spatial_match_tensor(g, grid) && !spatial_match_window_over_tensor(g, grid);
+}
+
+
 // Upper bound on the per-batch group workspace.
 constexpr std::size_t kArenaBytes = 192u << 20;
 // NLH keeps matches and pixel indices there only (its kernels aggregate):
@@ -379,7 +386,7 @@ void estimate_sigma(Frame& f, int t) {
         const std::size_t per_group = shape.group * sizeof(DeviceMatch) + sizeof(int) + nch * sizeof(double);
         const std::size_t fit = (d.arena_bytes - 16 * 4 - 2 * nch * sizeof(double)) / (per_group + 1);
         const int batch = static_cast<int>(std::clamp<std::size_t>(fit, 1, static_cast<std::size_t>(grid.count())));
-        const void* scratch = s.match_scratch.get() && spatial_match_tensor(geometry, grid) ? s.match_scratch.get() : nullptr;
+        const void* scratch = s.match_scratch.get() && tensor_matching(geometry, grid) ? s.match_scratch.get() : nullptr;
         if (scratch) spatial_match_prepare(guide, geometry, const_cast<void*>(scratch), s.stream);
         for (int begin = 0; begin < grid.count(); begin += batch) {
             const int n = std::min(batch, grid.count() - begin);
@@ -627,7 +634,7 @@ void run_twsc(Frame& f) {
             if (batch > resident && batch < 8 * resident) batch -= batch % resident;
             bool written = false;
             const bool predictive = o.radius > 0 && f.count > 1;
-            const bool tensor = !predictive && s.match_scratch.get() && spatial_match_tensor(geometry, grid);
+            const bool tensor = !predictive && s.match_scratch.get() && tensor_matching(geometry, grid);
             for (int t0 = last ? f.center : 0; t0 < (last ? f.center + 1 : f.count); ++t0) {
                 window.t0 = t0;
                 if (tensor) spatial_match_prepare(guide_ptr[t0], geometry, s.match_scratch.get(), s.stream);
@@ -1504,14 +1511,14 @@ bool twsc_tensor_matching(const ImageData& d) {
     const int width = d.width[0], height = d.height[0];
     if (d.estimate) {
         const MatchGeometry g = match_geometry(width, height, 8, 40, 16);
-        if (spatial_match_tensor(g, make_raster_grid(width, height, 8, nss::kNoiseEstimateStep))) return true;
+        if (tensor_matching(g, make_raster_grid(width, height, 8, nss::kNoiseEstimateStep))) return true;
     }
     // Rounds match jointly over the planes of the full-size geometry (one each on cfast's planes).
     int joint = 1;
     for (int c = 1; c < d.planes && !d.split; ++c) joint += d.width[c] == width && d.height[c] == height;
     if (d.twsc.radius > 0 || joint > 1) return false;
     const MatchGeometry g = match_geometry(width, height, d.twsc.block, d.twsc.window, d.twsc.group);
-    return spatial_match_tensor(g, make_raster_grid(width, height, d.twsc.block, d.twsc.step));
+    return tensor_matching(g, make_raster_grid(width, height, d.twsc.block, d.twsc.step));
 }
 
 // What the memory plan settles beside the device buffers: the pinned

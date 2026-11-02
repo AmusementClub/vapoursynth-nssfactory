@@ -47,14 +47,15 @@ up to you, consider one of them.
     block 16 / group 8 step 3;
   - the square matcher for `block = 2 x step` (2/1, 4/2, 8/4, 12/6, 16/8) and
     the generalized 12/3, 12/4, 16/4 and 8/2, groups 2–32;
-  - on devices with 32-wide subgroups, an exact window matcher for groups up
-    to 32 at block 8 with `bm_range` 7 to 16 (the default
-    `block_step=8, bm_range=9` among them) and at block 4 with `bm_range` 12
-    to 16.
+  - on devices with 32-wide subgroups, an exact window matcher, any
+    `block_step`: `group_size` up to 32 at block 8 with `bm_range` 7 or more
+    (the default `block_step=8, bm_range=9` among them) and at block 4 with
+    12 or more; `group_size=64` at blocks 2, 4 and 8 with every `bm_range`;
+    blocks 12 and 16 with `group_size` up to 32 and `bm_range` 12 or more.
 
-  Column and window give the per-reference lane matcher's matches bit for
-  bit; square matches agree up to near ties. Everything else keeps the lane
-  matcher. Temporal search matches the centre frame with the square matcher
+  Column and window give the matches of the matcher they replace bit for bit;
+  square matches agree up to near ties. Everything else keeps the lane
+  matcher (or, for `group_size=64`, the block fallback). Temporal search matches the centre frame with the square matcher
   or the window matcher where one applies (the window matcher from
   `bm_range` 9 at block 8 and 14 at block 4), then searches the other frames
   predictively from those matches (a no-dedupe variant for `ps_num=1`). The
