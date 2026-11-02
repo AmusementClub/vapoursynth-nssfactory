@@ -78,7 +78,7 @@ jobs:
           export PIP_NO_CACHE_DIR=1
           /opt/venv/bin/pip install cmake ninja
           # Headers only: the plugin is loaded by the host and never links libvapoursynth.
-          git clone --depth 1 --branch R80 https://github.com/vapoursynth/vapoursynth /opt/vapoursynth
+          git clone --depth 1 --branch R81 https://github.com/vapoursynth/vapoursynth /opt/vapoursynth
           # Python 3.12+ images can also load the plugin to exercise the no-GPU path.
           if python3 -c 'import sys; sys.exit(sys.version_info < (3, 12))'; then /opt/venv/bin/pip install vapoursynth==81; fi
       - uses: actions/checkout@v4
@@ -97,7 +97,7 @@ jobs:
           export CCACHE_DIR=$GITHUB_WORKSPACE/.ccache PATH=/opt/venv/bin:$PATH
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache \
-            -DNSS_ENABLE_CUDA=ON -DNSS_BUILD_CPU=${{ matrix.cpu }} \
+            -DNSS_ENABLE_CUDA=ON -DNSS_CUDA_GPU_FRAMES=ON -DNSS_BUILD_CPU=${{ matrix.cpu }} \
             -DVapourSynth_INCLUDE_DIR=/opt/vapoursynth/include \
             -DPython3_EXECUTABLE=/opt/venv/bin/python
       - name: build
@@ -186,7 +186,7 @@ jobs:
         run: |
           $vsInclude = python -c "import vapoursynth, pathlib; print(pathlib.Path(vapoursynth.__file__).parent / 'include')"
           $pythonExe = (Get-Command python).Source
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=cl -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache -DNSS_ENABLE_CUDA=ON -DNSS_BUILD_CPU=OFF -DVapourSynth_INCLUDE_DIR="$vsInclude" -DPython3_EXECUTABLE="$pythonExe"
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=cl -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache -DNSS_ENABLE_CUDA=ON -DNSS_CUDA_GPU_FRAMES=ON -DNSS_BUILD_CPU=OFF -DVapourSynth_INCLUDE_DIR="$vsInclude" -DPython3_EXECUTABLE="$pythonExe"
       - name: build
         run: cmake --build build -j
       - name: ccache stats

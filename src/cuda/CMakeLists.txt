@@ -148,7 +148,7 @@ set(NSS_CUDA_RUNTIME_SOURCES
   runtime/vs_api43.cpp
 )
 
-option(NSS_CUDA_GPU_FRAMES "Build the experimental R81 GPU-frame frontend for all nss_cuda filters" OFF)
+option(NSS_CUDA_GPU_FRAMES "Build the R81 GPU-frame frontend for all nss_cuda filters (the release packages do)" OFF)
 if(NSS_CUDA_GPU_FRAMES)
   find_file(NSS_CUDA_VSVULKAN_HEADER VSVulkan4.h PATHS "${VapourSynth_INCLUDE_DIR}" NO_DEFAULT_PATH NO_CACHE)
   if(NOT NSS_CUDA_VSVULKAN_HEADER)
@@ -160,11 +160,17 @@ if(NSS_CUDA_GPU_FRAMES)
   endif()
   find_path(NSS_CUDA_VULKAN_INCLUDE_DIR vulkan/vulkan_core.h
             HINTS "$ENV{VULKAN_SDK}/Include" "$ENV{VULKAN_SDK}/include")
-  if(NOT NSS_CUDA_VULKAN_INCLUDE_DIR)
-    message(FATAL_ERROR "NSS_CUDA_GPU_FRAMES requires Vulkan headers (set NSS_CUDA_VULKAN_INCLUDE_DIR or VULKAN_SDK)")
+  if(NSS_CUDA_VULKAN_INCLUDE_DIR)
+    set(_nss_cuda_vulkan_include "${NSS_CUDA_VULKAN_INCLUDE_DIR}")
+  else()
+    # None installed: the Vulkan backend's pinned Vulkan-Headers.
+    set(NSS_VK_HEADERS_ONLY ON)
+    include("${PROJECT_SOURCE_DIR}/cmake/Vulkan.cmake")
+    unset(NSS_VK_HEADERS_ONLY)
+    set(_nss_cuda_vulkan_include "${nss_vulkan_headers_SOURCE_DIR}/include")
   endif()
   set_source_files_properties(runtime/vs_api43.cpp PROPERTIES COMPILE_DEFINITIONS VS_USE_API_43)
-  message(STATUS "NSSFactory CUDA: experimental R81 GPU-frame frontend for all filters")
+  message(STATUS "NSSFactory CUDA: R81 GPU-frame frontend for all filters")
 endif()
 
 # Optional cuSolverDx (MathDx package root, the directory holding include/
@@ -237,7 +243,7 @@ set_source_files_properties(runtime/device.cpp PROPERTIES COMPILE_DEFINITIONS
 target_link_libraries(nss_cuda_core PUBLIC nss_frontend nss_gpuhost CUDA::cudart_static)
 if(NSS_CUDA_GPU_FRAMES)
   target_compile_definitions(nss_cuda_core PUBLIC NSS_CUDA_GPU_FRAMES=1)
-  target_include_directories(nss_cuda_core SYSTEM PRIVATE "${NSS_CUDA_VULKAN_INCLUDE_DIR}")
+  target_include_directories(nss_cuda_core SYSTEM PRIVATE "${_nss_cuda_vulkan_include}")
 else()
   target_compile_definitions(nss_cuda_core PUBLIC NSS_CUDA_GPU_FRAMES=0)
 endif()

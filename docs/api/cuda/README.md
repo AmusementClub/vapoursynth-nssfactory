@@ -11,11 +11,11 @@ behind the defaults are on the CPU pages.
 
 What each filter costs: frames per second at 1920x1080 YUV420 (MCWNNM: RGB)
 with noise of sigma 3, on an RTX 5080, with the frames already on the GPU
-(VapourSynth R81 [GPU frames](#gpu-frames), an experimental build option
-here), so copies to and from host memory are not counted. **Default** is the
-filter's default arguments, **heavy** the slower arguments nearer its paper
-(see [Closer to the papers](#closer-to-the-papers)). Take them as cost tiers:
-they scale with the pixel count and differ between GPUs.
+(VapourSynth R81 [GPU frames](#gpu-frames)), so copies to and from host memory
+are not counted. **Default** is the filter's default arguments, **heavy** the
+slower arguments nearer its paper (see [Closer to the
+papers](#closer-to-the-papers)). Take them as cost tiers: they scale with the
+pixel count and differ between GPUs.
 
 | Filter | Default | Heavy |
 |---|---:|---:|
@@ -198,21 +198,22 @@ GPU. NLM is temporal through `d`; LSSC has no temporal mode.
 
 ### GPU frames
 
-By default `nss_cuda` takes CPU frames only. On VapourSynth R80+ a GPU-resident
-clip (`std.GPUUpload`, a GPU filter's output) passed to an `nss_cuda` filter is
-downloaded by the core first, and the output is a CPU frame.
+On VapourSynth R81 every `nss_cuda` filter takes and returns GPU frames: a
+GPU-resident clip (`std.GPUUpload`, another GPU filter's output) stays in video
+memory through the filter, so a chain of GPU filters skips the copies to and
+from host memory. CPU clips work as before, and a filter's clips must all be
+CPU frames or all GPU frames. On R80 and untested newer cores, GPU clips are
+downloaded by the core first and the output is a CPU frame.
 
-An **experimental, opt-in R81 frontend** covers every `nss_cuda` filter:
-build with `-DNSS_CUDA_GPU_FRAMES=ON` and set `NSS_CUDA_GPU_FRAMES=1` before
-loading the plugin. Filters then accept CPU or GPU frames (`vnode:all`) and
-keep GPU input and output resident. R80 and untested newer cores explicitly
-download GPU input instead. The frontend uses per-stream CUDA / Vulkan timeline
-semaphores, bounded external-memory import caches, and the existing host wait
-per frame. `NSS_CUDA_GPU_IMPORT_CACHE=2..16` selects the per-stream memory-import
-cache capacity (default 8). Temporal rolling chunks stay on the device, and NLM uses its tile
-path to avoid the initial GPU-node plane-path regression. `Backend()["gpu_frames"]`
-reports the mode. The normal Vulkan GPU-chain implementation remains
-[`nss_vk`'s](../vk/README.md#gpu-frames-vapoursynth-r80).
+- The release packages include it; a source build needs
+  `-DNSS_CUDA_GPU_FRAMES=ON` and R81 headers ([Building](../building.md)).
+- `NSS_CUDA_GPU_FRAMES=0` (set before the plugin loads) turns it off: GPU
+  clips are then downloaded as on other cores.
+- `NSS_CUDA_GPU_IMPORT_CACHE=2..16` sets how many VapourSynth frame
+  allocations each stream keeps imported (default 8).
+- `Backend()["gpu_frames"]` reports the mode.
+- [`nss_vk`](../vk/README.md#gpu-frames-vapoursynth-r80) takes GPU frames on
+  R80 as well.
 
 ### Driver and GPU support
 

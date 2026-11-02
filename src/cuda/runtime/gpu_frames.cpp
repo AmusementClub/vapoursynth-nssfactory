@@ -26,9 +26,11 @@ namespace {
 
 std::string prefix(const char* filter) { return std::string("nss_cuda.") + filter + ": "; }
 
+// GPU frames are on unless NSS_CUDA_GPU_FRAMES is 0 or off (on by default
+// since r3; GPU clips are then downloaded as on other cores).
 bool requested() {
     const char* value = std::getenv("NSS_CUDA_GPU_FRAMES");
-    return value && (!std::strcmp(value, "1") || !std::strcmp(value, "on") || !std::strcmp(value, "force"));
+    return !value || (std::strcmp(value, "0") != 0 && std::strcmp(value, "off") != 0);
 }
 
 int core_release(VSCore* core, const VSAPI* vsapi) {
@@ -117,10 +119,10 @@ std::string gpu_frames_status(VSCore* core, const VSAPI* vsapi) {
     return "no (built without CUDA GPU frames)";
 #else
     if (!vs_api::gpu_frames(vsapi)) return "no (VapourSynth API before 4.3)";
-    if (!requested()) return "off (NSS_CUDA_GPU_FRAMES=1 enables experimental GPU frames)";
+    if (!requested()) return "off (NSS_CUDA_GPU_FRAMES=0)";
     const int release = core_release(core, vsapi);
-    if (release == kTestedCore) return "yes (R81, experimental, all filters)";
-    return "downloaded (R" + std::to_string(release) + " untested; experimental GPU frames support R81)";
+    if (release == kTestedCore) return "yes (R81, all filters)";
+    return "downloaded (R" + std::to_string(release) + " untested; GPU frames support R81)";
 #endif
 }
 
@@ -176,7 +178,7 @@ const VSVULKANAPI* take_clips(const char* filter, std::initializer_list<ClipArg>
         std::lock_guard lock(mutex);
         if (warned.insert(core).second) {
             const std::string message = !requested()
-                ? "nss_cuda: NSS_CUDA_GPU_FRAMES is off: GPU clips are taken as CPU frames (std.GPUDownload)"
+                ? "nss_cuda: NSS_CUDA_GPU_FRAMES=0: GPU clips are taken as CPU frames (std.GPUDownload)"
                 : "nss_cuda: VapourSynth R" + std::to_string(release) +
                   " is not the tested R81 core: its GPU clips are taken as CPU frames (std.GPUDownload)";
             vsapi->logMessage(mtWarning, message.c_str(), core);

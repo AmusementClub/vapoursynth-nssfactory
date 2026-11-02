@@ -25,6 +25,12 @@ FetchContent_Declare(nss_vulkan_headers
   GIT_TAG ${NSS_VK_SDK_TAG}
   GIT_SHALLOW TRUE
   SOURCE_SUBDIR nss-no-cmake)
+# nss_cuda's GPU-frame frontend needs the headers alone: it sets
+# NSS_VK_HEADERS_ONLY and includes this file (src/cuda/CMakeLists.txt).
+if(NSS_VK_HEADERS_ONLY)
+  FetchContent_MakeAvailable(nss_vulkan_headers)
+  return()
+endif()
 FetchContent_Declare(nss_volk
   GIT_REPOSITORY https://github.com/zeux/volk.git
   GIT_TAG ${NSS_VK_SDK_TAG}
