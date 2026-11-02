@@ -4,6 +4,7 @@
 #include "vulkan/runtime/error.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <cstring>
 #include <stdexcept>
@@ -324,11 +325,16 @@ void Slot::read_timestamps() noexcept {
         if (bits < 64) raw[q] &= (std::uint64_t{1} << bits) - 1;
         valid[q] = true;
     }
-    if (valid[0]) {
-        for (std::uint32_t q = 0; q < query_count_; ++q) {
-            if (valid[q] && raw[q] >= raw[0]) {
-                times_[q] = static_cast<double>(raw[q] - raw[0]) * device_->timestamp_period_ns();
-            }
+    std::array<std::uint32_t, kStages> baselines;
+    baselines.fill(query_count_);
+    for (std::uint32_t q = 0; q < query_count_; ++q) {
+        if (valid[q]) baselines[marked_[q]] = std::min(baselines[marked_[q]], q);
+    }
+    for (std::uint32_t q = 0; q < query_count_; ++q) {
+        const int stage = marked_[q];
+        const std::uint32_t baseline = stage < 0 ? query_count_ : baselines[stage];
+        if (valid[q] && baseline != query_count_ && raw[q] >= raw[baseline]) {
+            times_[q] = static_cast<double>(raw[q] - raw[baseline]) * device_->timestamp_period_ns();
         }
     }
     // Host reset after the wait: every query is unavailable again before the

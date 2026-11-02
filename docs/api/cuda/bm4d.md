@@ -12,21 +12,12 @@ Algorithm, paper, parameters and quality: [`nss.BM4D`](../bm4d.md).
 out = core.nss_cuda.BM4D(clip, sigma=5)
 ```
 
-## Speed
+## Cost
 
-1080p, RTX 5080, one instance; 160 frames of an anime episode with grain of
-sigma 5 added:
-
-| Clip | fps |
-|---|---:|
-| gray | 40 |
-| YUV420 | 27 |
-
-About 40 times the CPU plugin on a 16-thread Ryzen 9 5950X (gray: 1.0 fps).
 Asking for one frame computes its 32-frame chunk; the chunk's other frames
 come from the cache. Once the requests reach the last three quarters of a
 chunk, the next chunk's frames are fetched and uploaded while this one
-computes.
+computes. Rendering in order is the cheapest way through a clip.
 
 ## Signature
 

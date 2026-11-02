@@ -31,7 +31,13 @@ RollingParams parse_rolling(const VSAPI* vsapi, const VSMap* in, int radius, con
                             RollingCache cache) {
     const bool adaptive = cache == RollingCache::Adaptive;
     RollingParams p;
-    p.rolling_chunk = map_int(vsapi, in, "rolling_chunk", 4);
+    // The GPU plugins (adaptive cache) default to chunks of one frame: every
+    // frame of a chunk holds a VapourSynth thread until the chunk is done, so
+    // larger chunks starve the threads that make the next chunk's input
+    // (1080p BM3D radius=1, RTX 5080: chunks of 4 need about 16 threads; with
+    // 8, one frame a chunk was 9-24% faster, and never more than 4% slower).
+    // The output is the same at every chunk size.
+    p.rolling_chunk = map_int(vsapi, in, "rolling_chunk", adaptive ? 1 : 4);
     int cache_limit_err = 0;
     p.cache_limit = map_int(vsapi, in, "rolling_cache_limit", adaptive ? 16 : 1, &cache_limit_err);
     int cache_chunks_err = 0;

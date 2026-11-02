@@ -16,28 +16,26 @@ hiq = core.nss_cuda.NCSR(clip, sigma=25, block_step=4)
 temporal = core.nss_cuda.NCSR(clip, sigma=25, radius=1)  # finished frames, every round on the device
 ```
 
-## Speed
+## Cost
 
-1080p, default arguments, RTX 5080, one instance; median over nine test images
-(see the [overview](README.md#speed)).
-
-| Call | YUV420 | RGB |
-|---|---:|---:|
-| default | 390 | 215 |
-| `radius=1` | 265 | 135 |
-
-Larger groups cost more: at 1080p gray, `group_size=16` runs at about 180 fps,
-`group_size=32` at 50 (13 with `block_step=4`).
+Larger groups and a smaller `block_step` cost much more, and every extra round
+(`iters`) adds about a full pass. Spatial searches of many shapes take faster
+dedicated matchers with the same matches (one match channel): the window
+search for `bm_range` 7 and more at block 8 (the default 7 included), groups
+34 to 64 at any `bm_range`, and other blocks from smaller or larger windows;
+and the column search at `block_step` 1 to 3; see [BM3D's optimized search
+shapes](bm3d.md#optimized-search-shapes). With `radius > 0` the window search
+also covers the centre frame from `bm_range` 9 at block 8.
 
 ## Closer to the papers
 
-The defaults are fast settings. Settings closer to the paper, with their quality and cost. Measured on one 1080p RGB frame (an anime credits frame with its own film grain) with Gaussian noise added, against the frame without it; the noisy input is 24.97 dB at sigma 15 and 20.98 dB at sigma 25. One image: take these as starting points, not tuned presets. σ is the standard deviation of the noise in 8-bit units; speed at 1080p on an RTX 5080 (the second row's on the test frame).
+The defaults are fast settings. Settings closer to the paper, with their quality; they are much slower than the defaults. Measured on one 1080p RGB frame (an anime credits frame with its own film grain) with Gaussian noise added, against the frame without it; the noisy input is 24.97 dB at sigma 15 and 20.98 dB at sigma 25. One image: take these as starting points, not tuned presets. σ is the standard deviation of the noise in 8-bit units.
 
-| Arguments | PSNR, sigma 15 | PSNR, sigma 25 | fps YUV420 / RGB |
-|---|---:|---:|---:|
-| defaults, `sigma=σ` | 29.42 dB | 25.59 dB | 390 / 215 |
-| defaults, `sigma=1.8 σ` | 33.04 dB | 29.67 dB | 390 / 215 |
-| `block_step=4, group_size=16, sigma=σ` | 33.41 dB | 30.37 dB | 36.8 / 18.5 |
+| Arguments | PSNR, sigma 15 | PSNR, sigma 25 |
+|---|---:|---:|
+| defaults, `sigma=σ` | 29.42 dB | 25.59 dB |
+| defaults, `sigma=1.8 σ` | 33.04 dB | 29.67 dB |
+| `block_step=4, group_size=16, sigma=σ` | 33.41 dB | 30.37 dB |
 
 - At the default geometry (group 8, 2 rounds) about 1.8 σ is best (9 anime frames, σ 1 to 20, within 0.1 dB of the best at every σ). The factor falls as the group and the rounds grow: about 1.3 σ at group 16 and σ as is at group 32.
 
@@ -49,7 +47,7 @@ core.nss_cuda.NCSR(clip clip[, float[] sigma = 3.0, int block_size = 8,
                    int radius = 0, int ps_num = 2, int ps_range = 4,
                    clip rclip = None, int iters = 2, float delta = 0.1,
                    int memory_limit_mb, string temporal_mode = "rolling",
-                   int rolling_chunk = 4, int rolling_cache_chunks = 1,
+                   int rolling_chunk = 1, int rolling_cache_chunks = 1,
                    int rolling_cache_limit = 16, int device_id = 0,
                    int num_streams])
 ```
@@ -62,7 +60,7 @@ core.nss_cuda.NCSR(clip clip[, float[] sigma = 3.0, int block_size = 8,
 | `block_size` | 8 | [1, 16] | Patch edge. |
 | `block_step` | 8 | [1, block] | Reference-patch stride; positions scale as `1/step^2`. |
 | `group_size` | 8 | [1, 32] | Matched patches per group (columns of the PCA matrix). |
-| `bm_range` | 7 | [1, 64] | Search window radius. With `bm_range` 20 or more, spatial matching of one channel runs on tensor cores on GPUs of compute capability 8.0+ (block 8, group at most 16): the same matches, a workspace of one plane per stream (about 24 MiB at 1080p); BM3D gray 1080p `bm_range=30` 1.6x. |
+| `bm_range` | 7 | [1, 64] | Search window radius. With `bm_range` 25 or more, spatial matching of one channel runs on tensor cores on GPUs of compute capability 8.0+ (block 8, group at most 16): the same matches, a workspace of one plane per stream (about 24 MiB at 1080p). |
 | `iters` | 2 | [1, 64] | Outer re-estimation rounds; the second round re-matches on the current estimate. ~2x cost per extra round. |
 | `radius` | 0 | [0, 16] | Temporal radius. >0 makes the filter temporal: finished, normal-height frames by default (`temporal_mode`, below). |
 | `rclip` | none | clip | Reference clip guiding matching. |
@@ -78,14 +76,14 @@ core.nss_cuda.NCSR(clip clip[, float[] sigma = 3.0, int block_size = 8,
 
 | Parameter | Default | Meaning |
 |---|---|---|
-| `device_id`, `num_streams`, `memory_limit_mb` | 0, 2 or 3, none | The GPU, the frames in flight ([default streams](README.md#default-streams)), and a memory cap; see [shared arguments](README.md#shared-by-every-filter). |
-| `temporal_mode`, `rolling_chunk`, `rolling_cache_chunks`, `rolling_cache_limit` | `"rolling"`, 4, 1, 16 | What `radius > 0` returns (finished frames by default); see [temporal output](README.md#temporal-output). |
+| `device_id`, `num_streams`, `memory_limit_mb` | 0, 2 or 3 (1 on GPU frames), none | The GPU, the frames in flight ([default streams](README.md#default-streams)), and a memory cap; see [shared arguments](README.md#shared-by-every-filter). |
+| `temporal_mode`, `rolling_chunk`, `rolling_cache_chunks`, `rolling_cache_limit` | `"rolling"`, 1, 1, 16 | What `radius > 0` returns (finished frames by default); see [temporal output](README.md#temporal-output). |
 
 ## Notes
 
 - **Accuracy.** 105–139 dB against the CPU plugin on the reference set;
   identical from run to run.
-- **Matching.** Spatial search reuses [BM3D's exact column matcher](bm3d.md#speed)
+- **Matching.** Spatial search reuses [BM3D's exact window and column matchers](bm3d.md#optimized-search-shapes)
   with the same block, step and group limits. Other spatial shapes and temporal
   search keep their existing matchers.
 - **Temporal output** runs every round on the GPU and agrees with the legacy
@@ -93,15 +91,6 @@ core.nss_cuda.NCSR(clip clip[, float[] sigma = 3.0, int block_size = 8,
 - **Memory.** At gray 1080p `radius=1` an instance takes about 310 MiB of GPU
   memory; the smallest accepted `memory_limit_mb` is 405 MiB. Groups of 17 to
   32 patches add 14.5 KiB of scratch per group of a batch.
-
-## Speed
-
-1080p, RTX 5080 with a Ryzen 5950X, one stream: default (gray) 516 fps,
-`block_step=4` 266, `group_size=16` 177, `group_size=32, block_step=4` 13.3, RGB 195,
-`radius=1` 310 (`iters=1`: 456); `group_size=32` with the default step 50. The
-16-thread CPU plugin on the same host: 35.8, 6.8, 3.0, 0.084, 8.4 and 11.7 (21.6).
-The spatial default is bound by the host's frame copies (about 600 fps with
-`iters=1`); more streams do not raise it.
 
 ## Pitfalls
 

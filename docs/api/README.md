@@ -2,49 +2,50 @@
 
 `libnss` is the CPU plugin (namespace `nss`). Each page documents one filter:
 its signature, the parameters (the ones you usually touch first), the paper
-and where this implementation departs from it, the defaults, speed and
+and where this implementation departs from it, the defaults, cost and
 pitfalls. The GPU plugins have the same filters and arguments; see the
 [CUDA reference](cuda/README.md) and the [Vulkan reference](vk/README.md)
 (a preview: BM3D, NLM and PNLM so far, with VapourSynth R80+ GPU frames).
 
 ## Choosing a filter
 
-One CPU core (Emerald Rapids), 1920x1080 gray, sigma 3, default arguments
-(MCWNNM: all three planes of an RGB clip). Treat the numbers as cost tiers:
-they scale with the pixel count, and VapourSynth runs frames in parallel on
-more cores.
+What each filter costs: frames per second at 1920x1080 YUV420 (MCWNNM: RGB)
+with noise of sigma 3, on a Ryzen 9 5950X (16 cores, VapourSynth's default
+threads). **Default** is the filter's default arguments, **heavy** the slower
+arguments nearer its paper (see
+[Closer to the papers](cuda/README.md#closer-to-the-papers)). Take them as
+cost tiers: they scale with the pixel count and the cores. The GPU plugins
+are far faster: [CUDA](cuda/README.md#speed), [Vulkan](vk/README.md#speed).
 
-| Filter | fps | Temporal | Good for |
-|---|---:|---|---|
-| [BM3D](bm3d.md) | ~17† | yes | General use; the fastest |
-| [NLM](nlm.md) | ~7.6 | yes (`d`) | Light noise |
-| [PNLM](pnlm.md) | ~4.0§ | yes (`d`) | Light noise; edges and line art |
-| [WNNM](wnnm.md) | ~7.6 | yes | Texture and edge retention |
-| [NCSR](ncsr.md) | ~3.7 | yes | Sparse-coding quality at moderate cost |
-| [LSSC](lssc.md) | ~2.7‡ | no | Structured noise, film grain, text |
-| [TWSC](twsc.md) | ~0.75 | yes | Real-world noise |
-| [NLH](nlh.md) | ~0.15* | yes | Real-world noise of unknown level |
-| [MCWNNM](mcwnnm.md) | ~0.43 | yes | RGB color noise |
+| Filter | Default | Heavy | Temporal | Good for |
+|---|---:|---:|---|---|
+| [BM3D](bm3d.md) | 148 | 1.3 | yes | General use; the fastest |
+| [WNNM](wnnm.md) | 81 | 0.56 | yes | Texture and edge retention |
+| [NLM](nlm.md) | 74 | 12.8 | yes (`d`) | Light noise |
+| [LSSC](lssc.md) | 66 | 40 | no | Structured noise, film grain, text |
+| [PNLM](pnlm.md) | 47 | 5.7 | yes (`d`) | Light noise; edges and line art; large windows and several frames |
+| [NCSR](ncsr.md) | 34 | 1.2 | yes | Sparse-coding quality at moderate cost |
+| [MCWNNM](mcwnnm.md) (RGB) | 6.7 | 0.018 | yes | RGB color noise |
+| [TWSC](twsc.md) | 5.7 | ~0.05\* | yes | Real-world noise |
+| [DA3D](da3d.md) | 4.5 | — | no | Refining another filter's output |
+| [NLH](nlh.md) | 1.8 | — | yes | Real-world noise of unknown level |
+| [BM4D](bm4d.md) | 0.46 | — | yes | Still and slowly moving content |
 
-[BM4D](bm4d.md) (about 0.15 fps, temporal by construction) treats the
-clip as a volume of 3D cubes; it beats temporal BM3D on still and slowly
-moving content, and is the slowest. [DA3D](da3d.md) is not a denoiser on its own: it takes the noisy clip and
-another filter's output and returns a refined result (see its page for its
-gain and cost).
+- NLM filters luma only at its defaults; PNLM filters every plane.
+- NLH's defaults are its paper's preset already; BM4D and DA3D have no
+  heavier settings. DA3D is timed after its guide (`BM3D(final=1)`), which is
+  not counted; its cost grows as the noise falls.
+- \* Estimated from the CUDA plugin's default-to-heavy ratio, not measured.
 
-\* NLH measured with `block_size=8, block_step=8` in both stages and a given
-sigma; its default (smaller steps, blind estimation) is much heavier (see its
-page).
+[BM4D](bm4d.md) (temporal by construction) treats the clip as a volume of 3D
+cubes; it beats temporal BM3D on still and slowly moving content, and is the
+slowest. [DA3D](da3d.md) is not a denoiser on its own: it takes the noisy clip
+and another filter's output and returns a refined result (see its page for
+its gain and cost).
 
-† BM3D measured with `bm_range=7`; the current default is 9, about 1.6x the
-candidates of the matching step.
-
-§ PNLM measured on a Ryzen 9 5950X core: NLM 8.8 fps; spatial (`d=0`) PNLM
-7.4 fps against NLM's 35.7. On the GPU it is the faster of the two from `a=2` up.
-
-‡ LSSC measured with model version 3 at `block_step=8`. Version 4 at its
-default `block_step=4` took about 7% less time at sigma 3 and about half at
-sigma 25 on a Ryzen 9 5950X core.
+Some argument combinations have faster paths on the GPU plugins: see
+[BM3D's optimized search shapes](cuda/bm3d.md#optimized-search-shapes) (also
+WNNM and NCSR) and [PNLM against NLM](cuda/pnlm.md#cost).
 
 ## Conventions
 

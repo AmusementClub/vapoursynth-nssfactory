@@ -10,34 +10,20 @@ out = core.nss_cuda.LSSC(clip, sigma=25)                    # defaults
 fine = core.nss_cuda.LSSC(clip, sigma=25, block_step=3)
 ```
 
-## Speed
+## Cost
 
-1080p, default arguments, RTX 5080, one instance; median over nine test images
-(see the [overview](README.md#speed)).
-
-| Call | YUV420 | RGB |
-|---|---:|---:|
-| default | 305 | 165 |
-
-The cost of a patch grows with the atoms it needs, so the speed depends on the
-content and the noise: on a grainy, text-heavy 1080p RGB frame the default
-runs at 92 fps at sigma 3 and 195 at sigma 25 (gray: 285 and 635).
-
-Model version 3 (k-means clusters and a group soft threshold, default
-`block_step=8`) ran the same images at 205 (YUV420) and 145 (RGB), where
-version 4 then ran at 230 and 145 (before its GPU dictionary and alpha0
-changes): paired on each image, version 4 was 14% faster in YUV420
-(between 5% slower and 17% faster) and 1% slower in RGB (between 28% slower
-and 13% faster); the most textured images are the slowest.
+The cost of a patch grows with the atoms it needs, so it depends on the
+content and the noise: grainy, text-heavy frames at low sigma are the
+slowest.
 
 ## Closer to the papers
 
-The defaults are fast settings. Settings closer to the paper, with their quality and cost. Measured on one 1080p RGB frame (an anime credits frame with its own film grain) with Gaussian noise added, against the frame without it; the noisy input is 24.97 dB at sigma 15 and 20.98 dB at sigma 25. One image: take these as starting points, not tuned presets. σ is the standard deviation of the noise in 8-bit units; speed at 1080p on an RTX 5080 (the second row's on the test frame).
+The defaults are fast settings. Settings closer to the paper, with their quality; they are much slower than the defaults. Measured on one 1080p RGB frame (an anime credits frame with its own film grain) with Gaussian noise added, against the frame without it; the noisy input is 24.97 dB at sigma 15 and 20.98 dB at sigma 25. One image: take these as starting points, not tuned presets. σ is the standard deviation of the noise in 8-bit units.
 
-| Arguments | PSNR, sigma 15 | PSNR, sigma 25 | fps YUV420 / RGB |
-|---|---:|---:|---:|
-| defaults, `sigma=σ` | 31.86 dB | 28.75 dB | 305 / 165 |
-| `block_step=3, sigma=σ` | 32.19 dB | 29.17 dB | 249 / 116 |
+| Arguments | PSNR, sigma 15 | PSNR, sigma 25 |
+|---|---:|---:|
+| defaults, `sigma=σ` | 31.86 dB | 28.75 dB |
+| `block_step=3, sigma=σ` | 32.19 dB | 29.17 dB |
 
 - The defaults are close to the paper's sparse coding already (overlapping patches, error-constrained OMP); a denser step adds a little. Model version 3 gave 29.15 / 26.28 dB here.
 

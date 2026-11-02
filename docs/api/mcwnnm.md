@@ -7,7 +7,7 @@ its most expensive one per pixel family.
 
 ```python
 out = core.nss.MCWNNM(rgb_clip, sigma=[25, 25, 25])   # defaults
-quick = core.nss.MCWNNM(rgb_clip, sigma=25, iters=1)  # coarser but ~100% faster
+quick = core.nss.MCWNNM(rgb_clip, sigma=25, iters=1)  # coarser but about twice as fast
 ```
 
 ## Signature
@@ -33,7 +33,7 @@ core.nss.MCWNNM(clip clip[, float[] sigma = 3.0, int block_size = 8,
 | `block_step` | 8 | [1, block] | Reference-patch stride; positions scale as `1/step^2`. |
 | `group_size` | 8 | [1, 32] | Matched patches per group. |
 | `bm_range` | 7 | [1, 64] | Search window radius. |
-| `iters` | 2 | [1, 64] | Outer re-estimation rounds (re-match on the current estimate). Round 2 costs ~another full pass; reduce to 1 for a ~2x speedup when quality allows. |
+| `iters` | 2 | [1, 64] | Outer re-estimation rounds (re-match on the current estimate). Round 2 costs about another full pass; reduce to 1 when quality allows. |
 | `radius` | 0 | [0, 16] | Temporal radius. >0 returns the weighted intermediate for `VAggregate`, or finished frames with `temporal_mode="rolling"` ([Temporal output](README.md#temporal-output)). |
 | `rclip` | none | clip | Reference clip guiding matching. |
 
@@ -64,12 +64,11 @@ output bit-for-bit.
 ## Defaults rationale and performance
 
 Defaults mirror the shared geometry (block/step/group/range 8/8/8/7) plus the
-authors' ADMM schedule. About 0.43 fps at 1080p on one CPU core —
-**note this is for all three RGB planes**, so per-channel cost is about three
-times a gray filter at the same settings. `admm_iter` and `iters` multiply the
+authors' ADMM schedule. It filters all three RGB planes jointly, so its cost
+is about three times a gray filter's at the same settings. `admm_iter` and `iters` multiply the
 solve cost directly; `block_step` scales positions as usual.
 
-Settings closer to the paper, with their measured quality and GPU speed, are on the [CUDA page](cuda/mcwnnm.md#closer-to-the-papers); the CPU takes the same arguments.
+Settings closer to the paper, with their measured quality, are on the [CUDA page](cuda/mcwnnm.md#closer-to-the-papers); the CPU takes the same arguments.
 
 ## Pitfalls
 

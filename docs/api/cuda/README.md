@@ -9,62 +9,71 @@ behind the defaults are on the CPU pages.
 
 ## Speed
 
-Frames per second at 1080p, default arguments, on an RTX 5080 (Ryzen 9 5950X
-host), one instance, frames requested in order. Median over a set of nine test
-images with Gaussian noise of sigma 3, each timed for at least 7 s after a
-warm-up; the images differ by at most 3%.
+What each filter costs: frames per second at 1920x1080 YUV420 (MCWNNM: RGB)
+with noise of sigma 3, on an RTX 5080, with the frames already on the GPU
+(VapourSynth R81 [GPU frames](#gpu-frames)), so copies to and from host memory
+are not counted. **Default** is the filter's default arguments, **heavy** the
+slower arguments nearer its paper (see [Closer to the
+papers](#closer-to-the-papers)). Take them as cost tiers: they scale with the
+pixel count and differ between GPUs.
 
-| Filter | YUV420 | RGB | Temporal, `radius=1` (YUV420 / RGB) |
-|---|---:|---:|---:|
-| [BM3D](bm3d.md) | 495 | 280 | 455 / 230 |
-| [NLM](nlm.md) | 620 | 260 | (temporal by default, `d=1`) |
-| [PNLM](pnlm.md) | 470 | 236 | (temporal by default, `d=1`; every plane) |
-| [WNNM](wnnm.md) | 500 | 285 | 455 / 230 |
-| [MCWNNM](mcwnnm.md) | — | 200 | — / 135 |
-| [NCSR](ncsr.md) | 390 | 215 | 265 / 135 |
-| [LSSC](lssc.md) | 305 | 165 | (no temporal mode) |
-| [NLH](nlh.md) | 37 | 31 | 13 / 11 |
-| [TWSC](twsc.md) | 77 | 44 | |
-| [BM4D](bm4d.md) | 27 | — | (temporal by construction; gray 40) |
-| [DA3D](da3d.md) | 37 / 70 | 5.6 / 14 | (sigma 3 / 10; a last step on a guide) |
+| Filter | Default | Heavy |
+|---|---:|---:|
+| [BM3D](bm3d.md) | 1570 | 29 |
+| [NLM](nlm.md) | 880 | 140 |
+| [PNLM](pnlm.md) | 780 | 290 |
+| [WNNM](wnnm.md) | 1080 | 9.3 |
+| [MCWNNM](mcwnnm.md) (RGB) | 270 | 0.42 |
+| [NCSR](ncsr.md) | 660 | 37 |
+| [LSSC](lssc.md) | 370 | 250 |
+| [TWSC](twsc.md) | 86 | 0.71 |
+| [NLH](nlh.md) | 63 | — |
+| [BM4D](bm4d.md) | 28 | — |
+| [DA3D](da3d.md) | 60 | — |
 
-- BM4D and DA3D are measured differently: BM4D on 160 frames of an anime episode
-  with grain of sigma 5, DA3D on one test image at the sigma given, with
-  `BM3D(final=1)` at 4/3 sigma as its guide (computed beforehand). DA3D's
-  output is within a level of the CPU plugin's; BM4D's matching takes FP16
-  distances (its PSNR is the CPU's).
-- PNLM filters every plane by default; `NLM` filters only luma and measured
-  711 / 269 fps the same way (`sigma=[3, 0]`: 606).
-- NLH runs its default blind noise estimation; giving `sigma` skips it.
-- TWSC's default is a speed setting. Its quality geometry (`block_step=1,
-  group_size=90, iters=12`) denoises 8 to 10 dB better and runs at about
-  0.012 fps for YUV420 and 0.022 fps for RGB at 1080p; its page has the trade-offs.
+- NLM filters luma only at its defaults; PNLM filters every plane.
+- NLH's defaults are its paper's preset already; BM4D and DA3D have no
+  heavier settings. DA3D is timed after its guide (`BM3D(final=1)`), which is
+  not counted; its cost grows as the noise falls.
+- With CPU frames the copies set the pace of the fastest filters;
+  [direct transfers](#direct-transfers-with-vapoursynth-classic) on
+  vapoursynth-classic take part of that cost away.
+
+## Performance notes
+
+- The defaults are fast settings. Every filter page lists which arguments
+  cost the most (denser references, larger groups and windows, more rounds).
+- Several search shapes have dedicated, faster block-matching paths that give
+  the same matches as the general search (BM3D, WNNM and NCSR; see
+  [BM3D's optimized search shapes](bm3d.md#optimized-search-shapes)). When a
+  shape is up to you, prefer one of them.
+- NLH runs a blind noise estimation by default; giving `sigma` skips it.
+- TWSC's default is a speed setting; its quality geometry is far slower (its
+  page has the trade-offs).
 - MCWNNM takes RGB only.
-- The release packages are built with CUDA 13.3. Up to r2 they were built with CUDA 12.9, which
-  gives the same output and the same speed within 5% for every filter except NLM, about 20%
-  fewer fps at its defaults (490 / 255 fps).
-- Against BM3DCUDA, VapourSynth-WNNM, vs-nlm-ispc and vs-nlm-cuda at the same arguments, and
-  r2 against r1: [Against other plugins](compare.md).
-- The CPU plugin's speed is on the [CPU API guide](../README.md).
+- The release packages are built with CUDA 13.3; older packages (up to r2)
+  were built with CUDA 12.9, which gives the same output.
+- Third-party plugins with the same algorithms: [Against other plugins](compare.md).
 
 ## Closer to the papers
 
 The defaults are fast settings shared by most filters (`block_step=8`, small
 groups). Each filter page has a "Closer to the papers" section with arguments
-nearer its paper, their quality and their cost. In short, with σ the noise's
-standard deviation in 8-bit units (one 1080p RGB test frame with Gaussian
-noise added; PSNR against the frame without it, noisy input 24.97 dB):
+nearer its paper and their quality; they are much slower than the defaults.
+In short, with σ the noise's standard deviation in 8-bit units (one 1080p RGB
+test frame with Gaussian noise added; PSNR against the frame without it,
+noisy input 24.97 dB):
 
-| Filter | Arguments | PSNR at sigma 15: default → these | fps RGB: default → these |
-|---|---|---:|---:|
-| [BM3D](bm3d.md#closer-to-the-papers) | `final=1, block_step=3, group_size=32, group_size_basic=16, bm_range=19, sigma=4/3 σ` | 31.5 → 34.4 | 280 → 10.9 |
-| [WNNM](wnnm.md#closer-to-the-papers) | `block_step=4, group_size=32, bm_range=15, sigma=1.41 σ` | 26.3 → 33.7 | 285 → 4.3 |
-| [MCWNNM](mcwnnm.md#closer-to-the-papers) | `block_step=4, group_size=32, iters=4` | 25.6 → 33.7 | 200 → 0.38 |
-| [NCSR](ncsr.md#closer-to-the-papers) | `block_step=4, group_size=16` | 29.4 → 33.4 | 215 → 18.5 |
-| [LSSC](lssc.md#closer-to-the-papers) | `block_step=3` | 31.9 → 32.2 | 165 → 116 |
-| [TWSC](twsc.md#closer-to-the-papers) | `block_step=4, group_size=90, iters=4` | 25.3 → 36.8 | 44 → 0.38 |
-| [NLH](nlh.md#closer-to-the-papers) | defaults (or `sigma=σ`) | 35.2 (35.6) | 31 |
-| [NLM](nlm.md#closer-to-the-papers) | `a=10, s=3, d=0, h=0.6 σ` | 25.0 → 33.3 | 260 → 81 |
+| Filter | Arguments | PSNR at sigma 15: default → these |
+|---|---|---:|
+| [BM3D](bm3d.md#closer-to-the-papers) | `final=1, block_step=3, group_size=32, group_size_basic=16, bm_range=19, sigma=4/3 σ` | 31.5 → 34.4 |
+| [WNNM](wnnm.md#closer-to-the-papers) | `block_step=4, group_size=32, bm_range=15, sigma=1.41 σ` | 26.3 → 33.7 |
+| [MCWNNM](mcwnnm.md#closer-to-the-papers) | `block_step=4, group_size=32, iters=4` | 25.6 → 33.7 |
+| [NCSR](ncsr.md#closer-to-the-papers) | `block_step=4, group_size=16` | 29.4 → 33.4 |
+| [LSSC](lssc.md#closer-to-the-papers) | `block_step=3` | 31.9 → 32.2 |
+| [TWSC](twsc.md#closer-to-the-papers) | `block_step=4, group_size=90, iters=4` | 25.3 → 36.8 |
+| [NLH](nlh.md#closer-to-the-papers) | defaults (or `sigma=σ`) | 35.2 (35.6) |
+| [NLM](nlm.md#closer-to-the-papers) | `a=10, s=3, d=0, h=0.6 σ` | 25.0 → 33.3 |
 
 - One image: take these as starting points, not tuned presets.
 
@@ -136,36 +145,34 @@ of the [CPU plugin](../README.md#conventions).
 
 ### Default streams
 
-Without `num_streams`, each filter takes the fewest streams that measured as
-fast as any count up to three, and fewer where `memory_limit_mb` does not
-hold them. Extra streams
-overlap one frame's transfers and host work with another frame's kernels.
-They pay where those leave the GPU idle, and not where the kernels dominate.
+Without `num_streams`, each filter takes the fewest streams that were as fast
+as any count up to three on our test GPU, and fewer where `memory_limit_mb`
+does not hold them. Extra streams overlap one frame's transfers and host work
+with another frame's kernels; they help where those leave the GPU idle, and
+not where the kernels dominate.
 
-| Filter | Default | Gain over one stream | Peak GPU memory, one stream → default |
-|---|---|---|---|
-| NLM | 2 | 1.23× (YUV420, d = 1); with direct transfers 1.06–1.50× (three: no faster) | 529 → 759 MiB (gray, d = 1) |
-| PNLM | 3 | 1.19× (gray, d = 1; two streams 1.13×) | 182 → 325 MiB (gray, d = 1) |
-| TWSC | 3 | 1.22× (gray; two streams: 1.03×) | 385 → 1084 MiB |
-| NCSR | 2; 3 with direct transfers | 1.10× (YUV420); with direct transfers 1.38–1.52× | 170 → 258 MiB (three: 346 MiB) |
-| BM3D, WNNM | 1; 2 with direct transfers | 0.99× staged; with direct transfers 1.01–1.14× (three streams; two equal them on YUV420) | YUV420 150 / 162 MiB, plus about 68 / 80 MiB per stream |
-| MCWNNM | 1; 3 with direct transfers | 0.99× staged; with direct transfers 1.46× (RGB) | 478 → 1009 MiB |
-| DA3D | 3; 2 for joint RGB | see [da3d.md](da3d.md) | |
-| LSSC, NLH | 1 | three streams: LSSC 0.73×, NLH 0.96× | |
-| BM4D | 1 | computes one chunk at a time | |
+| Filter | Default | Peak GPU memory, one stream → default |
+|---|---|---|
+| NLM | 2 | 529 → 759 MiB (gray, d = 1) |
+| PNLM | 3 for d ≤ 1; 2 beyond | 182 → 325 MiB (gray, d = 1) |
+| TWSC | 3 | 385 → 1084 MiB |
+| NCSR | 2; 3 with direct transfers; 1 on GPU frames | 170 → 258 MiB (three: 346 MiB) |
+| BM3D, WNNM | 1; 2 with direct transfers | YUV420 150 / 162 MiB, plus about 68 / 80 MiB per stream |
+| MCWNNM | 1; 3 with direct transfers | 478 → 1009 MiB |
+| DA3D | 3; 2 for joint RGB | |
+| LSSC, NLH, BM4D | 1 | |
 
 - "Direct transfers" means vapoursynth-classic's frame memory extension (see
   [below](#direct-transfers-with-vapoursynth-classic)), with spatial output or
   `temporal_mode="legacy"`.
-- Rolling temporal output keeps one stream; it has not been measured with
-  more.
+- GPU frames (the R81 frontend below) keep one stream for BM3D, WNNM, MCWNNM
+  and NCSR: a frame gives its stream back once its work is queued, so the next
+  frame's work follows it on the device.
+- Rolling temporal output keeps one stream.
 - The NLM default applies to its tile kernels (`a`, `s` and `d` within their
   limits, as at the defaults); NLM's plane path keeps one.
-- Measured at 1080p on an RTX 5080 (Ryzen 9 5950X, VapourSynth R78 and a
-  vapoursynth-classic build with the extension). Medians of three paired runs
-  (classic: three runs in alternating order); outputs were identical at every
-  stream count. Other GPUs
-  and hosts may differ, and `num_streams` overrides the default.
+- The output is the same at every stream count. Other GPUs and hosts may
+  prefer other counts; `num_streams` overrides the default.
 
 ### Temporal output
 
@@ -176,7 +183,7 @@ GPU. NLM is temporal through `d`; LSSC has no temporal mode.
 | Parameter | Default | Range | Meaning |
 |---|---|---|---|
 | `temporal_mode` | `"rolling"` | rolling / legacy | `"rolling"` returns finished frames; `"legacy"` returns the CPU plugin's intermediate, for `core.nss.VAggregate`. |
-| `rolling_chunk` | 4 | [1, 64] | Frames computed together. |
+| `rolling_chunk` | 1 | [1, 64] | Frames computed together. The CPU plugin's default is 4; here every frame of a chunk holds a VapourSynth thread until the chunk is done, so larger chunks need many more threads (about four per frame of the chunk) to keep the GPU busy. |
 | `rolling_cache_chunks` | 1 | [1, 64] | Finished chunks kept for later frame requests at first. |
 | `rolling_cache_limit` | 16 | [1, 64], >= `rolling_cache_chunks` | What the cache may grow to when requests come back to chunks it dropped. (On the CPU the two arguments name one fixed size.) |
 
@@ -191,21 +198,22 @@ GPU. NLM is temporal through `d`; LSSC has no temporal mode.
 
 ### GPU frames
 
-By default `nss_cuda` takes CPU frames only. On VapourSynth R80+ a GPU-resident
-clip (`std.GPUUpload`, a GPU filter's output) passed to an `nss_cuda` filter is
-downloaded by the core first, and the output is a CPU frame.
+On VapourSynth R81 every `nss_cuda` filter takes and returns GPU frames: a
+GPU-resident clip (`std.GPUUpload`, another GPU filter's output) stays in video
+memory through the filter, so a chain of GPU filters skips the copies to and
+from host memory. CPU clips work as before, and a filter's clips must all be
+CPU frames or all GPU frames. On R80 and untested newer cores, GPU clips are
+downloaded by the core first and the output is a CPU frame.
 
-An **experimental, opt-in R81 frontend** covers every `nss_cuda` filter:
-build with `-DNSS_CUDA_GPU_FRAMES=ON` and set `NSS_CUDA_GPU_FRAMES=1` before
-loading the plugin. Filters then accept CPU or GPU frames (`vnode:all`) and
-keep GPU input and output resident. R80 and untested newer cores explicitly
-download GPU input instead. The frontend uses per-stream CUDA / Vulkan timeline
-semaphores, bounded external-memory import caches, and the existing host wait
-per frame. `NSS_CUDA_GPU_IMPORT_CACHE=1..16` selects the per-stream memory-import
-cache capacity (default 16). Temporal rolling chunks stay on the device, and NLM uses its tile
-path to avoid the initial GPU-node plane-path regression. `Backend()["gpu_frames"]`
-reports the mode. The normal Vulkan GPU-chain implementation remains
-[`nss_vk`'s](../vk/README.md#gpu-frames-vapoursynth-r80).
+- The release packages include it; a source build needs
+  `-DNSS_CUDA_GPU_FRAMES=ON` and R81 headers ([Building](../building.md)).
+- `NSS_CUDA_GPU_FRAMES=0` (set before the plugin loads) turns it off: GPU
+  clips are then downloaded as on other cores.
+- `NSS_CUDA_GPU_IMPORT_CACHE=2..16` sets how many VapourSynth frame
+  allocations each stream keeps imported (default 8).
+- `Backend()["gpu_frames"]` reports the mode.
+- [`nss_vk`](../vk/README.md#gpu-frames-vapoursynth-r80) takes GPU frames on
+  R80 as well.
 
 ### Driver and GPU support
 
@@ -236,16 +244,12 @@ frames directly, without the pinned staging copies.
   planes is transferred, and unlocked when the pool returns it to the system.
   At most half the core's frame cache (`core.max_cache_size`) is locked;
   further blocks are staged.
-- **Speed** (1080p, RTX 5080, a decoder-like source, single runs, against
-  staging): with one stream BM3D 1.46–1.65×, WNNM gray 1.63×, NCSR
-  1.17–1.19×, MCWNNM RGB 1.13×; with `num_streams=3`, 1.53–1.67× across the
-  four. NLM at its default two streams: gray 1.73×, YUV420 1.47×, RGB 1.67×,
-  gray `d=0` 1.79× (two runs each). `nss_vk.NLM` (a preview since r3) uses the
-  same extension and runs at 0.87–1.03× of `nss_cuda.NLM` on that core.
-  Rolling `radius=1` (two runs, output hashed): BM3D gray 1.20×, YUV420 1.11×, WNNM gray 1.21×; NCSR, MCWNNM, LSSC, DA3D, BM4D, NLH and TWSC
-  within ±3% (their kernels set the pace). Direct transfers raise the
-  [default streams](#default-streams) of BM3D, WNNM, MCWNNM and NCSR. With a small frame cache the lock cap keeps most blocks
-  staged, and the gain shrinks.
+- **Effect:** the staging copies on the host go away, which helps most where
+  they set the pace (spatial BM3D, WNNM and NLM) and little where the kernels
+  do (NLH, TWSC, BM4D). `nss_vk.NLM` uses the same extension. Direct
+  transfers raise the [default streams](#default-streams) of BM3D, WNNM,
+  MCWNNM and NCSR. With a small frame cache the lock cap keeps most blocks
+  staged, and the effect shrinks.
 - **Environment:** `NSS_CUDA_DIRECT_IO=0` turns it off,
   `NSS_CUDA_DIRECT_IO_MAX_MB` sets the lock cap in MiB, and
   `NSS_CUDA_DIRECT_IO_STATS` prints counts when a core's last instance is freed.
@@ -261,21 +265,6 @@ scheduling flags, so a few threads stayed at 100% CPU for nothing. Events
 that only order streams on the GPU stay without the flag, because recording a
 blocking event costs more.
 
-CPU time per frame, master `c161be3` against this behaviour (1080p, RTX
-5080, a decoder-like source whose own work is in both columns, 30 s runs,
-two each):
-
-| Filter (vapoursynth-classic, direct transfers) | CPU ms/frame | fps |
-|---|---|---|
-| NLM gray `d=0` / RGB `d=1` | 5.10 → 1.85 / 15.75 → 5.55 | −0.2% / −0.6% |
-| BM3D gray / YUV420 `radius=1` / gray `radius=1` legacy | 4.11 → 1.75 / 11.30 → 6.56 / 9.49 → 1.37 | −0.8% / −0.1% / −0.4% |
-| WNNM gray / `radius=1` | 4.12 → 1.75 / 8.19 → 5.44 | −0.7% / −0.2% |
-| NCSR gray / MCWNNM RGB / MCWNNM RGB `radius=1` | 3.74 → 1.13 / 13.94 → 4.57 / 24.30 → 11.01 | −0.7% / −0.2% / 0% |
-| LSSC / DA3D | 10.31 → 1.01 / 68.4 → 1.44 | +0.6% / 0% |
-| TWSC / NLH / BM4D | 17.63 → 17.05 / 33.6 → 21.4 / 46.9 → 33.7 | −0.2% / +0.2% / −0.5% |
-| **VapourSynth R78** (staging): NLM gray / BM3D gray / BM3D YUV420 `radius=1` / LSSC | 10.80 → 9.22 / 7.99 → 6.56 / 17.05 → 14.63 / 10.71 → 2.91 | −0.1% / −0.2% / −0.2% / −0.4% |
-
 The CPU this frees goes to the rest of the script (decoding, encoding, CPU
-filters). The cost is the sleeping thread's wake-up where the GPU waits on
-that thread: up to about 1% in the table, more where a frame is mostly waits
-(NLM's plane path at 720p with `a=1`: −2.5% at a third of the CPU).
+filters). The cost is the sleeping thread's wake-up, which is small except
+where a frame is mostly waits.

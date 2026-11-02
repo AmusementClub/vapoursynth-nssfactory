@@ -128,13 +128,12 @@ mode, and the removed `lambda1` parameter is rejected (including zero).
 ## Defaults rationale and performance
 
 The default is the fast geometry `block_size=8, block_step=8, group_size=8,
-iters=2`, the same for every noise level (sigma sets the strength): about
-0.75 fps at 1080p gray on one CPU core.
+iters=2`, the same for every noise level (sigma sets the strength).
 
 It is a speed setting. The paper's high-quality regime, `block_step=1,
 group_size=90, iters=12` (4 on the fast color path), denoises 8 to 10 dB
-better at sigma 5 to 100 on DIV2K crops, at thousands of times the cost
-(tens of minutes per 1080p frame on one CPU core). In between:
+better at sigma 5 to 100 on DIV2K crops, at thousands of times the cost. In
+between:
 
 | Call | Against the quality call (gray / RGB) |
 |---|---|
@@ -144,7 +143,7 @@ better at sigma 5 to 100 on DIV2K crops, at thousands of times the cost
 
 RGB needs its 12 rounds at `group_size=90` (5 rounds lose 2.6 dB there).
 
-Settings closer to the paper, with their measured quality and GPU speed, are on the [CUDA page](cuda/twsc.md#closer-to-the-papers); the CPU takes the same arguments.
+Settings closer to the paper, with their measured quality, are on the [CUDA page](cuda/twsc.md#closer-to-the-papers); the CPU takes the same arguments.
 
 ## Pitfalls
 

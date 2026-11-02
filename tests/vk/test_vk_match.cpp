@@ -252,7 +252,14 @@ void temporal_case(const std::shared_ptr<Device>& device, Matcher& matcher, int 
                                      if (f->needs_copy()) f->record_upload(slot.commands(Slot::Upload));
                                  }
                                  if (table.needs_copy()) table.record_upload(slot.commands(Slot::Upload));
-                                 matcher.predictive(slot.commands(Slot::Compute), g, w, grid, 0, grid.count(), out, counts);
+                                 // As the group driver: the window kernel seeds the centre
+                                 // where it takes the search (native passes; the emulated pass
+                                 // runs the lane kernels alone, compared bit for bit).
+                                 if (!matcher.predictive_window(slot.commands(Slot::Compute), g, w, grid, 0, grid.count(),
+                                                                out, counts)) {
+                                     matcher.predictive(slot.commands(Slot::Compute), g, w, grid, 0, grid.count(), out,
+                                                        counts);
+                                 }
                              },
                              label);
     for (int ref = 0; ref < grid.count(); ++ref) {
@@ -464,6 +471,51 @@ int main(int argc, char** argv) {
                 spatial_case(device, matcher, 97, 83, block, group, 2, 7, flat, stats, 13, true, &column);
             }
         }
+        // The exact window kernel (block 8, sides 15 to 33): its native pass
+        // against the emulated lane kernels bit for bit (run_both), and the
+        // CPU; every group class, sparse and dense steps, padded rows, split
+        // batches, planes smaller than the window, and BM3D's default.
+        for (const int group : {2, 3, 8, 9, 16, 17, 32}) {
+            spatial_case(device, matcher, 97, 83, 8, group, 8, 9, flat, stats, 0, group == 8);
+        }
+        for (const int range : {7, 8, 12, 16}) {
+            spatial_case(device, matcher, 101, 76, 8, 8, 8, range, flat, stats, 5, true);
+            spatial_case(device, matcher, 77, 61, 8, 16, 4, range, flat, stats);
+        }
+        for (const int step : {1, 3, 5, 6, 7}) spatial_case(device, matcher, 97, 83, 8, 8, step, 9, flat, stats);
+        // Wide windows (tiles of up to 33 x 33), groups 34 to 64 (chain
+        // mode against the block fallback) and blocks 12 / 16 (split mode,
+        // both lane-kernel layouts).
+        spatial_case(device, matcher, 150, 120, 8, 8, 8, 20, flat, stats, 0, true);
+        spatial_case(device, matcher, 150, 120, 4, 16, 4, 24, flat, stats);
+        spatial_case(device, matcher, 100, 90, 8, 32, 8, 64, flat, stats, 3);
+        for (const int group : {34, 48, 64}) {
+            spatial_case(device, matcher, 97, 83, 8, group, 8, 4, flat, stats, 0, group == 48);
+            spatial_case(device, matcher, 97, 83, 4, group, 4, 9, flat, stats);
+            spatial_case(device, matcher, 61, 58, 2, group, 2, 6, flat, stats, 5);
+            spatial_case(device, matcher, 120, 100, 8, group, 5, 24, flat, stats);
+        }
+        for (const int group : {8, 9, 10, 16, 33}) {
+            spatial_case(device, matcher, 97, 83, 12, group, 8, 9, flat, stats, 0, group == 9);
+            spatial_case(device, matcher, 97, 83, 16, group, 6, group <= 9 ? 24 : 12, flat, stats, 4);
+        }
+        // Block 4 at and above its smallest window side (12: side 25), and
+        // blocks the window kernel does not take here (the lane kernels).
+        for (const auto& shape : {std::pair<int, int>{4, 12}, {4, 16}, {4, 9}, {2, 9}, {6, 6}}) {
+            for (const int group : {2, 8, 17, 32}) {
+                spatial_case(device, matcher, 97, 83, shape.first, group, shape.first, shape.second, flat, stats);
+            }
+        }
+        // Temporal searches seeded by the window kernel (default BM3D shape,
+        // clip start and end, other blocks, ps_num 1 and the B8/L8 PS2 pair).
+        temporal_case(device, matcher, 97, 83, 8, 8, 8, 9, 1, 1, 3, flat, stats);
+        temporal_case(device, matcher, 97, 83, 8, 16, 6, 9, 2, 0, 9, flat, stats);
+        temporal_case(device, matcher, 71, 66, 6, 32, 6, 9, 1, 8, 9, flat, stats);
+        temporal_case(device, matcher, 71, 66, 4, 8, 4, 14, 2, 2, 5, flat, stats, 1);
+        temporal_case(device, matcher, 71, 66, 8, 8, 8, 7, 1, 1, 3, flat, stats, 4);  // side 15: lanes alone
+        spatial_case(device, matcher, 12, 10, 8, 8, 1, 9, flat, stats);
+        spatial_case(device, matcher, 8, 8, 8, 32, 1, 16, flat, stats);
+        spatial_case(device, matcher, 240, 135, 8, 8, 8, 9, flat, stats, 0, true);
         // The block fallback: groups beyond the lanes (BM3D's 64), one top-K
         // chunk exceeded (window 81 x 81), and block 32 with group 64.
         spatial_case(device, matcher, 97, 83, 8, 64, 3, 7, flat, stats);

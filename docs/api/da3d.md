@@ -65,22 +65,21 @@ This implementation:
 
 9 anime frames (1080p, `ds/`) with Gaussian noise added; the guide is
 `nss.BM3D` with both stages (`final=1`) at 4/3 of sigma. PSNR gain of DA3D
-over its guide, mean (worst to best), and the time for one frame on one
-Ryzen 9 5950X core (median):
+over its guide, mean (worst to best):
 
-| sigma | gray: gain | gray: s / frame | RGB: gain | RGB: s / frame |
-|---:|---:|---:|---:|---:|
-| 2 | +0.19 dB (-0.01 to +0.42) | 3.0 | +0.30 dB (+0.12 to +0.47) | 26 |
-| 5 | +0.75 dB (+0.43 to +1.34) | 1.7 | +0.94 dB (+0.60 to +1.33) | 12 |
-| 10 | +1.34 dB (+0.74 to +2.02) | 1.1 | +1.87 dB (+1.40 to +2.46) | 8.3 |
-| 25 | +2.19 dB (+1.28 to +2.97) | 0.65 | +3.37 dB (+2.57 to +4.37) | 4.3 |
+| sigma | gray: gain | RGB: gain |
+|---:|---:|---:|
+| 2 | +0.19 dB (-0.01 to +0.42) | +0.30 dB (+0.12 to +0.47) |
+| 5 | +0.75 dB (+0.43 to +1.34) | +0.94 dB (+0.60 to +1.33) |
+| 10 | +1.34 dB (+0.74 to +2.02) | +1.87 dB (+1.40 to +2.46) |
+| 25 | +2.19 dB (+1.28 to +2.97) | +3.37 dB (+2.57 to +4.37) |
 
-- The gain grows with the noise, and so does the speed: at low sigma the
+- The gain grows with the noise, and the cost falls: at low sigma the
   masks are narrow and far more patches are needed (gray: 8% of the pixels
   are patch centres at sigma 2, 1.3% at sigma 25; RGB: 37% and 3.6%).
 - Anime's flat areas and gradients suit the method; the paper reports
   smaller gains on photographs (+0.1 to +0.7 dB over BM3D).
-- RGB costs 3 to 9 times gray: three channels per patch, and the color
+- RGB costs several times gray: three channels per patch, and the color
   similarity makes the masks narrower, so there are more patches.
 - VapourSynth runs frames in parallel; each frame runs on one thread.
 
@@ -94,4 +93,4 @@ Ryzen 9 5950X core (median):
 - At sigma 2 or less the gain is small and the cost is high.
 - Frame properties: `_NSSDA3DPatches` and `_NSSDA3DGuideOnly` count the
   patches of the frame (all planes) and those that took the guide.
-- On the GPU, [`nss_cuda.DA3D`](cuda/da3d.md) gives the same result (within a level), at 5.6 to 70 fps at 1080p.
+- On the GPU, [`nss_cuda.DA3D`](cuda/da3d.md) gives the same result (within a level), far faster.

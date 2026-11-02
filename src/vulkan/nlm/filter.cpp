@@ -322,7 +322,8 @@ void write_frame(const NlmData& d, PlaneStore& store, int region, const Frames& 
 
 // The copies of the upload stage; the slot keeps the imported frames until they are done.
 void record_uploads(const NlmData& d, const PlaneStore& store, const std::vector<PlaneUpload>& uploads, Slot& slot,
-                    const VSAPI* vsapi) {
+                    const VSAPI* vsapi, FrameTimer& timer) {
+    timer.upload_begin();
     VkCommandBuffer commands = slot.commands(Slot::Upload);
     const std::size_t row_bytes = static_cast<std::size_t>(d.width) * sizeof(float);
     for (const PlaneUpload& u : uploads) {
@@ -421,15 +422,17 @@ void plane_frame(NlmData& d, const Frames& srcf, const Frames& reff, const MakeO
     auto upload = [&](int region, int t) {
         std::vector<PlaneUpload> uploads;
         write_frame(d, p.frames, region, srcf, reff, t, vsapi, uploads);
-        if (!uploads.empty()) record_uploads(d, p.frames, uploads, slot, vsapi);
+        if (!uploads.empty()) record_uploads(d, p.frames, uploads, slot, vsapi, timer);
     };
     upload(0, d.d);
+    timer.compute_begin();
     {
         const ResetPush push{p.sums.address(), count};
         d.reset.dispatch(slot.commands(Slot::Compute), &push, (count + 255) / 256);
         compute_barrier(slot.device(), slot.commands(Slot::Compute));
     }
     for (int i = -d.d; i <= 0; ++i) {
+        timer.compute_begin();
         // The pair's regions are reused: the previous pair has finished (wait below).
         if (i < 0) {
             upload(1, d.d + i);
@@ -456,9 +459,11 @@ void plane_frame(NlmData& d, const Frames& srcf, const Frames& reff, const MakeO
             }
         }
         if (i == 0) {
+            timer.match_end();
             const FinishPush push{frames, p.sums.address(), p.out.address(), center, count, d.wref};
             d.finish.dispatch(commands, &push, (count + 255) / 256);
-            timer.filter_end();
+            timer.aggregate_end();
+            timer.next_stage();
             timer.download_begin();
             record_result(d, p.out, direct, dst, slot, vsapi);
             timer.download_end();
@@ -504,13 +509,14 @@ void tile_frame(NlmData& d, int n, const Frames& srcf, const Frames& reff, const
     FrameTimer timer(slot);
     if (staged) {
         for (const auto& [semaphore, value] : window.previous_uses()) slot.wait_for(Slot::Upload, semaphore, value);
-        record_uploads(d, store, uploads, slot, vsapi);
+        record_uploads(d, store, uploads, slot, vsapi, timer);
     }
     // Frames other requests upload: wait for their upload stages on the device.
     for (WindowFrame* f : window.pinned()) {
         if (!window.uploads(f)) slot.wait_for(Slot::Compute, f->ready, f->ready_value);
     }
 
+    timer.compute_begin();
     TilePush push{};
     push.frames = store.address();
     push.out = lease->out.address();
@@ -533,6 +539,7 @@ void tile_frame(NlmData& d, int n, const Frames& srcf, const Frames& reff, const
     d.tile.dispatch(slot.commands(Slot::Compute), &push, static_cast<std::uint32_t>((d.width + kTileWidth - 1) / kTileWidth),
                     static_cast<std::uint32_t>((d.height + kTileHeight - 1) / kTileHeight));
     slot.end_label(Slot::Compute);
+    // The fused tile has no separate match or aggregate stage.
     timer.filter_end();
     timer.download_begin();
     record_result(d, lease->out, direct, dst, slot, vsapi);

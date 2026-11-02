@@ -75,8 +75,28 @@ public:
     // Whether a search of this shape runs on the emulated warp layer here (D23;
     // never the block fallback, which has no subgroup operations).
     bool emulated(const MatchGeometry& g, int ps_num) const;
-    // Tests: the emulated layer on any device (it gives the native bits).
+    // Whether spatial() takes the exact candidate-parallel kernel
+    // (common/match_window.comp: one channel, blocks 4 and 8 from their
+    // measured minimum window sides to 33, groups up to 32, a native subgroup
+    // of 32) instead of the lane kernels: the same distances and keys, bit for
+    // bit.
+    bool window(const MatchGeometry& g) const;
+    // Whether predictive_window() takes a temporal search: the window kernel
+    // and the seeded lane kernels both serve it, and the window is large
+    // enough for the extra dispatch to pay.
+    bool window_seeds(const MatchGeometry& g, int ps_num) const;
+    // The predictive search with its centre frame by the window kernel, a
+    // barrier, then the seeded lane kernels: the predictive lane search's
+    // matches, bit for bit. Returns false (and records nothing) where
+    // window_seeds() does not hold.
+    bool predictive_window(VkCommandBuffer commands, const MatchGeometry& g, const TemporalWindow& window,
+                           const RasterGrid& grid, int ref_begin, int ref_count, VkDeviceAddress matches,
+                           VkDeviceAddress counts);
+    // Tests: the emulated layer on any device (it gives the native bits; it
+    // also turns the window kernel off).
     void force_emulation(bool on) noexcept { force_emulation_ = on; }
+    // Tests and benchmarks: the lane kernels where the window kernel would run.
+    void disable_window(bool on) noexcept { disable_window_ = on; }
     // Tests: rows of at most `x` workgroups (default 65535), so that small
     // searches take the multi-row dispatch.
     void limit_groups_x(int x) noexcept { max_groups_x_ = x; }
@@ -87,8 +107,14 @@ private:
     void dispatch(VkCommandBuffer commands, const MatchGeometry& g, bool predictive, int ps_num, const void* push,
                   int ref_count, bool seeded = false, bool pair2 = false);
 
+    const Pipeline& window_pipeline(const MatchGeometry& g, bool temporal);
+    // frame >= 0: `source` is a frame table and the plane its frame `frame`.
+    void dispatch_window(VkCommandBuffer commands, VkDeviceAddress source, int frame, const MatchGeometry& g,
+                         const RasterGrid& grid, int ref_begin, int ref_count, VkDeviceAddress matches,
+                         VkDeviceAddress counts);
+
     std::shared_ptr<Device> device_;
-    bool force_emulation_ = false;
+    bool force_emulation_ = false, disable_window_ = false;
     // Dispatches wider than this go in rows (common/warp.glsl's w_workgroup,
     // match_block.comp's main): 65535 is the smallest
     // maxComputeWorkGroupCount Vulkan allows.

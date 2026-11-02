@@ -10,28 +10,22 @@ out = core.nss_cuda.NLM(clip, h=1.2)          # defaults
 denoised = core.nss_cuda.NLM(clip, d=1, a=4, s=3, h=1.5, channels="Y")
 ```
 
-## Speed
+## Cost
 
-1080p, default arguments, RTX 5080, one instance; median over nine test images
-(see the [overview](README.md#speed)).
-
-| Call | YUV420 | RGB |
-|---|---:|---:|
-| default (`d=1`) | 620 | 260 |
-
-The release packages are built with CUDA 13.3. A CUDA 12.9 build (the toolkit of r2 and earlier) gives the same
-output at 490 / 255 fps: its code generation suits this kernel less
-([toolkit note](compare.md#notes)).
+The cost grows with the search window (`a`), the patch (`s`) and the temporal
+radius (`d`): about `(2a+1)^2 (2d+1)` distances a pixel. For large windows or
+several frames, consider [PNLM](pnlm.md), whose cost grows far more slowly
+with `a` and `d`.
 
 ## Closer to the papers
 
-The defaults are fast settings. Settings closer to the paper, with their quality and cost. Measured on one 1080p RGB frame (an anime credits frame with its own film grain) with Gaussian noise added, against the frame without it; the noisy input is 24.97 dB at sigma 15 and 20.98 dB at sigma 25. One image: take these as starting points, not tuned presets. σ is the standard deviation of the noise in 8-bit units; speed at 1080p on an RTX 5080 (the second row's on the test frame).
+The defaults are fast settings. Settings closer to the paper, with their quality; they are much slower than the defaults. Measured on one 1080p RGB frame (an anime credits frame with its own film grain) with Gaussian noise added, against the frame without it; the noisy input is 24.97 dB at sigma 15 and 20.98 dB at sigma 25. One image: take these as starting points, not tuned presets. σ is the standard deviation of the noise in 8-bit units.
 
-| Arguments | PSNR, sigma 15 | PSNR, sigma 25 | fps YUV420 / RGB |
-|---|---:|---:|---:|
-| defaults (`h=1.2`) | 24.97 dB | 20.98 dB | 620 / 260 |
-| `d=0, h=0.6 σ` | 32.44 dB | 28.94 dB | 780 / 280 |
-| `a=10, s=3, d=0, h=0.6 σ` | 33.31 dB | 30.53 dB | 130 / 81 |
+| Arguments | PSNR, sigma 15 | PSNR, sigma 25 |
+|---|---:|---:|
+| defaults (`h=1.2`) | 24.97 dB | 20.98 dB |
+| `d=0, h=0.6 σ` | 32.44 dB | 28.94 dB |
+| `a=10, s=3, d=0, h=0.6 σ` | 33.31 dB | 30.53 dB |
 
 - `h` is the KNLMeansCL scale (the weight is exp(-mean squared patch difference / h^2), without the paper's -2 sigma^2 offset), so it has to grow with the noise: the default `h=1.2` leaves noise of sigma 3 or more untouched. About 0.6 σ is best on a single frame (`d=0`), about 0.8 σ with `d` ≥ 1 on video, where the neighbouring frames carry their own noise.
 - The 21 x 21 window and 7 x 7 patches are the paper's. They gain 0.9 to 1.6 dB on this grainy frame, but within 0.1 dB on 11 cleaner images (DIV2K and crops), at 3 (RGB) to 6 (YUV420) times the cost.
@@ -72,9 +66,8 @@ core.nss_cuda.NLM(clip clip[, int d = 1, int a = 2, int s = 4, float h = 1.2,
 
 ## Notes
 
-- **R81 GPU frames (experimental).** With the build- and run-time switches in
-  [GPU frames](README.md#gpu-frames), NLM accepts and returns GPU-resident
-  frames. The tile path, its window cache and weight-map reuse all work on
+- **R81 GPU frames.** On VapourSynth R81 ([GPU frames](README.md#gpu-frames))
+  NLM accepts and returns GPU-resident frames. The tile path, its window cache and weight-map reuse all work on
   resident frames; output uses fresh planes with device-to-device copies.
 - **Accuracy.** Above 144 dB against the CPU plugin (it is the same model with
   exact box sums); identical from run to run.

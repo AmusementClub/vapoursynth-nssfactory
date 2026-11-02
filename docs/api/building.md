@@ -97,15 +97,15 @@ plugin.
 | Option | Default | Meaning |
 |---|---|---|
 | `NSS_ENABLE_CUDA` | OFF | Build the CUDA plugin. |
-| `NSS_CUDA_GPU_FRAMES` | OFF | Build the experimental R81 GPU-frame frontend for all `nss_cuda` filters; requires R81 VapourSynth and Vulkan headers. Set `NSS_CUDA_GPU_FRAMES=1` at run time to enable it. |
+| `NSS_CUDA_GPU_FRAMES` | OFF | Build the R81 [GPU-frame](cuda/README.md#gpu-frames) frontend for all `nss_cuda` filters (the release packages do); requires R81 VapourSynth headers. Vulkan headers come from `VULKAN_SDK` or the system, else the pinned Vulkan-Headers are fetched. On at run time unless `NSS_CUDA_GPU_FRAMES=0`. |
 | `NSS_CUDA_GPU_FRAMES_PYTHON` | empty | A Python whose VapourSynth is R81, for `test_cuda_gpu_frames_r81`. |
 | `NSS_ENABLE_VULKAN` | OFF | Build the Vulkan plugin (a preview). |
 | `NSS_VK_GPU_FRAMES_PYTHON` | empty | A Python whose VapourSynth is R80 or newer, for the GPU-frame test (`test_vk_gpu_frames_r8x`). |
 | `NSS_VK_GLSLANG`, `NSS_VK_SPIRV_OPT`, `NSS_VK_SPIRV_VAL` | empty | Installed `glslang`, `spirv-opt` and `spirv-val` to use instead of building the pinned ones; set all three or none. |
 | `NSS_BUILD_CPU` | ON | Build the CPU plugin and its tests. |
 | `NSS_CUDA_ARCHITECTURES` | see above | CUDA architectures to compile for. |
-| `NSS_CUDA_MATHDX` | empty | Path to a MathDx package root (`nvidia/mathdx/<version>`, holding `include/cusolverdx.hpp`; MathDx 25.12 or newer, the CUDA 12 or CUDA 13 package to match nvcc). The eigen steps of NCSR's groups of 17 to 32 and TWSC's caps of 17 to 32 then use cuSolverDx `heev` (NCSR group 32 1.16x; TWSC block 8, group 24 1.10x, group 32 1.05x). Needs CMake 3.25 or newer; the NCSR and TWSC kernels are compiled separately and linked with link-time optimization. |
-| `NSS_CUDA_COMPRESS` | `size` | Fatbin compression (`nvcc --compress-mode`, CUDA 12.8 or newer): `size`, `balance`, `speed`, `none`, or `default` for nvcc's own choice. `size` makes the plugin about a quarter of the default size and the first frame a few milliseconds slower. |
+| `NSS_CUDA_MATHDX` | empty | Path to a MathDx package root (`nvidia/mathdx/<version>`, holding `include/cusolverdx.hpp`; MathDx 25.12 or newer, the CUDA 12 or CUDA 13 package to match nvcc). The eigen steps of NCSR's groups of 17 to 32 and TWSC's caps of 17 to 32 then use cuSolverDx `heev`, which is faster there. Needs CMake 3.25 or newer; the NCSR and TWSC kernels are compiled separately and linked with link-time optimization. |
+| `NSS_CUDA_COMPRESS` | `size` | Fatbin compression (`nvcc --compress-mode`, CUDA 12.8 or newer): `size`, `balance`, `speed`, `none`, or `default` for nvcc's own choice. `size` makes the plugin about a quarter of the default size; the first frame takes slightly longer. |
 | `NSS_HWY_TARGET_MODE` | `dynamic` | `avx2`, `avx3`, `neon` pin one target; `portable-test` (Clang only) is a diagnostic build, not a release mode. |
 | `NSS_AVX2_DEFAULTS` | ON on x86 | The validated AVX2 kernel ports. OFF keeps the reference routes. |
 | `NSS_AVX2_EXPERIMENT` | 0 | Bitmask of experimental AVX2 candidates (none by default). |

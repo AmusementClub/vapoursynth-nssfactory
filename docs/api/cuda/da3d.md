@@ -14,16 +14,7 @@ guide = core.nss_cuda.BM3D(clip, sigma=20, final=1)
 out = core.nss_cuda.DA3D(clip, guide, sigma=15)
 ```
 
-## Speed
-
-1080p, RTX 5080, one instance, default streams; a frame of the Ufotable test
-image with Gaussian noise added and `nss_cuda.BM3D(final=1)` at 4/3 sigma as
-the guide (only DA3D timed):
-
-| sigma | YUV420 | RGB |
-|---:|---:|---:|
-| 3 | 37 | 5.6 |
-| 10 | 70 | 14 |
+## Cost
 
 The cost follows the number of patches, which grows as the noise falls and
 with color (see the CPU page). The tiles of a frame run in parallel, one
@@ -40,7 +31,7 @@ core.nss_cuda.DA3D(clip clip, clip ref[, float[] sigma = 3.0, int memory_limit_m
 `num_streams`: frames in flight. Default 3 for a clip filtered plane by plane
 (gray, YUV, RGB with different sigmas: two tiles share an SM, and a third
 frame keeps the GPU full) and 2 for joint RGB, fewer where the memory limit
-requires; more measured no faster.
+requires.
 
 ## Notes
 
@@ -48,7 +39,7 @@ requires; more measured no faster.
   100 dB or more from the CPU's output, the same PSNR to the clean frame,
   the patch counts within 1%): the 64 x 64 FFT is the CPU's radix-4
   arithmetic in shared memory and the kernels are built without
-  contraction; only the sums' order differs (15% faster on gray).
+  contraction; only the sums' order differs.
 - **Memory**: about 7 bytes a pixel per stream for a joint RGB clip (the
   tiles' sums), plus the frames; a plane-by-plane clip holds the work of
   every filtered plane at once.

@@ -24,20 +24,12 @@ resident = core.nss_vk.BM3D(clip.std.GPUUpload(), sigma=25)    # VapourSynth R80
 and `ref` take CPU or GPU frames (`vnode:all`); both must be the same kind
 ([GPU frames](README.md#gpu-frames-vapoursynth-r80)).
 
-## Speed
+## Cost
 
-1080p, default arguments with `sigma=3`, RTX 5080 (see the
-[overview](README.md#speed)):
-
-| Frames | gray | YUV420 | RGB |
-|---|---:|---:|---:|
-| VapourSynth R81, CPU frames | 730 | 485 | 245 |
-| vapoursynth-classic, direct transfers | 1165 | 756 | 375 |
-| R81, GPU frames | 1703 | 1051 | 586 |
-| `radius=1`, R81 CPU frames / GPU frames | 720 / 908 | 475 / 585 | 238 / 313 |
-
-`final=1` and `radius=2` are bound by their kernels (gray 1080p `radius=1,
-final=1` on classic: 478 fps against `nss_cuda`'s 640).
+Spatial BM3D is bound by its transfers on CPU frames and by its kernels on GPU
+frames; `final=1` and `radius=2` are bound by their kernels. Some search
+shapes have faster dedicated matchers (see Matching below): when the shape is
+up to you, consider one of them.
 
 ## Notes
 
@@ -49,11 +41,25 @@ final=1` on classic: 478 fps against `nss_cuda`'s 640).
   legacy intermediate reduced by `VAggregate` to rounding.
 - **Model.** BM3D model 3 (orthonormal Haar along the group), as the CPU and
   CUDA plugins.
-- **Matching.** Spatial search uses the square matcher for `block=2/step=1`,
-  `4/2`, `8/4`, `12/6` and `16/8`, with groups 2–32 and one match channel.
-  Other spatial shapes keep their existing matcher; temporal search always
-  uses the predictive lane matcher, with a no-dedupe variant for `ps_num=1`.
-  The tensor-core matcher is not ported.
+- **Matching.** One-channel spatial searches use, in this order:
+  - the exact column matcher: blocks 4/8/12/16 at steps 1–3, groups
+    8/16/32, except block 4 step 2, block 12 step 3, block 16 group 32 and
+    block 16 / group 8 step 3;
+  - the square matcher for `block = 2 x step` (2/1, 4/2, 8/4, 12/6, 16/8) and
+    the generalized 12/3, 12/4, 16/4 and 8/2, groups 2–32;
+  - on devices with 32-wide subgroups, an exact window matcher, any
+    `block_step`: `group_size` up to 32 at block 8 with `bm_range` 7 or more
+    (the default `block_step=8, bm_range=9` among them) and at block 4 with
+    12 or more; `group_size=64` at blocks 2, 4 and 8 with every `bm_range`;
+    blocks 12 and 16 with `group_size` up to 32 and `bm_range` 12 or more.
+
+  Column and window give the matches of the matcher they replace bit for bit;
+  square matches agree up to near ties. Everything else keeps the lane
+  matcher (or, for `group_size=64`, the block fallback). Temporal search matches the centre frame with the square matcher
+  or the window matcher where one applies (the window matcher from
+  `bm_range` 9 at block 8 and 14 at block 4), then searches the other frames
+  predictively from those matches (a no-dedupe variant for `ps_num=1`). The
+  tensor-core matcher is not ported.
 - **Memory.** Peak device memory at 1080p `radius=1` (eight threads): gray
   566 MiB, YUV420 839 MiB, RGB 1657 MiB; RGB legacy 1226 MiB.
 

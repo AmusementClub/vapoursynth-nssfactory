@@ -11,21 +11,13 @@ best = core.nss_cuda.TWSC(clip, sigma=25, block_step=4, group_size=90, iters=12)
 blind = core.nss_cuda.TWSC(clip, estimate_sigma=1)          # per-frame sigma
 ```
 
-## Speed
-
-1080p, default arguments, RTX 5080, one instance; median over nine test images
-(see the [overview](README.md#speed)).
-
-| Call | YUV420 | RGB |
-|---|---:|---:|
-| default | 77 | 44 |
+## Cost
 
 The default is a speed setting. The quality geometry `block_step=1,
 group_size=90, iters=12` (4 on the fast color path) denoises 8 to 10 dB better
-at sigma 5 to 100 and takes about 80 s per YUV420 1080p frame and 45 s per RGB
-frame; `block_step=4` keeps its quality at a sixteenth of the groups. The
-[CPU page](../twsc.md#defaults-rationale-and-performance) has the
-measurements.
+at sigma 5 to 100 but is thousands of times slower; `block_step=4` keeps its
+quality at a sixteenth of the groups. The
+[CPU page](../twsc.md#defaults-rationale-and-performance) has the details.
 
 On GPUs of compute capability 8.0 and later, the block matching of planes
 matched on their own (gray, the luma of YUV, the fast color path's planes, the
@@ -37,16 +29,16 @@ shapes, joint channels and temporal matching keep the lane kernels.
 
 ## Closer to the papers
 
-The defaults are fast settings. Settings closer to the paper, with their quality and cost. Measured on one 1080p RGB frame (an anime credits frame with its own film grain) with Gaussian noise added, against the frame without it; the noisy input is 24.97 dB at sigma 15 and 20.98 dB at sigma 25. One image: take these as starting points, not tuned presets. σ is the standard deviation of the noise in 8-bit units; speed at 1080p on an RTX 5080 (the second row's on the test frame).
+The defaults are fast settings. Settings closer to the paper, with their quality; they are much slower than the defaults. Measured on one 1080p RGB frame (an anime credits frame with its own film grain) with Gaussian noise added, against the frame without it; the noisy input is 24.97 dB at sigma 15 and 20.98 dB at sigma 25. One image: take these as starting points, not tuned presets. σ is the standard deviation of the noise in 8-bit units.
 
-| Arguments | PSNR, sigma 15 | PSNR, sigma 25 | fps YUV420 / RGB |
-|---|---:|---:|---:|
-| defaults, `sigma=σ` | 25.26 dB | 21.27 dB | 77 / 44 |
-| defaults, `sigma=3.4 σ` | 34.88 dB | 31.89 dB | 77 / 44 |
-| `block_step=4, group_size=90, iters=4, sigma=σ` (RGB on the fast color path) | 36.77 dB | 34.23 dB | 0.56 / 0.38 |
+| Arguments | PSNR, sigma 15 | PSNR, sigma 25 |
+|---|---:|---:|
+| defaults, `sigma=σ` | 25.26 dB | 21.27 dB |
+| defaults, `sigma=3.4 σ` | 34.88 dB | 31.89 dB |
+| `block_step=4, group_size=90, iters=4, sigma=σ` (RGB on the fast color path) | 36.77 dB | 34.23 dB |
 
 - With σ as is, the default geometry (group 8, 2 rounds) barely denoises; about 3.4 σ is best (9 anime frames, σ 1 to 20, within 0.1 dB of the best at every σ). The factor falls as the group and the rounds grow, to σ as is at the geometry below.
-- The quality geometry of [Speed](#speed) at step 4, which keeps the quality of step 1. On this image it is the best of the eight filters by 2 dB or more; the joint (non-`cfast`) path takes `iters=12`.
+- The quality geometry of [Cost](#cost) at step 4, which keeps the quality of step 1. On this image it is the best of the eight filters by 2 dB or more; the joint (non-`cfast`) path takes `iters=12`.
 
 ## Signature
 
@@ -59,7 +51,7 @@ core.nss_cuda.TWSC(clip clip[, float[] sigma = 3.0, int block_size = 8,
                    int search_window = 60, int admm_iter = 10, float rho = 0.5,
                    float mu = 1.1, float tol = 1e-6, int cfast = 1,
                    int memory_limit_mb, string temporal_mode = "rolling",
-                   int rolling_chunk = 4, int rolling_cache_chunks = 1,
+                   int rolling_chunk = 1, int rolling_cache_chunks = 1,
                    int rolling_cache_limit = 16, int device_id = 0,
                    int num_streams])
 ```
@@ -72,7 +64,7 @@ core.nss_cuda.TWSC(clip clip[, float[] sigma = 3.0, int block_size = 8,
 | `estimate_sigma` | 0 | 0 / 1 | Estimate sigma per frame/channel instead of taking it (the NLH estimator: 8x8 blocks on every fourth position per axis). |
 | `block_size` | 8 | [1, 16] | Patch edge. |
 | `block_step` | min(8, block) | [1, block] | Reference-patch stride: positions scale as `1/step^2`. 4 keeps the quality of 1 (within 0.1 dB) at a sixteenth of the groups. |
-| `group_size` | 8 | [1, 256] | Matched patches per group. 90 follows the paper's high-quality regime (see [Speed](#speed)). |
+| `group_size` | 8 | [1, 256] | Matched patches per group. 90 follows the paper's high-quality regime (see [Cost](#cost)). |
 | `search_window` | 60 | [1, 129] | Matching window edge. `bm_range=r` means `2r+1`; passing both is an error. |
 | `iters` | 2 | [1, 64] | Outer iterations (re-match and re-solve per round), nearly linear cost. With `group_size=90`: 12 for the joint filter, 4 on the fast color path. |
 | `radius` | 0 | [0, 16] | Temporal radius. >0 makes the filter temporal: finished, normal-height frames by default (`temporal_mode`, below). |
@@ -109,9 +101,7 @@ conditions, the quality it was measured at and when it pays are on the
 it ran.
 
 - It pays when `group_size` is larger than `block_size^2` (the default 90
-  against 64): RGB 1080p, `sigma=3, block_size=4, block_step=4,
-  group_size=32, search_window=20` runs at 13.1 fps with it at `iters=2` and
-  9.0 without.
+  against 64, or `block_size=4` with `group_size=32`).
 - With a small group (the default `group_size=8`) the joint dictionary is no
   larger and three planes are three times the groups: `cfast=0` is the faster
   call there.
@@ -121,7 +111,7 @@ it ran.
 | Parameter | Default | Meaning |
 |---|---|---|
 | `device_id`, `num_streams`, `memory_limit_mb` | 0, 3, none | The GPU, the frames in flight ([default streams](README.md#default-streams)), and a memory cap; see [shared arguments](README.md#shared-by-every-filter). |
-| `temporal_mode`, `rolling_chunk`, `rolling_cache_chunks`, `rolling_cache_limit` | `"rolling"`, 4, 1, 16 | What `radius > 0` returns (finished frames by default); see [temporal output](README.md#temporal-output). |
+| `temporal_mode`, `rolling_chunk`, `rolling_cache_chunks`, `rolling_cache_limit` | `"rolling"`, 1, 1, 16 | What `radius > 0` returns (finished frames by default); see [temporal output](README.md#temporal-output). |
 
 ## Notes
 
@@ -139,7 +129,7 @@ it ran.
 ## Pitfalls
 
 - The default is the fast geometry; for quality pass the larger group and
-  more rounds (see [Speed](#speed)).
+  more rounds (see [Cost](#cost)).
 - `estimate_sigma` and explicit `sigma` are mutually exclusive (creation-time
   error).
 - `ps_num > group_size` is an error after resolution.

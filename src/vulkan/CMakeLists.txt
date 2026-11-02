@@ -148,8 +148,9 @@ foreach(_nss_c 1 3)
     endforeach()
   endforeach()
 endforeach()
-# Square-center seeding for every block = 2 * step shape served by the lane
-# matcher. PS1 keeps its no-dedupe specialization; B16 PS2 has its own below.
+# Seeded predictive lanes: the centre frame's matches come from the square
+# matcher (block = 2 * step) or the window matcher (blocks 4 and 8). PS1 keeps
+# its no-dedupe specialization; B16 PS2 has its own below.
 foreach(_nss_b 2 4 8 12 16)
   foreach(_nss_l 8 16 32)
     foreach(_nss_emu 0 1)
@@ -202,7 +203,7 @@ endforeach()
 # Exact column-reuse matching for one-channel spatial searches. CPT is step + 1,
 # the number of 128-reference segments a thread covers. B12/B16 group 8 uses
 # the paired layout of the eight-lane matcher; B4 step 2, B12 step 3 and B16
-# group 32 stay out (B16 group 8 step 3 also uses square).
+# group 32 stay out (B16 group 8 step 3 also uses square), and get no shaders.
 foreach(_nss_b 4 8 12 16)
   foreach(_nss_k 7 15 31)
     if((_nss_b EQUAL 12 OR _nss_b EQUAL 16) AND _nss_k EQUAL 7)
@@ -212,7 +213,7 @@ foreach(_nss_b 4 8 12 16)
       continue()
     endif()
     foreach(_nss_cpt 2 3 4)
-      if(_nss_b EQUAL 4 AND _nss_cpt EQUAL 3)
+      if((_nss_b EQUAL 4 AND _nss_cpt EQUAL 3) OR (_nss_b EQUAL 12 AND _nss_cpt EQUAL 4))
         continue()
       endif()
       nss_vk_add_shader(NSS_VK_SPIRV_SOURCES match_column_b${_nss_b}_k${_nss_k}_c${_nss_cpt} common/match_column.comp
@@ -222,11 +223,37 @@ foreach(_nss_b 4 8 12 16)
 endforeach()
 foreach(_nss_b 12 16)
   foreach(_nss_cpt 2 3 4)
-    if(_nss_b EQUAL 16 AND _nss_cpt EQUAL 4)
+    if(_nss_cpt EQUAL 4)
       continue()
     endif()
     nss_vk_add_shader(NSS_VK_SPIRV_SOURCES match_column_pair8_b${_nss_b}_c${_nss_cpt} common/match_column_pair8.comp
                       DEFINES B=${_nss_b} K=7 CPT=${_nss_cpt})
+  endforeach()
+endforeach()
+# Exact candidate-parallel matching (match_window.comp), NY candidates an
+# item: tree (the lane kernels' arithmetic; blocks 4 and 8, where it beat them
+# on NVIDIA; _t reads a frame table, the centre of a predictive search whose
+# lane kernels it seeds), chain (groups 34 to 64, match_block.comp's
+# arithmetic; blocks 2, 4 and 8, BM3D's below 12) and split (blocks 12 and
+# 16; _pair the lane kernels' eight-lane layout).
+foreach(_nss_ny 2 3 4 5 6)
+  foreach(_nss_b 4 8)
+    nss_vk_add_shader(NSS_VK_SPIRV_SOURCES match_window_tree_b${_nss_b}_ny${_nss_ny} common/match_window.comp
+                      DEFINES B=${_nss_b} NY=${_nss_ny} MODE=0)
+    nss_vk_add_shader(NSS_VK_SPIRV_SOURCES match_window_tree_b${_nss_b}_ny${_nss_ny}_t common/match_window.comp
+                      DEFINES B=${_nss_b} NY=${_nss_ny} MODE=0 TEMPORAL=1)
+  endforeach()
+  foreach(_nss_b 2 4 8)
+    nss_vk_add_shader(NSS_VK_SPIRV_SOURCES match_window_chain_b${_nss_b}_ny${_nss_ny} common/match_window.comp
+                      DEFINES B=${_nss_b} NY=${_nss_ny} MODE=1)
+  endforeach()
+endforeach()
+foreach(_nss_ny 2 3 4)
+  foreach(_nss_b 12 16)
+    nss_vk_add_shader(NSS_VK_SPIRV_SOURCES match_window_split_b${_nss_b}_pair_ny${_nss_ny} common/match_window.comp
+                      DEFINES B=${_nss_b} NY=${_nss_ny} MODE=2 PAIR=1)
+    nss_vk_add_shader(NSS_VK_SPIRV_SOURCES match_window_split_b${_nss_b}_cols_ny${_nss_ny} common/match_window.comp
+                      DEFINES B=${_nss_b} NY=${_nss_ny} MODE=2 PAIR=0)
   endforeach()
 endforeach()
 # BM3D square matching (block = RQ at step Q), with its own reduction order.

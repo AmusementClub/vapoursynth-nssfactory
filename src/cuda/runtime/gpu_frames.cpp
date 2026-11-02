@@ -26,9 +26,11 @@ namespace {
 
 std::string prefix(const char* filter) { return std::string("nss_cuda.") + filter + ": "; }
 
+// GPU frames are on unless NSS_CUDA_GPU_FRAMES is 0 or off (on by default
+// since r3; GPU clips are then downloaded as on other cores).
 bool requested() {
     const char* value = std::getenv("NSS_CUDA_GPU_FRAMES");
-    return value && (!std::strcmp(value, "1") || !std::strcmp(value, "on") || !std::strcmp(value, "force"));
+    return !value || (std::strcmp(value, "0") != 0 && std::strcmp(value, "off") != 0);
 }
 
 int core_release(VSCore* core, const VSAPI* vsapi) {
@@ -39,16 +41,20 @@ int core_release(VSCore* core, const VSAPI* vsapi) {
 
 #if NSS_CUDA_GPU_FRAMES
 constexpr int kTestedCore = 81;
+constexpr std::size_t kDefaultMemoryImports = 8;
+// copy_rows holds the source's mapping while it maps the target: a cache of
+// one would evict (and unmap) the source before the copy is queued.
+constexpr std::size_t kMinMemoryImports = 2;
 constexpr std::size_t kMaxMemoryImports = 16;
 constexpr std::size_t kMaxSemaphoreImports = 16;
 
 std::size_t memory_import_limit() {
     const char* value = std::getenv("NSS_CUDA_GPU_IMPORT_CACHE");
-    if (!value || !*value) return kMaxMemoryImports;
+    if (!value || !*value) return kDefaultMemoryImports;
     char* end = nullptr;
     const long parsed = std::strtol(value, &end, 10);
-    return end == value || parsed < 1 || parsed > static_cast<long>(kMaxMemoryImports)
-               ? kMaxMemoryImports
+    return end == value || parsed < static_cast<long>(kMinMemoryImports) || parsed > static_cast<long>(kMaxMemoryImports)
+               ? kDefaultMemoryImports
                : static_cast<std::size_t>(parsed);
 }
 
@@ -113,10 +119,10 @@ std::string gpu_frames_status(VSCore* core, const VSAPI* vsapi) {
     return "no (built without CUDA GPU frames)";
 #else
     if (!vs_api::gpu_frames(vsapi)) return "no (VapourSynth API before 4.3)";
-    if (!requested()) return "off (NSS_CUDA_GPU_FRAMES=1 enables experimental GPU frames)";
+    if (!requested()) return "off (NSS_CUDA_GPU_FRAMES=0)";
     const int release = core_release(core, vsapi);
-    if (release == kTestedCore) return "yes (R81, experimental, all filters)";
-    return "downloaded (R" + std::to_string(release) + " untested; experimental GPU frames support R81)";
+    if (release == kTestedCore) return "yes (R81, all filters)";
+    return "downloaded (R" + std::to_string(release) + " untested; GPU frames support R81)";
 #endif
 }
 
@@ -172,7 +178,7 @@ const VSVULKANAPI* take_clips(const char* filter, std::initializer_list<ClipArg>
         std::lock_guard lock(mutex);
         if (warned.insert(core).second) {
             const std::string message = !requested()
-                ? "nss_cuda: NSS_CUDA_GPU_FRAMES is off: GPU clips are taken as CPU frames (std.GPUDownload)"
+                ? "nss_cuda: NSS_CUDA_GPU_FRAMES=0: GPU clips are taken as CPU frames (std.GPUDownload)"
                 : "nss_cuda: VapourSynth R" + std::to_string(release) +
                   " is not the tested R81 core: its GPU clips are taken as CPU frames (std.GPUDownload)";
             vsapi->logMessage(mtWarning, message.c_str(), core);
@@ -305,8 +311,7 @@ struct GpuStream::Impl {
 
     const std::size_t import_limit = memory_import_limit();
 
-    Impl(std::shared_ptr<GpuFrames> frames_, cudaStream_t stream_)
-        : frames(std::move(frames_)), stream(stream_), import_limit(memory_import_limit()) {
+    Impl(std::shared_ptr<GpuFrames> frames_, cudaStream_t stream_) : frames(std::move(frames_)), stream(stream_) {
         imports.reserve(import_limit);
         semaphores.reserve(kMaxSemaphoreImports);
         char error[256] = {};

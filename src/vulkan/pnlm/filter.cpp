@@ -173,8 +173,10 @@ void write_frame(PnlmData& d, const WindowFrame& f, const VSFrame* frame, const 
     }
 }
 
-void record_uploads(const PnlmData& d, const std::vector<PlaneUpload>& uploads, Slot& slot, const VSAPI* vsapi) {
+void record_uploads(const PnlmData& d, const std::vector<PlaneUpload>& uploads, Slot& slot, const VSAPI* vsapi,
+                    FrameTimer& timer) {
     const PlaneStore& store = d.window.store;
+    timer.upload_begin();
     VkCommandBuffer commands = slot.commands(Slot::Upload);
     for (const PlaneUpload& u : uploads) {
         const std::size_t offset = d.offset[u.c] * sizeof(float);
@@ -248,13 +250,14 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
     }
     if (staged) {
         for (const auto& [semaphore, value] : window.previous_uses()) slot.wait_for(Slot::Upload, semaphore, value);
-        record_uploads(*d, uploads, slot, vsapi);
+        record_uploads(*d, uploads, slot, vsapi, timer);
     }
     for (WindowFrame* f : window.pinned()) {
         if (!window.uploads(f)) slot.wait_for(Slot::Compute, f->ready, f->ready_value);
     }
 
     // Every plane's parameters, then its kernels.
+    timer.compute_begin();
     VkCommandBuffer commands = slot.commands(Slot::Compute);
     const int q = d->block / 2;
     std::array<int, 3> blocks{};
@@ -305,12 +308,13 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
             const MatchPush match{block, keys, counts, s.est.address()};
             d->match.dispatch(commands, &match, static_cast<std::uint32_t>(blocks[static_cast<std::size_t>(c)]));
             compute_barrier(*d->device, commands);
-            if (d->count == 1) timer.match_end();
+            timer.match_end();
             if (!d->fused) {
                 const int per = 256 / nss::pnlm_lanes(d->block * d->block);
                 const WeightPush weight{block, keys, counts, s.est.address(), static_cast<std::int32_t>(refs), 0};
                 d->weight.dispatch(commands, &weight, static_cast<std::uint32_t>((refs + per - 1) / per));
                 compute_barrier(*d->device, commands);
+                timer.filter_end();
             }
         }
         const GatherPush gather{s.est.address(), s.out.address() + d->offset[c] * sizeof(float), b.nx, b.ny,
@@ -319,7 +323,8 @@ const VSFrame* getFrame(int n, int activation, void* instance, void**, VSFrameCo
                            static_cast<std::uint32_t>((b.height + 7) / 8));
         // The next plane's matcher overwrites the estimates.
         compute_barrier(*d->device, commands);
-        if (d->count == 1) timer.filter_end();
+        timer.aggregate_end();
+        timer.next_stage();
     }
 
     // Results: into the GPU frame or the imported frame, else the readback buffer.
@@ -439,18 +444,27 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     const std::size_t slot_bytes = kParamsStride * 3 + std::max<std::size_t>(est, 4) + d->keys_bytes +
                                    frame_bytes(*d) * (d->gpu ? 1 : 2);
     const std::size_t limit = d->budget ? d->budget->snapshot().limit : SIZE_MAX;
-    // Without num_streams: three for d <= 1, one beyond (1080p gray, R78,
-    // fps with one / two / three: defaults 690 / 736 / 809, YUV420 439 / 510 /
-    // 527, RGB 228 / 247 / 267; d = 2, a = 2: 841 / 779 / 700).
-    if (!d->backend.streams_explicit) d->backend.num_streams = d->d <= 1 ? 3 : 1;
-    const std::size_t streams = static_cast<std::size_t>(d->backend.num_streams);
-    std::size_t slots = streams + kExtraSlots, extra_outputs = kExtraOutputs, cached = window + slots;
+    // Without num_streams: three for d <= 1, one beyond (1080p gray R81, d =
+    // 2, a = 2, one / two / three streams: GPU frames 1207 / 1205 / 1200 fps,
+    // CPU frames 775 / 751; d = 2, a = 8 two within 0.3% of one), fewer where
+    // the limit does not hold them even without the extras.
+    std::size_t streams = d->backend.streams_explicit ? static_cast<std::size_t>(d->backend.num_streams)
+                                                      : (d->d <= 1 ? 3 : 1);
+    std::size_t slots = 0, extra_outputs = 0, cached = 0;
     const auto plan_bytes = [&] {
         return frame_bytes(*d) * cached * (staged ? 2 : 1) + slot_bytes * slots + (slots + extra_outputs) * output_bytes;
     };
-    if (plan_bytes() > limit) extra_outputs = 0;
-    while (plan_bytes() > limit && slots > streams) cached = window + --slots;
-    while (plan_bytes() > limit && cached > window) --cached;
+    const auto fit = [&] {
+        slots = streams + kExtraSlots;
+        extra_outputs = kExtraOutputs;
+        cached = window + slots;
+        if (plan_bytes() > limit) extra_outputs = 0;
+        while (plan_bytes() > limit && slots > streams) cached = window + --slots;
+        while (plan_bytes() > limit && cached > window) --cached;
+        return plan_bytes() <= limit;
+    };
+    while (!fit() && !d->backend.streams_explicit && streams > 1) --streams;
+    d->backend.num_streams = static_cast<int>(streams);
     if (plan_bytes() > limit) {
         throw std::invalid_argument("nss_vk.PNLM: memory_limit_mb is too small for this clip: it needs at least " +
                                     std::to_string((plan_bytes() >> 20) + 1) + " MiB");

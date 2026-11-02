@@ -13,7 +13,8 @@ namespace nss_vk {
 
 struct TimingValues {
     double upload_ns = 0.0, match_ns = 0.0, filter_ns = 0.0, aggregate_ns = 0.0, download_ns = 0.0, wait_ns = 0.0;
-    std::uint64_t submit_count = 0;
+    double compute_wall_ns = 0.0, square_ns = 0.0, predictive_ns = 0.0;
+    std::uint64_t submit_count = 0, overflow_count = 0;
 };
 
 class TimingStats {
@@ -26,7 +27,11 @@ public:
         aggregate_ns_ += values.aggregate_ns;
         download_ns_ += values.download_ns;
         wait_ns_ += values.wait_ns;
+        compute_wall_ns_ += values.compute_wall_ns;
+        square_ns_ += values.square_ns;
+        predictive_ns_ += values.predictive_ns;
         submit_count_ += values.submit_count;
+        overflow_count_ += values.overflow_count;
     }
 
     void print(const std::string& filter) const {
@@ -34,34 +39,60 @@ public:
         std::fprintf(stderr,
                      "%s timings: {\"_NSSVkUploadNs\":%lld,\"_NSSVkMatchNs\":%lld,\"_NSSVkFilterNs\":%lld,"
                      "\"_NSSVkAggregateNs\":%lld,\"_NSSVkDownloadNs\":%lld,\"_NSSVkWaitNs\":%lld,"
-                     "\"_NSSVkSubmitCount\":%llu}\n",
+                     "\"_NSSVkComputeWallNs\":%lld,\"_NSSVkSquareNs\":%lld,\"_NSSVkPredictiveNs\":%lld,"
+                     "\"_NSSVkSubmitCount\":%llu,\"_NSSVkTimingOverflow\":%llu}\n",
                      filter.c_str(), static_cast<long long>(upload_ns_), static_cast<long long>(match_ns_),
                      static_cast<long long>(filter_ns_), static_cast<long long>(aggregate_ns_),
                      static_cast<long long>(download_ns_), static_cast<long long>(wait_ns_),
-                     static_cast<unsigned long long>(submit_count_));
+                     static_cast<long long>(compute_wall_ns_), static_cast<long long>(square_ns_),
+                     static_cast<long long>(predictive_ns_), static_cast<unsigned long long>(submit_count_),
+                     static_cast<unsigned long long>(overflow_count_));
     }
 
 private:
     mutable std::mutex mutex_;
     double upload_ns_ = 0.0, match_ns_ = 0.0, filter_ns_ = 0.0, aggregate_ns_ = 0.0, download_ns_ = 0.0, wait_ns_ = 0.0;
-    std::uint64_t submit_count_ = 0;
+    double compute_wall_ns_ = 0.0, square_ns_ = 0.0, predictive_ns_ = 0.0;
+    std::uint64_t submit_count_ = 0, overflow_count_ = 0;
 };
 
 class FrameTimer {
 public:
-    explicit FrameTimer(Slot& slot) : slot_(slot), enabled_(slot.has_timestamps()) {
-        if (!enabled_) return;
-        slot_.mark(Slot::Upload, 0);
-        slot_.mark(Slot::Compute, 2);
+    explicit FrameTimer(Slot& slot) : slot_(slot), enabled_(slot.has_timestamps()) {}
+    void upload_begin() {
+        if (enabled_ && !upload_started_) {
+            slot_.mark(Slot::Upload, 0);
+            upload_started_ = true;
+        }
     }
-    void upload_end() { mark(Slot::Upload, 1); }
-    void match_end() { mark(Slot::Compute, stage_query(0)); }
-    void filter_end() { mark(Slot::Compute, stage_query(1)); }
-    void aggregate_end() { mark(Slot::Compute, stage_query(2)); }
-    void download_begin() { mark(Slot::Download, 3); }
-    void download_end() { mark(Slot::Download, 4); }
+    void compute_begin() {
+        if (enabled_ && !compute_started_) {
+            slot_.mark(Slot::Compute, 2);
+            compute_started_ = true;
+            last_compute_query_ = 2;
+        }
+    }
+    void upload_end() {
+        if (upload_started_) mark(Slot::Upload, 1);
+    }
+    void match_end() { compute_end(0); }
+    void filter_end() { compute_end(1); }
+    void aggregate_end() { compute_end(2); }
+    void square_end() { detail_end(0); }
+    void predictive_end() { detail_end(1); }
+    void download_begin() {
+        if (enabled_ && !download_started_) {
+            slot_.mark(Slot::Download, 3);
+            download_started_ = true;
+        }
+    }
+    void download_end() {
+        if (download_started_) mark(Slot::Download, 4);
+    }
     void next_stage() {
+        if (!enabled_) return;
         if (stage_ + 1 < kMaxStages) ++stage_;
+        else overflow_ = true;
     }
 
     void wait() {
@@ -73,32 +104,80 @@ public:
         slot_.wait();
         values_.wait_ns += std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - begin).count();
         const auto& times = slot_.timestamps_ns();
-        if (times.size() != kTimingQueryCount) return;
-        values_.upload_ns += duration(times[0], times[1]);
-        for (std::uint32_t stage = 0; stage <= stage_; ++stage) {
-            values_.match_ns += duration(times[2], times[stage_query(0, stage)]);
-            values_.filter_ns += duration(times[stage_query(0, stage)], times[stage_query(1, stage)]);
-            values_.aggregate_ns += duration(times[stage_query(1, stage)], times[stage_query(2, stage)]);
+        if (times.size() == kTimingQueryCount) {
+            if (upload_started_) values_.upload_ns += duration(times[0], times[1]);
+            if (compute_started_ && !overflow_) {
+                values_.compute_wall_ns += duration(times[2], times[last_compute_query_]);
+                for (std::uint32_t stage = 0; stage <= stage_; ++stage) {
+                    std::uint32_t begin_query = stage_begin_[stage];
+                    for (std::uint32_t part = 0; part < 3; ++part) {
+                        if (!(stage_marks_[stage] & (std::uint32_t{1} << part))) continue;
+                        const std::uint32_t end_query = stage_query(part, stage);
+                        const double elapsed = duration(times[begin_query], times[end_query]);
+                        if (part == 0) values_.match_ns += elapsed;
+                        if (part == 1) values_.filter_ns += elapsed;
+                        if (part == 2) values_.aggregate_ns += elapsed;
+                        begin_query = end_query;
+                    }
+                    if (detail_marks_[stage] & 1) {
+                        const std::uint32_t square_query = detail_query(0, stage);
+                        values_.square_ns += duration(times[stage_begin_[stage]], times[square_query]);
+                        if (detail_marks_[stage] & 2)
+                            values_.predictive_ns += duration(times[square_query], times[detail_query(1, stage)]);
+                    }
+                }
+            }
+            if (overflow_) ++values_.overflow_count;
+            if (download_started_) values_.download_ns += duration(times[3], times[4]);
+            values_.submit_count += slot_.submit_count();
         }
-        values_.download_ns += duration(times[3], times[4]);
-        values_.submit_count += slot_.submit_count();
+        upload_started_ = compute_started_ = download_started_ = overflow_ = false;
+        stage_ = 0;
+        last_compute_query_ = 2;
+        for (std::uint32_t stage = 0; stage < kMaxStages; ++stage) {
+            stage_marks_[stage] = detail_marks_[stage] = 0;
+            stage_begin_[stage] = 2;
+        }
     }
 
     const TimingValues& values() const noexcept { return values_; }
 
 private:
-    static constexpr std::uint32_t kMaxStages = (kTimingQueryCount - 5) / 3;
+    static constexpr std::uint32_t kMaxStages = (kTimingStageQueryCount - 5) / 3;
     static double duration(double begin, double end) { return end >= begin ? end - begin : 0.0; }
     std::uint32_t stage_query(std::uint32_t part, std::uint32_t stage) const { return 5 + 3 * stage + part; }
-    std::uint32_t stage_query(std::uint32_t part) const { return stage_query(part, stage_); }
+    std::uint32_t detail_query(std::uint32_t part, std::uint32_t stage) const {
+        return kTimingStageQueryCount + 2 * stage + part;
+    }
+    void begin_stage() {
+        if (!stage_marks_[stage_] && !detail_marks_[stage_]) stage_begin_[stage_] = last_compute_query_;
+    }
+    void compute_end(std::uint32_t part) {
+        if (!compute_started_ || overflow_) return;
+        begin_stage();
+        const std::uint32_t query = stage_query(part, stage_);
+        mark(Slot::Compute, query);
+        stage_marks_[stage_] |= std::uint32_t{1} << part;
+        last_compute_query_ = query;
+    }
+    void detail_end(std::uint32_t part) {
+        if (!compute_started_ || overflow_) return;
+        begin_stage();
+        const std::uint32_t query = detail_query(part, stage_);
+        mark(Slot::Compute, query);
+        detail_marks_[stage_] |= std::uint32_t{1} << part;
+        last_compute_query_ = query;
+    }
     void mark(Slot::Stage stage, std::uint32_t query) {
         if (enabled_) slot_.mark(stage, query);
     }
 
     Slot& slot_;
-    bool enabled_ = false;
+    bool enabled_ = false, upload_started_ = false, compute_started_ = false, download_started_ = false, overflow_ = false;
     TimingValues values_;
-    std::uint32_t stage_ = 0;
+    std::uint32_t stage_ = 0, last_compute_query_ = 2;
+    std::uint32_t stage_marks_[kMaxStages]{}, detail_marks_[kMaxStages]{};
+    std::uint32_t stage_begin_[kMaxStages]{};
 };
 
 }  // namespace nss_vk

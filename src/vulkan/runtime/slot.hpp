@@ -25,7 +25,8 @@ struct VSGPUTimeline;
 namespace nss_vk {
 
 bool timing_enabled();
-constexpr std::uint32_t kTimingQueryCount = 256;
+constexpr std::uint32_t kTimingStageQueryCount = 256;
+constexpr std::uint32_t kTimingQueryCount = 2 * kTimingStageQueryCount;
 
 class Slot {
 public:
@@ -75,8 +76,9 @@ public:
     // the slot for the next frame. Throws VkError on timeout or device loss;
     // the slot is then unusable and the device is poisoned (Device::poison).
     void wait();
-    // Times of this frame's marked queries in nanoseconds since query 0 (0 for
-    // unmarked or unavailable ones). Valid after wait() until the next frame.
+    // Times of this frame's marked queries in nanoseconds since the first
+    // marked query on the same queue (0 for unmarked or unavailable ones).
+    // Valid after wait() until the next frame.
     const std::vector<double>& timestamps_ns() const noexcept { return times_; }
     bool has_timestamps() const noexcept { return query_count_ != 0; }
     std::uint32_t submit_count() const noexcept { return submit_count_; }

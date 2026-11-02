@@ -25,19 +25,11 @@ core.nss_vk.NLM(clip clip[, int d = 1, int a = 2, int s = 4, float h = 1.2,
 On VapourSynth R80+ `clip` and `rclip` take CPU or GPU frames (`vnode:all`);
 both must be the same kind ([GPU frames](README.md#gpu-frames-vapoursynth-r80)).
 
-## Speed
+## Cost
 
-1080p, default arguments, RTX 5080 (see the [overview](README.md#speed)):
-
-| Frames | gray | YUV420 | RGB |
-|---|---:|---:|---:|
-| VapourSynth R81, CPU frames | 804 | 710 | 209 |
-| vapoursynth-classic, direct transfers | 851 | 836 | 381 |
-| R81, GPU frames | 841 | 839 | 505 |
-
-At its defaults NLM is bound by its kernel (`d=1`: about 1.1 ms a 1080p plane
-on the RTX 5080), so GPU frames gain most where the transfers were the limit
-(RGB).
+At its defaults NLM is bound by its kernel, so GPU frames gain most where the
+transfers were the limit (RGB). Its cost grows with `a`, `s` and `d`; for large
+windows or several frames, consider [PNLM](pnlm.md).
 
 ## Notes
 

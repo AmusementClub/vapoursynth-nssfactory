@@ -25,24 +25,16 @@ core.nss_vk.PNLM(clip clip[, float[] sigma = 3.0, int d = 1, int a = 2,
 On VapourSynth R80+ `clip` takes CPU or GPU frames (`vnode:all`;
 [GPU frames](README.md#gpu-frames-vapoursynth-r80)). A plane with `sigma=0`
 is the source's (shared, not copied). `num_streams` defaults to 3 for `d` up
-to 1 and to 1 beyond (measured: more streams slow `d=2` down).
+to 1 and to 1 beyond (more streams did not help there), fewer where the memory
+limit requires.
 
-## Speed
+## Cost
 
-1080p, `sigma=3`, RTX 5080 (see the [overview](README.md#speed)):
-
-| Call | gray | YUV420 | RGB |
-|---|---:|---:|---:|
-| defaults, VapourSynth R78, CPU frames | 809 | 527 | 267 |
-| defaults, `nss_cuda.PNLM` on the same core | 581 | 382 | 189 |
-| defaults, vapoursynth-classic, direct transfers | 1134 | 771 | 382 |
-| defaults, R81, GPU frames | 1729 | 1085 | 600 |
-
-Heavier settings, gray, R78, CPU frames, one stream (fps, `nss_vk` /
-`nss_cuda`): `a=4, d=0` 841 / 584, `a=8, d=0` 861 / 574, `a=4, d=1` 800 / 576,
-`a=8, d=1` 625 / 542, `d=2` 841 / 576, `a=8, d=2` 432 / 469. As on the CUDA
-plugin, the cost grows slowly with `a` and `d` (the
-[comparison with NLM](../cuda/pnlm.md)).
+As on the CUDA plugin, PNLM's cost grows far more slowly than `NLM`'s with the
+search window `a` and the temporal radius `d` (the
+[comparison with NLM](../cuda/pnlm.md#cost)): for large windows or several
+frames, consider PNLM instead of `NLM`. At the defaults it is bound by its
+transfers, so GPU frames and direct transfers help most there.
 
 ## Notes
 

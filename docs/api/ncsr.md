@@ -91,11 +91,11 @@ sigma 10／25 的平均 PSNR 相對舊版分別下降約 0.366／0.167 dB。
 ## Defaults rationale and performance
 
 Shared geometry (8/8/8/7) + two rounds, matching the calibration matrix.
-About 3.7 fps at 1080p gray on one CPU core. Matching cost scales
+Matching cost scales
 with `1/step^2 * bm_range^2`; per-group cost scales with the PCA/SVD solve at
 `block^2 x group`.
 
-Settings closer to the paper, with their measured quality and GPU speed, are on the [CUDA page](cuda/ncsr.md#closer-to-the-papers); the CPU takes the same arguments.
+Settings closer to the paper, with their measured quality, are on the [CUDA page](cuda/ncsr.md#closer-to-the-papers); the CPU takes the same arguments.
 
 ## Pitfalls
 

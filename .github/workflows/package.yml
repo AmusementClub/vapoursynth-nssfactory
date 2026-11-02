@@ -264,7 +264,7 @@ jobs:
           python3 -m venv /opt/venv
           /opt/venv/bin/pip install cmake ninja vapoursynth==81
           # Headers only: the plugin is loaded by the host and never links libvapoursynth.
-          git clone --depth 1 --branch R80 https://github.com/vapoursynth/vapoursynth /opt/vapoursynth
+          git clone --depth 1 --branch R81 https://github.com/vapoursynth/vapoursynth /opt/vapoursynth
       - uses: actions/checkout@v4
       - name: package label
         shell: bash
@@ -273,7 +273,7 @@ jobs:
         run: |
           export PATH=/opt/venv/bin:$PATH
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-            -DNSS_ENABLE_CUDA=ON -DNSS_BUILD_CPU=OFF \
+            -DNSS_ENABLE_CUDA=ON -DNSS_CUDA_GPU_FRAMES=ON -DNSS_BUILD_CPU=OFF \
             -DNSS_GIT_DESCRIBE="$PKG_LABEL" \
             -DVapourSynth_INCLUDE_DIR=/opt/vapoursynth/include \
             -DPython3_EXECUTABLE=/opt/venv/bin/python
@@ -325,7 +325,7 @@ jobs:
         run: |
           $vsInclude = python -c "import vapoursynth, pathlib; print(pathlib.Path(vapoursynth.__file__).parent / 'include')"
           $pythonExe = (Get-Command python).Source
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=cl -DNSS_ENABLE_CUDA=ON -DNSS_BUILD_CPU=OFF -DNSS_GIT_DESCRIBE="$env:PKG_LABEL" -DVapourSynth_INCLUDE_DIR="$vsInclude" -DPython3_EXECUTABLE="$pythonExe"
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=cl -DNSS_ENABLE_CUDA=ON -DNSS_CUDA_GPU_FRAMES=ON -DNSS_BUILD_CPU=OFF -DNSS_GIT_DESCRIBE="$env:PKG_LABEL" -DVapourSynth_INCLUDE_DIR="$vsInclude" -DPython3_EXECUTABLE="$pythonExe"
       - name: build
         run: cmake --build build -j
       - name: "cuda tests (no GPU: load, signatures, creation errors)"

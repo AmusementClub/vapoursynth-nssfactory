@@ -57,11 +57,10 @@ pinned so a given toolchain reproduces output bit-for-bit.
 
 `block=8, step=8, group=8, bm_range=7, sigma=3` mirrors the shared search
 geometry used across this plugin's denoisers so algorithms can be compared at
-matched settings. About 7.6 fps at 1080p gray on one CPU core.
-Cost scales with `1/step^2` for matching plus per-group SVD work growing with
+matched settings. Cost scales with `1/step^2` for matching plus per-group SVD work growing with
 `group_size` and `block_size^2`.
 
-Settings closer to the paper, with their measured quality and GPU speed, are on the [CUDA page](cuda/wnnm.md#closer-to-the-papers); the CPU takes the same arguments.
+Settings closer to the paper, with their measured quality, are on the [CUDA page](cuda/wnnm.md#closer-to-the-papers); the CPU takes the same arguments.
 
 ## Pitfalls
 
