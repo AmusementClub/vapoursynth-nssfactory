@@ -13,7 +13,9 @@ temporal = core.nss_cuda.WNNM(clip, sigma=25, radius=1)      # finished frames
 ## Cost
 
 Groups above 8 patches cost much more (an eigendecomposition per group), and
-`block_step` sets the number of groups (`1/step^2`). Spatial searches of many
+`block_step` sets the number of groups (`1/step^2`). Groups of 17 to 32
+patches take a divide-and-conquer eigensolver, about twice as fast as the
+Jacobi sweeps that groups of 9 to 16 keep. Spatial searches of many
 shapes take faster dedicated matchers with the same matches (one match
 channel): the window search for `bm_range` 7 and more at block 8 (the default
 7 included), groups 34 to 64 at any `bm_range`, and other blocks from smaller
@@ -82,7 +84,10 @@ core.nss_cuda.WNNM(clip clip[, float[] sigma = 3.0, int block_size = 8,
 ## Notes
 
 - **Accuracy.** 86–143 dB against the CPU plugin on the reference set (the SVD
-  is taken through an FP32 Gram matrix); identical from run to run.
+  is taken through an FP32 Gram matrix); identical from run to run. Groups of
+  17 to 32 agree less closely, 76–101 dB, because the divide and conquer is
+  accurate to the largest eigenvalue rather than to each one; against the
+  clean image the result is the same (within 0.01 dB at a tuned `sigma`).
 - **Matching.** Spatial search reuses [BM3D's exact window and column matchers](bm3d.md#optimized-search-shapes)
   with the same block, step and group limits. Other spatial shapes and temporal
   search keep their existing matchers.

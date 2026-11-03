@@ -40,16 +40,16 @@
 //     row `lane` of C; every thread of the block calls it (it holds a barrier
 //     between reading the eigenvalues and writing C).
 //   static constexpr int kLaneFinishMax = 16;
-//     finish_lane only up to that N (WNNM: at 32 its lane-0 shrink is
-//     cheaper than every lane placing all 32 values, 0.97).
+//     finish_lane only up to that N (lane 0 runs `finish` above it).
 //   static constexpr bool kDivideAndConquer = true;
 //     groups of 17 to 32 take Householder tridiagonalization and divide and
 //     conquer for the eigen step (a third of the Jacobi's time on 32 x 32
 //     Gram matrices) and need gram_scratch_floats(group, true). Its accuracy
 //     is absolute (about eps |G|) where the Jacobi's is relative: right for
 //     centred groups (NCSR: closer to the CPU in every case measured), not for
-//     uncentred ones with one dominant eigenvalue (WNNM's default: 104 to 80 dB
-//     against the CPU at block 16).
+//     uncentred ones with one dominant eigenvalue, where the small values lose
+//     relative accuracy (WNNM, which takes it anyway: 76 to 101 dB against the
+//     CPU where the Jacobi kept 95 or more, the same against the clean image).
 #pragma once
 
 #include "cuda/common/aggregate.hpp"
