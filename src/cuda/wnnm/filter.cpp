@@ -74,7 +74,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         args.scratch = l.scratch;
         wnnm_filter_groups(args, l.stream);
     };
-    config.scratch_floats = [](const GroupPlane& g, bool) { return gram_scratch_floats(g.group); };
+    config.scratch_floats = [](const GroupPlane& g, bool) { return gram_scratch_floats(g.group, true); };
     group_filter_install(std::move(config), out, core, vsapi);
 }
 

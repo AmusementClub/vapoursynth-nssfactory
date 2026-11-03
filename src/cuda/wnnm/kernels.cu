@@ -17,7 +17,16 @@ struct WnnmModel {
     // that falls to the threshold; s^2 - constant falls with s, so a value
     // is kept exactly when its place is below `start`, or below the rank
     // with s^2 - constant > 0, and `kept` is a count over the lanes.
-    static constexpr int kLaneFinishMax = 16;
+    // At N = 32 too since the divide and conquer took the eigen step: lane
+    // 0's insertion sort (its order array in local memory) meets the divide
+    // and conquer's value order near its worst case and became 39% of the
+    // kernel; the lanes are 1.53x end to end (0.87x after the Jacobi).
+    static constexpr int kLaneFinishMax = 32;
+    // Groups of 17 to 32 take the divide and conquer (gram_group.cuh): 1.40x
+    // the Jacobi end to end at block 8 / step 4 / group 32 (2.14x with the
+    // lanes' finish). Against the clean image the same within 0.01 dB at a
+    // tuned sigma; against the CPU 76.6 dB or more where the Jacobi kept 95.
+    static constexpr bool kDivideAndConquer = true;
     template <int N>
     __device__ float finish_lane(float* g, const float* v, const DeviceMatch*, int n, int area, int lane) const {
         const float constant = 8.f * sqrtf(2.f * static_cast<float>(n)) * sigma * sigma;
