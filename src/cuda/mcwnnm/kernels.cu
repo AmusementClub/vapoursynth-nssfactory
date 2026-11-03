@@ -524,23 +524,35 @@ __global__ void mcwnnm_block_kernel(McwnnmGroupArgs a) {
             // g is symmetric: row lane read as column lane, so that the lanes
             // read consecutive words (row reads were an N-way bank conflict:
             // 1.12x on group 32). u may be g, so all reads come first.
+            {
+                // Column `lane` of g in registers: one shared read a product
+                // (1.21x at group 32 although the kernel then spills).
+                float own[N];
 #pragma unroll
-            for (int k = 0; k < N; ++k) {
-                float sum = 0.f;
-#pragma unroll 1
-                for (int j = 0; j < N; ++j) sum = fmaf(g[j * N + lane], v[j * N + k], sum);
-                acc[k] = sum;
+                for (int j = 0; j < N; ++j) own[j] = g[j * N + lane];
+#pragma unroll
+                for (int k = 0; k < N; ++k) {
+                    float sum = 0.f;
+#pragma unroll
+                    for (int j = 0; j < N; ++j) sum = fmaf(own[j], v[j * N + k], sum);
+                    acc[k] = sum;
+                }
             }
             __syncthreads();
 #pragma unroll
             for (int k = 0; k < N; ++k) u[lane * N + k] = acc[k];
             __syncthreads();
+            {
+                float own[N];  // column `lane` of v
 #pragma unroll
-            for (int k = 0; k < N; ++k) {
-                float sum = 0.f;
-#pragma unroll 1
-                for (int i = 0; i < N; ++i) sum = fmaf(v[i * N + lane], u[i * N + k], sum);
-                acc[k] = sum;
+                for (int i = 0; i < N; ++i) own[i] = v[i * N + lane];
+#pragma unroll
+                for (int k = 0; k < N; ++k) {
+                    float sum = 0.f;
+#pragma unroll
+                    for (int i = 0; i < N; ++i) sum = fmaf(own[i], u[i * N + k], sum);
+                    acc[k] = sum;
+                }
             }
             __syncthreads();  // u may be g: every thread has read it before one writes
 #pragma unroll
@@ -554,9 +566,38 @@ __global__ void mcwnnm_block_kernel(McwnnmGroupArgs a) {
             }
             __syncthreads();
         }
-        block_jacobi<float>(g, v, N, cs, &flag, it == 0, lane, N);
-        // g = C with M = V C.
-        if (lane == 0) kept = gram_shrink_spectrum<N>(g, v, rank, constant * (2.f / rho), start_k, true);
+        block_jacobi<float, N>(g, v, cs, &flag, it == 0, lane);
+        // g = C with M = V C: gram_shrink_spectrum's codes on the group's N
+        // lanes (lane 0 alone, its order array in local memory, was a fifth
+        // of the kernel at group 32). Lane i forms row i of C, gain_i
+        // v[:, i]^T; the spectrum is walked in descending order and stops at
+        // the first value that falls to the threshold, and s^2 - threshold
+        // falls with s, so a value is kept exactly when its place is below
+        // start_k or below the rank with s^2 - threshold > 0.
+        {
+            const float threshold = constant * (2.f / rho);
+            const int start = min(start_k, rank);
+            float sv;
+            const int place = singular_place<N>(g, lane, &sv);
+            float gain = 0.f;
+            bool keep = place < start;
+            if (keep) {
+                gain = 1.f;
+            } else if (place < rank) {
+                const float tmp = sv * sv - threshold;
+                if (tmp > 0.f) {
+                    gain = ((sv + sqrtf(tmp)) * 0.5f) / sv;
+                    keep = true;
+                }
+            }
+            // The group's lanes: all 32, or one half of the warp at N = 16.
+            const unsigned group_lanes = N == 32 ? 0xffffffffu : 0xffffu << (threadIdx.x & 16);
+            const int count = __popc(__ballot_sync(0xffffffffu, keep) & group_lanes);
+            __syncthreads();  // every eigenvalue is read before C overwrites g
+#pragma unroll
+            for (int j = 0; j < N; ++j) g[lane * N + j] = gain * v[j * N + lane];
+            if (lane == 0) kept = count;
+        }
         __syncthreads();
         const bool last = it + 1 == a.admm_iter;
         const float next_rho = fminf(1e4f, a.mu * rho);

@@ -23,59 +23,57 @@ __device__ __forceinline__ void jacobi_schedule(int round, int pair, int K, int&
     q = max(a, b);
 }
 
-// g: symmetric k x k (row-major), v: its eigenvectors on return. cs holds the
-// (k + 1) / 2 rotations of a round and is read by every thread for every
-// element: keep it in shared memory. *flag is shared scratch (the last round
-// of the sweep that rotated, plus one). Without
-// `identity` the rotations go on from the v passed in (g then being in that
-// basis).
+// g: symmetric KN x KN (row-major), v: its eigenvectors on return; KN even,
+// on KN threads, this one being `lane` of them. cs holds the KN / 2
+// rotations of a round and is read by every thread for every element: keep
+// it in shared memory. *flag is shared scratch (the last round of the sweep
+// that rotated, plus one). Without `identity` the rotations go on from the v
+// passed in (g then being in that basis).
 //
-// `lanes` threads work on the matrix, this one being `lane` of them. A block
-// may hold several matrices, each with its own g, v and cs and all with the
-// same k and *flag: every thread of the block then calls this, and the
-// sweeps go on until no matrix rotates. A matrix that has converged is not
-// changed by the further sweeps (no element passes the test again), so its
-// result does not depend on what shares the block.
+// A block may hold several matrices, each with its own g, v and cs and all
+// with the same KN and *flag: every thread of the block then calls this, and
+// the sweeps go on until no matrix rotates. A matrix that has converged is
+// not changed by the further sweeps (no element passes the test again), so
+// its result does not depend on what shares the block.
 //
 // A round's work items are (row, pair): row `row` of v under the rotation of
-// `pair`, and for row < k / 2 the 2 x 2 block of g that the pairs `row` and
+// `pair`, and for row < KN / 2 the 2 x 2 block of g that the pairs `row` and
 // `pair` span, which no other item touches. Neighbouring threads take
 // neighbouring pairs of one row, that is different columns of one matrix row
-// (the same column of neighbouring rows is a bank conflict when k is a
-// multiple of 32).
-template <class Real>
-__device__ void block_jacobi(Real* g, Real* v, int k, Real* cs, int* flag, bool identity, int lane, int lanes) {
-    for (int e = lane; identity && e < k * k; e += lanes) v[e] = (e / k == e % k) ? Real(1) : Real(0);
+// (the same column of neighbouring rows is a bank conflict when KN is a
+// multiple of 32). A thread keeps its pair (lane % (KN / 2)) for the whole
+// round and takes every second row, so the walk is unrolled with the size a
+// constant and the pair's rotation read once a round: 1.17-1.30x over the
+// run-time-sized loop at 16 and 32 with the same bits.
+template <class Real, int KN>
+__device__ void block_jacobi(Real* g, Real* v, Real* cs, int* flag, bool identity, int lane) {
+    static_assert(KN >= 2 && KN % 2 == 0, "an even matrix size");
+    constexpr int k = KN, half = KN / 2;
+    for (int e = lane; identity && e < k * k; e += k) v[e] = (e / k == e % k) ? Real(1) : Real(0);
     const Real tolerance = sizeof(Real) == 8 ? Real(1e-15) : Real(1e-7);
     __syncthreads();
-    if (k < 2) return;
     Real trace = 0;
     for (int i = 0; i < k; ++i) trace += fabs(g[i * k + i]);  // identical on every thread
     const Real floor = tolerance * trace / k;
-    const int K = k + (k & 1), half = K / 2;
-    // Item `lane`, then every `lanes`-th: (row, pair) advances without a division.
-    const int row_first = lane / half, pair_first = lane % half;
-    const int row_step = lanes / half, pair_step = lanes % half;
+    const int row_first = lane / half, mine = lane % half;
     for (int sweep = 0; sweep < 30; ++sweep) {
         if (lane == 0) *flag = 0;  // the same value from every matrix's lane 0
         __syncthreads();
-        for (int round = 0; round < K - 1; ++round) {
-            for (int pair = lane; pair < half; pair += lanes) {
+        for (int round = 0; round < k - 1; ++round) {
+            if (lane < half) {
                 int p, q;
-                jacobi_schedule(round, pair, K, p, q);
+                jacobi_schedule(round, lane, k, p, q);
                 Real c = 1, sn = 0;
-                if (q < k) {
-                    const Real apq = g[p * k + q], app = g[p * k + p], aqq = g[q * k + q];
-                    if (fabs(apq) > tolerance * sqrt(fabs(app * aqq)) && fabs(apq) > floor) {
-                        const Real theta = (aqq - app) / (Real(2) * apq);
-                        const Real t = copysign(Real(1), theta) / (fabs(theta) + sqrt(theta * theta + Real(1)));
-                        c = Real(1) / sqrt(t * t + Real(1));
-                        sn = t * c;
-                        *flag = round + 1;
-                    }
+                const Real apq = g[p * k + q], app = g[p * k + p], aqq = g[q * k + q];
+                if (fabs(apq) > tolerance * sqrt(fabs(app * aqq)) && fabs(apq) > floor) {
+                    const Real theta = (aqq - app) / (Real(2) * apq);
+                    const Real t = copysign(Real(1), theta) / (fabs(theta) + sqrt(theta * theta + Real(1)));
+                    c = Real(1) / sqrt(t * t + Real(1));
+                    sn = t * c;
+                    *flag = round + 1;
                 }
-                cs[2 * pair] = c;
-                cs[2 * pair + 1] = sn;
+                cs[2 * lane] = c;
+                cs[2 * lane + 1] = sn;
             }
             __syncthreads();
             // No pair of this round rotates (late sweeps): nothing to apply. The
@@ -84,14 +82,12 @@ __device__ void block_jacobi(Real* g, Real* v, int k, Real* cs, int* flag, bool 
                 __syncthreads();
                 continue;
             }
-            Real c = 1, sn = 0;
-            int p = 0, q = 0;
-            for (int row = row_first, pair = pair_first, loaded = -1; row < k;) {
-                if (pair != loaded) {  // a thread keeps its pair when lanes is a multiple of k / 2
-                    c = cs[2 * pair], sn = cs[2 * pair + 1];  // sn != 0 only with q < k
-                    jacobi_schedule(round, pair, K, p, q);
-                    loaded = pair;
-                }
+            const Real c = cs[2 * mine], sn = cs[2 * mine + 1];
+            int p, q;
+            jacobi_schedule(round, mine, k, p, q);
+#pragma unroll
+            for (int i = 0; i < half; ++i) {
+                const int row = row_first + 2 * i;
                 if (sn != Real(0)) {
                     const Real vip = v[row * k + p], viq = v[row * k + q];
                     v[row * k + p] = c * vip - sn * viq;
@@ -102,10 +98,9 @@ __device__ void block_jacobi(Real* g, Real* v, int k, Real* cs, int* flag, bool 
                     const Real cr = cs[2 * row], sr = cs[2 * row + 1];
                     if (sn != Real(0) || sr != Real(0)) {
                         int pr, qr;
-                        jacobi_schedule(round, row, K, pr, qr);
-                        const bool wide = q < k, tall = qr < k;
-                        Real a = g[pr * k + p], b = wide ? g[pr * k + q] : Real(0);
-                        Real d = tall ? g[qr * k + p] : Real(0), e = wide && tall ? g[qr * k + q] : Real(0);
+                        jacobi_schedule(round, row, k, pr, qr);
+                        Real a = g[pr * k + p], b = g[pr * k + q];
+                        Real d = g[qr * k + p], e = g[qr * k + q];
                         if (sn != Real(0)) {
                             const Real ap = c * a - sn * b, aq = sn * a + c * b;
                             const Real dp = c * d - sn * e, dq = sn * d + c * e;
@@ -117,16 +112,10 @@ __device__ void block_jacobi(Real* g, Real* v, int k, Real* cs, int* flag, bool 
                             a = ap, d = dp, b = bp, e = ep;
                         }
                         g[pr * k + p] = a;
-                        if (wide) g[pr * k + q] = b;
-                        if (tall) g[qr * k + p] = d;
-                        if (wide && tall) g[qr * k + q] = e;
+                        g[pr * k + q] = b;
+                        g[qr * k + p] = d;
+                        g[qr * k + q] = e;
                     }
-                }
-                pair += pair_step;
-                row += row_step;
-                if (pair >= half) {
-                    pair -= half;
-                    ++row;
                 }
             }
             __syncthreads();
@@ -136,12 +125,6 @@ __device__ void block_jacobi(Real* g, Real* v, int k, Real* cs, int* flag, bool 
         __syncthreads();
         if (!rotated) break;
     }
-}
-
-// One matrix per block, on all its threads.
-template <class Real>
-__device__ void block_jacobi(Real* g, Real* v, int k, Real* cs, int* flag, bool identity = true) {
-    block_jacobi(g, v, k, cs, flag, identity, static_cast<int>(threadIdx.x), static_cast<int>(blockDim.x));
 }
 
 // Cyclic Jacobi for a k x k matrix, k <= 16, on one warp (blockDim.x == 32),
