@@ -25,7 +25,7 @@ are far faster: [CUDA](cuda/README.md#speed), [Vulkan](vk/README.md#speed).
 | [LSSC](lssc.md) | 66 | 40 | no | Structured noise, film grain, text |
 | [PNLM](pnlm.md) | 47 | 5.7 | yes (`d`) | Light noise; edges and line art; large windows and several frames |
 | [NCSR](ncsr.md) | 34 | 1.6 | yes | Sparse-coding quality at moderate cost |
-| [MCWNNM](mcwnnm.md) (RGB) | 6.7 | 0.018 | yes | RGB color noise |
+| [MCWNNM](mcwnnm.md) (RGB) | 6.7 | 0.029 | yes | RGB color noise |
 | [TWSC](twsc.md) | 5.7 | ~0.05\* | yes | Real-world noise |
 | [DA3D](da3d.md) | 4.5 | — | no | Refining another filter's output |
 | [NLH](nlh.md) | 1.8 | — | yes | Real-world noise of unknown level |
