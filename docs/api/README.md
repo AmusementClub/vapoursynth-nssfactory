@@ -20,11 +20,11 @@ are far faster: [CUDA](cuda/README.md#speed), [Vulkan](vk/README.md#speed).
 | Filter | Default | Heavy | Temporal | Good for |
 |---|---:|---:|---|---|
 | [BM3D](bm3d.md) | 148 | 1.3 | yes | General use; the fastest |
-| [WNNM](wnnm.md) | 81 | 0.56 | yes | Texture and edge retention |
+| [WNNM](wnnm.md) | 81 | 0.95 | yes | Texture and edge retention |
 | [NLM](nlm.md) | 74 | 12.8 | yes (`d`) | Light noise |
 | [LSSC](lssc.md) | 66 | 40 | no | Structured noise, film grain, text |
 | [PNLM](pnlm.md) | 47 | 5.7 | yes (`d`) | Light noise; edges and line art; large windows and several frames |
-| [NCSR](ncsr.md) | 34 | 1.2 | yes | Sparse-coding quality at moderate cost |
+| [NCSR](ncsr.md) | 34 | 1.6 | yes | Sparse-coding quality at moderate cost |
 | [MCWNNM](mcwnnm.md) (RGB) | 6.7 | 0.018 | yes | RGB color noise |
 | [TWSC](twsc.md) | 5.7 | ~0.05\* | yes | Real-world noise |
 | [DA3D](da3d.md) | 4.5 | — | no | Refining another filter's output |
