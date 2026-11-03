@@ -202,7 +202,7 @@ __device__ __forceinline__ void gram_block(const GramGroupArgs& a, const Model& 
         for (int e = lane; e < N * N; e += N) g[e] = e / N == e % N ? values[e / N] : 0.f;
         __syncthreads();
     } else {
-        block_jacobi<float>(g, v, N, cs, &flag, true, lane, N);
+        block_jacobi<float, N>(g, v, cs, &flag, true, lane);
     }
     if constexpr (GramLaneFinish<Model>::value && N <= GramLaneFinishMax<Model>::value) {
         const float w = model.template finish_lane<N>(g, v, m, n, area, lane);
