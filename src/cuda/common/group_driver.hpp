@@ -103,8 +103,8 @@ struct GroupFilterConfig {
     bool shared_match = false;
     // Matching by the square matcher where it applies (block twice the step;
     // spatial_match_square_takes), spatially and for the centre frame of a
-    // temporal search (predictive_match_square): BM3D. Its distances differ from the
-    // lane kernels' in the last bits, so the other filters keep those.
+    // temporal search (predictive_match_square): BM3D and WNNM. Its distances differ
+    // from the lane kernels' in the last bits, so the other filters keep those.
     bool square_match = false;
     // Exact column-reuse matching where spatial_match_column_takes admits it
     // (BM3D, WNNM, NCSR: the lane kernels' distances and keys).

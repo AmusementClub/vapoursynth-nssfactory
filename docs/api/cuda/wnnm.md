@@ -17,9 +17,12 @@ Groups above 8 patches cost much more (an eigendecomposition per group), and
 shapes take faster dedicated matchers with the same matches (one match
 channel): the window search for `bm_range` 7 and more at block 8 (the default
 7 included), groups 34 to 64 at any `bm_range`, and other blocks from smaller
-or larger windows; and the column search at `block_step` 1 to 3; see [BM3D's
-optimized search shapes](bm3d.md#optimized-search-shapes). With `radius > 0`
-the window search also covers the centre frame from `bm_range` 9 at block 8.
+or larger windows; and the column search at `block_step` 1 to 3. Where
+`block_size` is twice `block_step` (8 / 4, 16 / 8, ...) the square search
+takes it, with the same matches up to near ties (the output differs in the
+last bits); see [BM3D's optimized search shapes](bm3d.md#optimized-search-shapes).
+With `radius > 0` the square search, or else the window search from `bm_range`
+9 at block 8, also covers the centre frame.
 
 ## Closer to the papers
 
