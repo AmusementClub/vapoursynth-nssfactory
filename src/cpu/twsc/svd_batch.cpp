@@ -17,9 +17,13 @@ namespace HWY_NAMESPACE {
 namespace hn = hwy::HWY_NAMESPACE;
 
 bool TwscSvdValidationLanesAvailable(int columns) {
-    // Small groups use the same ordered reductions. Keep large-group AVX3
-    // validation on its existing scalar route.
-    return HWY_TARGET == HWY_AVX2 || (columns == 8 && HWY_TARGET == HWY_AVX3);
+    // The lanes keep the scalar validator's products and sums in order, so the
+    // verdicts are the same. Measured on AVX2 (Ryzen 9 5950X) and AVX3 (C4,
+    // one core; groups above 32 1.19x, 16 to 32 1.05-1.11x with the
+    // admission of valid_svd); AVX3_ZEN4 has no measurement and keeps the
+    // scalar route.
+    (void)columns;
+    return HWY_TARGET == HWY_AVX2 || HWY_TARGET == HWY_AVX3;
 }
 
 bool TwscValidSvdLanes(const float* a, int m, int n, int lda, const TwscWorkspace& w) {
