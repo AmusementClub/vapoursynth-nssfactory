@@ -1645,8 +1645,12 @@ void spatial_match_paths(const float* plane, const MatchGeometry& geometry, cons
     if (ref_count <= 0) return;
     const bool window_first = window && spatial_match_window_over_tensor(geometry, grid);
     if (!window_first && launch_tensor(plane, geometry, grid, ref_begin, ref_count, out, counts, scratch, stream)) return;
-    if (window && spatial_match_window(plane, geometry, grid, ref_begin, ref_count, out, counts, stream)) return;
+    // Joint channels take the window kernel only where the lane kernels do not
+    // (it reproduces the kernels after them, not theirs).
+    const bool joint = geometry.channels > 1;
+    if (window && !joint && spatial_match_window(plane, geometry, grid, ref_begin, ref_count, out, counts, stream)) return;
     if (launch_lanes(plane, geometry, nullptr, grid, ref_begin, ref_count, out, counts, stream)) return;
+    if (window && joint && spatial_match_window(plane, geometry, grid, ref_begin, ref_count, out, counts, stream)) return;
     const int span = geometry.lo() + geometry.hi();
     const int candidates = (span + 1) * (span + 1);
     const int wanted = std::min(geometry.group, kMaxGroup) - 1;

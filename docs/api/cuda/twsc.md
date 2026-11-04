@@ -24,8 +24,10 @@ matched on their own (gray, the luma of YUV, the fast color path's planes, the
 blind estimate) runs on tensor cores when the window is 40 to 129 pixels wide,
 the block 8 and the group at most 16, the default among them. The matches are
 the same, bit for bit; the cost is a workspace of one plane per stream (about
-24 MiB at 1080p), left out when `memory_limit_mb` has no room for it. Other
-shapes, joint channels and temporal matching keep the lane kernels.
+24 MiB at 1080p), left out when `memory_limit_mb` has no room for it. The two
+chroma planes of YUV, matched jointly, take an exact window matcher for blocks of
+2 to 8 and groups of up to 64 (the same matches, bit for bit, and no workspace).
+Other shapes, joint RGB and temporal matching keep the lane kernels.
 
 ## Closer to the papers
 

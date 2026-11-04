@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // Candidate-parallel exact matcher for one-channel spatial searches, also as
-// the centre-frame search of the predictive temporal search.
+// the centre-frame search of the predictive temporal search, and for two
+// joint channels (window_joint_kernel: TWSC's subsampled chroma pair).
 //
 // The lane kernels spread one candidate over eight lanes (a block column each)
 // and total it by three shuffles, then vote on its key: about 4.8k warp
@@ -274,6 +275,101 @@ __global__ void __launch_bounds__(32 * kWarps) window_match_kernel(const float* 
     write_list<kSlots>(held, wanted, lane, cx, cy, 0, out + static_cast<long long>(r) * g.group, counts + r);
 }
 
+// Joint channels (Chain only, blocks 2 to 8; mode_of admits two): g.channels
+// planes, a region each; a candidate's distance is its channels' row-major chains added in
+// channel order (group_ssd's, so the select and block top-K kernels' bits).
+// window_match_kernel's layout otherwise; a round loads each channel's
+// reference block (from L1) before its chains.
+template <int B, int NY>
+__global__ void __launch_bounds__(32 * kWarps) window_joint_kernel(const float* plane, MatchGeometry g, RasterGrid grid,
+                                                                  Tiling tiling, int ref_begin, int ref_count,
+                                                                  DeviceMatch* out, int* counts) {
+    constexpr int kSlots = 2;
+    constexpr int kMaxChannels = 3;
+    extern __shared__ float regions[];
+    const int lane = threadIdx.x % 32, warp = threadIdx.x / 32;
+    const int r = blockIdx.x * kWarps + warp;
+    if (r >= ref_count) return;  // whole warps: every lane leaves together
+    const int lo = g.lo(), side = lo + g.hi() + 1;
+    const int channels = g.channels;
+    const int pitch = region_pitch(tiling.tile_w + B - 1);
+    const int region_floats = (tiling.tile_h + B - 1) * pitch;
+    float* region = regions + warp * channels * region_floats;
+    const int cx = grid.x(ref_begin + r), cy = grid.y(ref_begin + r);
+    const int x_lo = cx - lo, y_lo = cy - lo;
+    const long long ref_at = static_cast<long long>(cy) * g.pitch + cx;
+    const int max_x = g.width - B, max_y = g.height - B;
+    const unsigned self = static_cast<unsigned>(cy) << 16 | static_cast<unsigned>(cx);
+    const int wanted = min(g.group, 32 * kSlots + 1) - 1;  // the list's length
+    HeldList<kSlots> held;
+    held.init();
+    for (int ty = 0; ty < tiling.rows; ++ty) {
+        const int oy = ty * tiling.tile_h, ch = min(tiling.tile_h, side - oy);
+        for (int tx = 0; tx < tiling.cols; ++tx) {
+            const int ox = tx * tiling.tile_w, cw = min(tiling.tile_w, side - ox);
+            const int rows = ch + B - 1;
+            for (int c = 0; c < channels; ++c) {
+                stage(region + c * region_floats, pitch, plane + c * g.channel_step, g, x_lo + ox, y_lo + oy,
+                      cw + B - 1, rows, lane);
+            }
+            const int bands = (ch + NY - 1) / NY, items = cw * bands;
+            for (int first = 0; first < items; first += 32) {
+                const int item = first + lane;
+                const bool live = item < items;
+                const int col = live ? item % cw : 0, band = live ? item / cw : 0;
+                const int y0 = band * NY;
+                float total[NY];
+#pragma unroll
+                for (int channel = 0; channel < kMaxChannels; ++channel) {
+                    if (channel >= channels) break;
+                    const float* reference = plane + channel * g.channel_step + ref_at;
+                    float ref[B][B];
+#pragma unroll
+                    for (int y = 0; y < B; ++y) {
+#pragma unroll
+                        for (int c = 0; c < B; ++c) ref[y][c] = reference[y * g.pitch + c];
+                    }
+                    const float* channel_region = region + channel * region_floats;
+                    float acc[NY];
+#pragma unroll
+                    for (int k = 0; k < NY; ++k) acc[k] = 0.f;
+                    // Region row y0 + i is row i - k of candidate k's block.
+#pragma unroll
+                    for (int i = 0; i < NY + B - 1; ++i) {
+                        const float* row = channel_region + min(y0 + i, rows - 1) * pitch + col;
+                        float v[B];
+#pragma unroll
+                        for (int c = 0; c < B; ++c) v[c] = row[c];
+#pragma unroll
+                        for (int k = 0; k < NY; ++k) {
+                            const int y = i - k;
+                            if (y < 0 || y >= B) continue;
+#pragma unroll
+                            for (int c = 0; c < B; ++c) {
+                                const float d = ref[y][c] - v[c];
+                                acc[k] = fmaf(d, d, acc[k]);
+                            }
+                        }
+                    }
+#pragma unroll
+                    for (int k = 0; k < NY; ++k) total[k] = channel == 0 ? acc[k] : total[k] + acc[k];
+                }
+                unsigned long long key[NY];
+#pragma unroll
+                for (int k = 0; k < NY; ++k) {
+                    const int x = x_lo + ox + col, y = y_lo + oy + y0 + k;
+                    const unsigned at = static_cast<unsigned>(y) << 16 | static_cast<unsigned>(x);
+                    const bool ok = live && y0 + k < ch && x >= 0 && x <= max_x && y >= 0 && y <= max_y && at != self;
+                    key[k] = ok ? static_cast<unsigned long long>(min(__float_as_uint(total[k]), kInfinity)) << 32 | at
+                                : kEmpty;
+                }
+                insert_round<NY, kSlots>(key, held, wanted, lane);
+            }
+        }
+    }
+    write_list<kSlots>(held, wanted, lane, cx, cy, 0, out + static_cast<long long>(r) * g.group, counts + r);
+}
+
 // Split: two lanes a candidate, blocks 12 and 16 (see the file comment). Pair:
 // the lane kernels' eight-lane layout (groups up to 9).
 template <int B, int NY, bool Table, bool Pair>
@@ -385,7 +481,8 @@ __global__ void __launch_bounds__(32 * kWarps) window_split_kernel(const float* 
 //   block / 2): 0.37-1.0x below these sides, 1.02-1.75x at them, 1.3-2.8x at
 //   sides 19 to 25 and 1.6-2.6x up to 129.
 // - Chain, against the select and block top-K kernels: 1.15-7.5x at every
-//   side (5x at side 5, 7x at 129).
+//   side (5x at side 5, 7x at 129). Two joint channels (TWSC's chroma at its
+//   default side 61, group 8, 1080p YUV420, host frames): the filter 1.17x.
 // - Split, against the lane kernels: block 12 0.40-0.94x below side 19,
 //   1.21-1.64x from it; block 16 with 16 lanes 0.38-0.95x below 25,
 //   1.05-1.39x from it; with eight (groups up to 9) 0.39-0.91x up to side 33,
@@ -404,7 +501,14 @@ int min_side(Mode m, int block, int group) {
 }
 
 bool mode_of(const MatchGeometry& g, Mode& m) {
-    if (g.channels != 1 || g.group < 2 || g.group > 64) return false;
+    if (g.channels < 1 || g.channels > 2 || g.group < 2 || g.group > 64) return false;
+    if (g.channels == 2) {
+        // Two joint channels (TWSC's subsampled chroma pair): the select and
+        // block top-K kernels' distances. Three (MCWNNM, BM3D, DA3D joint
+        // RGB) keep their kernels.
+        m = Mode::Chain;
+        return g.block >= 2 && g.block <= 8;
+    }
     if (g.block >= 2 && g.block <= 8) {
         m = g.group <= 33 ? Mode::Tree : Mode::Chain;
         return true;
@@ -438,10 +542,11 @@ int item_rows(int tile, int block, int lanes_per, int max_ny) {
 }
 
 std::size_t region_bytes(const MatchGeometry& g, const Tiling& t) {
-    return static_cast<std::size_t>(t.tile_h + g.block - 1) * region_pitch(t.tile_w + g.block - 1) * sizeof(float);
+    return static_cast<std::size_t>(g.channels) * (t.tile_h + g.block - 1) * region_pitch(t.tile_w + g.block - 1) *
+           sizeof(float);
 }
 
-template <int B, Mode M, bool Table>
+template <int B, Mode M, bool Table, bool Joint = false>
 void launch_block(const float* plane, const float* const* frames, int frame, const MatchGeometry& g,
                   const RasterGrid& grid, int ref_begin, int ref_count, DeviceMatch* out, int* counts,
                   cudaStream_t stream) {
@@ -470,9 +575,14 @@ void launch_block(const float* plane, const float* const* frames, int frame, con
         switch (item_rows(t.tile_h, B, 1, kMaxNY)) {
 #define NSS_WINDOW_NY(N)                                                                                            \
     case N:                                                                                                         \
-        window_match_kernel<B, N, Table, M><<<blocks, 32 * kWarps, shared, stream>>>(plane, frames, frame, g, grid, \
-                                                                                    t, ref_begin, ref_count, out,    \
-                                                                                    counts);                         \
+        if constexpr (Joint) {                                                                                      \
+            window_joint_kernel<B, N><<<blocks, 32 * kWarps, shared, stream>>>(plane, g, grid, t, ref_begin,          \
+                                                                               ref_count, out, counts);             \
+        } else {                                                                                                    \
+            window_match_kernel<B, N, Table, M><<<blocks, 32 * kWarps, shared, stream>>>(plane, frames, frame, g,   \
+                                                                                        grid, t, ref_begin,          \
+                                                                                        ref_count, out, counts);     \
+        }                                                                                                           \
         break;
             NSS_WINDOW_NY(2)
             NSS_WINDOW_NY(3)
@@ -501,6 +611,16 @@ bool run_window(const float* plane, const float* const* frames, int frame, const
         return true;
     }
     if constexpr (!Table) {
+        if (m == Mode::Chain && g.channels > 1) {
+            switch (g.block) {
+#define NSS_WINDOW_B(B) \
+    case B: args(launch_block<B, Mode::Chain, false, true>); break;
+                NSS_WINDOW_B(2) NSS_WINDOW_B(3) NSS_WINDOW_B(4) NSS_WINDOW_B(5) NSS_WINDOW_B(6) NSS_WINDOW_B(7)
+                NSS_WINDOW_B(8)
+#undef NSS_WINDOW_B
+            }
+            return true;
+        }
         if (m == Mode::Chain) {
             switch (g.block) {
 #define NSS_WINDOW_B(B) \
@@ -512,7 +632,7 @@ bool run_window(const float* plane, const float* const* frames, int frame, const
             return true;
         }
     } else {
-        if (m == Mode::Chain) return false;  // the predictive lane kernels take groups up to 33
+        if (m == Mode::Chain) return false;  // the predictive lane kernels take groups up to 33 (and joint channels)
     }
     switch (g.block) {
 #define NSS_WINDOW_B(B) \
