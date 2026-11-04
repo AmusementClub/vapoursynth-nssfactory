@@ -537,6 +537,7 @@ set_source_files_properties(${NSS_HOT_SOURCES}
 # keep IEEE comparison semantics (-fno-finite-math-only) while the SSD
 # arithmetic itself matches the vec.cpp HOT class bit-for-bit.
 set(NSS_FINITE_HOT_SOURCES
+  src/cpu/common/image_candidates.cpp
   src/cpu/lssc/cluster_ssd.cpp
 )
 set_source_files_properties(${NSS_FINITE_HOT_SOURCES}
