@@ -72,11 +72,22 @@ __global__ void sample_kernel(LsscWork w) {
     for (int i = 0; i < w.m; ++i) w.sample_y[id * w.m + i] = patch[i] - mean;
 }
 
+// The pixel-major transpose of the dictionary (prepare_kernel forms it for
+// coding too).
+__global__ void transpose_kernel(LsscWork w) {
+    const int id = blockIdx.x * blockDim.x + threadIdx.x;
+    if (id >= w.atoms * w.m) return;
+    const int a = id / w.m, r = id % w.m;
+    w.transpose[static_cast<long long>(r) * w.atoms + a] = w.dict[id];
+}
+
 // nss::lssc_omp (sparsity 8) in FP32 (the CPU takes the correlations,
 // Cholesky solve and residual in FP64; FP32 measured the same against it on
 // the references) for one sample per block: the atoms'
-// correlations in parallel, the first strict maximum picked in atom order, the
-// support's normal equations in parallel and their solve by one thread.
+// correlations in parallel (the atoms' columns from the pixel-major transpose,
+// so a warp reads consecutive atoms), the first strict maximum in atom order
+// by the first warp, the support's normal equations in parallel and their
+// solve by one thread.
 __global__ void __launch_bounds__(kThreads) omp_kernel(LsscWork w) {
     constexpr int kMax = 8;
     __shared__ float residual[256];
@@ -106,28 +117,42 @@ __global__ void __launch_bounds__(kThreads) omp_kernel(LsscWork w) {
         for (int k = lane; k < atoms; k += lanes) {
             float correlation = -1.f;
             if (!used[k]) {
-                const float* column = w.dict + k * m;
+                const float* column = w.transpose + k;
                 correlation = 0.f;
-                for (int row = 0; row < m; ++row) correlation = fmaf(column[row], residual[row], correlation);
+                for (int row = 0; row < m; ++row) correlation = fmaf(column[row * atoms], residual[row], correlation);
                 correlation = fabsf(correlation);
             }
             magnitude[k] = correlation;
         }
         __syncthreads();
-        if (lane == 0) {
+        if (lane < 32) {
+            // The first strict maximum above 0 in atom order: each lane's in
+            // its atoms (ascending), then the larger value, on ties the lower
+            // atom.
             int best = -1;
             float largest = 0.f;
-            for (int k = 0; k < atoms; ++k) {
+            for (int k = lane; k < atoms; k += 32) {
                 if (magnitude[k] > largest) {
                     largest = magnitude[k];
                     best = k;
                 }
             }
-            if (best < 0 || largest < 1e-12f) {
-                state[1] = 1;
-            } else {
-                used[best] = 1;
-                support[state[0]++] = best;
+#pragma unroll
+            for (int offset = 16; offset > 0; offset >>= 1) {
+                const float v = __shfl_xor_sync(0xffffffffu, largest, offset);
+                const int b = __shfl_xor_sync(0xffffffffu, best, offset);
+                if (v > largest || (v == largest && b >= 0 && (best < 0 || b < best))) {
+                    largest = v;
+                    best = b;
+                }
+            }
+            if (lane == 0) {
+                if (best < 0 || largest < 1e-12f) {
+                    state[1] = 1;
+                } else {
+                    used[best] = 1;
+                    support[state[0]++] = best;
+                }
             }
         }
         __syncthreads();
@@ -451,19 +476,29 @@ static_assert(nss::kLsscDefaultAtoms <= 32 * kAtomSlots, "atoms per lane");
 
 __host__ __device__ inline int tri(int t) { return t * (t + 1) / 2; }
 
+// Floats of a coding warp's slice of w.ubuf: its u rows, then the packed
+// factor. The factor in shared memory (5.5 KB a warp at cap 48) held an SM
+// to 15 warps; in global memory it is read through L1, 1.03x end to end,
+// and 20 resident warps were slower than 16.
+__host__ __device__ inline std::size_t code_ubuf_floats(int cap, int atoms) {
+    return static_cast<std::size_t>(cap) * atoms + tri(cap);
+}
+
 struct CodeShared {
-    float* l;    // packed lower triangle of the factor, row t at tri(t)
+    float* l;    // packed lower triangle of the factor, row t at tri(t) (in w.ubuf)
     float* inv;  // its reciprocal diagonal
     float* z;
     float* x;
     int* support;
+    __device__ __forceinline__ float* row(int t) const { return l + tri(t); }
 };
 
-// The u rows stay in global memory: rows in shared memory (up to 4 of them)
-// cost more in occupancy than they saved in L2 latency.
+// Shared bytes of a coding warp: the reciprocal diagonal, z, x and the
+// support. The u rows stay in global memory too: rows in shared memory (up to
+// 4 of them) cost more in occupancy than they saved in L2 latency.
 __host__ __device__ inline std::size_t code_warp_bytes(int cap) {
     const std::size_t c = static_cast<std::size_t>(cap);
-    return (static_cast<std::size_t>(tri(cap)) + 3 * c) * sizeof(float) + c * sizeof(int);
+    return 3 * c * sizeof(float) + c * sizeof(int);
 }
 
 template <class T>
@@ -486,7 +521,7 @@ __device__ void back_solve(const CodeShared& s, int k, int lane) {
             if (i == slot && lane == owner) xq = r[i] * s.inv[q];
         xq = __shfl_sync(0xffffffffu, xq, owner);
         if (lane == owner) s.x[q] = xq;
-        const float* lq = s.l + tri(q);
+        const float* lq = s.row(q);
         for (int i = 0; i < kSupportSlots; ++i) {
             const int t = lane + 32 * i;
             if (t < q) r[i] = fmaf(-lq[t], xq, r[i]);
@@ -662,12 +697,12 @@ __global__ void __launch_bounds__(kCodeWarps * 32) code_kernel(LsscWork w, float
     const int warp = threadIdx.x / 32, lane = threadIdx.x % 32;
     const int m = w.m, atoms = w.atoms, cap = w.cap;
     CodeShared s;
-    s.l = reinterpret_cast<float*>(code_shared + warp * code_warp_bytes(cap));
-    s.inv = s.l + tri(cap);
+    s.inv = reinterpret_cast<float*>(code_shared + warp * code_warp_bytes(cap));
     s.z = s.inv + cap;
     s.x = s.z + cap;
     s.support = reinterpret_cast<int*>(s.x + cap);
-    float* ubuf = w.ubuf + (static_cast<long long>(blockIdx.x) * kCodeWarps + warp) * cap * atoms;
+    float* ubuf = w.ubuf + (static_cast<long long>(blockIdx.x) * kCodeWarps + warp) * code_ubuf_floats(cap, atoms);
+    s.l = ubuf + static_cast<long long>(cap) * atoms;
     const auto urow = [&](int q) { return ubuf + static_cast<long long>(q) * atoms; };
     const bool full = atoms == 32 * kAtomSlots;
     for (;;) {
@@ -729,8 +764,8 @@ __global__ void __launch_bounds__(kCodeWarps * 32) code_kernel(LsscWork w, float
                     if (low) r0 = wq; else r1 = wq;
                 }
                 wq = __shfl_sync(0xffffffffu, wq, owner);
-                if (lane > q && lane < k) r0 = fmaf(-s.l[tri(lane) + q], wq, r0);
-                if (lane + 32 > q && lane + 32 < k) r1 = fmaf(-s.l[tri(lane + 32) + q], wq, r1);
+                if (lane > q && lane < k) r0 = fmaf(-s.row(lane)[q], wq, r0);
+                if (lane + 32 > q && lane + 32 < k) r1 = fmaf(-s.row(lane + 32)[q], wq, r1);
             }
             float p = 0.f, v = 0.f;
             if (lane < k) {
@@ -748,7 +783,7 @@ __global__ void __launch_bounds__(kCodeWarps * 32) code_kernel(LsscWork w, float
             const float lkk = sqrtf(pivot);
             const float inv_kk = 1.f / lkk;
             const float zk = (a0b - lane_tree(v)) * inv_kk;
-            float* lk = s.l + tri(k);
+            float* lk = s.row(k);
             if (lane < k) lk[lane] = r0;
             if (lane + 32 < k) lk[lane + 32] = r1;
             if (lane == 0) {
@@ -873,6 +908,8 @@ void lssc_patch_atoms(const LsscWork& w, const int* sources, int first, cudaStre
 void lssc_ksvd(const LsscWork& w, cudaStream_t stream) {
     sample_kernel<<<blocks_for(w.samples), kThreads, 0, stream>>>(w);
     NSS_CUDA_CHECK_LAUNCH();
+    transpose_kernel<<<blocks_for(static_cast<long long>(w.atoms) * w.m), kThreads, 0, stream>>>(w);
+    NSS_CUDA_CHECK_LAUNCH();
     omp_kernel<<<w.samples, kThreads, 0, stream>>>(w);
     NSS_CUDA_CHECK_LAUNCH();
     sample_product_kernel<<<blocks_for(static_cast<long long>(w.samples) * w.m), kThreads, 0, stream>>>(w);
@@ -943,7 +980,7 @@ int lssc_code_warps(int device) {
 int lssc_code_slots(int device, int np) { return std::max(1, std::min(lssc_code_warps(device), (np + 31) / 32)); }
 
 std::size_t lssc_code_scratch_bytes(int slots, int m, int atoms) {
-    return static_cast<std::size_t>(slots) * nss::lssc_omp_cap(m, atoms) * atoms * sizeof(float);
+    return static_cast<std::size_t>(slots) * code_ubuf_floats(nss::lssc_omp_cap(m, atoms), atoms) * sizeof(float);
 }
 
 void lssc_finish(const float* num, const float* den, const float* src, int width, int height, int pitch, float weight,
