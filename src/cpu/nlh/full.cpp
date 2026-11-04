@@ -63,6 +63,23 @@ void nlh_filter_full(const float* input, const float* reference, int m, int n, i
         const int* indices = row_indices + row * q;
         float* matrix = w.matrix.data() + row * size;
         float* ref = o.wiener ? w.reference.data() + row * size : nullptr;
+        if (q == 4) {
+            // The presets' q, the row's pixels held across the columns.
+            const int i0 = indices[0], i1 = indices[1], i2 = indices[2], i3 = indices[3];
+            for (int j = 0; j < n; ++j) {
+                const float* in = input + j * lda;
+                float* out = matrix + j * 4;
+                out[0] = in[i0], out[1] = in[i1], out[2] = in[i2], out[3] = in[i3];
+            }
+            if (ref) {
+                for (int j = 0; j < n; ++j) {
+                    const float* in = reference + j * lda;
+                    float* out = ref + j * 4;
+                    out[0] = in[i0], out[1] = in[i1], out[2] = in[i2], out[3] = in[i3];
+                }
+            }
+            continue;
+        }
         for (int j = 0; j < n; ++j) for (int k = 0; k < q; ++k) {
             matrix[k + j * q] = input[indices[k] + j * lda];
             if (ref) ref[k + j * q] = reference[indices[k] + j * lda];
@@ -86,6 +103,20 @@ void nlh_filter_full(const float* input, const float* reference, int m, int n, i
     for (int row = 0; row < m; ++row) {
         const int* indices = row_indices + row * q;
         const float* matrix = w.matrix.data() + row * size;
+        if (q == 4) {
+            // The same additions in the same (j, k) order, the row's pixels
+            // held across the columns.
+            const int i0 = indices[0], i1 = indices[1], i2 = indices[2], i3 = indices[3];
+            for (int j = 0; j < n; ++j) {
+                double* num = w.numerator.data() + std::size_t(j) * m;
+                const float* src = matrix + j * 4;
+                num[i0] += src[0];
+                num[i1] += src[1];
+                num[i2] += src[2];
+                num[i3] += src[3];
+            }
+            continue;
+        }
         for (int j = 0; j < n; ++j) {
             double* num = w.numerator.data() + std::size_t(j) * m;
             const float* src = matrix + j * q;
