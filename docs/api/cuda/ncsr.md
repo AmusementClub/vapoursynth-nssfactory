@@ -23,9 +23,12 @@ Larger groups and a smaller `block_step` cost much more, and every extra round
 dedicated matchers with the same matches (one match channel): the window
 search for `bm_range` 7 and more at block 8 (the default 7 included), groups
 34 to 64 at any `bm_range`, and other blocks from smaller or larger windows;
-and the column search at `block_step` 1 to 3; see [BM3D's optimized search
-shapes](bm3d.md#optimized-search-shapes). With `radius > 0` the window search
-also covers the centre frame from `bm_range` 9 at block 8.
+and the column search at `block_step` 1 to 3. Where `block_size` is twice
+`block_step` (8 / 4, 16 / 8, ...) the square search takes it, with the same
+matches up to near ties (the output differs in the last bits); see [BM3D's
+optimized search shapes](bm3d.md#optimized-search-shapes). With `radius > 0`
+the square search, or else the window search from `bm_range` 9 at block 8,
+also covers the centre frame.
 
 ## Closer to the papers
 
@@ -83,7 +86,7 @@ core.nss_cuda.NCSR(clip clip[, float[] sigma = 3.0, int block_size = 8,
 
 - **Accuracy.** 105–139 dB against the CPU plugin on the reference set;
   identical from run to run.
-- **Matching.** Spatial search reuses [BM3D's exact window and column matchers](bm3d.md#optimized-search-shapes)
+- **Matching.** Spatial search reuses [BM3D's exact window, column and square matchers](bm3d.md#optimized-search-shapes)
   with the same block, step and group limits. Other spatial shapes and temporal
   search keep their existing matchers.
 - **Temporal output** runs every round on the GPU and agrees with the legacy

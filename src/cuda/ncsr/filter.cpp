@@ -57,6 +57,9 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
         g.ps_range = p.ps_range;
         g.fused = true;
     }
+    // Spatial matching by the column or square matcher where it applies, as
+    // WNNM (the square matcher also takes the centre frame of a temporal search).
+    config.square_match = true;
     config.column_match = true;
     config.launch = [](const GroupLaunch& l) {
         NcsrGroupArgs args{};
