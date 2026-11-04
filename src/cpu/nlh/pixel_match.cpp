@@ -21,6 +21,39 @@ namespace HWY_NAMESPACE {
 namespace hn = hwy::HWY_NAMESPACE;
 #include "cpu/nlh/select_top3-inl.hpp"
 
+// SSDs of row r against the K full vectors of candidates from s0 and then
+// `tail` (< lanes) more, into out + s0: one pass over the columns with an
+// accumulator per vector, each lane's sum in column order as before.
+template <int K, class D>
+HWY_INLINE void SsdRemainder(D d, const float* group, int n, int lda, int r, int s0, std::size_t tail, float* out) {
+    const int N = static_cast<int>(hn::Lanes(d));
+    auto a0 = hn::Zero(d), a1 = hn::Zero(d), a2 = hn::Zero(d), at = hn::Zero(d);
+    for (int c = 0; c < n; ++c) {
+        const auto vr = hn::Set(d, group[r + c * lda]);
+        const float* col = group + c * lda + s0;
+        if constexpr (K > 0) {
+            const auto e = hn::Sub(hn::LoadU(d, col), vr);
+            a0 = hn::MulAdd(e, e, a0);
+        }
+        if constexpr (K > 1) {
+            const auto e = hn::Sub(hn::LoadU(d, col + N), vr);
+            a1 = hn::MulAdd(e, e, a1);
+        }
+        if constexpr (K > 2) {
+            const auto e = hn::Sub(hn::LoadU(d, col + 2 * N), vr);
+            a2 = hn::MulAdd(e, e, a2);
+        }
+        if (tail) {
+            const auto e = hn::Sub(hn::LoadN(d, col + K * N, tail), vr);
+            at = hn::MulAdd(e, e, at);
+        }
+    }
+    if constexpr (K > 0) hn::StoreU(a0, d, out + s0);
+    if constexpr (K > 1) hn::StoreU(a1, d, out + s0 + N);
+    if constexpr (K > 2) hn::StoreU(a2, d, out + s0 + 2 * N);
+    if (tail) hn::StoreN(at, d, out + s0 + K * N, tail);
+}
+
 void PixelMatch(const float* group, int m, int n, int lda, int q, int* idx) {
     if (!group || !idx || m < 1 || n < 1 || q < 1 || lda < m) {
         return;
@@ -111,7 +144,8 @@ void PixelMatch(const float* group, int m, int n, int lda, int q, int* idx) {
     const int N = static_cast<int>(hn::Lanes(d));
     using V = hn::Vec<hn::ScalableTag<float>>;
     constexpr int kSelM = 64;
-    auto ssd_from = [&](int r, int s0) {
+    // Row r's SSDs against candidates s0.. into out[s0..m).
+    auto ssd_from = [&](int r, int s0, float* out) {
         for (; s0 + 4 * N <= m; s0 += 4 * N) {
             V acc0 = hn::Zero(d);
             V acc1 = hn::Zero(d);
@@ -129,28 +163,20 @@ void PixelMatch(const float* group, int m, int n, int lda, int q, int* idx) {
                 acc2 = hn::MulAdd(e2, e2, acc2);
                 acc3 = hn::MulAdd(e3, e3, acc3);
             }
-            hn::StoreU(acc0, d, pair_dist + s0);
-            hn::StoreU(acc1, d, pair_dist + s0 + N);
-            hn::StoreU(acc2, d, pair_dist + s0 + 2 * N);
-            hn::StoreU(acc3, d, pair_dist + s0 + 3 * N);
+            hn::StoreU(acc0, d, out + s0);
+            hn::StoreU(acc1, d, out + s0 + N);
+            hn::StoreU(acc2, d, out + s0 + 2 * N);
+            hn::StoreU(acc3, d, out + s0 + 3 * N);
         }
-        for (; s0 + N <= m; s0 += N) {
-            V acc = hn::Zero(d);
-            for (int c = 0; c < n; ++c) {
-                const auto e = hn::Sub(hn::LoadU(d, group + c * lda + s0), hn::Set(d, group[r + c * lda]));
-                acc = hn::MulAdd(e, e, acc);
-            }
-            hn::StoreU(acc, d, pair_dist + s0);
-        }
-        if (s0 < m) {
-            const std::size_t remaining = static_cast<std::size_t>(m - s0);
-            V acc = hn::Zero(d);
-            for (int c = 0; c < n; ++c) {
-                const auto e = hn::Sub(hn::LoadN(d, group + c * lda + s0, remaining),
-                                       hn::Set(d, group[r + c * lda]));
-                acc = hn::MulAdd(e, e, acc);
-            }
-            hn::StoreN(acc, d, pair_dist + s0, remaining);
+        // The rest, under four vectors: one pass (a vector at a time it was
+        // a chain of dependent FMAs per vector).
+        if (s0 >= m) return;
+        const std::size_t tail = static_cast<std::size_t>((m - s0) % N);
+        switch ((m - s0) / N) {
+            case 0: SsdRemainder<0>(d, group, n, lda, r, s0, tail, out); break;
+            case 1: SsdRemainder<1>(d, group, n, lda, r, s0, tail, out); break;
+            case 2: SsdRemainder<2>(d, group, n, lda, r, s0, tail, out); break;
+            default: SsdRemainder<3>(d, group, n, lda, r, s0, tail, out); break;
         }
     };
 
@@ -161,10 +187,19 @@ void PixelMatch(const float* group, int m, int n, int lda, int q, int* idx) {
         const auto inf = hn::Set(d, kInf);
         distances[r] = kInf;
         for (int slot = 1; slot < qq; ++slot) {
-            auto vmin = inf;
+            // Four running minima (one chain was latency-bound): the minimum
+            // of the distances (never NaN for a finite group) in any order.
+            auto v0 = inf, v1 = inf, v2 = inf, v3 = inf;
             int j = 0;
+            for (; j + 4 * N <= m; j += 4 * N) {
+                v0 = hn::Min(v0, hn::LoadU(d, distances + j));
+                v1 = hn::Min(v1, hn::LoadU(d, distances + j + N));
+                v2 = hn::Min(v2, hn::LoadU(d, distances + j + 2 * N));
+                v3 = hn::Min(v3, hn::LoadU(d, distances + j + 3 * N));
+            }
             for (; j + N <= m; j += N)
-                vmin = hn::Min(vmin, hn::LoadU(d, distances + j));
+                v0 = hn::Min(v0, hn::LoadU(d, distances + j));
+            const auto vmin = hn::Min(hn::Min(v0, v1), hn::Min(v2, v3));
             float best_d = hn::ReduceMin(d, vmin);
             for (; j < m; ++j) best_d = std::min(best_d, distances[j]);
             const auto vbest = hn::Set(d, best_d);
@@ -193,10 +228,21 @@ void PixelMatch(const float* group, int m, int n, int lda, int q, int* idx) {
         // A whole row permits SIMD selection without a quadratic scratch
         // matrix. SSD arithmetic is repeated for the symmetric row, keeping
         // the same column/FMA order; changing the difference sign is exact.
+        // Every distance below kInf, by its bits (non-negative floats order
+        // as their bits; overflowed and NaN distances fail), a vector at a
+        // time: the scalar compares took a fifth of the stage.
+        const hn::RebindToUnsigned<decltype(d)> du;
+        const auto limit = hn::Set(du, std::bit_cast<std::uint32_t>(kInf));
         for (int r = 0; r < m; ++r) {
-            ssd_from(r, 0);
-            bool bounded = true;
-            for (int s = 0; s < m; ++s) bounded &= pair_dist[s] < kInf;
+            ssd_from(r, 0, pair_dist);
+            auto below = hn::FirstN(du, hn::Lanes(du));
+            int s = 0;
+            for (; s + N <= m; s += N) below = hn::And(below, hn::Lt(hn::BitCast(du, hn::LoadU(d, pair_dist + s)), limit));
+            if (s < m) {
+                const std::size_t rest = static_cast<std::size_t>(m - s);
+                below = hn::And(below, hn::Lt(hn::BitCast(du, hn::LoadN(d, pair_dist + s, rest)), limit));
+            }
+            const bool bounded = hn::AllTrue(du, below);
             if (bounded) select_row(pair_dist, r);
             else {
                 // The insertion path also defines finite sentinel ties and
@@ -210,13 +256,12 @@ void PixelMatch(const float* group, int m, int n, int lda, int q, int* idx) {
         // per pair. Ties keep the lowest index, matching better().
         std::array<float, kSelM * kSelM> dist;
         for (int r = 0; r < m; ++r) {
-            ssd_from(r, r + 1);
-            dist[static_cast<std::size_t>(r) * static_cast<std::size_t>(m) + static_cast<std::size_t>(r)] = 0.f;
-            for (int s = r + 1; s < m; ++s) {
-                const float value = pair_dist[s];
-                dist[static_cast<std::size_t>(r) * static_cast<std::size_t>(m) + static_cast<std::size_t>(s)] = value;
-                dist[static_cast<std::size_t>(s) * static_cast<std::size_t>(m) + static_cast<std::size_t>(r)] = value;
-            }
+            // The row's upper part straight from the SSD; the lower part is
+            // the transposed column of the rows before it.
+            float* row = dist.data() + static_cast<std::size_t>(r) * static_cast<std::size_t>(m);
+            ssd_from(r, r + 1, row);
+            row[r] = 0.f;
+            for (int s = r + 1; s < m; ++s) dist[static_cast<std::size_t>(s) * static_cast<std::size_t>(m) + static_cast<std::size_t>(r)] = row[s];
         }
         // Each row is consumed exactly once and select_row only mutates the
         // row it selects from, so select directly on the matrix row — no
@@ -228,7 +273,7 @@ void PixelMatch(const float* group, int m, int n, int lda, int q, int* idx) {
     // Compute only the upper triangle. Every distance is inserted into both
     // rows, so symmetric pairs cannot diverge through rounding or ties.
     for (int r = 0; r < m; ++r) {
-        ssd_from(r, r + 1);
+        ssd_from(r, r + 1, pair_dist);
         for (int s = r + 1; s < m; ++s) {
             insert(r, s, pair_dist[s]);
             insert(s, r, pair_dist[s]);

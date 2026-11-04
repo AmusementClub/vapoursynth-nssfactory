@@ -153,6 +153,15 @@ def make_filter(core: vs.Core, algorithm: str, source: vs.VideoNode) -> vs.Video
             block_step=int(os.environ.get("NSS_PROFILE_LSSC_STEP", "8")),
         )
     if algorithm == "nlh":
+        # NSS_PROFILE_NLH_PRESET: "sigma" times the preset at sigma 3, "blind"
+        # the preset with its noise estimate; unset keeps the fixed shape below.
+        preset = os.environ.get("NSS_PROFILE_NLH_PRESET")
+        if preset == "sigma":
+            return core.nss.NLH(source, sigma=3)
+        if preset == "blind":
+            return core.nss.NLH(source)
+        if preset:
+            raise ValueError(f"NSS_PROFILE_NLH_PRESET must be sigma or blind, not {preset!r}")
         block_size = int(os.environ.get("NSS_PROFILE_NLH_BLOCK", "8"))
         block_step = int(os.environ.get("NSS_PROFILE_NLH_STEP", str(min(block_size, 8))))
         return core.nss.NLH(
