@@ -19,46 +19,51 @@ __device__ __forceinline__ int group_columns(int count, int group, bool pow2) {
     return n;
 }
 
+// Distance between a row held in registers (N > 0: N columns) or in rows
+// (N == 0: n columns) and another row of the group, in column order.
+template <int N>
+__device__ __forceinline__ float row_distance(const float* other, const float* fixed, const float* mine, int n) {
+    float d = 0.f;
+    if constexpr (N > 0) {
+#pragma unroll
+        for (int c = 0; c < N; ++c) {
+            const float e = other[c] - fixed[c];
+            d = fmaf(e, e, d);
+        }
+    } else {
+        for (int c = 0; c < n; ++c) {
+            const float e = other[c] - mine[c];
+            d = fmaf(e, e, d);
+        }
+    }
+    return d;
+}
+
 // nss::pixel_match for row r of a guide group stored [row][column]: slot 0 is
 // the row itself, the others are the nearest rows by (distance, index).
 // With N > 0 the rows are N wide and zero beyond the group's n columns, so
 // the distance loop has a fixed bound (zero terms leave the sum unchanged).
-template <int N>
+// M > 0 fixes the row count m at compile time.
+template <int N, int M = 0>
 __device__ __forceinline__ void select_rows(const float* rows, int m, int n, int stride, int q, int r, int* out) {
+    if constexpr (M > 0) m = M;
     const int qq = min(q, m);
     constexpr float kInf = 1.0e30f;
-    float best_d[16];
-    int best_i[16];
-    for (int k = 0; k < qq; ++k) {
-        best_d[k] = k == 0 ? 0.f : kInf;
-        best_i[k] = r;
-    }
     const float* mine = rows + r * stride;
     float fixed[N > 0 ? N : 1];
 #pragma unroll
     for (int c = 0; c < N; ++c) fixed[c] = mine[c];
-    // Up to four slots the list stays in registers: three sorted candidates,
-    // of which the first qq - 1 are the answer (the order is total).
-    const bool few = qq <= 4;
-    float d1 = kInf, d2 = kInf, d3 = kInf;
-    int i1 = r, i2 = r, i3 = r;
-    for (int s = 0; s < m && qq > 1; ++s) {
-        if (s == r) continue;
-        const float* other = rows + s * stride;
-        float d = 0.f;
-        if (N > 0) {
-#pragma unroll
-            for (int c = 0; c < N; ++c) {
-                const float e = other[c] - fixed[c];
-                d = fmaf(e, e, d);
-            }
-        } else {
-            for (int c = 0; c < n; ++c) {
-                const float e = other[c] - mine[c];
-                d = fmaf(e, e, d);
-            }
-        }
-        if (few) {
+    if (qq <= 4) {
+        // Up to four slots the list stays in registers: three sorted
+        // candidates, of which the first qq - 1 are the answer (the order is
+        // total). The row's distance to itself is taken as +inf, which never
+        // enters the list (its entries are at most kInf), in place of a
+        // branch around it.
+        float d1 = kInf, d2 = kInf, d3 = kInf;
+        int i1 = r, i2 = r, i3 = r;
+        for (int s = 0; s < m && qq > 1; ++s) {
+            float d = row_distance<N>(rows + s * stride, fixed, mine, n);
+            if (s == r) d = __int_as_float(0x7f800000);
             if (!(d < d3 || (d == d3 && s < i3))) continue;
             d3 = d, i3 = s;
             if (d3 < d2 || (d3 == d2 && i3 < i2)) {
@@ -71,8 +76,20 @@ __device__ __forceinline__ void select_rows(const float* rows, int m, int n, int
                 const int ti = i1;
                 d1 = d2, i1 = i2, d2 = td, i2 = ti;
             }
-            continue;
         }
+        const int best[4] = {r, i1, i2, i3};
+        for (int k = 0; k < q; ++k) out[k] = k < qq ? best[k] : r;
+        return;
+    }
+    float best_d[16];
+    int best_i[16];
+    for (int k = 0; k < qq; ++k) {
+        best_d[k] = k == 0 ? 0.f : kInf;
+        best_i[k] = r;
+    }
+    for (int s = 0; s < m; ++s) {
+        if (s == r) continue;
+        const float d = row_distance<N>(rows + s * stride, fixed, mine, n);
         int pos = qq - 1;
         if (!(d < best_d[pos] || (d == best_d[pos] && s < best_i[pos]))) continue;
         while (pos > 1 && (d < best_d[pos - 1] || (d == best_d[pos - 1] && s < best_i[pos - 1]))) {
@@ -83,33 +100,89 @@ __device__ __forceinline__ void select_rows(const float* rows, int m, int n, int
         best_d[pos] = d;
         best_i[pos] = s;
     }
-    if (few) {
-        const int best[4] = {r, i1, i2, i3};
-        for (int k = 0; k < q; ++k) out[k] = k < qq ? best[k] : r;
-        return;
-    }
     for (int k = 0; k < q; ++k) out[k] = k < qq ? best_i[k] : r;
+}
+
+// The group sizes the per-group kernels stage their patch addresses for.
+constexpr int kStagedGroup = 16;
+
+// Patch addresses of a group with at most kStagedGroup matches, staged once
+// per block: the frame t, the sample y * width + x and the accumulator cell
+// t * slice_step + y * width + x of patch j (beyond the group's n columns,
+// those of its last).
+struct StagedPatches {
+    int t[kStagedGroup];
+    long long at[kStagedGroup];
+    long long cell[kStagedGroup];
+    // Lane filter: patch j's first sample in the channel at hand (data and
+    // Basic reference planes; stage_channel).
+    const float* data[kStagedGroup];
+    const float* reference[kStagedGroup];
+};
+
+__device__ __forceinline__ void stage_patches(const NlhGroupArgs& a, const DeviceMatch* match, int n,
+                                              StagedPatches& p) {
+    for (int j = threadIdx.x; j < kStagedGroup; j += blockDim.x) {
+        const DeviceMatch mj = match[min(j, n - 1)];
+        const long long at = static_cast<long long>(mj.y) * a.width + mj.x;
+        p.t[j] = mj.t;
+        p.at[j] = at;
+        p.cell[j] = mj.t * static_cast<long long>(a.slice_step) + at;
+    }
+}
+
+// The sample pointers of channel c (the threads of stage_patches' patches,
+// so it needs no barrier after it).
+__device__ __forceinline__ void stage_channel(const NlhGroupArgs& a, int c, bool wiener, StagedPatches& p) {
+    for (int j = threadIdx.x; j < kStagedGroup; j += blockDim.x) {
+        const int plane = p.t[j] * a.nch + c;
+        p.data[j] = a.data[plane] + p.at[j];
+        if (wiener) p.reference[j] = a.reference[plane] + p.at[j];
+    }
+}
+
+// Patch edge of a kernel instance: B > 0 fixes it at compile time (the
+// presets' 8 and 16), 0 takes the runtime block.
+template <int B>
+__device__ __forceinline__ int patch_edge(const NlhGroupArgs& a) {
+    if constexpr (B > 0) return B;
+    return a.block;
 }
 
 // One block per group, one thread per patch pixel row: the guide group is
 // staged in shared memory, then every row selects its pixels. With `den`
 // (the lane filter follows) it also adds every pixel's selection count to
-// the count plane.
+// the count plane. B > 0 (patch_edge) fixes the block at compile time and
+// takes group 16.
+template <int B>
 __global__ void prepare_kernel(NlhGroupArgs a, int den) {
     extern __shared__ float rows[];  // m * group, [row][column]
-    const int m = a.block * a.block;
+    __shared__ StagedPatches patches;
+    const int block = patch_edge<B>(a);
+    const int m = block * block;
+    const int group = B > 0 ? kStagedGroup : a.group;
     const int g = blockIdx.x, r = threadIdx.x;
-    const int n = group_columns(a.counts[g], a.group, a.pow2);
-    const DeviceMatch* match = a.matches + static_cast<long long>(g) * a.group;
-    const int offset = (r / a.block) * a.width + r % a.block;
-    for (int j = 0; j < a.group; ++j) {
-        rows[r * a.group + j] =
-            j < n ? a.guides[match[j].t][static_cast<long long>(match[j].y) * a.width + match[j].x + offset] : 0.f;
+    const int n = group_columns(a.counts[g], group, a.pow2);
+    const DeviceMatch* match = a.matches + static_cast<long long>(g) * group;
+    const int offset = (r / block) * a.width + r % block;
+    if constexpr (B > 0) {
+        stage_patches(a, match, n, patches);
+        __syncthreads();
+#pragma unroll
+        for (int j = 0; j < kStagedGroup; ++j) {
+            rows[r * kStagedGroup + j] = j < n ? a.guides[patches.t[j]][patches.at[j] + offset] : 0.f;
+        }
+    } else {
+        for (int j = 0; j < group; ++j) {
+            rows[r * group + j] =
+                j < n ? a.guides[match[j].t][static_cast<long long>(match[j].y) * a.width + match[j].x + offset] : 0.f;
+        }
     }
     __syncthreads();
     int* out = a.indices + (static_cast<long long>(g) * m + r) * a.q;
-    if (a.group == 16) select_rows<16>(rows, m, n, 16, a.q, r, out);
-    else select_rows<0>(rows, m, n, a.group, a.q, r, out);
+    if constexpr (B > 0) select_rows<kStagedGroup, B * B>(rows, m, n, kStagedGroup, a.q, r, out);
+    else if (group == 16) select_rows<16>(rows, m, n, 16, a.q, r, out);
+    else select_rows<0>(rows, m, n, group, a.q, r, out);
     if (!den) return;
     // The selections of every pixel, counted where the guide rows were.
     auto* hits = reinterpret_cast<unsigned*>(rows);
@@ -121,8 +194,10 @@ __global__ void prepare_kernel(NlhGroupArgs a, int den) {
     const unsigned count = hits[r];
     if (count == 0) return;
     for (int j = 0; j < n; ++j) {
-        const long long cell = match[j].t * static_cast<long long>(a.slice_step) +
-                               static_cast<long long>(match[j].y) * a.width + match[j].x + offset;
+        long long cell;
+        if constexpr (B > 0) cell = patches.cell[j] + offset;
+        else cell = match[j].t * static_cast<long long>(a.slice_step) + static_cast<long long>(match[j].y) * a.width +
+                    match[j].x + offset;
         atomicAdd(a.den + cell, count);
     }
 }
@@ -478,17 +553,14 @@ __device__ __forceinline__ void haar_columns(float* v, int n, bool inverse) {
 // channel c: lane k's part of the row's q x n matrix after Haar, shrink and
 // inverse Haar. The q lanes of the row must call it together.
 template <bool Wiener, int Q>
-__device__ __forceinline__ void lane_values(const NlhGroupArgs& a, const DeviceMatch* match, int n, int offset, int k,
-                                            int c, float* v) {
+__device__ __forceinline__ void lane_values(const NlhGroupArgs& a, const StagedPatches& patches, int n, int offset,
+                                            int k, int c, float* v) {
     const int kk = lane_index<Q>(k);
     float r[16];
 #pragma unroll
     for (int j = 0; j < 16; ++j) {
-        const int jj = min(j, n - 1);
-        const long long at = static_cast<long long>(match[jj].y) * a.width + match[jj].x + offset;
-        const int plane = match[jj].t * a.nch + c;
-        v[j] = j < n ? a.data[plane][at] : 0.f;
-        if (Wiener) r[j] = j < n && !a.identity[c] ? a.reference[plane][at] : 0.f;
+        v[j] = j < n ? __ldg(patches.data[j] + offset) : 0.f;
+        if (Wiener) r[j] = j < n && !a.identity[c] ? __ldg(patches.reference[j] + offset) : 0.f;
     }
     if (!a.identity[c]) {
 #pragma unroll
@@ -539,41 +611,45 @@ __device__ __forceinline__ void lane_values(const NlhGroupArgs& a, const DeviceM
 // A pixel is selected at most once per row, so m values below `limit` at
 // `scale` units stay inside a cell (nlh_lane_scale); a larger value goes to
 // the accumulators directly. The launch bound (1024 threads for block 16)
-// holds the kernel to 64 registers, which it fits without spilling.
-template <bool Wiener, int Q>
+// holds the kernel to 64 registers, which it fits without spilling. B > 0
+// (patch_edge) fixes the block at compile time: the index arithmetic of the
+// sums' flush then takes shifts in place of divisions.
+template <bool Wiener, int Q, int B>
 __global__ void __launch_bounds__(1024, 1) filter_lane_kernel(NlhGroupArgs a, float limit, float scale) {
     extern __shared__ int sums[];
-    const int m = a.block * a.block;
+    __shared__ StagedPatches patches;
+    const int block = patch_edge<B>(a);
+    const int m = block * block;
     const int g = blockIdx.x, k = threadIdx.x % Q, row = threadIdx.x / Q;
-    const int n = group_columns(a.counts[g], a.group, a.pow2);
-    const DeviceMatch* match = a.matches + static_cast<long long>(g) * a.group;
+    const int n = group_columns(a.counts[g], kStagedGroup, a.pow2);
+    stage_patches(a, a.matches + static_cast<long long>(g) * kStagedGroup, n, patches);
+    stage_channel(a, 0, Wiener, patches);
     const int pixel = a.indices[(static_cast<long long>(g) * m + row) * Q + k];
-    const int offset = (pixel / a.block) * a.width + pixel % a.block;
+    const int offset = (pixel / block) * a.width + pixel % block;
     const long long unit = static_cast<long long>(kFixedScale / scale);  // accumulator units per shared unit
     for (int i = threadIdx.x; i < m * 16; i += blockDim.x) sums[i] = 0;
     __syncthreads();
     for (int c = 0; c < a.nch; ++c) {
         float v[16];
-        lane_values<Wiener, Q>(a, match, n, offset, k, c, v);
+        lane_values<Wiener, Q>(a, patches, n, offset, k, c, v);
 #pragma unroll
         for (int j = 0; j < 16; ++j) {
             if (j >= n) break;
             if (fabsf(v[j]) < limit) {
                 atomicAdd(sums + j * m + pixel, __float2int_rn(v[j] * scale));
             } else {
-                const long long at = static_cast<long long>(match[j].y) * a.width + match[j].x + offset;
-                fixed_add(a.num[c], match[j].t * static_cast<long long>(a.slice_step) + at, v[j]);
+                fixed_add(a.num[c], patches.cell[j] + offset, v[j]);
             }
         }
         __syncthreads();
+        // Every lane has read channel c's samples: the next channel's pointers.
+        if (c + 1 < a.nch) stage_channel(a, c + 1, Wiener, patches);
         for (int i = threadIdx.x; i < m * 16; i += blockDim.x) {
             const int sum = sums[i];
             sums[i] = 0;
             const int j = i / m, p = i % m;
             if (sum == 0 || j >= n) continue;
-            const long long at = static_cast<long long>(match[j].y) * a.width + match[j].x +
-                                 (p / a.block) * a.width + p % a.block;
-            atomicAdd(a.num[c] + match[j].t * static_cast<long long>(a.slice_step) + at,
+            atomicAdd(a.num[c] + patches.cell[j] + (p / block) * a.width + p % block,
                       static_cast<unsigned long long>(sum * unit));
         }
         __syncthreads();
@@ -659,7 +735,8 @@ __global__ void estimate_kernel(NlhGroupArgs a, double* partial) {
     __syncthreads();
 
     // The three nearest rows by (distance, index); candidates arrive in
-    // index order. Columns beyond n are zero in every row.
+    // index order. Columns beyond n are zero in every row. The row itself is
+    // taken at distance +inf, which no list entry (at most kInf) lets in.
     constexpr float kInf = 1.0e30f;
     float mine[kEstimateGroup];
 #pragma unroll
@@ -667,16 +744,11 @@ __global__ void estimate_kernel(NlhGroupArgs a, double* partial) {
     float d1 = kInf, d2 = kInf, d3 = kInf;
     int i1 = r, i2 = r, i3 = r;
     for (int s = 0; s < kEstimateRows; ++s) {
-        float d = 0.f;
-#pragma unroll
-        for (int c = 0; c < kEstimateGroup; ++c) {
-            const float e = rows[s * kEstimateGroup + c] - mine[c];
-            d = fmaf(e, e, d);
-        }
-        const bool other = s != r;
-        const bool l1 = other && (d < d1 || (d == d1 && s < i1));
-        const bool l2 = other && (d < d2 || (d == d2 && s < i2));
-        const bool l3 = other && (d < d3 || (d == d3 && s < i3));
+        float d = row_distance<kEstimateGroup>(rows + s * kEstimateGroup, mine, nullptr, kEstimateGroup);
+        if (s == r) d = __int_as_float(0x7f800000);
+        const bool l1 = d < d1 || (d == d1 && s < i1);
+        const bool l2 = d < d2 || (d == d2 && s < i2);
+        const bool l3 = d < d3 || (d == d3 && s < i3);
         d3 = l2 ? d2 : (l3 ? d : d3);
         i3 = l2 ? i2 : (l3 ? s : i3);
         d2 = l1 ? d1 : (l2 ? d : d2);
@@ -793,8 +865,12 @@ void nlh_prepare_groups(const NlhGroupArgs& args, cudaStream_t stream) {
     if (args.batch <= 0) return;
     const int m = args.block * args.block;
     if (nlh_prepare_shared(args.block, args.group)) {
-        prepare_kernel<<<args.batch, m, m * args.group * sizeof(float), stream>>>(
-            args, nlh_filter_lanes(args.block, args.group, args.q));
+        const std::size_t bytes = static_cast<std::size_t>(m) * args.group * sizeof(float);
+        const int den = nlh_filter_lanes(args.block, args.group, args.q);
+        const bool staged = args.group == kStagedGroup;
+        if (staged && args.block == 8) prepare_kernel<8><<<args.batch, m, bytes, stream>>>(args, den);
+        else if (staged && args.block == 16) prepare_kernel<16><<<args.batch, m, bytes, stream>>>(args, den);
+        else prepare_kernel<0><<<args.batch, m, bytes, stream>>>(args, den);
         NSS_CUDA_CHECK_LAUNCH();
         return;
     }
@@ -811,14 +887,21 @@ void nlh_filter_groups(const NlhGroupArgs& args, cudaStream_t stream) {
         const std::size_t bytes = static_cast<std::size_t>(m) * 16 * sizeof(int);
         const int threads = m * args.q;
         const float limit = nlh_lane_limit(args.block), scale = nlh_lane_scale(args.block);
+        const auto launch = [&](auto kernel) { kernel<<<args.batch, threads, bytes, stream>>>(args, limit, scale); };
+        // The presets' blocks (Basic 8, Wiener 16) at compile time.
+        const auto edges = [&](auto b8, auto b16, auto any) {
+            if (args.block == 8) launch(b8);
+            else if (args.block == 16) launch(b16);
+            else launch(any);
+        };
         if (args.wiener && args.q == 4) {
-            filter_lane_kernel<true, 4><<<args.batch, threads, bytes, stream>>>(args, limit, scale);
+            edges(filter_lane_kernel<true, 4, 8>, filter_lane_kernel<true, 4, 16>, filter_lane_kernel<true, 4, 0>);
         } else if (args.wiener) {
-            filter_lane_kernel<true, 2><<<args.batch, threads, bytes, stream>>>(args, limit, scale);
+            edges(filter_lane_kernel<true, 2, 8>, filter_lane_kernel<true, 2, 16>, filter_lane_kernel<true, 2, 0>);
         } else if (args.q == 4) {
-            filter_lane_kernel<false, 4><<<args.batch, threads, bytes, stream>>>(args, limit, scale);
+            edges(filter_lane_kernel<false, 4, 8>, filter_lane_kernel<false, 4, 16>, filter_lane_kernel<false, 4, 0>);
         } else {
-            filter_lane_kernel<false, 2><<<args.batch, threads, bytes, stream>>>(args, limit, scale);
+            edges(filter_lane_kernel<false, 2, 8>, filter_lane_kernel<false, 2, 16>, filter_lane_kernel<false, 2, 0>);
         }
         NSS_CUDA_CHECK_LAUNCH();
         return;
