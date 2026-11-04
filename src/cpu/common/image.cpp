@@ -7,6 +7,7 @@
 #include "cpu/common/image_ssd_row.hpp"
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <stdexcept>
 
@@ -65,6 +66,7 @@ int image_match(const float* const* guides, int frames, int nch, int width, int 
     // original row-major scan, so distances, ties, and ordinals are unchanged.
     // cfg.window <= 129 is validated above, so count fits the row buffer.
     const ImageSsdRowKernel ssd_row = image_ssd_row_kernel();
+    const ImageRowCandidatesKernel row_candidates = image_row_candidates_kernel();
     std::array<float, 129> dist_row{}, tmp_row{};
     for (int y = ylo; y <= yhi; ++y) {
         const int count = xhi - xlo + 1;
@@ -74,15 +76,27 @@ int image_match(const float* const* guides, int frames, int nch, int width, int 
                     c == 0 ? dist_row.data() : tmp_row.data());
             if (c > 0) for (int i = 0; i < count; ++i) dist_row[i] += tmp_row[i];
         }
-        for (int i = 0; i < count; ++i) {
+        const auto visit = [&](int i) {
             const int x = xlo + i;
-            if (x == x0 && y == y0) continue;
+            if (x == x0 && y == y0) return;
             const float dist = dist_row[i];
             if (!std::isfinite(dist)) throw std::runtime_error("nss: unrepresentable patch distance");
             // Retained distances are finite, so a strictly larger finite
             // distance is exactly what SortedTopK::add would reject.
-            if (spatial.full() && dist > spatial.worst_distance()) continue;
+            if (spatial.full() && dist > spatial.worst_distance()) return;
             spatial.add(Match{x, y, t0, dist, std::uint32_t(1 + y * width + x)});
+        };
+        if (!spatial.full()) {
+            for (int i = 0; i < count; ++i) visit(i);
+            continue;
+        }
+        // A full list's worst only falls: what is finite and strictly farther
+        // than it now is rejected at its turn too, so only the row's other
+        // candidates are visited, in the same order.
+        std::array<unsigned long long, 3> take{};
+        row_candidates(dist_row.data(), count, spatial.worst_distance(), take.data());
+        for (int w = 0; w < (count + 63) / 64; ++w) {
+            for (unsigned long long bits = take[w]; bits; bits &= bits - 1) visit(64 * w + std::countr_zero(bits));
         }
     }
 #endif

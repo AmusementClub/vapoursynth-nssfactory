@@ -17,4 +17,11 @@ using ImageSsdRowKernel = void (*)(const float* anchor, int sa, const float* can
                                    int count, float* out);
 // Resolves the runtime Highway target once; call sites keep the pointer.
 ImageSsdRowKernel image_ssd_row_kernel();
+
+// Bit i of mask[i / 64] (count <= 192) is set when dist[i] <= worst or dist[i]
+// is not finite (tested on its bits): the candidates a full top-K can still
+// take, and the ones the scan reports. The others are strictly farther than
+// `worst` and finite.
+using ImageRowCandidatesKernel = void (*)(const float* dist, int count, float worst, unsigned long long* mask);
+ImageRowCandidatesKernel image_row_candidates_kernel();
 } // namespace nss

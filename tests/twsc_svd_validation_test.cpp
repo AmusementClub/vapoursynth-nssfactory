@@ -36,8 +36,7 @@ int main(int argc, char** argv) {
     try {
         const auto caps = nss::backend_caps();
         for (int columns : {0, 7, 8, 9, 32, 33, 90}) {
-            const bool expected = caps.selected_target == HWY_AVX2 ||
-                (caps.selected_target == HWY_AVX3 && columns == 8);
+            const bool expected = caps.selected_target == HWY_AVX2 || caps.selected_target == HWY_AVX3;
             if (nss::twsc_svd_validation_lanes_available(columns) != expected)
                 throw std::runtime_error("unexpected TWSC validator target/column capability");
         }
