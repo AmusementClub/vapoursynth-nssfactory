@@ -164,6 +164,8 @@ int svd_mn(int m, int n, const float* A, int lda, float* U, int ldu, float* S, f
     }
     if (n == 8) {
         jacobi_svd_8(R, n, Ur, n, S, Vt, ldvt, Vj);
+    } else if (n > 8) {
+        jacobi_svd_n_hwy(n, R, n, Ur, n, S, Vt, ldvt);
     } else {
         jacobi_svd_n(n, R, n, Ur, n, S, Vt, ldvt, Vj);
     }

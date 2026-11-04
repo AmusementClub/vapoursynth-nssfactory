@@ -31,6 +31,15 @@ def make_source(
                 f"gray8 sample has {raw.size} bytes, expected {expected}: {gray8_path}"
             )
         base = raw.reshape(height, width).astype(np.float32) * np.float32(1.0 / 255.0)
+        crop = os.environ.get("NSS_PROFILE_CROP")
+        if crop:
+            # NSS_PROFILE_CROP=W,H: the centred W x H region of the sample.
+            cw, ch = (int(v) for v in crop.split(","))
+            if not (0 < cw <= width and 0 < ch <= height):
+                raise ValueError(f"crop {cw}x{ch} outside the {width}x{height} sample")
+            x0, y0 = (width - cw) // 2, (height - ch) // 2
+            base = np.ascontiguousarray(base[y0:y0 + ch, x0:x0 + cw])
+            width, height = cw, ch
     else:
         yy, xx = np.mgrid[0:height, 0:width]
         base = (

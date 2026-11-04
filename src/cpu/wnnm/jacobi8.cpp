@@ -373,6 +373,105 @@ static void ApplyHouseholderCols(float* col0, int ld, int ncols, const float* v,
     }
 }
 
+// One-sided Jacobi SVD of an n x n matrix (9 <= n <= kSvdMaxN) with the scalar
+// jacobi_svd_n's cyclic pair order, tolerance, rank floor, sweep limit,
+// normalization and descending sort; the column dot products and rotations
+// run along the column in vectors (columns zero-padded to a multiple of the
+// vector, which no rotation changes), and the squared norms follow each
+// rotation in closed form within a sweep (as JacobiSvd8). The order inside
+// the dot products and the norms differ from the scalar loops
+// (numeric-equivalent track).
+void JacobiSvdN(int n, const float* A, int lda, float* U, int ldu, float* S, float* Vt, int ldvt) {
+    const hn::ScalableTag<float> d;
+    const int N = static_cast<int>(hn::Lanes(d));
+    const int P = (n + N - 1) / N * N;
+    constexpr int kMaxP = kSvdMaxN + 64;  // the widest vector rounds n up by at most a vector
+    HWY_ALIGN float Up[kSvdMaxN * kMaxP];
+    HWY_ALIGN float Vp[kSvdMaxN * kMaxP];
+    for (int j = 0; j < n; ++j) {
+        for (int i = 0; i < P; ++i) {
+            Up[i + j * P] = i < n ? A[i + j * lda] : 0.f;
+            Vp[i + j * P] = i == j ? 1.f : 0.f;
+        }
+    }
+    const auto dot = [&](const float* a, const float* b) {
+        auto acc = hn::Zero(d);
+        for (int i = 0; i < P; i += N) acc = hn::MulAdd(hn::Load(d, a + i), hn::Load(d, b + i), acc);
+        return hn::ReduceSum(d, acc);
+    };
+    // Squared column norms, kept in closed form across a sweep's rotations
+    // and recomputed at its end (as JacobiSvd8 and the batched Jacobi do).
+    float nrm[kSvdMaxN];
+    float max_norm = 0.f;
+    for (int col = 0; col < n; ++col) {
+        nrm[col] = dot(Up + col * P, Up + col * P);
+        max_norm = std::max(max_norm, nrm[col]);
+    }
+    const float rank_floor = max_norm * detail::kSvdRankFloorSquared;
+    for (int sweep = 0; sweep < 32; ++sweep) {
+        bool rotated = false;
+        for (int p = 0; p < n - 1; ++p) {
+            float* const up = Up + p * P;
+            float* const vp = Vp + p * P;
+            for (int q = p + 1; q < n; ++q) {
+                float* const uq = Up + q * P;
+                const float app = nrm[p], aqq = nrm[q], apq = dot(up, uq);
+                if (app <= rank_floor || aqq <= rank_floor ||
+                    std::fabs(apq) <= detail::kJacobiCorrelationTolerance * std::sqrt(app * aqq)) {
+                    continue;
+                }
+                rotated = true;
+                const float t = detail::jacobi_tangent(app, aqq, apq);
+                const float cs = 1.f / std::sqrt(1.f + t * t);
+                const float sn = cs * t;
+                const auto c = hn::Set(d, cs), s = hn::Set(d, sn);
+                float* const vq = Vp + q * P;
+                for (int i = 0; i < P; i += N) {
+                    const auto a = hn::Load(d, up + i), b = hn::Load(d, uq + i);
+                    hn::Store(hn::NegMulAdd(s, b, hn::Mul(c, a)), d, up + i);
+                    hn::Store(hn::MulAdd(s, a, hn::Mul(c, b)), d, uq + i);
+                    const auto x = hn::Load(d, vp + i), y = hn::Load(d, vq + i);
+                    hn::Store(hn::NegMulAdd(s, y, hn::Mul(c, x)), d, vp + i);
+                    hn::Store(hn::MulAdd(s, x, hn::Mul(c, y)), d, vq + i);
+                }
+                const float c2 = cs * cs, s2 = sn * sn, cs2 = 2.f * cs * sn;
+                nrm[p] = std::max(c2 * app - cs2 * apq + s2 * aqq, 0.f);
+                nrm[q] = std::max(s2 * app + cs2 * apq + c2 * aqq, 0.f);
+            }
+        }
+        for (int col = 0; col < n; ++col) nrm[col] = dot(Up + col * P, Up + col * P);
+        if (!rotated) break;
+    }
+    for (int j = 0; j < n; ++j) {
+        float* const col = Up + j * P;
+        float nrm = dot(col, col);
+        nrm = nrm > rank_floor ? std::sqrt(nrm) : 0.f;
+        S[j] = nrm;
+        const auto scale = hn::Set(d, nrm > 1e-20f ? 1.f / nrm : 0.f);
+        for (int i = 0; i < P; i += N) hn::Store(hn::Mul(hn::Load(d, col + i), scale), d, col + i);
+    }
+    int order[kSvdMaxN];
+    for (int a = 0; a < n; ++a) order[a] = a;
+    for (int a = 0; a < n; ++a) {
+        int best = a;
+        for (int b = a + 1; b < n; ++b) {
+            if (S[order[b]] > S[order[best]]) best = b;
+        }
+        std::swap(order[a], order[best]);
+    }
+    float sorted[kSvdMaxN];
+    for (int a = 0; a < n; ++a) sorted[a] = S[order[a]];
+    for (int a = 0; a < n; ++a) {
+        S[a] = sorted[a];
+        const float* const u = Up + order[a] * P;
+        const float* const v = Vp + order[a] * P;
+        for (int i = 0; i < n; ++i) {
+            U[i + a * ldu] = u[i];
+            Vt[a + i * ldvt] = v[i];
+        }
+    }
+}
+
 int HouseholderQR(int m, int n, const float* A, int lda, float* Q, int ldq, float* R, int ldr, float* W, float* Vh,
                   float* beta, bool form_q) {
     if (m < n || n <= 0) {
@@ -795,6 +894,7 @@ HWY_AFTER_NAMESPACE();
 #if HWY_ONCE
 namespace nss {
 HWY_EXPORT(JacobiSvd8);
+HWY_EXPORT(JacobiSvdN);
 HWY_EXPORT(HouseholderQR);
 HWY_EXPORT(ApplyHouseholder);
 HWY_EXPORT(GemmNN);
@@ -802,6 +902,10 @@ HWY_EXPORT(GemmTN);
 
 void jacobi_svd_8(const float* A, int lda, float* U, int ldu, float* S, float* Vt, int ldvt, float* V) {
     HWY_DYNAMIC_DISPATCH(JacobiSvd8)(A, lda, U, ldu, S, Vt, ldvt, V);
+}
+
+void jacobi_svd_n_hwy(int n, const float* A, int lda, float* U, int ldu, float* S, float* Vt, int ldvt) {
+    HWY_DYNAMIC_DISPATCH(JacobiSvdN)(n, A, lda, U, ldu, S, Vt, ldvt);
 }
 
 int householder_qr_hwy(int m, int n, const float* A, int lda, float* Q, int ldq, float* R, int ldr, float* W, float* Vh,

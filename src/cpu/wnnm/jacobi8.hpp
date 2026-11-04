@@ -6,6 +6,9 @@
 namespace nss {
 
 void jacobi_svd_8(const float* A, int lda, float* U, int ldu, float* S, float* Vt, int ldvt, float* V);
+// jacobi_svd_n for 9 <= n <= kSvdMaxN with the column work in vectors (same
+// pair order and stopping rules; dot products in another order).
+void jacobi_svd_n_hwy(int n, const float* A, int lda, float* U, int ldu, float* S, float* Vt, int ldvt);
 int householder_qr_hwy(int m, int n, const float* A, int lda, float* Q, int ldq, float* R, int ldr, float* W, float* Vh,
                        float* beta, bool form_q = true);
 void apply_householder_hwy(float* matrix, int ld, int ncols, const float* v, int len, float beta);
