@@ -26,16 +26,15 @@ are far faster: [CUDA](cuda/README.md#speed), [Vulkan](vk/README.md#speed).
 | [PNLM](pnlm.md) | 47 | 5.7 | yes (`d`) | Light noise; edges and line art; large windows and several frames |
 | [NCSR](ncsr.md) | 34 | 1.6 | yes | Sparse-coding quality at moderate cost |
 | [MCWNNM](mcwnnm.md) (RGB) | 6.7 | 0.029 | yes | RGB color noise |
-| [TWSC](twsc.md) | 5.7 | ~0.05\* | yes | Real-world noise |
+| [TWSC](twsc.md) | 6.6 | 0.012 | yes | Real-world noise |
 | [DA3D](da3d.md) | 4.5 | — | no | Refining another filter's output |
-| [NLH](nlh.md) | 1.8 | — | yes | Real-world noise of unknown level |
+| [NLH](nlh.md) | 2.1 | — | yes | Real-world noise of unknown level |
 | [BM4D](bm4d.md) | 0.46 | — | yes | Still and slowly moving content |
 
 - NLM filters luma only at its defaults; PNLM filters every plane.
 - NLH's defaults are its paper's preset already; BM4D and DA3D have no
   heavier settings. DA3D is timed after its guide (`BM3D(final=1)`), which is
   not counted; its cost grows as the noise falls.
-- \* Estimated from the CUDA plugin's default-to-heavy ratio, not measured.
 
 [BM4D](bm4d.md) (temporal by construction) treats the clip as a volume of 3D
 cubes; it beats temporal BM3D on still and slowly moving content, and is the
