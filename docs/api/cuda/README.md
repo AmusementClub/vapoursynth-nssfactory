@@ -26,7 +26,7 @@ pixel count and differ between GPUs.
 | [MCWNNM](mcwnnm.md) (RGB) | 270 | 0.81 |
 | [NCSR](ncsr.md) | 660 | 46 |
 | [LSSC](lssc.md) | 370 | 250 |
-| [TWSC](twsc.md) | 86 | 0.71 |
+| [TWSC](twsc.md) | 109 | 0.92 |
 | [NLH](nlh.md) | 63 | — |
 | [BM4D](bm4d.md) | 28 | — |
 | [DA3D](da3d.md) | 60 | — |
