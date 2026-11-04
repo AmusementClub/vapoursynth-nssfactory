@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <random>
 #include <string_view>
 #include <vector>
@@ -666,6 +667,45 @@ int test_image_match_characterization() {
     return 0;
 }
 
+// A non-finite distance late in the scan (the list full, so the row passes the
+// candidate mask) still stops the search, as in the reference: an overflowing
+// sample (its square is above FLT_MAX) and a NaN one.
+int test_image_match_nonfinite() {
+    std::mt19937 rng(44);
+    const int width = 64, height = 48, block = 8;
+    for (const float bad : {3.0e19f, std::numeric_limits<float>::quiet_NaN()}) {
+        for (int nch : {1, 3}) {
+            std::vector<std::vector<float>> planes(nch, std::vector<float>(static_cast<std::size_t>(width) * height));
+            std::vector<const float*> guides(nch);
+            for (int c = 0; c < nch; ++c) {
+                fill_pattern(rng, planes[c].data(), planes[c].size(), kRand);
+                guides[c] = planes[c].data();
+            }
+            planes[nch - 1][static_cast<std::size_t>(44) * width + 60] = bad;
+            nss::ImageSearch cfg;
+            cfg.block = block;
+            cfg.window = 129;
+            cfg.group = 8;
+            std::array<nss::Match, 256> m{};
+            const auto throws = [&](auto&& search) {
+                try {
+                    search();
+                } catch (const std::runtime_error&) {
+                    return true;
+                }
+                return false;
+            };
+            const bool a = throws([&] { nss::image_match(guides.data(), 1, nch, width, height, 0, 4, 4, cfg, m.data()); });
+            const bool b = throws([&] { image_match_reference(guides.data(), 1, nch, width, height, 0, 4, 4, cfg, m.data()); });
+            if (!a || !b) {
+                std::fprintf(stderr, "image_match non-finite: scan %d reference %d (nch=%d)\n", a, b, nch);
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -687,6 +727,7 @@ int main(int argc, char** argv) {
     rc |= test_ncsr_rowmajor_bitwise();
     rc |= test_twsc_gemm_bitwise();
     rc |= test_image_match_characterization();
+    rc |= test_image_match_nonfinite();
     if (g_failures) return 1;
     if (rc == 0) std::puts("test_bitwise_kernels: all bitwise characterizations passed");
     return rc;
