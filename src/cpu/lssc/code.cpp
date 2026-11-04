@@ -143,8 +143,25 @@ static int LsscSelect(const float* alpha, const float* inv_norm, const float* av
     const auto score = [&](int a) {
         return hn::Mul(hn::Mul(hn::Abs(hn::LoadU(d, alpha + a)), hn::LoadU(d, inv_norm + a)), hn::LoadU(d, available + a));
     };
-    auto top = hn::Zero(d);
+    // Four running maxima (one chain was latency-bound): the maximum does not
+    // depend on the order unless a score is NaN, and then the single chain of
+    // before decides.
+    auto t0 = hn::Zero(d), t1 = hn::Zero(d), t2 = hn::Zero(d), t3 = hn::Zero(d);
+    auto nan = hn::MaskFalse(d);
     int a = 0;
+    for (; a + 4 * N <= atoms; a += 4 * N) {
+        const auto s0 = score(a), s1 = score(a + N), s2 = score(a + 2 * N), s3 = score(a + 3 * N);
+        nan = hn::Or(nan, hn::Or(hn::Or(hn::IsNaN(s0), hn::IsNaN(s1)), hn::Or(hn::IsNaN(s2), hn::IsNaN(s3))));
+        t0 = hn::Max(t0, s0);
+        t1 = hn::Max(t1, s1);
+        t2 = hn::Max(t2, s2);
+        t3 = hn::Max(t3, s3);
+    }
+    auto top = hn::Max(hn::Max(t0, t1), hn::Max(t2, t3));
+    if (!hn::AllFalse(d, nan)) {
+        top = hn::Zero(d);
+        for (a = 0; a + 4 * N <= atoms; a += N) top = hn::Max(top, score(a));
+    }
     for (; a + N <= atoms; a += N) top = hn::Max(top, score(a));
     float best_value = hn::ReduceMax(d, top);
     for (int t = a; t < atoms; ++t) best_value = std::max(best_value, std::fabs(alpha[t]) * inv_norm[t] * available[t]);
@@ -159,9 +176,20 @@ static int LsscSelect(const float* alpha, const float* inv_norm, const float* av
     return -1;
 }
 
+// Lanes l < Half of the butterfly below take lane l + Half, then the next
+// level: sizes fixed at compile time, so the levels unroll.
+template <int Half, class T>
+static inline void LsscFold(T* lane) {
+    for (int l = 0; l < Half; ++l) lane[l] = lane[l] + lane[l + Half];
+    if constexpr (Half > 1) LsscFold<Half / 2>(lane);
+}
+
 // The device's warp sum: 32 lanes, lane l taking terms l, l + 32, ... in
 // order from 0, then a butterfly over lane distances 16, 8, 4, 2, 1. Lane 0
 // of the butterfly is the halving tree below (lane l pairs with l + half).
+// With count <= 16 the upper lanes are +0 (no lane is -0: a lane starts at +0
+// and its terms are added to it), so the levels that only add them change
+// nothing and are skipped.
 template <class T, class Term>
 static T LsscLaneSum(int count, const Term& term) {
     T lane[32];
@@ -170,8 +198,12 @@ static T LsscLaneSum(int count, const Term& term) {
         for (int t = l; t < count; t += 32) acc = term(acc, t);
         lane[l] = acc;
     }
-    for (int half = 16; half > 0; half >>= 1)
-        for (int l = 0; l < half; ++l) lane[l] = lane[l] + lane[l + half];
+    if (count <= 1) return lane[0];
+    if (count <= 2) LsscFold<1>(lane);
+    else if (count <= 4) LsscFold<2>(lane);
+    else if (count <= 8) LsscFold<4>(lane);
+    else if (count <= 16) LsscFold<8>(lane);
+    else LsscFold<16>(lane);
     return lane[0];
 }
 
@@ -254,10 +286,25 @@ static int LsscOmpCodeFrom(const float* patch, const LsscOmpDictionary* dict, fl
     }
     if (k > 0) LsscBackSolve(chol, inv, cap, z, k, x);
     LsscCombine(rec, nullptr, m, k, [&](int t) { return cols[t]; }, x);
+    // Every value finite and |value| <= 8, and the mean added back, a vector
+    // at a time.
     bool ok = true;
-    for (int r = 0; r < m; ++r) {
-        if (!std::isfinite(rec[r]) || std::fabs(rec[r]) > 8.f) ok = false;
-        rec[r] += mean;
+    {
+        const hn::ScalableTag<float> d;
+        const int N = static_cast<int>(hn::Lanes(d));
+        const auto vmean = hn::Set(d, mean), limit = hn::Set(d, 8.f);
+        auto good = hn::FirstN(d, hn::Lanes(d));
+        int r = 0;
+        for (; r + N <= m; r += N) {
+            const auto v = hn::LoadU(d, rec + r);
+            good = hn::And(good, hn::And(hn::IsFinite(v), hn::Le(hn::Abs(v), limit)));
+            hn::StoreU(hn::Add(v, vmean), d, rec + r);
+        }
+        ok = hn::AllTrue(d, good);
+        for (; r < m; ++r) {
+            if (!std::isfinite(rec[r]) || std::fabs(rec[r]) > 8.f) ok = false;
+            rec[r] += mean;
+        }
     }
     if (!ok) std::memcpy(rec, patch, static_cast<std::size_t>(m) * sizeof(float));
     return k;

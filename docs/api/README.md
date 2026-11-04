@@ -22,7 +22,7 @@ are far faster: [CUDA](cuda/README.md#speed), [Vulkan](vk/README.md#speed).
 | [BM3D](bm3d.md) | 148 | 1.3 | yes | General use; the fastest |
 | [WNNM](wnnm.md) | 81 | 0.95 | yes | Texture and edge retention |
 | [NLM](nlm.md) | 74 | 12.8 | yes (`d`) | Light noise |
-| [LSSC](lssc.md) | 66 | 40 | no | Structured noise, film grain, text |
+| [LSSC](lssc.md) | 68 | 42 | no | Structured noise, film grain, text |
 | [PNLM](pnlm.md) | 47 | 5.7 | yes (`d`) | Light noise; edges and line art; large windows and several frames |
 | [NCSR](ncsr.md) | 34 | 1.6 | yes | Sparse-coding quality at moderate cost |
 | [MCWNNM](mcwnnm.md) (RGB) | 6.7 | 0.029 | yes | RGB color noise |
