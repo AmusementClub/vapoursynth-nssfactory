@@ -77,6 +77,131 @@ __device__ __forceinline__ void ordered_dots(int n, Real* sum, Common common, Ea
     }
 }
 
+// The Gram matrix of the smaller side of the group (kd x kd, both triangles)
+// by 4 x 4 tiles of its lower triangle, one a thread. An entry is the sum
+// ordered_dots takes (in index order, the row's element first in each
+// product), so the bits are those of a run of four, from half the loads: a
+// tile reads its four rows and four columns once for 16 products. Tall: the
+// rows are patches (yc's columns, contiguous), wide: pixels (a patch's
+// neighbouring elements); with m a multiple of 4 the loads are float4. The
+// group arrays are beyond L1 beside the shared memory, so the loads are L2
+// traffic: 1080p YUV420 at block_step 4 / group 90 / iters 4 1.22x, RGB
+// 1.06x (RTX 5080).
+template <class Real>
+__device__ __forceinline__ void gram_tiles(const float* yc, int m, int n, int kd, bool tall, Real* gram) {
+    const int sides = (kd + 3) / 4;
+    const int tiles = sides * (sides + 1) / 2;
+    const bool vector = m % 4 == 0;
+    for (int t = threadIdx.x; t < tiles; t += blockDim.x) {
+        int tp = static_cast<int>((sqrtf(8.f * t + 1.f) - 1.f) * 0.5f);
+        while (tp * (tp + 1) / 2 > t) --tp;
+        while ((tp + 1) * (tp + 2) / 2 <= t) ++tp;
+        const int p0 = 4 * tp, q0 = 4 * (t - tp * (tp + 1) / 2);
+        Real acc[4][4];
+#pragma unroll
+        for (int s = 0; s < 4; ++s) {
+#pragma unroll
+            for (int u = 0; u < 4; ++u) acc[s][u] = 0;
+        }
+        const auto step = [&](const float (&x)[4], const float (&y)[4]) {
+#pragma unroll
+            for (int s = 0; s < 4; ++s) {
+#pragma unroll
+                for (int u = 0; u < 4; ++u) acc[s][u] += static_cast<Real>(x[s]) * static_cast<Real>(y[u]);
+            }
+        };
+        if (tall) {
+            const float* row[4];
+            const float* col[4];
+#pragma unroll
+            for (int s = 0; s < 4; ++s) {
+                row[s] = yc + min(p0 + s, kd - 1) * m;
+                col[s] = yc + min(q0 + s, kd - 1) * m;
+            }
+            int i = 0;
+            if (vector) {
+                for (; i < m; i += 4) {
+                    float4 xr[4], yr[4];
+#pragma unroll
+                    for (int s = 0; s < 4; ++s) {
+                        xr[s] = *reinterpret_cast<const float4*>(row[s] + i);
+                        yr[s] = *reinterpret_cast<const float4*>(col[s] + i);
+                    }
+                    step({xr[0].x, xr[1].x, xr[2].x, xr[3].x}, {yr[0].x, yr[1].x, yr[2].x, yr[3].x});
+                    step({xr[0].y, xr[1].y, xr[2].y, xr[3].y}, {yr[0].y, yr[1].y, yr[2].y, yr[3].y});
+                    step({xr[0].z, xr[1].z, xr[2].z, xr[3].z}, {yr[0].z, yr[1].z, yr[2].z, yr[3].z});
+                    step({xr[0].w, xr[1].w, xr[2].w, xr[3].w}, {yr[0].w, yr[1].w, yr[2].w, yr[3].w});
+                }
+            }
+            for (; i < m; ++i) step({row[0][i], row[1][i], row[2][i], row[3][i]}, {col[0][i], col[1][i], col[2][i], col[3][i]});
+        } else if (vector) {
+            // kd = m: every tile is whole.
+            for (int j = 0; j < n; ++j) {
+                const float4 x = *reinterpret_cast<const float4*>(yc + j * m + p0);
+                const float4 y = *reinterpret_cast<const float4*>(yc + j * m + q0);
+                step({x.x, x.y, x.z, x.w}, {y.x, y.y, y.z, y.w});
+            }
+        } else {
+            for (int j = 0; j < n; ++j) {
+                const float* at = yc + j * m;
+                step({at[min(p0, kd - 1)], at[min(p0 + 1, kd - 1)], at[min(p0 + 2, kd - 1)], at[min(p0 + 3, kd - 1)]},
+                     {at[min(q0, kd - 1)], at[min(q0 + 1, kd - 1)], at[min(q0 + 2, kd - 1)], at[min(q0 + 3, kd - 1)]});
+            }
+        }
+#pragma unroll
+        for (int s = 0; s < 4; ++s) {
+#pragma unroll
+            for (int u = 0; u < 4; ++u) {
+                const int p = p0 + s, q = q0 + u;
+                if (p < kd && q <= p) {
+                    gram[p * kd + q] = acc[s][u];
+                    gram[q * kd + p] = acc[s][u];
+                }
+            }
+        }
+    }
+}
+
+// out(j, i) = sum over k < depth of left(k, j) right(k, i), for j < rows and
+// i < cols, by 4 x 4 tiles of out, one a thread: each sum in k order with the
+// left factor first, as an ordered_dots run (the same bits), from a quarter
+// of the loads per product. right(k, i0, v) gives the four of columns i0 to
+// i0 + 3 (clamped to cols - 1), store(j, i, sum) takes a result. The
+// reconstruction: the gram_tiles shape 1.056x more in YUV420 (the chroma
+// pair's tall groups read yc), 1.005x in RGB.
+template <class Real, class Left, class Right, class Store>
+__device__ __forceinline__ void tiled_products(int rows, int cols, int depth, Left left, Right right, Store store) {
+    const int across = (cols + 3) / 4;
+    const int tiles = (rows + 3) / 4 * across;
+    for (int t = threadIdx.x; t < tiles; t += blockDim.x) {
+        const int j0 = 4 * (t / across), i0 = 4 * (t % across);
+        Real acc[4][4];
+#pragma unroll
+        for (int s = 0; s < 4; ++s) {
+#pragma unroll
+            for (int u = 0; u < 4; ++u) acc[s][u] = 0;
+        }
+        for (int k = 0; k < depth; ++k) {
+            Real l[4], r[4];
+#pragma unroll
+            for (int s = 0; s < 4; ++s) l[s] = left(k, min(j0 + s, rows - 1));
+            right(k, i0, r);
+#pragma unroll
+            for (int s = 0; s < 4; ++s) {
+#pragma unroll
+                for (int u = 0; u < 4; ++u) acc[s][u] += l[s] * r[u];
+            }
+        }
+#pragma unroll
+        for (int s = 0; s < 4; ++s) {
+#pragma unroll
+            for (int u = 0; u < 4; ++u) {
+                if (j0 + s < rows && i0 + u < cols) store(j0 + s, i0 + u, acc[s][u]);
+            }
+        }
+    }
+}
+
 // The elements e = outer * inners + inner of an outers x inners array from
 // e = threadIdx.x by steps of blockDim.x: body(outer, inner). The pair is
 // advanced by counters instead of a division per element.
@@ -280,21 +405,7 @@ __global__ void __launch_bounds__(kThreads, 768 / kThreads) twsc_block_kernel(Tw
     __syncthreads();
 
     // Gram matrix of the smaller side, then its eigendecomposition.
-    for_runs(kd, kd, [=](int p, int q, int count) {
-        if (q > p) return;
-        Real sum[kWays];
-        if (tall) {
-            ordered_dots<Real>(m, sum, [=](int i) { return yc[p * m + i]; },
-                               [=](int w, int i) { return yc[min(q + w, p) * m + i]; });
-        } else {
-            ordered_dots<Real>(n, sum, [=](int j) { return yc[j * m + p]; },
-                               [=](int w, int j) { return yc[j * m + min(q + w, p)]; });
-        }
-        for (int w = 0; w < count && q + w <= p; ++w) {
-            gram[p * kd + q + w] = sum[w];
-            gram[(q + w) * kd + p] = sum[w];
-        }
-    });
+    gram_tiles<Real>(yc, m, n, kd, tall, gram);
     __syncthreads();
     group_eigen<Real, kDc, kThreads>(gram, reflectors, kd, cap, scratch, values, data);
 
@@ -513,32 +624,55 @@ __global__ void __launch_bounds__(kThreads, 768 / kThreads) twsc_block_kernel(Tw
     if (uniform) {
         for_elements(r, n, [&](int k, int j) { coef[k * n + j] *= tall ? scale[k] : spectrum[k]; });
         __syncthreads();
-        for_runs(tall ? n : 0, n, [=](int j, int l, int count) {
-            Real sum[kWays];
-            ordered_dots<Real>(r, sum, [=](int k) { return coef[k * n + j]; },
-                               [=](int w, int k) { return gram[order[k] * kd + min(l + w, n - 1)]; });
-            for (int w = 0; w < count; ++w) mix[(l + w) * n + j] = sum[w];
-        });
+        if (tall) {
+            tiled_products<Real>(
+                n, n, r, [=](int k, int j) { return coef[k * n + j]; },
+                [=](int k, int l0, Real (&v)[4]) {
+                    const Real* row = gram + order[k] * kd;
+#pragma unroll
+                    for (int u = 0; u < 4; ++u) v[u] = row[min(l0 + u, n - 1)];
+                },
+                [=](int j, int l, Real sum) { mix[l * n + j] = sum; });
+        }
         __syncthreads();
     }
-    for_runs(n, m, [=](int j, int i, int count) {
-        Real sum[kWays];
-        if (!uniform) {
-            ordered_dots<Real>(r, sum, [=](int k) { return coef[k * n + j]; },
-                               [=](int w, int k) { return atoms[static_cast<long long>(k) * m + min(i + w, m - 1)]; });
-        } else if (tall) {
-            ordered_dots<Real>(n, sum, [=](int l) { return mix[l * n + j]; },
-                               [=](int w, int l) { return static_cast<Real>(yc[l * m + min(i + w, m - 1)]); });
-        } else {
-            ordered_dots<Real>(r, sum, [=](int k) { return coef[k * n + j]; },
-                               [=](int w, int k) { return gram[order[k] * kd + min(i + w, m - 1)]; });
-        }
-        for (int w = 0; w < count; ++w) {
-            const int at = i + w;
-            a.values[(at / area) * channel_values + (static_cast<long long>(g) * a.group + j) * area + at % area] =
-                static_cast<float>(sum[w] + mean[at]);
-        }
-    });
+    const auto store = [=](int j, int at, Real sum) {
+        a.values[(at / area) * channel_values + (static_cast<long long>(g) * a.group + j) * area + at % area] =
+            static_cast<float>(sum + mean[at]);
+    };
+    if (!uniform) {
+        tiled_products<Real>(
+            n, m, r, [=](int k, int j) { return coef[k * n + j]; },
+            [=](int k, int i0, Real (&v)[4]) {
+                const Real* row = atoms + static_cast<long long>(k) * m;
+#pragma unroll
+                for (int u = 0; u < 4; ++u) v[u] = row[min(i0 + u, m - 1)];
+            },
+            store);
+    } else if (tall) {
+        tiled_products<Real>(
+            n, m, n, [=](int l, int j) { return mix[l * n + j]; },
+            [=](int l, int i0, Real (&v)[4]) {
+                const float* row = yc + l * m;
+                if (m % 4 == 0) {
+                    const float4 q = *reinterpret_cast<const float4*>(row + i0);
+                    v[0] = q.x, v[1] = q.y, v[2] = q.z, v[3] = q.w;
+                } else {
+#pragma unroll
+                    for (int u = 0; u < 4; ++u) v[u] = static_cast<Real>(row[min(i0 + u, m - 1)]);
+                }
+            },
+            store);
+    } else {
+        tiled_products<Real>(
+            n, m, r, [=](int k, int j) { return coef[k * n + j]; },
+            [=](int k, int i0, Real (&v)[4]) {
+                const Real* row = gram + order[k] * kd;
+#pragma unroll
+                for (int u = 0; u < 4; ++u) v[u] = row[min(i0 + u, m - 1)];
+            },
+            store);
+    }
     for (int j = lane; j < a.group; j += lanes) {
         a.patches[static_cast<long long>(g) * a.group + j] =
             j < n ? AggregatePatch{match[j].x, match[j].y, match[j].t,
