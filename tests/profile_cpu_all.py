@@ -114,6 +114,14 @@ def make_filter(core: vs.Core, algorithm: str, source: vs.VideoNode) -> vs.Video
         )
     if algorithm == "twsc":
         block_size = int(os.environ.get("NSS_PROFILE_TWSC_BLOCK", "8"))
+        # NSS_PROFILE_TWSC_WINDOW=W takes search_window=W (the filter's default
+        # is 60) in place of bm_range.
+        window = os.environ.get("NSS_PROFILE_TWSC_WINDOW")
+        search = (
+            dict(search_window=int(window))
+            if window
+            else dict(bm_range=int(os.environ.get("NSS_PROFILE_TWSC_RANGE", "7")))
+        )
         return core.nss.TWSC(
             source,
             sigma=3,
@@ -121,8 +129,8 @@ def make_filter(core: vs.Core, algorithm: str, source: vs.VideoNode) -> vs.Video
             block_size=block_size,
             block_step=int(os.environ.get("NSS_PROFILE_TWSC_STEP", str(min(block_size, 8)))),
             group_size=int(os.environ.get("NSS_PROFILE_TWSC_GROUP", "8")),
-            bm_range=int(os.environ.get("NSS_PROFILE_TWSC_RANGE", "7")),
             iters=int(os.environ.get("NSS_PROFILE_TWSC_ITERS", "2")),
+            **search,
         )
     if algorithm == "ncsr":
         block_size = int(os.environ.get("NSS_PROFILE_NCSR_BLOCK", "8"))
