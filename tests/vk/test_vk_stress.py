@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-only
-"""D30 create/render/free soak for the three r3 Vulkan filters.
+"""D30 create/render/free soak for the Vulkan filters (the three of r3 and WNNM).
 
 CPU frames run even on pre-4.3 cores. GPU frames are checked separately on
 supported cores, including residency, downloaded pixels and repeat hashes.
@@ -103,6 +103,8 @@ def main(argv=None):
         ("BM3D legacy", lambda clip: core.nss_vk.BM3D(clip, sigma=8, radius=1,
                                                    temporal_mode="legacy")),
         ("PNLM", lambda clip: core.nss_vk.PNLM(clip, sigma=6)),
+        ("WNNM", lambda clip: core.nss_vk.WNNM(clip, sigma=8, group_size=32)),
+        ("WNNM rolling", lambda clip: core.nss_vk.WNNM(clip, sigma=8, radius=1, temporal_mode="rolling")),
     )
     baselines, lifetimes = {}, 0
     for iteration in range(args.iterations):

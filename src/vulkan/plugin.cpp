@@ -24,6 +24,7 @@ namespace nss_vk {
 void register_nlm(VSPlugin* plugin, const VSPLUGINAPI* vspapi, bool gpu_frames);
 void register_bm3d(VSPlugin* plugin, const VSPLUGINAPI* vspapi, bool gpu_frames);
 void register_pnlm(VSPlugin* plugin, const VSPLUGINAPI* vspapi, bool gpu_frames);
+void register_wnnm(VSPlugin* plugin, const VSPLUGINAPI* vspapi, bool gpu_frames);
 }  // namespace nss_vk
 
 namespace {
@@ -114,4 +115,5 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin* plugin, const VSPLUGINAPI
     nss_vk::register_nlm(plugin, vspapi, gpu_frames);
     nss_vk::register_bm3d(plugin, vspapi, gpu_frames);
     nss_vk::register_pnlm(plugin, vspapi, gpu_frames);
+    nss_vk::register_wnnm(plugin, vspapi, gpu_frames);
 }

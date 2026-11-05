@@ -72,6 +72,14 @@ if(TARGET nss_cpu)
 endif()
 
 # Queue-layout throughput (D28), run by hand on a device; not a test.
+if(TARGET nss_cpu)
+  add_executable(test_vk_wnnm test_vk_wnnm.cpp)
+  target_link_libraries(test_vk_wnnm PRIVATE nss_vk_core nss_cpu)
+  target_include_directories(test_vk_wnnm PRIVATE "${PROJECT_SOURCE_DIR}/include" "${PROJECT_SOURCE_DIR}/src")
+  add_test(NAME test_vk_wnnm COMMAND test_vk_wnnm)
+  set_tests_properties(test_vk_wnnm PROPERTIES LABELS vk SKIP_RETURN_CODE 77)
+endif()
+
 add_executable(bench_vk_queues bench_vk_queues.cpp)
 target_link_libraries(bench_vk_queues PRIVATE nss_vk_core)
 
@@ -87,7 +95,7 @@ add_test(NAME test_vk_backend
 # D21 parity against the CPU golden. Filters still pending in
 # docs/vulkan-plan.md are expected to be missing; each phase removes the
 # filters it delivers. VAggregate is the CPU's alone (D21).
-set(NSS_VK_PENDING_FILTERS "WNNM,MCWNNM,NCSR,NLH,TWSC,LSSC,DA3D,BM4D")
+set(NSS_VK_PENDING_FILTERS "MCWNNM,NCSR,NLH,TWSC,LSSC,DA3D,BM4D")
 add_test(NAME test_vk_plugin_interface
          COMMAND ${Python3_EXECUTABLE} "${PROJECT_SOURCE_DIR}/tests/test_plugin_interface.py"
                  --plugin "${NSS_VK_PLUGIN}" --namespace nss_vk
@@ -131,7 +139,7 @@ if(NSS_VK_GPU_FRAMES_PYTHON)
 endif()
 # Filters against the CPU plugin (needs the CPU tree).
 if(TARGET nss)
-  foreach(filter nlm bm3d pnlm)
+  foreach(filter nlm bm3d pnlm wnnm)
     add_test(NAME test_vk_${filter}_live
              COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_vk_${filter}_live.py"
                      --cpu "$<TARGET_FILE:nss>" --vk "${NSS_VK_PLUGIN}")
@@ -149,5 +157,12 @@ if(TARGET nss)
            COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_vk_pnlm_live.py"
                    --cpu "$<TARGET_FILE:nss>" --vk "${NSS_VK_PLUGIN}" --quick)
   set_tests_properties(test_vk_pnlm_live_emulated PROPERTIES LABELS vk SKIP_RETURN_CODE 77
+                       ENVIRONMENT "NSS_VK_FORCE_EMULATED_WARP=1")
+  # WNNM's emulated warp-layer kernels on a native device (and their bits
+  # against the native layer's).
+  add_test(NAME test_vk_wnnm_live_emulated
+           COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_vk_wnnm_live.py"
+                   --cpu "$<TARGET_FILE:nss>" --vk "${NSS_VK_PLUGIN}" --quick)
+  set_tests_properties(test_vk_wnnm_live_emulated PROPERTIES LABELS vk SKIP_RETURN_CODE 77
                        ENVIRONMENT "NSS_VK_FORCE_EMULATED_WARP=1")
 endif()
