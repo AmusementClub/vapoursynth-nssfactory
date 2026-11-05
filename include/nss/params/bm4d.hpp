@@ -34,7 +34,9 @@
 // then back. Every voxel of every cube adds bm4d_fixed(wv v) to its
 // numerator and bm4d_fixed(wv) to its denominator, wv = weight x Kaiser
 // window (beta kBm4dKaiserBeta), v the estimate: 64-bit fixed-point sums,
-// exact in any order (so a GPU's atomics give the same bits). The estimate is
+// exact in any order (a GPU's atomics may add them in any order; nss_cuda
+// takes the denominators from the cubes' weights instead, see
+// src/cuda/bm4d/kernels.cu, close to these within about 1e-7). The estimate is
 // bm4d_ratio(numerator, denominator). (The paper's 1 / sigma^2 factor of the
 // weights cancels in the ratio and is left out.)
 // Distances are sums in a fixed order (along z, then y, then x, each in
