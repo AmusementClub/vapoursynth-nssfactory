@@ -32,6 +32,9 @@ constexpr int kCubeStride = (kMaxCube3 + 15) & ~15;  // floats a cube in a group
 constexpr int kWindowPad = 64;  // floats past the window row B (RefSums' loads)
 constexpr int kSlabBatch = 8;   // offsets a Slabs pass
 constexpr int kBandRows = 8;    // rows of references a band
+constexpr int kMaxStep = 3;     // the stages' reference steps at most
+constexpr int kBandSlabRows = (kBandRows - 1) * kMaxStep + kMaxCube;  // slab rows a band reads
+static_assert(kBm4dHard.step <= kMaxStep && kBm4dWiener.step <= kMaxStep, "band slab rows");
 
 inline std::size_t align16(std::size_t n) { return (n + 15) & ~std::size_t{15}; }
 
@@ -131,10 +134,13 @@ struct Refs {
 };
 
 // A[y][x] = sum over k < L (in order) of (V[z0 + k][y][x] - V[z0 + k + dz][y + dy][x + dx])^2
-// for the rows and columns where both exist.
+// for the rows and columns where both exist (the slab of an offset).
+// One offset's slab, a vector at a time from x_lo and the rest one at a time
+// (on targets whose MulAdd is not fused the two round differently, so the
+// split stays the model's); rows from a_row0.
 template <int L>
 static HWY_NOINLINE void Slab(const float* V, const Volume& vol, int z0, int dz, int dy, int dx, int y_lo, int y_hi,
-                              int x_lo, int x_hi, float* A) {
+                              int x_lo, int x_hi, float* A, int a_row0) {
     const hn::ScalableTag<float> d;
     const int N = static_cast<int>(hn::Lanes(d));
     for (int y = y_lo; y < y_hi; ++y) {
@@ -144,7 +150,7 @@ static HWY_NOINLINE void Slab(const float* V, const Volume& vol, int z0, int dz,
             p[k] = V + vol.at(z0 + k, y, 0);
             q[k] = V + vol.at(z0 + k + dz, y + dy, 0) + dx;
         }
-        float* a = A + static_cast<std::size_t>(y) * vol.w;
+        float* a = A + static_cast<std::size_t>(y - a_row0) * vol.w;
         int x = x_lo;
         for (; x + N <= x_hi; x += N) {
             auto acc = hn::Zero(d);
@@ -165,15 +171,16 @@ static HWY_NOINLINE void Slab(const float* V, const Volume& vol, int z0, int dz,
     }
 }
 
-// Slab for the D offsets dx0, dx0 + 1, ... at once (the reference frames'
-// loads shared): offset j's A at A + j h w. A run of columns ends with a
-// vector over its last N columns (columns done twice get the same values).
+// The slabs of the D offsets dx0, dx0 + 1, ... at once (the reference frames'
+// loads shared): offset j's rows from a_row0 at A + j ps. A run of columns
+// ends with a vector over its last N columns (columns done twice get the same
+// values). Targets with a fused MulAdd only: there every column's sum is the
+// fused chain whichever path takes it (elsewhere Slab keeps master's split).
 template <int L, int D>
 static HWY_NOINLINE void Slabs(const float* V, const Volume& vol, int z0, int dz, int dy, int dx0, int y_lo, int y_hi,
-                               float* A) {
+                               float* A, int a_row0, std::size_t ps) {
     const hn::ScalableTag<float> d;
     const int N = static_cast<int>(hn::Lanes(d));
-    const std::size_t hw = static_cast<std::size_t>(vol.h) * vol.w;
     // the columns every offset has, a vector at a time for all of them; each
     // offset's other columns on its own
     const int c_lo = std::max(0, -dx0), c_hi = std::min(vol.w, vol.w - (dx0 + D - 1));
@@ -185,7 +192,7 @@ static HWY_NOINLINE void Slabs(const float* V, const Volume& vol, int z0, int dz
             p[k] = V + vol.at(z0 + k, y, 0);
             q[k] = V + vol.at(z0 + k + dz, y + dy, 0) + dx0;
         }
-        float* a = A + static_cast<std::size_t>(y) * vol.w;
+        float* a = A + static_cast<std::size_t>(y - a_row0) * vol.w;
         auto all = [&](int x) {
             hn::Vec<decltype(d)> acc[D];
             for (int j = 0; j < D; ++j) acc[j] = hn::Zero(d);
@@ -196,12 +203,15 @@ static HWY_NOINLINE void Slabs(const float* V, const Volume& vol, int z0, int dz
                     acc[j] = hn::MulAdd(e, e, acc[j]);
                 }
             }
-            for (int j = 0; j < D; ++j) hn::StoreU(acc[j], d, a + j * hw + x);
+            for (int j = 0; j < D; ++j) hn::StoreU(acc[j], d, a + j * ps + x);
         };
+        int v_hi = c_lo;  // the common run done
         if (common) {
-            int x = c_lo;
-            for (; x + N <= c_hi; x += N) all(x);
-            if (x < c_hi) all(c_hi - N);
+            for (; v_hi + N <= c_hi; v_hi += N) all(v_hi);
+            if (v_hi < c_hi) {
+                all(c_hi - N);
+                v_hi = c_hi;
+            }
         }
         for (int j = 0; j < D; ++j) {
             const int lo = std::max(0, -(dx0 + j)), hi = std::min(vol.w, vol.w - (dx0 + j));
@@ -211,7 +221,7 @@ static HWY_NOINLINE void Slabs(const float* V, const Volume& vol, int z0, int dz
                     const auto e = hn::Sub(hn::LoadU(d, p[k] + x), hn::LoadU(d, q[k] + x + j));
                     acc = hn::MulAdd(e, e, acc);
                 }
-                hn::StoreU(acc, d, a + j * hw + x);
+                hn::StoreU(acc, d, a + j * ps + x);
             };
             auto single = [&](int xx) {
                 float acc = 0.f;
@@ -219,7 +229,7 @@ static HWY_NOINLINE void Slabs(const float* V, const Volume& vol, int z0, int dz
                     const float e = p[k][xx] - q[k][xx + j];
                     acc = std::fma(e, e, acc);
                 }
-                a[j * hw + xx] = acc;
+                a[j * ps + xx] = acc;
             };
             // [lo, hi) less the common run
             auto run = [&](int s0, int s1) {
@@ -234,7 +244,7 @@ static HWY_NOINLINE void Slabs(const float* V, const Volume& vol, int z0, int dz
             };
             if (common) {
                 run(lo, std::min(c_lo, hi));
-                run(std::max(c_hi, lo), hi);
+                run(std::max(v_hi, lo), hi);
             } else {
                 run(lo, hi);
             }
@@ -272,7 +282,7 @@ static HWY_NOINLINE void Window(const float* A, int w, int y0, int x_lo, int x_h
 // at 3 ix (step 3, all but perhaps the last) a vector at a time, by
 // deinterleaved loads (B has kWindowPad floats after the row).
 template <int L>
-static HWY_NOINLINE void RefSums(const float* B, int w, int nx, int step, int lo, int hi, float* Cr) {
+static HWY_NOINLINE void RefSums(const float* B, int w, int step, int lo, int hi, float* Cr) {
     const hn::ScalableTag<float> d;
     const int N = static_cast<int>(hn::Lanes(d));
     static_assert(L <= 6, "two deinterleaved loads");
@@ -301,7 +311,6 @@ static HWY_NOINLINE void RefSums(const float* B, int w, int nx, int step, int lo
         for (int i = 1; i < L; ++i) acc = acc + B[x0 + i];
         Cr[ix] = acc;
     }
-    (void)nx;
 }
 
 template <int L>
@@ -324,7 +333,7 @@ static HWY_NOINLINE void Match(const float* V, const Volume& vol, const Refs& re
     // neighbouring dx at a time. Each reference still sees its offsets in
     // (dz, dy, dx) order.
     const int S = kBm4dSearch;
-    const std::size_t hw = static_cast<std::size_t>(vol.h) * vol.w;
+    const std::size_t ps = static_cast<std::size_t>(kBandSlabRows) * vol.w;  // a band's slab plane
     for (int iz = 0; iz < refs.nz; ++iz) {
         const int z0 = position(vol.t, L, refs.step, iz);
         for (int band = 0; band < refs.ny; band += kBandRows) {
@@ -338,33 +347,36 @@ static HWY_NOINLINE void Match(const float* V, const Volume& vol, const Refs& re
                     if (y_hi - y_lo < L) continue;
                     for (int dx0 = -S; dx0 <= S; dx0 += kSlabBatch) {
                         const int D = std::min(kSlabBatch, S - dx0 + 1);
-                        switch (D) {
-                            case 8: Slabs<L, 8>(V, vol, z0, dz, dy, dx0, y_lo, y_hi, A); break;
-                            case 7: Slabs<L, 7>(V, vol, z0, dz, dy, dx0, y_lo, y_hi, A); break;
-                            case 6: Slabs<L, 6>(V, vol, z0, dz, dy, dx0, y_lo, y_hi, A); break;
-                            case 5: Slabs<L, 5>(V, vol, z0, dz, dy, dx0, y_lo, y_hi, A); break;
-                            case 4: Slabs<L, 4>(V, vol, z0, dz, dy, dx0, y_lo, y_hi, A); break;
-                            case 3: Slabs<L, 3>(V, vol, z0, dz, dy, dx0, y_lo, y_hi, A); break;
-                            case 2: Slabs<L, 2>(V, vol, z0, dz, dy, dx0, y_lo, y_hi, A); break;
-                            default: Slabs<L, 1>(V, vol, z0, dz, dy, dx0, y_lo, y_hi, A); break;
+                        static_assert(2 * kSlabBatch - 1 == 2 * kBm4dSearch + 1, "batches of 8 and 7 offsets");
+#if HWY_NATIVE_FMA
+                        if (D == kSlabBatch)
+                            Slabs<L, kSlabBatch>(V, vol, z0, dz, dy, dx0, y_lo, y_hi, A, row_lo, ps);
+                        else
+                            Slabs<L, kSlabBatch - 1>(V, vol, z0, dz, dy, dx0, y_lo, y_hi, A, row_lo, ps);
+#else
+                        for (int j = 0; j < D; ++j) {
+                            const int dx = dx0 + j;
+                            Slab<L>(V, vol, z0, dz, dy, dx, y_lo, y_hi, std::max(0, -dx), std::min(vol.w, vol.w - dx),
+                                    A + j * ps, row_lo);
                         }
+#endif
                         for (int j = 0; j < D; ++j) {
                             const int dx = dx0 + j;
                             if (dz == 0 && dy == 0 && dx == 0) continue;
                             const int x_lo = std::max(0, -dx), x_hi = std::min(vol.w, vol.w - dx);
                             if (x_hi - x_lo < L) continue;
-                            const float* Aj = A + j * hw;
+                            const float* Aj = A + j * ps;
                             for (int iy = band; iy < band_end; ++iy) {
                                 const int y0 = position(vol.h, L, refs.step, iy);
                                 if (y0 + dy < 0 || y0 + dy > vol.h - L) continue;
-                                Window<L>(Aj, vol.w, y0, x_lo, x_hi, B);
+                                Window<L>(Aj, vol.w, y0 - row_lo, x_lo, x_hi, B);
                                 const int base = (iz * refs.ny + iy) * refs.nx;
                                 // the references whose candidate exists: ix in [ix_lo, ix_hi)
                                 const float* worst = m.worst + base;
                                 int ix_lo = 0, ix_hi = refs.nx;
                                 while (ix_lo < ix_hi && position(vol.w, L, refs.step, ix_lo) + dx < 0) ++ix_lo;
                                 while (ix_hi > ix_lo && position(vol.w, L, refs.step, ix_hi - 1) + dx > vol.w - L) --ix_hi;
-                                RefSums<L>(B, vol.w, refs.nx, refs.step, ix_lo, ix_hi, Cr);
+                                RefSums<L>(B, vol.w, refs.step, ix_lo, ix_hi, Cr);
                                 // as insert's test of a full list, without reading it, a vector at a time
                                 int ix = ix_lo;
                                 for (; ix + N <= ix_hi; ix += N) {
@@ -471,9 +483,10 @@ static void Haar(float* g, int m, int n, bool inverse, float* tmp) {
             hn::StoreU(hn::Mul(hn::Add(va, vb), vc), dd, plus + e);
             hn::StoreU(hn::Mul(hn::Sub(va, vb), vc), dd, minus + e);
         }
-        for (; e < n; ++e) {
-            plus[e] = (a[e] + b[e]) * c;
-            minus[e] = (a[e] - b[e]) * c;
+        for (; e < n; ++e) {  // both read first: plus or minus may be a or b
+            const float va = a[e], vb = b[e];
+            plus[e] = (va + vb) * c;
+            minus[e] = (va - vb) * c;
         }
     };
     if (!inverse) {
@@ -633,6 +646,10 @@ static HWY_NOINLINE void Stage(const float* noisy, const float* basic, const Vol
     const int N = static_cast<int>(hn::Lanes(d));
     constexpr int L2 = L * L, L3 = L2 * L;
     constexpr int cs = (L3 + 15) & ~15;  // a cube's floats in the group buffers
+    static_assert(cs <= kCubeStride, "group buffers");
+    // the cubes' padding zero for this stage (the gathers do not write it,
+    // Haar keeps zeros; the other stage's cubes have another stride)
+    for (float* b : {buf.group, buf.bgroup, buf.tmp}) std::fill(b, b + static_cast<std::size_t>(kMaxGroup) * cs, 0.f);
     Refs refs{position_count(vol.t, L, st.step), position_count(vol.h, L, st.step), position_count(vol.w, L, st.step),
               L, st.step};
     const float sigma2 = sigma * sigma;
@@ -693,7 +710,7 @@ static HWY_NOINLINE void Stage(const float* noisy, const float* basic, const Vol
             // m divides 32, so the terms of element e go to the lanes
             // (e m) % 32 + q in order
             float lane[32] = {};
-            if (m >= N) {
+            if (HWY_NATIVE_FMA && m >= N) {  // MulAdd is std::fma there
                 hn::Vec<decltype(d)> acc[32];
                 for (int k = 0; k < 32 / N; ++k) acc[k] = hn::Zero(d);
                 for (int e = 0; e < L3; ++e) {
@@ -761,7 +778,7 @@ void Bm4dDenoiseVolume(const float* noisy, int t, int h, int w, float sigma, flo
     auto* num = reinterpret_cast<std::int64_t*>(take(2 * n));
     auto* den = reinterpret_cast<std::int64_t*>(take(2 * n));
     StageBuffers buf{};
-    buf.A = take(static_cast<std::size_t>(kSlabBatch) * h * w);
+    buf.A = take(static_cast<std::size_t>(kSlabBatch) * kBandSlabRows * w);
     buf.B = take(static_cast<std::size_t>(w) + kWindowPad);
     buf.Cr = take(static_cast<std::size_t>(w));
     const int R = std::max(1, position_count(t, kBm4dHard.cube, kBm4dHard.step)) *
@@ -774,8 +791,6 @@ void Bm4dDenoiseVolume(const float* noisy, int t, int h, int w, float sigma, flo
     buf.group = take(static_cast<std::size_t>(kMaxGroup) * kCubeStride);
     buf.bgroup = take(static_cast<std::size_t>(kMaxGroup) * kCubeStride);
     buf.tmp = take(static_cast<std::size_t>(kMaxGroup) * kCubeStride);
-    // the cubes' padding stays zero (the gathers do not write it, Haar keeps zeros)
-    for (float* b : {buf.group, buf.bgroup, buf.tmp}) std::fill(b, b + static_cast<std::size_t>(kMaxGroup) * kCubeStride, 0.f);
     buf.soa = take(static_cast<std::size_t>(kMaxGroup + 16) * kMaxCube3);
     buf.bsoa = take(static_cast<std::size_t>(kMaxGroup + 16) * kMaxCube3);
     buf.tsoa = take(static_cast<std::size_t>(kMaxGroup + 16) * kMaxCube3);
@@ -815,7 +830,7 @@ std::size_t bm4d_work_floats(int t, int h, int w) {
     const std::size_t R = static_cast<std::size_t>(std::max(1, position_count(t, kBm4dHard.cube, kBm4dHard.step))) *
                           std::max(1, position_count(h, kBm4dHard.cube, kBm4dHard.step)) *
                           std::max(1, position_count(w, kBm4dHard.cube, kBm4dHard.step));
-    return align16(n) + 2 * align16(2 * n) + align16(static_cast<std::size_t>(kSlabBatch) * h * w) + align16(static_cast<std::size_t>(w) + kWindowPad) + align16(static_cast<std::size_t>(w)) +
+    return align16(n) + 2 * align16(2 * n) + align16(static_cast<std::size_t>(kSlabBatch) * kBandSlabRows * w) + align16(static_cast<std::size_t>(w) + kWindowPad) + align16(static_cast<std::size_t>(w)) +
            2 * align16(R * kMaxGroup) + 2 * align16(R) + 3 * align16(static_cast<std::size_t>(kMaxGroup) * kCubeStride) +
            3 * align16(static_cast<std::size_t>(kMaxGroup + 16) * kMaxCube3) + 16;
 }
