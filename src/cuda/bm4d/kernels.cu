@@ -8,8 +8,10 @@
 // then x), the closest taken by a block radix select of (distance, offset in
 // scan order), the CPU's insertion order. Groups:
 // one block per reference, Haar along the group then the 3D DCT of every
-// cube with the CPU's arithmetic, then the fixed-point sums by 64-bit integer
-// atomics (exact in any order). Built with --fmad=false.
+// cube with the CPU's arithmetic, then the numerators' fixed-point sums by
+// 64-bit integer atomics (exact in any order) and the denominators from the
+// cubes' weights (den_x_kernel; about 1e-7 from the CPU's). Built with
+// --fmad=false.
 #include "cuda/bm4d/kernels.hpp"
 #include "cuda/runtime/error.hpp"
 #include "nss/params/bm4d.hpp"
@@ -333,7 +335,6 @@ __global__ void __launch_bounds__(kTensorThreads) tensor_match_kernel(const floa
 #if __CUDA_ARCH__ >= 800
     constexpr int R = L + 2 * kSearch;
     constexpr int P = kTensorPitch;
-    constexpr int kChunks = L * L;              // (k, j) rows of the cube
     constexpr int kRows = kSide * kSide;        // (dz, dy) of the window
     constexpr int kTiles = (kRows + 15) / 16;   // 15
     constexpr int kTilesPerWarp = (kTiles + 3) / 4;
@@ -373,25 +374,31 @@ __global__ void __launch_bounds__(kTensorThreads) tensor_match_kernel(const floa
     }
     {
         // the FP16 region by asynchronous 4-byte copies of value pairs (0
-        // outside the volume), (zy row, pair) by counters
+        // outside the volume): thread (pair c, first row) takes the rows
+        // first, first + kRowStep, ... by counters and offsets
         constexpr int kPairs = P / 2;
-        constexpr int sc = kTensorThreads % kPairs, sr = kTensorThreads / kPairs;
-        int c = tid % kPairs, row = tid / kPairs;
-        const int pw = vol.w + kTensorPairPad * 2;
-        const unsigned dst0 = static_cast<unsigned>(__cvta_generic_to_shared(region));
-        for (int e = tid; e < R * R * kPairs; e += kTensorThreads) {
-            const int vz = z0 - kSearch + row / R, vy = y0 - kSearch + row % R;
-            const bool in = vz >= 0 && vz < vol.t && vy >= 0 && vy < vol.h;
-            const unsigned* src = tv.pairs + (in ? (static_cast<std::size_t>(vz) * vol.h + vy) * pw + kTensorPairPad + x0 - kSearch + 2 * c : 0);
-            asm volatile("cp.async.ca.shared.global [%0], [%1], 4, %2;\n" ::"r"(dst0 + 4u * static_cast<unsigned>(e)), "l"(src),
-                         "r"(in ? 4 : 0));
-            c += sc;
-            row += sr;
-            if (c >= kPairs) {
-                c -= kPairs;
-                ++row;
+        constexpr int kRowStep = kTensorThreads / kPairs;
+        static_assert(kRowStep < R, "one wrap a step");
+        const int c = tid % kPairs;
+        int row = tid / kPairs, rz = row / R, ry = row % R;
+        const long long pw = vol.w + kTensorPairPad * 2;
+        long long at = ((static_cast<long long>(z0 - kSearch + rz) * vol.h) + y0 - kSearch + ry) * pw + kTensorPairPad + x0 - kSearch + 2 * c;
+        unsigned dst = static_cast<unsigned>(__cvta_generic_to_shared(region)) + 4u * static_cast<unsigned>(row * kPairs + c);
+        if (row < kRowStep)
+            for (; row < R * R; row += kRowStep) {
+                const int vz = z0 - kSearch + rz, vy = y0 - kSearch + ry;
+                const bool in = vz >= 0 && vz < vol.t && vy >= 0 && vy < vol.h;
+                asm volatile("cp.async.ca.shared.global [%0], [%1], 4, %2;\n" ::"r"(dst), "l"(tv.pairs + (in ? at : 0)),
+                             "r"(in ? 4 : 0));
+                dst += 4u * kRowStep * kPairs;
+                ry += kRowStep;
+                at += kRowStep * pw;
+                if (ry >= R) {
+                    ry -= R;
+                    ++rz;
+                    at += (vol.h - R) * pw;
+                }
             }
-        }
         asm volatile("cp.async.commit_group;\n" ::);
     }
     for (int b = tid; b < kTensorBins; b += kTensorThreads) hist[b] = 0;
@@ -416,85 +423,90 @@ __global__ void __launch_bounds__(kTensorThreads) tensor_match_kernel(const floa
     }
     const unsigned rbase = static_cast<unsigned>(__cvta_generic_to_shared(region));
     const int colsel = (lane >> 4) * 8;
+    // this lane's B fragment of the reference row (k, j): element (kk, n) is
+    // r'[k][j][kk - n], kk = 2 t, 2 t + 1, 2 t + 8, 2 t + 9 (0 outside the row)
+    const int t = lane & 3, n = lane >> 2;
+    const int i0 = 2 * t - n;
+    const bool in0 = i0 >= 0 && i0 < L, in1 = i0 + 1 >= 0 && i0 + 1 < L, in2 = i0 + 8 < L, in3 = i0 + 9 < L;
+    const unsigned short* const rref = region + (kSearch * R + kSearch) * P + kSearch + i0;
 #pragma unroll 1
-    for (int chunk = 0; chunk < kChunks; ++chunk) {
-        const int off = ((chunk / L) * R + chunk % L) * P;
-        // this lane's B fragment of the reference row (k, j): element (kk, n) is r'[k][j][kk - n]
-        uint2 b;
-        {
-            const unsigned short* rrow = region + ((kSearch + chunk / L) * R + kSearch + chunk % L) * P + kSearch;
-            const int t = lane & 3, n = lane >> 2;
-            auto v = [&](int kk) -> unsigned { const int ii = kk - n; return ii >= 0 && ii < L ? rrow[ii] : 0u; };
-            b = make_uint2(v(2 * t) | v(2 * t + 1) << 16, v(2 * t + 8) | v(2 * t + 9) << 16);
-        }
+    for (int k = 0; k < L; ++k) {
 #pragma unroll
-        for (int tt = 0; tt < kTilesPerWarp; ++tt) {
-            if (warp + 4 * tt >= kTiles) continue;
-            unsigned a0, a1, a2, a3, a4, a5;
-            const unsigned at = rbase + 2u * static_cast<unsigned>(rowbase[tt] + off);
-            asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];"
-                         : "=r"(a0), "=r"(a1), "=r"(a2), "=r"(a3) : "r"(at + 2u * colsel));
-            asm volatile("ldmatrix.sync.aligned.m8n8.x2.shared.b16 {%0,%1}, [%2];" : "=r"(a4), "=r"(a5) : "r"(at + 32u));
-            asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};"
-                         : "+f"(acc[tt][0][0]), "+f"(acc[tt][0][1]), "+f"(acc[tt][0][2]), "+f"(acc[tt][0][3])
-                         : "r"(a0), "r"(a1), "r"(a2), "r"(a3), "r"(b.x), "r"(b.y));
-            asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};"
-                         : "+f"(acc[tt][1][0]), "+f"(acc[tt][1][1]), "+f"(acc[tt][1][2]), "+f"(acc[tt][1][3])
-                         : "r"(a2), "r"(a3), "r"(a4), "r"(a5), "r"(b.x), "r"(b.y));
+        for (int j = 0; j < L; ++j) {
+            const int off = (k * R + j) * P;
+            const unsigned short* rrow = rref + off;
+            const uint2 b = make_uint2((in0 ? rrow[0] : 0u) | (in1 ? rrow[1] : 0u) << 16,
+                                       (in2 ? rrow[8] : 0u) | (in3 ? rrow[9] : 0u) << 16);
+#pragma unroll
+            for (int tt = 0; tt < kTilesPerWarp; ++tt) {
+                if (warp + 4 * tt >= kTiles) continue;
+                unsigned a0, a1, a2, a3, a4, a5;
+                const unsigned at = rbase + 2u * static_cast<unsigned>(rowbase[tt] + off);
+                asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];"
+                             : "=r"(a0), "=r"(a1), "=r"(a2), "=r"(a3) : "r"(at + 2u * colsel));
+                asm volatile("ldmatrix.sync.aligned.m8n8.x2.shared.b16 {%0,%1}, [%2];" : "=r"(a4), "=r"(a5) : "r"(at + 32u));
+                asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};"
+                             : "+f"(acc[tt][0][0]), "+f"(acc[tt][0][1]), "+f"(acc[tt][0][2]), "+f"(acc[tt][0][3])
+                             : "r"(a0), "r"(a1), "r"(a2), "r"(a3), "r"(b.x), "r"(b.y));
+                asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};"
+                             : "+f"(acc[tt][1][0]), "+f"(acc[tt][1][1]), "+f"(acc[tt][1][2]), "+f"(acc[tt][1][3])
+                             : "r"(a2), "r"(a3), "r"(a4), "r"(a5), "r"(b.x), "r"(b.y));
+            }
         }
     }
-    __syncthreads();  // the region is read: its buffer takes the products
-#pragma unroll
-    for (int tt = 0; tt < kTilesPerWarp; ++tt)
-#pragma unroll
-        for (int h = 0; h < 2; ++h)
-#pragma unroll
-            for (int e = 0; e < 4; ++e) {
-                const int row = (warp + 4 * tt) * 16 + (lane >> 2) + (e >= 2 ? 8 : 0);
-                if (warp + 4 * tt < kTiles && row < kRows) dist[row * 16 + 8 * h + 2 * (lane & 3) + (e & 1)] = acc[tt][h][e];
-            }
-    __syncthreads();
-    // d' of every candidate (neighbouring threads, neighbouring dx; inf
-    // where no cube fits), those within the limit to the histogram
+    __syncthreads();  // the region is read: its buffer takes the distances
+    // d' of every candidate from this lane's products (inf where no cube
+    // fits), those within the limit to the histogram
     const std::size_t ref_at = vol.at(z0, y0, x0);
     const unsigned top = __float_as_uint(limit) >> 17;
     {
-        // thread (dxi, first row): rows first, first + 8, ... by counters
         const float nr = tv.norm[ref_at];
-        constexpr int kStep = kTensorThreads / 16;
-        static_assert(kStep < kSide, "one wrap a step");
-        const int dxi = tid & 15, cx = x0 + dxi - kSearch;
-        const bool x_ok = dxi < kSide && cx >= 0 && cx <= vol.w - L;
-        int row = tid >> 4, dzi = row / kSide, dyi = row % kSide;
-        constexpr int kAhead = 4;  // rows whose loads are in flight together
-        for (; row < kRows; row += kAhead * kStep) {
-            float nc[kAhead];
-            int at_e[kAhead];
-            bool ok[kAhead];
+        // the (dzi, dyi) whose cubes fit; this lane's columns dxi = 8 h + 2 (lane & 3) + (e & 1)
+        const int zlo = kSearch - z0, zhi = vol.t - L - z0 + kSearch;
+        const int ylo = kSearch - y0, yhi = vol.h - L - y0 + kSearch;
+        const int c0 = 2 * (lane & 3), cx0 = x0 - kSearch + c0;
+        bool x_ok[2][2];
 #pragma unroll
-            for (int u = 0; u < kAhead; ++u) {
-                const int rr = row + u * kStep;
-                const int cz = z0 + dzi - kSearch, cy = y0 + dyi - kSearch;
-                ok[u] = rr < kRows && x_ok && cz >= 0 && cz <= vol.t - L && cy >= 0 && cy <= vol.h - L &&
-                        !(dzi == kSearch && dyi == kSearch && dxi == kSearch);
-                at_e[u] = rr < kRows ? rr * 16 + dxi : -1;
-                nc[u] = ok[u] ? __ldg(tv.norm + vol.at(cz, cy, cx)) : 0.f;
-                dyi += kStep;
-                if (dyi >= kSide) {
-                    dyi -= kSide;
-                    ++dzi;
-                }
+        for (int h = 0; h < 2; ++h)
+#pragma unroll
+            for (int u = 0; u < 2; ++u) {
+                const int dxi = 8 * h + c0 + u, cx = cx0 + 8 * h + u;
+                x_ok[h][u] = dxi < kSide && cx >= 0 && cx <= vol.w - L;
             }
 #pragma unroll
-            for (int u = 0; u < kAhead; ++u) {
-                if (at_e[u] < 0) continue;
-                const int e = at_e[u];
-                float d = INFINITY;
-                if (ok[u]) {
-                    d = fmaxf(nr + nc[u] - 2.f * dist[e], 0.f);  // NaN (never: the header checks the volume) -> 0
-                    if (d <= limit) atomicAdd(&hist[tensor_bin(d, top)], 1u);
-                }
-                dist[e] = d;
+        for (int tt = 0; tt < kTilesPerWarp; ++tt) {
+            if (warp + 4 * tt >= kTiles) continue;
+            float nc[2][2][2];
+            bool ok[2][2][2];
+            int row[2];
+#pragma unroll
+            for (int g = 0; g < 2; ++g) {  // rows lane / 4 and lane / 4 + 8 of the tile
+                row[g] = (warp + 4 * tt) * 16 + (lane >> 2) + 8 * g;
+                const int dzi = row[g] / kSide, dyi = row[g] % kSide;
+                const bool zy = row[g] < kRows && dzi >= zlo && dzi <= zhi && dyi >= ylo && dyi <= yhi;
+                const float* nrow = tv.norm + ((static_cast<long long>(z0 - kSearch + dzi) * vol.h + y0 - kSearch + dyi) * vol.w + cx0);
+#pragma unroll
+                for (int h = 0; h < 2; ++h)
+#pragma unroll
+                    for (int u = 0; u < 2; ++u) {
+                        ok[g][h][u] = zy && x_ok[h][u] && !(dzi == kSearch && dyi == kSearch && 8 * h + c0 + u == kSearch);
+                        nc[g][h][u] = ok[g][h][u] ? __ldg(nrow + 8 * h + u) : 0.f;
+                    }
+            }
+#pragma unroll
+            for (int g = 0; g < 2; ++g) {
+                if (row[g] >= kRows) continue;
+#pragma unroll
+                for (int h = 0; h < 2; ++h)
+#pragma unroll
+                    for (int u = 0; u < 2; ++u) {
+                        float d = INFINITY;
+                        if (ok[g][h][u]) {
+                            d = fmaxf(nr + nc[g][h][u] - 2.f * acc[tt][h][2 * g + u], 0.f);  // NaN (never: the header checks the volume) -> 0
+                            if (d <= limit) atomicAdd(&hist[tensor_bin(d, top)], 1u);
+                        }
+                        dist[row[g] * 16 + 8 * h + c0 + u] = d;
+                    }
             }
         }
     }
@@ -732,7 +744,7 @@ __device__ __forceinline__ void part_sync() {
     else asm volatile("bar.sync 1, %0;" ::"n"(kGroupThreads - T0) : "memory");
 }
 template <int L, int T0 = 0>
-__device__ void dct3(float* g, float* g2, int m, bool inverse) {
+__device__ void dct3(float* g, float* g2, int m, bool inverse, bool xy_only = false) {
     constexpr int L2 = L * L, L3 = L2 * L;
     constexpr int kThreads = kGroupThreads - T0;
     const int lt = static_cast<int>(threadIdx.x) - T0;
@@ -781,7 +793,7 @@ __device__ void dct3(float* g, float* g2, int m, bool inverse) {
         part_sync<T0>();
         first_axis = 2;
     }
-    for (int axis = first_axis; axis < 3; ++axis) {
+    for (int axis = first_axis; axis < (xy_only ? 2 : 3); ++axis) {
         const int unit = axis == 0 ? 1 : axis == 1 ? L : L2;
         for (int ln = lt; ln < cubes * L2; ln += kThreads) {
             const int q = ln / L2, a = (ln / L) % L, b = ln % L;
@@ -799,6 +811,23 @@ __device__ void dct3(float* g, float* g2, int m, bool inverse) {
             }
         }
         part_sync<T0>();
+    }
+}
+
+// The forward DCT along z of the line of g at base (stride L^2), as dct3's.
+template <int L>
+__device__ __forceinline__ void dct_z(const float* g, int base, float* out) {
+    constexpr int L2 = L * L;
+    const float* D = c_dct + (L == 5 ? 16 : 0);
+    float in[L];
+#pragma unroll
+    for (int i = 0; i < L; ++i) in[i] = g[base + i * L2];
+#pragma unroll
+    for (int k = 0; k < L; ++k) {
+        float acc = D[k * L] * in[0];
+#pragma unroll
+        for (int i = 1; i < L; ++i) acc = fmaf(D[k * L + i], in[i], acc);
+        out[k] = acc;
     }
 }
 
@@ -829,9 +858,15 @@ __global__ void __launch_bounds__(kGroupThreads) group_kernel(const float* noisy
     // needed everywhere)
     if (!__syncthreads_or(touches) && Wiener) return;
     const std::size_t plane = static_cast<std::size_t>(vol.h) * vol.w;
-    for (int it = threadIdx.x; it < m * L3; it += kGroupThreads) {
-        const int q = it / L3, e = it % L3;
-        const std::size_t o = p[q] + (e / (L * L)) * plane + static_cast<std::size_t>((e / L) % L) * vol.w + e % L;
+    // Gather and aggregation: thread t takes element e = t % L3 of the cubes
+    // q = t / L3, t / L3 + kPer, ... (its offset and window computed once)
+    constexpr int kPer = kGroupThreads / L3;
+    const int e = static_cast<int>(threadIdx.x) % L3, q0 = static_cast<int>(threadIdx.x) / L3;
+    const int ez = e / (L * L), ey = (e / L) % L, ex = e % L;
+    const std::size_t off = ez * plane + static_cast<std::size_t>(ey) * vol.w + ex;
+    for (int q = q0; q < m && q0 < kPer; q += kPer) {
+        const int it = q * L3 + e;
+        const std::size_t o = p[q] + off;
 #if __CUDA_ARCH__ >= 800
         // asynchronous copies: all of a thread's loads in flight at once
         asm volatile("cp.async.ca.shared.global [%0], [%1], 4;\n" ::"r"(static_cast<unsigned>(__cvta_generic_to_shared(g + it))),
@@ -850,24 +885,42 @@ __global__ void __launch_bounds__(kGroupThreads) group_kernel(const float* noisy
     __syncthreads();
     haar<L3, false>(g, Wiener ? b : nullptr, m);
     __syncthreads();
-    dct3<L>(g, Wiener ? b : nullptr, m, false);
+    // x and y of the forward DCT, then z with the stage's step on the
+    // coefficients in the same thread
+    dct3<L>(g, Wiener ? b : nullptr, m, false, true);
     const float sigma2 = sigma * sigma;
+    constexpr int L2 = L * L;
     if (!Wiener) {
         const float threshold = nss::kBm4dLambda * sigma;
         int kept = 0;
-        for (int it = threadIdx.x; it < m * L3; it += kGroupThreads) {
-            if (fabsf(g[it]) >= threshold) ++kept;
-            else g[it] = 0.f;
+        for (int ln = threadIdx.x; ln < m * L2; ln += kGroupThreads) {
+            const int base = (ln / L2) * L3 + ln % L2;
+            float v[L];
+            dct_z<L>(g, base, v);
+#pragma unroll
+            for (int k = 0; k < L; ++k) {
+                if (fabsf(v[k]) >= threshold) ++kept;
+                else v[k] = 0.f;
+                g[base + k * L2] = v[k];
+            }
         }
         atomicAdd(&kept_count, kept);
         __syncthreads();
         if (threadIdx.x == 0) weight = 1.f / static_cast<float>(max(kept_count, 1));
     } else {
-        for (int it = threadIdx.x; it < m * L3; it += kGroupThreads) {
-            const float b2 = b[it] * b[it];
-            const float wv = b2 / (b2 + sigma2);
-            g[it] = g[it] * wv;
-            b[it] = wv;
+        // W = B^2 / (B^2 + sigma^2): the noisy coefficient times W; b takes W
+        for (int ln = threadIdx.x; ln < m * L2; ln += kGroupThreads) {
+            const int base = (ln / L2) * L3 + ln % L2;
+            float vg[L], vb[L];
+            dct_z<L>(g, base, vg);
+            dct_z<L>(b, base, vb);
+#pragma unroll
+            for (int k = 0; k < L; ++k) {
+                const float b2 = vb[k] * vb[k];
+                const float wv = b2 / (b2 + sigma2);
+                g[base + k * L2] = vg[k] * wv;
+                b[base + k * L2] = wv;
+            }
         }
         __syncthreads();
         // warp 0: the energy (a serial chain of 125 m / 32 terms a lane);
@@ -894,21 +947,66 @@ __global__ void __launch_bounds__(kGroupThreads) group_kernel(const float* noisy
     }
     __syncthreads();
     const float w = weight;
-    for (int it = threadIdx.x; it < m * L3; it += kGroupThreads) {
-        const int q = it / L3, e = it % L3;
-        const int z = e / (L * L), y = (e / L) % L, x = e % L;
-        const float* kaiser = c_kaiser + (L == 5 ? 4 : 0);
-        const float window = kaiser[z] * kaiser[y] * kaiser[x];
-        const float wv = w * window;
-        const std::size_t o = p[q] + z * plane + static_cast<std::size_t>(y) * vol.w + x;
-        atomicAdd(num + o, static_cast<unsigned long long>(fixed(wv * g[it])));
-        atomicAdd(den + o, static_cast<unsigned long long>(fixed(wv)));
-    }
+    const float* kaiser = c_kaiser + (L == 5 ? 4 : 0);
+    const float wv = w * (kaiser[ez] * kaiser[ey] * kaiser[ex]);
+    for (int q = q0; q < m && q0 < kPer; q += kPer)
+        atomicAdd(num + p[q] + off, static_cast<unsigned long long>(fixed(wv * g[q * L3 + e])));
+    // the denominators: the group's weight at each cube's first voxel (see den_x_kernel)
+    if (threadIdx.x < m) atomicAdd(den + p[threadIdx.x], static_cast<unsigned long long>(fixed(w)));
 }
 
-__global__ void ratio_kernel(const long long* num, const long long* den, float* out, std::size_t n) {
-    const std::size_t i = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    if (i < n) out[i] = static_cast<float>(static_cast<double>(num[i]) / static_cast<double>(den[i]));
+// The denominators from the weights of the cubes at each voxel (S, fixed
+// point): den(o) = sum over the cube's elements e of window(e) S(o - e), the
+// window separable, so along x (den_x_kernel), then y, then z (ratio_kernel),
+// each in increasing offset order, in FP32. One atomic a cube instead of one
+// a voxel; not the CPU's per-term rounding (about 1e-7 relative).
+template <int L>
+__global__ void den_x_kernel(const long long* S, Volume vol, float* A) {
+    const int x = blockIdx.x * blockDim.x + threadIdx.x, y = blockIdx.y, z = blockIdx.z;
+    if (x >= vol.w) return;
+    const float* kaiser = c_kaiser + (L == 5 ? 4 : 0);
+    const long long* row = S + vol.at(z, y, 0);
+    float acc = 0.f;
+#pragma unroll
+    for (int i = 0; i < L; ++i)
+        if (x - i >= 0) acc = fmaf(kaiser[i], __ll2float_rn(row[x - i]) * (1.f / nss::kBm4dFixedScale), acc);
+    A[vol.at(z, y, x)] = acc;
+}
+template <int L>
+__global__ void den_y_kernel(const float* A, Volume vol, float* B) {
+    const int x = blockIdx.x * blockDim.x + threadIdx.x, y = blockIdx.y, z = blockIdx.z;
+    if (x >= vol.w) return;
+    const float* kaiser = c_kaiser + (L == 5 ? 4 : 0);
+    float acc = 0.f;
+#pragma unroll
+    for (int j = 0; j < L; ++j)
+        if (y - j >= 0) acc = fmaf(kaiser[j], A[vol.at(z, y - j, x)], acc);
+    B[vol.at(z, y, x)] = acc;
+}
+template <int L>
+__global__ void ratio_kernel(const long long* num, const float* B, Volume vol, float* out) {
+    const int x = blockIdx.x * blockDim.x + threadIdx.x, y = blockIdx.y, z = blockIdx.z;
+    if (x >= vol.w) return;
+    const float* kaiser = c_kaiser + (L == 5 ? 4 : 0);
+    float den = 0.f;
+#pragma unroll
+    for (int k = 0; k < L; ++k)
+        if (z - k >= 0) den = fmaf(kaiser[k], B[vol.at(z - k, y, x)], den);
+    const std::size_t o = vol.at(z, y, x);
+    out[o] = static_cast<float>(static_cast<double>(num[o]) / (static_cast<double>(den) * nss::kBm4dFixedScale));
+}
+
+// den (the weights S of run_stage) to out through out as scratch: S is dead
+// once read, so the second pass writes over it
+template <int L>
+void finish_stage(const unsigned long long* num, unsigned long long* den, const Volume& vol, float* out, cudaStream_t stream) {
+    const dim3 grid((vol.w + 127) / 128, vol.h, vol.t);
+    den_x_kernel<L><<<grid, 128, 0, stream>>>(reinterpret_cast<const long long*>(den), vol, out);
+    NSS_CUDA_CHECK_LAUNCH();
+    den_y_kernel<L><<<grid, 128, 0, stream>>>(out, vol, reinterpret_cast<float*>(den));
+    NSS_CUDA_CHECK_LAUNCH();
+    ratio_kernel<L><<<grid, 128, 0, stream>>>(reinterpret_cast<const long long*>(num), reinterpret_cast<const float*>(den), vol, out);
+    NSS_CUDA_CHECK_LAUNCH();
 }
 
 __global__ void gather_kernel(const float* const* frames, std::size_t pitch, int t, int y0, int x0, int h, int w,
@@ -1078,21 +1176,16 @@ void bm4d_run_volume(const float* noisy, int t, int h, int w, float sigma, const
                         reinterpret_cast<unsigned*>(tb + l.half + l.norm + l.err + l.rows)};
     const Volume vol{t, h, w};
     const std::size_t n = static_cast<std::size_t>(t) * h * w;
-    const unsigned blocks = static_cast<unsigned>((n + 255) / 256);
     auto fits = [&](const nss::Bm4dStage& st) { return t >= st.cube && h >= st.cube && w >= st.cube; };
     if (fits(nss::kBm4dHard)) {
         run_stage<4>(noisy, nullptr, vol, sigma, keep, nss::kBm4dHard, pos, count, num, den, tw, stream);
-        ratio_kernel<<<blocks, 256, 0, stream>>>(reinterpret_cast<const long long*>(num),
-                                                 reinterpret_cast<const long long*>(den), basic, n);
-        NSS_CUDA_CHECK_LAUNCH();
+        finish_stage<4>(num, den, vol, basic, stream);
     } else {
         NSS_CUDA_CHECK(cudaMemcpyAsync(basic, noisy, n * sizeof(float), cudaMemcpyDeviceToDevice, stream));
     }
     if (fits(nss::kBm4dWiener)) {
         run_stage<5>(noisy, basic, vol, sigma, keep, nss::kBm4dWiener, pos, count, num, den, tw, stream);
-        ratio_kernel<<<blocks, 256, 0, stream>>>(reinterpret_cast<const long long*>(num),
-                                                 reinterpret_cast<const long long*>(den), out, n);
-        NSS_CUDA_CHECK_LAUNCH();
+        finish_stage<5>(num, den, vol, out, stream);
     } else {
         NSS_CUDA_CHECK(cudaMemcpyAsync(out, basic, n * sizeof(float), cudaMemcpyDeviceToDevice, stream));
     }

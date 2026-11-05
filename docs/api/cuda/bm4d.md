@@ -1,7 +1,7 @@
 # nss_cuda.BM4D
 
-BM4D on the device: the CPU model's transforms and fixed-point sums, with
-the matching by FP16 tensor-core distances (compute capability 8.0 and
+BM4D on the device: the CPU model's transforms and fixed-point numerators,
+with the matching by FP16 tensor-core distances (compute capability 8.0 and
 later), so near ties may take other cubes than the CPU's: the output is about
 70 dB from `nss.BM4D`'s with the same PSNR to the clean source. Every run
 gives the same bits.
@@ -35,10 +35,14 @@ time (the next chunk's upload overlaps).
   the cube distances are |r'|^2 + |c'|^2 - 2 r'.c' over FP16 values centred
   on the volume's mean (matrix products on the tensor cores), not the CPU's
   sums of squared differences; the transforms keep the CPU's arithmetic and
-  the sums are 64-bit fixed point, exact in any order. On 64 frames of anime
+  the numerators are 64-bit fixed point, exact in any order. The
+  denominators are each cube's weight at its first voxel spread by the
+  separable Kaiser window in FP32 (one atomic a cube instead of one a voxel),
+  about 1e-7 relative from the CPU's per-voxel sums. On 64 frames of anime
   with grain of sigma 5: PSNR to the clean source 46.6635 (CPU) and 46.6631
   dB, a mean difference of 0.05 level. GPUs without sm_80 code, and volumes
-  FP16 cannot hold, take the CPU's exact matching.
+  FP16 cannot hold, take the CPU's exact matching (about 150 dB from the
+  CPU's output: the denominators).
 - **Memory**: the chunk's 48 input and 32 output frames of the largest plane
   on the device, and 48 more input frames when the clip is longer than one
   chunk (the next chunk's upload), plus about 1 GB of work for a

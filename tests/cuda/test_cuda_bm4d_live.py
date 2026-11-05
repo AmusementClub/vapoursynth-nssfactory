@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-only
 """nss_cuda.BM4D vs nss.BM4D: the device runs the CPU model's transforms and
-fixed-point sums, but on sm_80+ matches by FP16 tensor-core distances
-(2026-10-22), so near ties may take other cubes: every clip must be within
-MIN_PSNR dB of the CPU's output, its PSNR to the clean clip within MAX_DPSNR
-dB of the CPU's, and a second node must give the same bits. A clip FP16
-cannot hold takes the exact matching (match_kernel) and must give the CPU's
-bits. Gray over two chunks and two tile columns, YUV420 with a bypassed
-plane, RGB, short clips and small planes, a flat clip; frames asked for out
-of order. Exits 77 without VapourSynth or a CUDA device.
+fixed-point numerators, but on sm_80+ matches by FP16 tensor-core distances
+(2026-10-22), so near ties may take other cubes, and takes the denominators
+from the cubes' weights through the separable window in FP32 (2026-11-05,
+about 1e-7 relative): every clip must be within MIN_PSNR dB of the CPU's
+output, its PSNR to the clean clip within MAX_DPSNR dB of the CPU's, and a
+second node must give the same bits. A clip FP16 cannot hold takes the exact
+matching (match_kernel) and must be within EXACT_PSNR dB of the CPU's output
+(one other match costs far more). Gray over two chunks and two tile columns,
+YUV420 with a bypassed plane, RGB, short clips and small planes, a flat clip;
+frames asked for out of order. Exits 77 without VapourSynth or a CUDA device.
 
 usage: test_cuda_bm4d_live.py --cpu PATH --cuda PATH
 """
@@ -17,6 +19,7 @@ import sys
 
 MIN_PSNR = 50.0      # dB between the CPU's and the device's output
 MAX_DPSNR = 0.05     # dB between their PSNRs to the clean clip
+EXACT_PSNR = 120.0   # dB between the CPU's and the device's output with exact matching
 
 try:
     import numpy as np
@@ -107,7 +110,7 @@ def main():
         between = psnr(cpu, gpu, peak)
         pg, pc = psnr(gpu, cleans, peak), psnr(cpu, cleans, peak)
         dpsnr = pg - pc  # the device's PSNR to the clean clip less the CPU's
-        ok = repeatable and (same if kind == "huge" else between >= MIN_PSNR and dpsnr >= -MAX_DPSNR)
+        ok = repeatable and (between >= EXACT_PSNR if kind == "huge" else between >= MIN_PSNR and dpsnr >= -MAX_DPSNR)
         failures += not ok
         print(f"{vs.core.get_video_format(fmt).name} {w}x{h}x{t} {kind} sigma {kw['sigma']}: "
               f"{'same bits' if same else f'{between:.1f} dB from the CPU'}, PSNR to clean {pg:.2f} ({dpsnr:+.4f} dB), "
