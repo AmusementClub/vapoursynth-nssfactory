@@ -117,9 +117,11 @@ __device__ __forceinline__ int tile_start(int n, int count, int i) {
 // N sums over the block of W warps by a tree: each thread's own terms, the
 // warp by shuffles, the warps' partials in order (part: W N floats); every
 // thread gets the totals. The order is fixed, so the sums are the same on
-// every run.
+// every run. Lane q of each warp adds the partials of sum q and hands it to
+// the warp's other lanes.
 template <int N, int W>
 __device__ __forceinline__ void block_reduce(float (&v)[N], float* part) {
+    static_assert(N <= 32, "a lane per sum");
     const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
 #pragma unroll
     for (int q = 0; q < N; ++q)
@@ -129,14 +131,28 @@ __device__ __forceinline__ void block_reduce(float (&v)[N], float* part) {
 #pragma unroll
         for (int q = 0; q < N; ++q) part[warp * N + q] = v[q];
     __syncthreads();
+    float t = 0.f;
+    if (lane < N) {
+        t = part[lane];
 #pragma unroll
-    for (int q = 0; q < N; ++q) {
-        float t = part[q];
-#pragma unroll
-        for (int w = 1; w < W; ++w) t += part[w * N + q];
-        v[q] = t;
+        for (int w = 1; w < W; ++w) t += part[w * N + lane];
     }
+#pragma unroll
+    for (int q = 0; q < N; ++q) v[q] = __shfl_sync(0xffffffffu, t, q);
 }
+
+// The weight map's pyramid for cores of at least 16 x 16 (fast_pyramid): level
+// l holds the minimum of the 2^l x 2^l squares of level 0, so levels 3 and 4
+// are found from level 0 directly (a minimum is exact) and levels 1 and 2
+// are not kept. Below level 3 the walk's choice is the
+// square's pixel of least weight, ties going to the walk's order of
+// quadrants ((0, 0), (1, 0), (0, 1), (1, 1) at each level): the least key
+// of (weight, quadrant digits from the top).
+__device__ __forceinline__ int quadrant_key(int lr, int lc) {
+    return (lr & 1) | (lc & 1) << 1 | (lr & 2) << 1 | (lc & 2) << 2 | (lr & 4) << 2 | (lc & 4) << 3;
+}
+__device__ __forceinline__ int key_row(int k) { return (k & 1) | (k >> 1 & 2) | (k >> 2 & 4); }
+__device__ __forceinline__ int key_col(int k) { return (k >> 1 & 1) | (k >> 2 & 2) | (k >> 3 & 4); }
 
 // (xr, xi) times (wr, wi): (xr wr - xi wi, xr wi + xi wr), fused as on the CPU.
 __device__ __forceinline__ void twiddle_mul(float& xr, float& xi, float wr, float wi) {
@@ -486,6 +502,8 @@ __global__ void __launch_bounds__(T, B) da3d_tile_kernel(const __grid_constant__
     const float inv_k = 1.f / gamma_r_sigma2;
     const float cc = static_cast<float>(my_col - kR);
     unsigned long long patches = 0, guide_only = 0;
+    const bool fast_pyramid = core_h >= 16 && core_w >= 16;
+    int prev_fr = 0, prev_lr = -1, prev_fc = 0, prev_lc = -1;  // the last patch's core rows and columns
     float y[C][kPer], g[C][kPer], kv[kPer];
 #ifdef NSS_DA3D_PHASES  // profiling aid: cycles per phase, printed per tile
     long long phs[8] = {}, last = clock64();
@@ -495,7 +513,70 @@ __global__ void __launch_bounds__(T, B) da3d_tile_kernel(const __grid_constant__
 #endif
 
     for (;;) {
-        if (threadIdx.x == 0) {
+        if (fast_pyramid) {
+            if (threadIdx.x < 32) {
+                const int lane = threadIdx.x;
+                // levels above 4 over the last patch's squares, by warp 0
+                for (int l = kSharedLevel + 2; l < levels; ++l) {
+                    const int fr = prev_fr >> l, fc = prev_fc >> l;
+                    const int nr = (prev_lr >> l) - fr + 1, nc = (prev_lc >> l) - fc + 1;
+                    const float* lo = swm + lv_off[l - 1];
+                    float* lvl = swm + lv_off[l];
+                    const int loc = lv_cols[l - 1];
+                    for (int i = lane; i < nr * nc; i += 32) {
+                        const int r = fr + i / nc, c = fc + i % nc;
+                        const float* q = lo + (2 * r) * loc + 2 * c;
+                        lvl[r * lv_cols[l] + c] = fminf(fminf(q[0], q[1]), fminf(q[loc], q[loc + 1]));
+                    }
+                    __syncwarp();
+                }
+                const float* top = swm + lv_off[levels - 1];
+                int r = 0, c = 0;
+                for (int l = levels - 2; l >= kSharedLevel; --l) {
+                    r <<= 1;
+                    c <<= 1;
+                    const float* lvl = swm + lv_off[l];
+                    const int lc = lv_cols[l];
+                    const float v00 = lvl[r * lc + c], v10 = lvl[(r + 1) * lc + c];
+                    const float v01 = lvl[r * lc + c + 1], v11 = lvl[(r + 1) * lc + c + 1];
+                    int br = r, bc = c;
+                    float best = v00;
+                    if (v10 < best) { best = v10; br = r + 1; bc = c; }
+                    if (v01 < best) { best = v01; br = r; bc = c + 1; }
+                    if (v11 < best) { best = v11; br = r + 1; bc = c + 1; }
+                    r = br;
+                    c = bc;
+                }
+                // the square (r, c) of level 3: its 64 weights, two a lane
+                const float* l0 = level(0);
+                const int c0s = lv_cols[0];
+                const int lr0 = lane >> 3, lc0 = lane & 7;
+                float v = l0[(8 * r + lr0) * c0s + 8 * c + lc0];
+                int key = quadrant_key(lr0, lc0);
+                {
+                    const float v1 = l0[(8 * r + lr0 + 4) * c0s + 8 * c + lc0];
+                    const int k1 = quadrant_key(lr0 + 4, lc0);
+                    if (v1 < v || (v1 == v && k1 < key)) {
+                        v = v1;
+                        key = k1;
+                    }
+                }
+#pragma unroll
+                for (int o = 16; o; o >>= 1) {
+                    const float ov = __shfl_xor_sync(0xffffffffu, v, o);
+                    const int ok = __shfl_xor_sync(0xffffffffu, key, o);
+                    if (ov < v || (ov == v && ok < key)) {
+                        v = ov;
+                        key = ok;
+                    }
+                }
+                if (lane == 0) {
+                    sh_go = top[0] < nss::kDa3dThreshold;
+                    sh_pr = 8 * r + key_row(key);
+                    sh_pc = 8 * c + key_col(key);
+                }
+            }
+        } else if (threadIdx.x == 0) {
             const float* top = level(levels - 1);
             sh_go = top[0] < nss::kDa3dThreshold;
             int r = 0, c = 0;
@@ -523,12 +604,16 @@ __global__ void __launch_bounds__(T, B) da3d_tile_kernel(const __grid_constant__
         const int pr = sh_pr, pc = sh_pc;
         ++patches;
 
-        // The patch into registers (the plane mirrored).
+        // The patch into registers (the plane mirrored; a patch inside the plane
+        // needs no mirroring).
         {
-            const int sx = symmetric(c0 - kR + pc + my_col, p.width);
+            const int x0 = c0 - kR + pc, y0 = r0 - kR + pr;
+            const bool inside = x0 >= 0 && y0 >= 0 && x0 + kS <= p.width && y0 + kS <= p.height;
+            const int sx = inside ? x0 + my_col : symmetric(x0 + my_col, p.width);
 #pragma unroll
             for (int k = 0; k < kPer; ++k) {
-                const int sy = symmetric(r0 - kR + pr + my_row + kRowStep * k, p.height);
+                const int yy = y0 + my_row + kRowStep * k;
+                const int sy = inside ? yy : symmetric(yy, p.height);
                 const std::size_t o = static_cast<std::size_t>(sy) * p.width + sx;
 #pragma unroll
                 for (int c = 0; c < C; ++c) {
@@ -648,7 +733,9 @@ __global__ void __launch_bounds__(T, B) da3d_tile_kernel(const __grid_constant__
             block_reduce<kFirst, kThreads / 32>(s1, partB);
 #pragma unroll
             for (int q = 0; q < kFirst; ++q) sb[q] = s1[q];
-            if constexpr (C == 3) {
+            // the other channels' averages are only taken when the patch is not
+            // the guide's (the mass is the same in every thread)
+            if constexpr (C == 3) if (!(sb[0] < nss::kDa3dGuideOnlyMass)) {
                 float s2[4] = {};
 #pragma unroll
                 for (int k = 0; k < kPer; ++k)
@@ -770,8 +857,10 @@ __global__ void __launch_bounds__(T, B) da3d_tile_kernel(const __grid_constant__
                 forward2(are, aim, tw, kThreads);
                 shrink(are, aim, threadIdx.x, kThreads);
                 __syncthreads();
+                PH(3);
                 inverse2_real<kThreads>(are, aim, tw);
                 take_real(0, are, aim);
+                PH(4);
             } else {
                 // two transforms at a time, one on each half of the block
                 const bool lower = threadIdx.x < kThreads / 2;
@@ -796,6 +885,7 @@ __global__ void __launch_bounds__(T, B) da3d_tile_kernel(const __grid_constant__
                 __syncthreads();
                 prep(2, bre, bim);
                 __syncthreads();
+                PH(3);
                 // the inverse of W0 (lower half) beside channel 2's forward (upper)
                 for (int step = 0; step < kInverseSteps; ++step) {
                     if (lower) transform_step(true, step, are, aim, tw, lt, nt);
@@ -808,16 +898,69 @@ __global__ void __launch_bounds__(T, B) da3d_tile_kernel(const __grid_constant__
                 __syncthreads();
                 inverse2_real<kThreads>(bre, bim, tw);
                 take_real(2, bre, bim);
+                PH(4);
             }
             add_tile([&](int c, int k, float old) { return fmaf(result[c][k], kv[k], old); });
         }
         __syncthreads();
         PH(5);
 
-        // IncreaseWeights(k^2, pr - r, pc - r): level 0 from the registers
+        // IncreaseWeights(k^2, pr - r, pc - r)
         const int row0 = pr - kR, col0 = pc - kR;
         const int first_r = max(0, row0), last_r = min(core_h, row0 + kS) - 1;
         const int first_c = max(0, col0), last_c = min(core_w, col0 + kS) - 1;
+        if (fast_pyramid) {
+            // k^2 into the idle transform buffer; then a warp takes a square of
+            // level 4 (16 x 16 of level 0), a lane one row of one of its four
+            // level-3 squares: level 0 gets k^2 where the patch covers the core
+            // (one load and one store), and levels 3 and 4 the minima of the new
+            // weights by shuffles (the levels above by warp 0 before the next
+            // selection). A 64 x 64 patch touches at most 5 x 5 squares of level 4.
+#pragma unroll
+            for (int k = 0; k < kPer; ++k) are[(my_row + kRowStep * k) * kPitch + my_col] = kv[k];
+            __syncthreads();
+            constexpr int kWarps = kThreads / 32;
+            const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+            const int dr = lane >> 3 & 1, dc = lane >> 4, j = lane & 7;
+            const int f4r = first_r >> 4, f4c = first_c >> 4;
+            const int n4c = (last_c >> 4) - f4c + 1;
+            const int squares = ((last_r >> 4) - f4r + 1) * n4c;
+            float* l0 = level(0);
+            float* l3 = swm + lv_off[kSharedLevel];
+            float* l4 = swm + lv_off[kSharedLevel + 1];
+            const int c0s = lv_cols[0], c3 = lv_cols[kSharedLevel], c4 = lv_cols[kSharedLevel + 1];
+            for (int sq = warp; sq < squares; sq += kWarps) {  // the same in the whole warp
+                const int R4 = f4r + sq / n4c, C4 = f4c + sq % n4c;
+                const int r = 16 * R4 + 8 * dr + j, cb = 16 * C4 + 8 * dc;
+                float4* at = reinterpret_cast<float4*>(l0 + r * c0s + cb);
+                float4 a = at[0], b = at[1];
+                if (r >= first_r && r <= last_r && cb <= last_c && cb + 7 >= first_c) {
+                    const float* kk = are + (r - row0) * kPitch - col0;
+                    auto add = [&](float& x, int c) {
+                        if (c >= first_c && c <= last_c) x = x + kk[c];
+                    };
+                    add(a.x, cb); add(a.y, cb + 1); add(a.z, cb + 2); add(a.w, cb + 3);
+                    add(b.x, cb + 4); add(b.y, cb + 5); add(b.z, cb + 6); add(b.w, cb + 7);
+                    at[0] = a;
+                    at[1] = b;
+                }
+                float m = fminf(fminf(fminf(a.x, a.y), fminf(a.z, a.w)), fminf(fminf(b.x, b.y), fminf(b.z, b.w)));
+                m = fminf(m, __shfl_xor_sync(0xffffffffu, m, 1));
+                m = fminf(m, __shfl_xor_sync(0xffffffffu, m, 2));
+                m = fminf(m, __shfl_xor_sync(0xffffffffu, m, 4));
+                if (j == 0) l3[(2 * R4 + dr) * c3 + 2 * C4 + dc] = m;
+                m = fminf(m, __shfl_xor_sync(0xffffffffu, m, 8));
+                m = fminf(m, __shfl_xor_sync(0xffffffffu, m, 16));
+                if (lane == 0) l4[R4 * c4 + C4] = m;
+            }
+            prev_fr = first_r;
+            prev_lr = last_r;
+            prev_fc = first_c;
+            prev_lc = last_c;
+            __syncthreads();
+            PH(6);
+            continue;
+        }
         {
             float* lvl = level(0);
             const int c = col0 + my_col;

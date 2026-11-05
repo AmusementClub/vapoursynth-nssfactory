@@ -29,7 +29,7 @@ pixel count and differ between GPUs.
 | [TWSC](twsc.md) | 109 | 0.92 |
 | [NLH](nlh.md) | 76 | — |
 | [BM4D](bm4d.md) | 28 | — |
-| [DA3D](da3d.md) | 60 | — |
+| [DA3D](da3d.md) | 66 | — |
 
 - NLM filters luma only at its defaults; PNLM filters every plane.
 - NLH's defaults are its paper's preset already; BM4D and DA3D have no
