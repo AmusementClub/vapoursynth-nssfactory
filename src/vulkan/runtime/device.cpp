@@ -4,6 +4,7 @@
 #include "vulkan/runtime/instance.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 
 namespace nss_vk {
@@ -133,6 +134,12 @@ DeviceCaps query_caps(VkPhysicalDevice device) {
     caps.vendor_id = p.vendorID;
     caps.type = p.deviceType;
     caps.shared_memory = p.limits.maxComputeSharedMemorySize;
+    // Diagnostics (tests of the 32 KiB tier on a larger device): at most
+    // NSS_VK_SHARED_LIMIT_KIB KiB, as if the device had that much.
+    if (const char* cap = std::getenv("NSS_VK_SHARED_LIMIT_KIB"); cap && *cap) {
+        const long kib = std::strtol(cap, nullptr, 10);
+        if (kib > 0) caps.shared_memory = std::min(caps.shared_memory, static_cast<std::uint32_t>(kib) * 1024u);
+    }
     caps.max_allocations = p.limits.maxMemoryAllocationCount;
     caps.max_workgroup_invocations =
         std::min(p.limits.maxComputeWorkGroupInvocations, p.limits.maxComputeWorkGroupSize[0]);

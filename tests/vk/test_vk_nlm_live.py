@@ -101,6 +101,7 @@ def main():
         ("rgb default", rgb, {}),
         ("rgb d0 a3", rgb, dict(d=0, a=3)),
         # Beyond the one-launch path: its shared memory (s) and its window (d).
+        ("gray s18", gray, dict(s=18)),  # the tile path's maps above 32 KiB (the plane path on a 32 KiB device)
         ("gray s30", gray, dict(s=30)),
         ("gray d9 a1 s1", gray, dict(d=9, a=1, s=1)),
         ("rgb s30 rclip", rgb, dict(s=30, d=2, rclip=make_clip(core, vs.RGBS, 41, 37, 11))),

@@ -20,7 +20,7 @@ static_assert(sizeof(Push) == 128, "matches the push block of shaders/bm3d/commo
 // The shapes the warp kernel serves, as nss_cuda's warp_serves (admitted
 // there on paired measurements against the block kernel): up to 128 samples
 // a lane for both stages, 256 for the hard threshold only, and 16 / 16.
-bool warp_serves(int block, int group, bool wiener) {
+bool warp_shape(int block, int group, bool wiener) {
     switch (block * 100 + group) {
         case 402: case 404: case 408: case 416: case 432:
         case 802: case 804: case 808: case 816:
@@ -33,6 +33,19 @@ bool warp_serves(int block, int group, bool wiener) {
     }
 }
 
+// Shared memory of the warp kernel (shaders/bm3d/group_warp.comp): the
+// transpose buffer, the Wiener stage's parked gains, and the emulated layer's
+// exchange (counted on both layers). Only block 16, group 16 Wiener (34,880
+// bytes) is above 32 KiB: a 32 KiB device runs it on the block kernel.
+std::size_t warp_shared_bytes(int block, int group, bool wiener) {
+    const std::size_t floats = static_cast<std::size_t>(block) * 33 + (wiener ? 32u * group * block : 0u);
+    return floats * sizeof(float) + 32 * 8;
+}
+
+bool warp_serves(int block, int group, bool wiener, std::uint32_t shared) {
+    return warp_shape(block, group, wiener) && warp_shared_bytes(block, group, wiener) <= shared;
+}
+
 // nss_cuda's kCubeSharedBytes: the block kernel keeps larger cubes in scratch.
 constexpr std::size_t kCubeSharedBytes = 24 * 1024;
 
@@ -42,10 +55,12 @@ std::size_t cube_bytes(int block, int group, bool wiener) {
 
 }  // namespace
 
-bool Bm3dKernels::warp_kernel(int block, int group, bool wiener) { return warp_serves(block, group, wiener); }
+bool Bm3dKernels::warp_kernel(int block, int group, bool wiener, std::uint32_t shared) {
+    return warp_serves(block, group, wiener, shared);
+}
 
-std::size_t bm3d_scratch_floats(int block, int group, bool wiener) {
-    if (warp_serves(block, group, wiener) || cube_bytes(block, group, wiener) <= kCubeSharedBytes) return 0;
+std::size_t bm3d_scratch_floats(int block, int group, bool wiener, std::uint32_t shared) {
+    if (warp_serves(block, group, wiener, shared) || cube_bytes(block, group, wiener) <= kCubeSharedBytes) return 0;
     return static_cast<std::size_t>(group) * block * block * (wiener ? 2 : 1);
 }
 
@@ -57,7 +72,7 @@ bool Bm3dKernels::supports(int block, int group) {
 
 const Pipeline& Bm3dKernels::pipeline(int block, int group, bool wiener, bool& warp) {
     if (!supports(block, group)) throw std::logic_error("nss_vk: unsupported BM3D block or group size");
-    warp = warp_serves(block, group, wiener);
+    warp = warp_serves(block, group, wiener, device_->caps().shared_memory);
     // The warp kernel (a 32-invocation workgroup) runs natively on the
     // widest selectable subgroup up to 32 where segments of B lanes are
     // native (D23), else on the emulated layer.

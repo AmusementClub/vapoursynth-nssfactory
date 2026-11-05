@@ -65,11 +65,18 @@ int main() {
     // A device whose widest subgroup is 16: lane kernels up to L = 16 native, wider ones emulated.
     const auto narrow = nss_vk::classify(device(8, 16, 48));
     expect(narrow.support == Support::emulated && narrow.native_lanes == 16, "narrow emulated");
-    // lavapipe (Mesa 26): subgroup 8 and 32 KiB, below D22's 48 KiB (no CI tier, 2026-10-24).
+    // The 32 KiB tier (D22 as amended 2026-11-05): AMD's Windows driver and
+    // AMDVLK on RDNA, Intel's Windows driver before Battlemage.
+    const auto amd_windows = nss_vk::classify(device(32, 64, 32));
+    expect(amd_windows.support == Support::native && amd_windows.missing.empty(), "32 KiB native");
+    // lavapipe (Mesa 26): subgroup 8 and 32 KiB: wider kernels on the emulated layer.
     const auto lavapipe = nss_vk::classify(device(8, 8, 32));
-    expect(lavapipe.support == Support::unsupported, "lavapipe unsupported");
-    expect(lavapipe.missing.size() == 1 && lists(lavapipe, "maxComputeSharedMemorySize 32 KiB"), "lavapipe reason");
-    expect(lavapipe.native_lanes == 0, "unsupported has no native lanes");
+    expect(lavapipe.support == Support::emulated && lavapipe.native_lanes == 8, "lavapipe emulated");
+    // Below the floor.
+    const auto small = nss_vk::classify(device(32, 32, 16));
+    expect(small.support == Support::unsupported, "16 KiB unsupported");
+    expect(small.missing.size() == 1 && lists(small, "maxComputeSharedMemorySize 16 KiB < 32 KiB"), "16 KiB reason");
+    expect(small.native_lanes == 0, "unsupported has no native lanes");
 
     auto old = device(32, 32, 48);
     old.api_version = VK_API_VERSION_1_2;

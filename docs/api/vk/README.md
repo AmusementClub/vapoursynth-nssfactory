@@ -89,7 +89,14 @@ A device runs `nss_vk` when it has Vulkan 1.3 with:
   64-bit integer atomics on buffers (the sums are fixed point);
 - subgroup basic, vote, ballot, shuffle and arithmetic operations in compute
   shaders, subgroup size control with full subgroups;
-- 48 KiB of shared memory per workgroup.
+- 32 KiB of shared memory per workgroup.
+
+On a device with less than 48 KiB (AMD's Windows driver and AMDVLK report 32
+KiB, as does Intel's Windows driver before Arc B-series), a few shapes take a
+smaller path: BM3D's block 16 / group 16 final stage, PNLM's weighting of
+groups 9 to 16, NLM's larger tiles and BM3D's matching windows at blocks 12
+and 16 use less shared memory there. The matches are the same; the output
+stays within the same tolerances, at some cost in speed for those shapes.
 
 `core.nss_vk.Backend(device_id)` reports it:
 
@@ -101,10 +108,11 @@ A device runs `nss_vk` when it has Vulkan 1.3 with:
 | `probe_ok`, `probe_ms` | A kernel run at load. |
 | `gpu_frames` | Whether GPU frames are processed on this core: `yes (R81)`, or why not (see below). |
 
-- **Vendors.** Validated on NVIDIA (RTX 5080, driver 595.91.07, Linux).
-  Mesa's software device (lavapipe) has 32 KiB of shared memory and is
-  `unsupported`. AMD and Intel GPUs that meet the list should run, but are
-  untested, as are Windows drivers at run time.
+- **Vendors.** Validated on NVIDIA (RTX 5080, driver 595.91.07, Linux); the
+  32 KiB paths are checked there with the device's shared memory capped to 32
+  KiB (`NSS_VK_SHARED_LIMIT_KIB=32`). AMD and Intel GPUs that meet the list
+  should run, but are untested, as are Windows drivers at run time. Mesa's
+  software device (lavapipe, 32 KiB) runs it `emulated`, very slowly.
 - **No loader needed to load.** The plugin finds the Vulkan loader when a
   filter is created; without one, `Backend()` says so.
 - **Pipeline cache.** Compiled kernels are kept on disk per device and driver
@@ -199,6 +207,7 @@ most half the core's frame cache is imported.
 | `NSS_VK_DIRECT_IO`, `NSS_VK_DIRECT_IO_MAX_MB`, `NSS_VK_DIRECT_IO_STATS` | Direct transfers with vapoursynth-classic (above). |
 | `NSS_VK_WAIT_TIMEOUT_MS` | How long a frame may take on the device before it is an error (default 60000). |
 | `NSS_VK_REBAR=0`, `NSS_VK_COPY_QUEUES=0/1/2` | Diagnostics: no resizable BAR uploads; fewer copy queues. |
+| `NSS_VK_SHARED_LIMIT_KIB` | Diagnostics: treat the device as having at most this much shared memory per workgroup (for example `32`, the paths of a 32 KiB device). |
 | `NSS_VK_TIMES` | `1`: record per-slot timestamps and print aggregate upload/match/filter/aggregate/download/wait/submit statistics when a filter is freed. Disabled by default. |
 
 Times are compared only within each stage queue. Stages with no commands are not

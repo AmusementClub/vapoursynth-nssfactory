@@ -48,6 +48,17 @@ namespace {
 constexpr std::size_t kExtraSlots = 2;
 constexpr std::size_t kExtraOutputs = 1;
 constexpr int kSide = 16, kRefs = kSide - 1;
+
+// Shared memory of the fused matcher (shaders/pnlm/match.comp, MODE 2) for
+// groups of k + 1: the quarter sums, each slot's keys and weights, its count
+// and reference, and on the emulated layer the warp exchange (8 warps). Groups
+// of 9 to 16 take 32,776 bytes natively: above a 32 KiB device's, which runs
+// them through the key path (nss_cuda's unfused one) instead.
+std::size_t fused_shared_bytes(int k, bool emulated) {
+    constexpr std::size_t slots = static_cast<std::size_t>(kRefs) * kRefs;
+    return 2 * kSide * (kSide + 1) * sizeof(float) + 2 * slots * static_cast<std::size_t>(k + 1) * 4 +
+           2 * slots * 4 + (emulated ? 8 * 32 * 8 : 0);
+}
 constexpr int kMaxFrames = 64;  // shaders/pnlm/common.glsl Params::frames (2 kPnlmMaxD + 1 = 63)
 static_assert(2 * nss::kPnlmMaxD + 1 <= kMaxFrames);
 
@@ -95,6 +106,8 @@ struct PnlmData : nss::PnlmParams {
     std::size_t offset[4] = {};  // their offsets in a frame, floats
     std::size_t frame_floats = 0;
     bool fused = false;
+    bool emulate = false;  // the warp kernels on the emulated layer (D23)
+    int k = 7;             // the matcher's group variant: 7, 15 or 31 matches beyond the reference
     std::size_t keys_bytes = 0;  // of the largest plane (0: fused)
     Pipeline match, weight, gather;
     WindowCache window;
@@ -412,7 +425,14 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     d->window.filter = "nss_vk.PNLM";
 
     std::size_t est = 0;
-    d->fused = d->a <= 4 && d->group <= 16;  // nss_cuda's pnlm_fused
+    // NSS_VK_FORCE_EMULATED_WARP=1 (diagnostics, tests): the emulated warp
+    // layer on any device.
+    const char* force = std::getenv("NSS_VK_FORCE_EMULATED_WARP");
+    const auto lanes = static_cast<std::uint32_t>(nss::pnlm_lanes(d->block * d->block));
+    d->emulate = d->device->support().native_lanes < lanes || (force && force[0] == '1');
+    d->k = d->group <= 8 ? 7 : d->group <= 16 ? 15 : 31;
+    // nss_cuda's pnlm_fused, where the device has the shared memory for it.
+    d->fused = d->a <= 4 && d->group <= 16 && fused_shared_bytes(d->k, d->emulate) <= d->device->caps().shared_memory;
     for (int plane = 0; plane < d->vi.format.numPlanes; ++plane) {
         if (d->sigma[plane] == 0.f) continue;
         const int w = nss::plane_width(d->vi, plane), h = nss::plane_height(d->vi, plane);
@@ -471,17 +491,13 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     }
 
     const int q = d->block / 2;
-    const std::size_t lanes = static_cast<std::size_t>(nss::pnlm_lanes(d->block * d->block));
-    // NSS_VK_FORCE_EMULATED_WARP=1 (diagnostics, tests): the emulated warp
-    // layer on any device.
-    const char* force = std::getenv("NSS_VK_FORCE_EMULATED_WARP");
-    const bool emulate = d->device->support().native_lanes < lanes || (force && force[0] == '1');
+    const bool emulate = d->emulate;
     const std::uint32_t width = emulate ? 0
                                         : std::clamp<std::uint32_t>(32, d->device->caps().min_subgroup_size,
                                                                     d->device->caps().max_subgroup_size);
     const std::string layer = emulate ? "_e" : "_n";
     const std::string qs = "_q" + std::to_string(q);
-    const int k = d->group <= 8 ? 7 : d->group <= 16 ? 15 : 31;
+    const int k = d->k;
     if (d->fused) {
         d->match = Pipeline(d->device, {"pnlm_match" + qs + "_k" + std::to_string(k) + "_m2" + layer,
                                         sizeof(MatchPush), width, {}});

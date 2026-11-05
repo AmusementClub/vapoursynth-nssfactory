@@ -309,7 +309,11 @@ foreach(_nss_b 1 2 4 8 12 16 32)
                             bm3d/group_warp.comp LIGHT
                             DEFINES B=${_nss_b} G=${_nss_g} WIENER=${_nss_w} WARP_EMULATED=${_nss_emu})
         endforeach()
-      else()
+      endif()
+      # The block kernel for every shape the warp kernel does not serve, and
+      # for block 16 / group 16 Wiener, whose warp kernel needs more than a
+      # 32 KiB device's shared memory (bm3d/kernels.cpp warp_shared_bytes).
+      if(NOT _nss_warp OR (_nss_shape EQUAL 1616 AND _nss_w))
         nss_vk_add_shader(NSS_VK_SPIRV_SOURCES bm3d_shape_b${_nss_b}_g${_nss_g}_${_nss_stage} bm3d/group_shape.comp
                           LIGHT DEFINES B=${_nss_b} G=${_nss_g} WIENER=${_nss_w})
       endif()

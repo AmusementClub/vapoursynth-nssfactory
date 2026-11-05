@@ -86,9 +86,17 @@ int window_min_side(WindowMode m, int block) {
 // raise).
 constexpr int kWindowSeedMargin = 4;
 
-int window_tile(int side) {
-    const int cols = (side + kWindowTile - 1) / kWindowTile;
-    return (side + cols - 1) / cols;
+// The tile side for a window side: the fewest columns of at most kWindowTile,
+// then more while a workgroup's regions (kWindowWarps of (tile + B - 1) rows
+// of pitch (tile + B - 1) | 1 floats) exceed the device's shared memory (a
+// 32 KiB device at blocks 12 and 16). Tiles split the search, not its result:
+// the matches do not depend on them.
+int window_tile(int side, int block, std::uint32_t shared) {
+    for (int cols = (side + kWindowTile - 1) / kWindowTile;; ++cols) {
+        const int tile = (side + cols - 1) / cols;
+        const long long span = tile + block - 1;
+        if (tile == 1 || kWindowWarps * span * (span | 1) * static_cast<long long>(sizeof(float)) <= shared) return tile;
+    }
 }
 
 // Rows an item takes for a tile side, as nss_cuda's match_window.cu: the
@@ -183,7 +191,7 @@ bool Matcher::window_seeds(const MatchGeometry& g, int ps_num) const {
 
 const Pipeline& Matcher::window_pipeline(const MatchGeometry& g, bool temporal) {
     const WindowMode m = window_mode(g);
-    const int tile = window_tile(g.lo() + g.hi() + 1);
+    const int tile = window_tile(g.lo() + g.hi() + 1, g.block, device_->caps().shared_memory);
     const bool split = m == WindowMode::split;
     const std::string id = "match_window_" +
                            std::string(m == WindowMode::tree ? "tree" : m == WindowMode::chain ? "chain" : "split") +
@@ -263,7 +271,7 @@ void Matcher::dispatch_window(VkCommandBuffer commands, VkDeviceAddress source, 
     if (static_cast<long long>(ref_count) * g.group >= (1LL << 31)) {
         throw std::logic_error("nss_vk: match batch beyond 32-bit indices");
     }
-    const int side = g.lo() + g.hi() + 1, tile = window_tile(side);
+    const int side = g.lo() + g.hi() + 1, tile = window_tile(side, g.block, device_->caps().shared_memory);
     const WindowPush p{source,     matches,   counts,    g.width,   g.height,           g.pitch,
                        g.group,    g.lo(),    g.hi(),    grid.nx,   grid.step,          grid.max_x,
                        grid.max_y, ref_begin, ref_count, std::max(frame, 0), tile,     tile,

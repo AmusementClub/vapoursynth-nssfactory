@@ -389,6 +389,8 @@ def main():
         ("chroma one plane alone", yuv444, dict(sigma=[10, 0, 7], chroma=1)),
         ("chroma final=1", yuv444, dict(sigma=10, chroma=1, final=1)),
         ("chroma block 16 group 32", yuv444, dict(sigma=10, chroma=1, block_size=16, group_size=32)),
+        # The window matcher's split layout at its largest tile (33: smaller on a 32 KiB device).
+        ("block 16 bm_range 16 final=1", gray, dict(sigma=10, block_size=16, group_size=16, bm_range=16, final=1)),
         ("memory limit", gray, dict(sigma=10, memory_limit_mb=64)),
     ]
     for label, clip, kw in others:

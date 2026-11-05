@@ -37,8 +37,9 @@ windows or several frames, consider [PNLM](pnlm.md).
   (the same model, exact box sums); identical from run to run, and the same
   bits on GPU frames as on CPU frames.
 - **Two paths.** The defaults and anything with `2d + 1 <= 17` frames and a
-  tile that fits 48 KiB of shared memory run one dispatch per frame, with the
-  window frames kept on the device once for every request that reads them.
+  tile that fits the device's shared memory (48 KiB at most) run one dispatch
+  per frame, with the window frames kept on the device once for every request
+  that reads them.
   Larger windows, patches or `d` take a slower path with three frames
   resident.
 - **`d=1`.** The weights of a frame pair are computed once for both frames
