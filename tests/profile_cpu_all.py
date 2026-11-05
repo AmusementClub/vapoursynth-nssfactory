@@ -47,11 +47,13 @@ def make_source(
             + 0.2 * np.sin(xx / 37.0) * np.cos(yy / 29.0)
             + 0.05 * (xx + yy) / (width + height)
         ).astype(np.float32)
+    # MCWNNM, and DA3D with NSS_PROFILE_DA3D_RGB=1 (its joint color path), take RGB.
+    rgb = algorithm == "mcwnnm" or (algorithm == "da3d" and os.environ.get("NSS_PROFILE_DA3D_RGB") == "1")
     planes = [
         base + rng.randn(height, width).astype(np.float32) * np.float32(3.0 / 255.0)
-        for _ in range(3 if algorithm == "mcwnnm" else 1)
+        for _ in range(3 if rgb else 1)
     ]
-    fmt = vs.RGBS if algorithm == "mcwnnm" else vs.GRAYS
+    fmt = vs.RGBS if rgb else vs.GRAYS
     blank = core.std.BlankClip(
         width=width,
         height=height,
@@ -174,6 +176,22 @@ def make_filter(core: vs.Core, algorithm: str, source: vs.VideoNode) -> vs.Video
             bm_range=int(os.environ.get("NSS_PROFILE_NLH_RANGE", "20")),
             q=int(os.environ.get("NSS_PROFILE_NLH_Q", "4")),
         )
+    if algorithm == "da3d":
+        # The guide (BM3D at 4/3 sigma, final=1, as the API cost tables) is computed
+        # once from frame 0, before the timing, and handed out for every frame.
+        sigma = float(os.environ.get("NSS_PROFILE_DA3D_SIGMA", "3"))
+        first = core.nss.BM3D(source[0], sigma=4 / 3 * sigma, final=1).get_frame(0)
+        guide_planes = [np.array(first[p], copy=True) for p in range(first.format.num_planes)]
+
+        def fill(n: int, f: vs.VideoFrame) -> vs.VideoFrame:
+            del n
+            out = f.copy()
+            for plane, values in enumerate(guide_planes):
+                np.asarray(out[plane])[:, :] = values
+            return out
+
+        guide = core.std.ModifyFrame(clip=source, clips=source, selector=fill)
+        return core.nss.DA3D(source, guide, sigma=sigma)
     if algorithm == "mcwnnm":
         block_size = int(os.environ.get("NSS_PROFILE_MCWNNM_BLOCK", "8"))
         sigma = float(os.environ.get("NSS_PROFILE_MCWNNM_SIGMA", "3"))
