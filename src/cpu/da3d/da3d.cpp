@@ -181,9 +181,10 @@ static const Tables& tables() {
 }
 
 // K 32-lane sums at once (params/da3d.hpp): term(acc, i) adds the terms of
-// elements i .. i + N - 1 to acc[0 .. K).
+// elements i .. i + N - 1 to acc[0 .. K) and may store per-element results
+// (every element is visited once).
 template <int K, class Term>
-static HWY_NOINLINE void LaneSums(float* out, const Term& term) {
+static HWY_INLINE void LaneSums(float* out, const Term& term) {
     const DF d;
     const int N = static_cast<int>(hn::Lanes(d));
     const int per = 32 / N;
@@ -339,12 +340,48 @@ static HWY_NOINLINE void Dit4(float* re, float* im, bool inverse) {
     }
 }
 
-// dst[c][f] = src[perm[f]][c] (perm null: the identity), in 4x4 blocks.
+// dst[c][f] = src[perm[f]][c] (perm null: the identity), in 8x8 blocks with
+// 256-bit vectors, else 4x4.
 static HWY_NOINLINE void Transpose(const float* src, float* dst, const int* perm) {
 #if HWY_TARGET == HWY_SCALAR
     for (int f = 0; f < 64; ++f) {
         const float* s = src + (perm ? perm[f] : f) * 64;
         for (int c = 0; c < 64; ++c) dst[c * 64 + f] = s[c];
+    }
+#elif HWY_MAX_BYTES >= 32
+    const hn::FixedTag<float, 8> d8;
+    const hn::Repartition<uint64_t, decltype(d8)> d64;
+    // 32-bit, then 64-bit interleaves within the 128-bit halves, then the halves.
+    const auto il = [&](hn::Vec<decltype(d8)> a, hn::Vec<decltype(d8)> b) {
+        return hn::BitCast(d8, hn::InterleaveLower(d64, hn::BitCast(d64, a), hn::BitCast(d64, b)));
+    };
+    const auto iu = [&](hn::Vec<decltype(d8)> a, hn::Vec<decltype(d8)> b) {
+        return hn::BitCast(d8, hn::InterleaveUpper(d64, hn::BitCast(d64, a), hn::BitCast(d64, b)));
+    };
+    for (int f = 0; f < 64; f += 8) {
+        const float* s[8];
+        for (int q = 0; q < 8; ++q) s[q] = src + (perm ? perm[f + q] : f + q) * 64;
+        for (int c = 0; c < 64; c += 8) {
+            const auto a0 = hn::Load(d8, s[0] + c), a1 = hn::Load(d8, s[1] + c);
+            const auto a2 = hn::Load(d8, s[2] + c), a3 = hn::Load(d8, s[3] + c);
+            const auto a4 = hn::Load(d8, s[4] + c), a5 = hn::Load(d8, s[5] + c);
+            const auto a6 = hn::Load(d8, s[6] + c), a7 = hn::Load(d8, s[7] + c);
+            const auto t0 = hn::InterleaveLower(d8, a0, a1), t1 = hn::InterleaveUpper(d8, a0, a1);
+            const auto t2 = hn::InterleaveLower(d8, a2, a3), t3 = hn::InterleaveUpper(d8, a2, a3);
+            const auto t4 = hn::InterleaveLower(d8, a4, a5), t5 = hn::InterleaveUpper(d8, a4, a5);
+            const auto t6 = hn::InterleaveLower(d8, a6, a7), t7 = hn::InterleaveUpper(d8, a6, a7);
+            const auto u0 = il(t0, t2), u1 = iu(t0, t2), u2 = il(t1, t3), u3 = iu(t1, t3);
+            const auto u4 = il(t4, t6), u5 = iu(t4, t6), u6 = il(t5, t7), u7 = iu(t5, t7);
+            float* o = dst + c * 64 + f;
+            hn::Store(hn::ConcatLowerLower(d8, u4, u0), d8, o + 0 * 64);
+            hn::Store(hn::ConcatLowerLower(d8, u5, u1), d8, o + 1 * 64);
+            hn::Store(hn::ConcatLowerLower(d8, u6, u2), d8, o + 2 * 64);
+            hn::Store(hn::ConcatLowerLower(d8, u7, u3), d8, o + 3 * 64);
+            hn::Store(hn::ConcatUpperUpper(d8, u4, u0), d8, o + 4 * 64);
+            hn::Store(hn::ConcatUpperUpper(d8, u5, u1), d8, o + 5 * 64);
+            hn::Store(hn::ConcatUpperUpper(d8, u6, u2), d8, o + 6 * 64);
+            hn::Store(hn::ConcatUpperUpper(d8, u7, u3), d8, o + 7 * 64);
+        }
     }
 #else
     const hn::FixedTag<float, 4> d4;
@@ -412,8 +449,6 @@ struct Patch {
     // Each array holds kArea floats.
     float* y[3];
     float* g[3];
-    float* plane[3];
-    float* k_reg;
     float* k;
     float* tre;  // transform work
     float* tim;
@@ -421,7 +456,7 @@ struct Patch {
     float* zim[3];
     float* wre[2];
     float* wim[2];
-    static constexpr int kArrays = 3 * 3 + 2 + 2 + 3 * 2 + 2 * 2;
+    static constexpr int kArrays = 2 * 3 + 1 + 2 + 3 * 2 + 2 * 2;
     static std::size_t floats() { return static_cast<std::size_t>(kArea) * kArrays; }
     void carve(float* p) {
         auto take = [&p]() {
@@ -431,8 +466,6 @@ struct Patch {
         };
         for (int c = 0; c < 3; ++c) y[c] = take();
         for (int c = 0; c < 3; ++c) g[c] = take();
-        for (int c = 0; c < 3; ++c) plane[c] = take();
-        k_reg = take();
         k = take();
         tre = take();
         tim = take();
@@ -443,23 +476,17 @@ struct Patch {
     }
 };
 
-// k = fastexp(-(sum_c (g_c - g_c(p))^2 inv_range + dist)).
-static HWY_NOINLINE void BilateralWeight(float* const* g, int channels, float inv_range, const float* dist, float* k) {
-    const DF d;
-    const int N = static_cast<int>(hn::Lanes(d));
-    float center[3];
-    for (int c = 0; c < channels; ++c) center[c] = g[c][kR * kS + kR];
-    const auto vinv = hn::Set(d, inv_range);
-    for (int i = 0; i < kArea; i += N) {
-        auto e = hn::Sub(hn::Load(d, g[0] + i), hn::Set(d, center[0]));
-        auto x = hn::Mul(e, e);
-        for (int c = 1; c < channels; ++c) {
-            e = hn::Sub(hn::Load(d, g[c] + i), hn::Set(d, center[c]));
-            x = hn::MulAdd(e, e, x);
-        }
-        x = hn::MulAdd(x, vinv, hn::Load(d, dist + i));
-        hn::Store(FastExp(d, hn::Neg(x)), d, k + i);
+// k = fastexp(-(sum_c (g_c - g_c(p))^2 inv_range + dist)) of N elements.
+template <int C>
+static HWY_INLINE VF Bilateral(DF d, const VF* g, const float* center, VF vinv, VF dist) {
+    auto e = hn::Sub(g[0], hn::Set(d, center[0]));
+    auto x = hn::Mul(e, e);
+    for (int c = 1; c < C; ++c) {
+        e = hn::Sub(g[c], hn::Set(d, center[c]));
+        x = hn::MulAdd(e, e, x);
     }
+    x = hn::MulAdd(x, vinv, dist);
+    return FastExp(d, hn::Neg(x));
 }
 
 // Y = (Z(f) + conj Z(-f)) / 2, G = (Z(f) - conj Z(-f)) / 2i of the packed
@@ -473,38 +500,76 @@ static HWY_NOINLINE void ShrinkChannel(const float* zre, const float* zim, float
     const Tables& tb = tables();
     const auto half = hn::Set(d, 0.5f);
     const auto vcoef = hn::Set(d, coef);
-    HWY_ALIGN float ext_re[80], ext_im[80];
-    const auto block = [&](int i, int b0, bool dc) {
+    // Writes Y' (or adds i Y') at i; ry, iy: the values.
+    const auto put = [&](float* r, float* im, VF ry, VF iy) {
+        if (kAddI) {
+            hn::StoreU(hn::Sub(hn::LoadU(d, r), iy), d, r);
+            hn::StoreU(hn::Add(hn::LoadU(d, im), ry), d, im);
+        } else {
+            hn::StoreU(ry, d, r);
+            hn::StoreU(iy, d, im);
+        }
+    };
+    // qr, qi: Z at -f of the block's N frequencies (column -b of the mirrored row).
+    // With ry_out, Y' at those -f goes to (*ry_out, *iy_m): G(-f) has the same
+    // |G|^2 (gr is symmetric in f and -f, gi changes sign), so the same K, and
+    // Y(-f) = conj Y(f) (its imaginary part recomputed, which keeps the sign of
+    // a zero).
+    const auto block = [&](int i, VF qr, VF qi, bool dc, VF* ry_out, VF* iy_m) {
         const auto zr = hn::Load(d, zre + i), zi = hn::Load(d, zim + i);
-        const auto qr = hn::Reverse(d, hn::LoadU(d, ext_re + 64 - b0 - N + 1));
-        const auto qi = hn::Reverse(d, hn::LoadU(d, ext_im + 64 - b0 - N + 1));
         const auto yr = hn::Mul(half, hn::Add(zr, qr));
         const auto yi = hn::Mul(half, hn::Sub(zi, qi));
         const auto gr = hn::Mul(half, hn::Add(zi, qi));
         const auto gi = hn::Mul(half, hn::Sub(qr, zr));
         auto K = FastExp(d, hn::Div(vcoef, hn::MulAdd(gr, gr, hn::Mul(gi, gi))));
         if (dc) K = hn::InsertLane(K, 0, 1.f);
-        const auto ry = hn::Mul(K, yr), iy = hn::Mul(K, yi);
-        if (kAddI) {
-            hn::Store(hn::Sub(hn::Load(d, outr + i), iy), d, outr + i);
-            hn::Store(hn::Add(hn::Load(d, outi + i), ry), d, outi + i);
-        } else {
-            hn::Store(ry, d, outr + i);
-            hn::Store(iy, d, outi + i);
+        const auto ry = hn::Mul(K, yr);
+        put(outr + i, outi + i, ry, hn::Mul(K, yi));
+        if (ry_out) {
+            *ry_out = ry;
+            *iy_m = hn::Mul(K, hn::Mul(half, hn::Sub(qi, zi)));
         }
     };
+    // Column b of row a0 pairs with column (64 - b) & 63 of the mirrored row
+    // na: lane j of the block at b0 > 0 is column 64 - b0 - j (a reversed load);
+    // at b0 = 0 lane 0 is column 0 and lane j > 0 column 64 - j. A row pair
+    // a0 < na is computed from row a0; rows that are their own mirror (the
+    // frequencies 0 and 32) in full.
     for (int a0 = 0; a0 < 64; ++a0) {
         const int na = tb.negrow[a0];
-        std::memcpy(ext_re, zre + na * 64, 64 * sizeof(float));
-        std::memcpy(ext_im, zim + na * 64, 64 * sizeof(float));
-        ext_re[64] = ext_re[0];
-        ext_im[64] = ext_im[0];
-        int b0 = 0;
-        if (a0 == 0) {
-            block(0, 0, true);
-            b0 = N;
+        if (na < a0) continue;
+        const bool pair = na != a0;
+        const float* mr = zre + na * 64;
+        const float* mi = zim + na * 64;
+        float* nr = outr + na * 64;
+        float* ni = outi + na * 64;
+        VF ry, iy;
+        block(a0 * 64, hn::InsertLane(hn::Slide1Up(d, hn::Reverse(d, hn::LoadU(d, mr + 64 - N))), 0, mr[0]),
+              hn::InsertLane(hn::Slide1Up(d, hn::Reverse(d, hn::LoadU(d, mi + 64 - N))), 0, mi[0]), a0 == 0,
+              pair ? &ry : nullptr, &iy);
+        if (pair) {
+            // lane 0 to column 0, lanes 1 .. N - 1 reversed to columns 65 - N .. 63
+            // (column 64 - N, lane 0 of the shifted store, keeps its value).
+            const auto keep = hn::FirstN(d, 1);
+            const auto oldr = hn::LoadU(d, nr + 64 - N), oldi = hn::LoadU(d, ni + 64 - N);
+            const auto sr = hn::Slide1Up(d, hn::Reverse(d, ry)), si = hn::Slide1Up(d, hn::Reverse(d, iy));
+            if (kAddI) {
+                hn::StoreU(hn::IfThenElse(keep, oldr, hn::Sub(oldr, si)), d, nr + 64 - N);
+                hn::StoreU(hn::IfThenElse(keep, oldi, hn::Add(oldi, sr)), d, ni + 64 - N);
+                nr[0] = nr[0] - hn::GetLane(iy);
+                ni[0] = ni[0] + hn::GetLane(ry);
+            } else {
+                hn::StoreU(hn::IfThenElse(keep, oldr, sr), d, nr + 64 - N);
+                hn::StoreU(hn::IfThenElse(keep, oldi, si), d, ni + 64 - N);
+                nr[0] = hn::GetLane(ry);
+                ni[0] = hn::GetLane(iy);
+            }
         }
-        for (; b0 < 64; b0 += N) block(a0 * 64 + b0, b0, false);
+        for (int b0 = N; b0 < 64; b0 += N) {
+            block(a0 * 64 + b0, hn::Reverse(d, hn::LoadU(d, mr + 64 - b0 - N + 1)),
+                  hn::Reverse(d, hn::LoadU(d, mi + 64 - b0 - N + 1)), false, pair ? &ry : nullptr, &iy);
+            if (pair) put(nr + 64 - b0 - N + 1, ni + 64 - b0 - N + 1, hn::Reverse(d, ry), hn::Reverse(d, iy));
+        }
     }
 }
 
@@ -521,88 +586,107 @@ struct TileContext {
     Da3dStats stats;
 };
 
+template <int C>
 static HWY_NOINLINE void ProcessPatch(TileContext& cx, int pr, int pc) {
     const DF d;
     const int N = static_cast<int>(hn::Lanes(d));
     const Tables& tb = tables();
-    const int C = cx.channels;
     Patch& P = cx.patch;
     const int ts = cx.tile_stride;
-
+    const float* noisy[C];
+    const float* guide[C];
+    float* num[C];
     for (int c = 0; c < C; ++c) {
-        for (int row = 0; row < kS; ++row) {
-            std::memcpy(P.y[c] + row * kS, cx.tile_noisy[c] + static_cast<std::ptrdiff_t>(pr + row) * ts + pc,
-                        kS * sizeof(float));
-            std::memcpy(P.g[c] + row * kS, cx.tile_guide[c] + static_cast<std::ptrdiff_t>(pr + row) * ts + pc,
-                        kS * sizeof(float));
-        }
+        noisy[c] = cx.tile_noisy[c] + static_cast<std::ptrdiff_t>(pr) * ts + pc;
+        guide[c] = cx.tile_guide[c] + static_cast<std::ptrdiff_t>(pr) * ts + pc;
+        num[c] = cx.tile_num[c] + static_cast<std::ptrdiff_t>(pr) * ts + pc;
     }
+    float* const den0 = cx.tile_den + static_cast<std::ptrdiff_t>(pr) * ts + pc;
+    float* const k = P.k;
+    // element i of the patch in the tile
+    const auto at = [ts](int i) { return static_cast<std::ptrdiff_t>(i / kS) * ts + i % kS; };
 
-    // Regression plane through g(p), weighted by k_reg.
+    // Regression plane through g(p), weighted by k_reg: its moments (a, b, cq)
+    // and, per channel, the k_reg-weighted moments of y - g(p).
     const float gamma_r_sigma2 = kDa3dGammaR * cx.sigma2;
-    BilateralWeight(P.g, C, 1.f / (gamma_r_sigma2 * kDa3dRegressionRangeScale), tb.dist_reg, P.k_reg);
-    const float* kr = P.k_reg;
-    float abc[3];
-    LaneSums<3>(abc, [&](VF* acc, int i) {
-        const auto kv = hn::Load(d, kr + i);
+    float center[C];
+    for (int c = 0; c < C; ++c) center[c] = guide[c][at(kR * kS + kR)];
+    const auto vinv_reg = hn::Set(d, 1.f / (gamma_r_sigma2 * kDa3dRegressionRangeScale));
+    float mom[3 + 2 * C];
+    LaneSums<3 + 2 * C>(mom, [&](VF* acc, int i) {
+        const std::ptrdiff_t o = at(i);
+        VF g[C];
+        for (int c = 0; c < C; ++c) g[c] = hn::LoadU(d, guide[c] + o);
+        const auto kv = Bilateral<C>(d, g, center, vinv_reg, hn::Load(d, tb.dist_reg + i));
         acc[0] = hn::MulAdd(hn::Load(d, tb.rr2 + i), kv, acc[0]);
         acc[1] = hn::MulAdd(hn::Load(d, tb.rc + i), kv, acc[1]);
         acc[2] = hn::MulAdd(hn::Load(d, tb.cc2 + i), kv, acc[2]);
-    });
-    const float a = abc[0], b = abc[1], cq = abc[2];
-    const float det = a * cq - b * b;
-    float slope_r[3]{}, slope_c[3]{};
-    if (!(std::fabs(det) < kDa3dRegressionEpsilon)) {
         for (int c = 0; c < C; ++c) {
-            const auto central = hn::Set(d, P.g[c][kR * kS + kR]);
-            const float* yc = P.y[c];
-            float de[2];
-            LaneSums<2>(de, [&](VF* acc, int i) {
-                const auto kv = hn::Load(d, kr + i);
-                const auto v = hn::Sub(hn::Load(d, yc + i), central);
-                acc[0] = hn::MulAdd(hn::Mul(hn::Load(d, tb.rr + i), v), kv, acc[0]);
-                acc[1] = hn::MulAdd(hn::Mul(hn::Load(d, tb.cc + i), v), kv, acc[1]);
-            });
-            slope_r[c] = (cq * de[0] - b * de[1]) / det;
-            slope_c[c] = (a * de[1] - b * de[0]) / det;
+            const auto v = hn::Sub(hn::LoadU(d, noisy[c] + o), hn::Set(d, center[c]));
+            acc[3 + 2 * c] = hn::MulAdd(hn::Mul(hn::Load(d, tb.rr + i), v), kv, acc[3 + 2 * c]);
+            acc[4 + 2 * c] = hn::MulAdd(hn::Mul(hn::Load(d, tb.cc + i), v), kv, acc[4 + 2 * c]);
         }
-    }
+    });
+    const float a = mom[0], b = mom[1], cq = mom[2];
+    const float det = a * cq - b * b;
+    VF sr[C], sc[C];
     for (int c = 0; c < C; ++c) {
-        const auto sr = hn::Set(d, slope_r[c]), sc = hn::Set(d, slope_c[c]);
-        for (int i = 0; i < kArea; i += N) {
-            const auto p = hn::MulAdd(sc, hn::Load(d, tb.cc + i), hn::Mul(sr, hn::Load(d, tb.rr + i)));
-            hn::Store(p, d, P.plane[c] + i);
-            hn::Store(hn::Sub(hn::Load(d, P.y[c] + i), p), d, P.y[c] + i);
-            hn::Store(hn::Sub(hn::Load(d, P.g[c] + i), p), d, P.g[c] + i);
+        float slope_r = 0.f, slope_c = 0.f;
+        if (!(std::fabs(det) < kDa3dRegressionEpsilon)) {
+            const float* de = mom + 3 + 2 * c;
+            slope_r = (cq * de[0] - b * de[1]) / det;
+            slope_c = (a * de[1] - b * de[0]) / det;
         }
+        sr[c] = hn::Set(d, slope_r);
+        sc[c] = hn::Set(d, slope_c);
     }
+    // the plane of channel c at elements i .. i + N - 1
+    const auto plane = [&](int c, int i) {
+        return hn::MulAdd(sc[c], hn::Load(d, tb.cc + i), hn::Mul(sr[c], hn::Load(d, tb.rr + i)));
+    };
 
-    BilateralWeight(P.g, C, 1.f / gamma_r_sigma2, tb.dist_k, P.k);
-    const float* k = P.k;
-    float mass_energy[2];
-    LaneSums<2>(mass_energy, [&](VF* acc, int i) {
-        const auto kv = hn::Load(d, k + i);
+    // y and g less the plane, k from that g, and the sums of k, k^2, k y, k g.
+    const int cb = (kR * kS + kR) / N * N;
+    float center2[C];
+    for (int c = 0; c < C; ++c) center2[c] = center[c] - hn::ExtractLane(plane(c, cb), kR * kS + kR - cb);
+    const auto vinv = hn::Set(d, 1.f / gamma_r_sigma2);
+    float sums[2 + 2 * C];
+    LaneSums<2 + 2 * C>(sums, [&](VF* acc, int i) {
+        const std::ptrdiff_t o = at(i);
+        VF y[C], g[C];
+        for (int c = 0; c < C; ++c) {
+            const auto p = plane(c, i);
+            y[c] = hn::Sub(hn::LoadU(d, noisy[c] + o), p);
+            g[c] = hn::Sub(hn::LoadU(d, guide[c] + o), p);
+            hn::Store(y[c], d, P.y[c] + i);
+            hn::Store(g[c], d, P.g[c] + i);
+        }
+        const auto kv = Bilateral<C>(d, g, center2, vinv, hn::Load(d, tb.dist_k + i));
+        hn::Store(kv, d, k + i);
         acc[0] = hn::Add(acc[0], kv);
         acc[1] = hn::MulAdd(kv, kv, acc[1]);
+        for (int c = 0; c < C; ++c) {
+            acc[2 + 2 * c] = hn::MulAdd(kv, y[c], acc[2 + 2 * c]);
+            acc[3 + 2 * c] = hn::MulAdd(kv, g[c], acc[3 + 2 * c]);
+        }
     });
-    const float mass = mass_energy[0];
+    const float mass = sums[0];
     ++cx.stats.patches;
 
     if (mass < kDa3dGuideOnlyMass) {
         ++cx.stats.guide_only;
         for (int row = 0; row < kS; ++row) {
-            float* den = cx.tile_den + static_cast<std::ptrdiff_t>(pr + row) * ts + pc;
+            const std::ptrdiff_t o = static_cast<std::ptrdiff_t>(row) * ts;
             for (int col = 0; col < kS; col += N) {
                 const int i = row * kS + col;
                 const auto kv = hn::Load(d, k + i);
                 const auto kk = hn::Mul(kv, kv);
                 for (int c = 0; c < C; ++c) {
-                    float* num = cx.tile_num[c] + static_cast<std::ptrdiff_t>(pr + row) * ts + pc + col;
-                    const auto v = hn::Add(hn::Load(d, P.g[c] + i), hn::Load(d, P.plane[c] + i));
-                    hn::StoreU(hn::MulAdd(v, kk, hn::LoadU(d, num)), d, num);
+                    const auto v = hn::Add(hn::Load(d, P.g[c] + i), plane(c, i));
+                    hn::StoreU(hn::MulAdd(v, kk, hn::LoadU(d, num[c] + o + col)), d, num[c] + o + col);
                 }
-                hn::StoreU(hn::Add(hn::LoadU(d, den + col), kk), d, den + col);
-                hn::Store(kk, d, P.k + i);
+                hn::StoreU(hn::Add(hn::LoadU(d, den0 + o + col), kk), d, den0 + o + col);
+                hn::Store(kk, d, k + i);
             }
         }
         return;
@@ -610,18 +694,12 @@ static HWY_NOINLINE void ProcessPatch(TileContext& cx, int pr, int pc) {
 
     // y_m = k y + (1 - k) avg packed with g_m as y_m + i g_m.
     const auto one = hn::Set(d, 1.f);
-    float avg[3];
+    float avg[C];
     for (int c = 0; c < C; ++c) {
         const float* yc = P.y[c];
         const float* gc = P.g[c];
-        float sums[2];
-        LaneSums<2>(sums, [&](VF* acc, int i) {
-            const auto kv = hn::Load(d, k + i);
-            acc[0] = hn::MulAdd(kv, hn::Load(d, yc + i), acc[0]);
-            acc[1] = hn::MulAdd(kv, hn::Load(d, gc + i), acc[1]);
-        });
-        avg[c] = sums[0] / mass;
-        const auto ya = hn::Set(d, avg[c]), ga = hn::Set(d, sums[1] / mass);
+        avg[c] = sums[2 + 2 * c] / mass;
+        const auto ya = hn::Set(d, avg[c]), ga = hn::Set(d, sums[3 + 2 * c] / mass);
         for (int i = 0; i < kArea; i += N) {
             const auto kv = hn::Load(d, k + i);
             const auto rest = hn::Sub(one, kv);
@@ -630,37 +708,37 @@ static HWY_NOINLINE void ProcessPatch(TileContext& cx, int pr, int pc) {
         }
         Forward2(P.tre, P.tim, P.zre[c], P.zim[c]);
     }
-    const float sigma_f2 = mass_energy[1] * cx.sigma2;
+    const float sigma_f2 = sums[1] * cx.sigma2;
 
     const float coef = -kDa3dGammaF * sigma_f2;
     ShrinkChannel<false>(P.zre[0], P.zim[0], P.wre[0], P.wim[0], coef);
-    if (C == 3) {
+    if constexpr (C == 3) {
         ShrinkChannel<true>(P.zre[1], P.zim[1], P.wre[0], P.wim[0], coef);
         ShrinkChannel<false>(P.zre[2], P.zim[2], P.wre[1], P.wim[1], coef);
     }
     // y'_0 (+ i y'_1) into (tre, tim); y'_2 into wre[0].
     Inverse2(P.wre[0], P.wim[0], P.tre, P.tim);
-    if (C == 3) Inverse2(P.wre[1], P.wim[1], P.wre[0], P.wim[0]);
+    if constexpr (C == 3) Inverse2(P.wre[1], P.wim[1], P.wre[0], P.wim[0]);
     const float* yout[3] = {P.tre, P.tim, P.wre[0]};
 
     // Add ((y' - (1 - k) avg) + plane k) k and k^2.
     const auto inv_n = hn::Set(d, 1.f / static_cast<float>(kArea));
     for (int row = 0; row < kS; ++row) {
-        float* den = cx.tile_den + static_cast<std::ptrdiff_t>(pr + row) * ts + pc;
+        const std::ptrdiff_t o = static_cast<std::ptrdiff_t>(row) * ts;
         const int src_row = tb.rev4[row] * kS;
         for (int col = 0; col < kS; col += N) {
             const int i = row * kS + col;
             const auto kv = hn::Load(d, k + i);
             const auto rest = hn::Sub(one, kv);
             for (int c = 0; c < C; ++c) {
-                float* num = cx.tile_num[c] + static_cast<std::ptrdiff_t>(pr + row) * ts + pc + col;
+                float* n = num[c] + o + col;
                 auto v = hn::Sub(hn::Mul(hn::Load(d, yout[c] + src_row + col), inv_n), hn::Mul(rest, hn::Set(d, avg[c])));
-                v = hn::MulAdd(hn::Load(d, P.plane[c] + i), kv, v);
-                hn::StoreU(hn::MulAdd(v, kv, hn::LoadU(d, num)), d, num);
+                v = hn::MulAdd(plane(c, i), kv, v);
+                hn::StoreU(hn::MulAdd(v, kv, hn::LoadU(d, n)), d, n);
             }
             const auto kk = hn::Mul(kv, kv);
-            hn::StoreU(hn::Add(hn::LoadU(d, den + col), kk), d, den + col);
-            hn::Store(kk, d, P.k + i);
+            hn::StoreU(hn::Add(hn::LoadU(d, den0 + o + col), kk), d, den0 + o + col);
+            hn::Store(kk, d, k + i);
         }
     }
 }
@@ -675,15 +753,28 @@ static HWY_NOINLINE void IncreaseWeights(WeightMap& wm, const float* kk, int row
         const float* src = kk + (r - row0) * kS - col0;
         for (int c = first_c; c <= last_c; ++c) dst[c] = dst[c] + src[c];
     }
+    // The weights are never NaN or -0 (FastExp gives +0 for NaN), so Min is
+    // std::min's value.
+#if HWY_TARGET != HWY_SCALAR
+    const DF d;
+    const int N = static_cast<int>(hn::Lanes(d));
+#endif
     for (int l = 1; l < wm.levels; ++l) {
         const float* lo = wm.data[l - 1];
         const int lc = wm.cols[l - 1];
         for (int r = first_r >> l; r <= last_r >> l; ++r) {
             float* dst = wm.data[l] + r * wm.cols[l];
-            for (int c = first_c >> l; c <= last_c >> l; ++c) {
-                const float* q = lo + (2 * r) * lc + 2 * c;
-                dst[c] = std::min({q[0], q[1], q[lc], q[lc + 1]});
+            const float* q0 = lo + (2 * r) * lc;
+            const float* q1 = q0 + lc;
+            int c = first_c >> l;
+#if HWY_TARGET != HWY_SCALAR
+            for (; c <= (last_c >> l) && 2 * (c + N) <= lc; c += N) {
+                const auto m0 = hn::Min(hn::LoadU(d, q0 + 2 * c), hn::LoadU(d, q1 + 2 * c));
+                const auto m1 = hn::Min(hn::LoadU(d, q0 + 2 * c + N), hn::LoadU(d, q1 + 2 * c + N));
+                hn::StoreU(hn::Min(hn::ConcatEven(d, m1, m0), hn::ConcatOdd(d, m1, m0)), d, dst + c);
             }
+#endif
+            for (; c <= last_c >> l; ++c) dst[c] = std::min({q0[2 * c], q0[2 * c + 1], q1[2 * c], q1[2 * c + 1]});
         }
     }
 }
@@ -760,7 +851,10 @@ void Da3dDenoise(const Da3dImage& img, float* work, std::size_t work_floats, Da3
             while (cx.wm.minimum() < kDa3dThreshold) {
                 int pr, pc;
                 cx.wm.find_minimum(&pr, &pc);
-                ProcessPatch(cx, pr, pc);
+                if (C == 3)
+                    ProcessPatch<3>(cx, pr, pc);
+                else
+                    ProcessPatch<1>(cx, pr, pc);
                 IncreaseWeights(cx.wm, cx.patch.k, pr - kR, pc - kR);
             }
             for (int row = std::max(0, r0 - kR); row < std::min(H, r1 + kAfter); ++row) {
@@ -808,7 +902,7 @@ std::size_t da3d_work_floats(int width, int height, int channels) {
     using namespace da3d_detail;
     const std::size_t plane = static_cast<std::size_t>(width) * height;
     const std::size_t tile = static_cast<std::size_t>(da3d_tile_max(width) + kS - 1) * (da3d_tile_max(height) + kS - 1);
-    const std::size_t patch = static_cast<std::size_t>(kArea) * (3 * 3 + 2 + 2 + 3 * 2 + 2 * 2);
+    const std::size_t patch = static_cast<std::size_t>(kArea) * (2 * 3 + 1 + 2 + 3 * 2 + 2 * 2);
     return (channels + 1) * align16(plane) + (3 * channels + 1) * align16(tile) +
            align16(WeightMap::floats(da3d_tile_max(height), da3d_tile_max(width))) + align16(patch) + 16;
 }
