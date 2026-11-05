@@ -11,7 +11,9 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <initializer_list>
 #include <stdexcept>
+#include <utility>
 
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE "cpu/bm4d/bm4d.cpp"
@@ -26,6 +28,13 @@ namespace bm4d_detail {
 constexpr int kMaxCube = 5;
 constexpr int kMaxCube3 = kMaxCube * kMaxCube * kMaxCube;
 constexpr int kMaxGroup = 32;
+constexpr int kCubeStride = (kMaxCube3 + 15) & ~15;  // floats a cube in a group buffer (zero padded)
+constexpr int kWindowPad = 64;  // floats past the window row B (RefSums' loads)
+constexpr int kSlabBatch = 8;   // offsets a Slabs pass
+constexpr int kBandRows = 8;    // rows of references a band
+constexpr int kMaxStep = 3;     // the stages' reference steps at most
+constexpr int kBandSlabRows = (kBandRows - 1) * kMaxStep + kMaxCube;  // slab rows a band reads
+static_assert(kBm4dHard.step <= kMaxStep && kBm4dWiener.step <= kMaxStep, "band slab rows");
 
 inline std::size_t align16(std::size_t n) { return (n + 15) & ~std::size_t{15}; }
 
@@ -80,6 +89,7 @@ struct Matches {
     float* dist;
     std::int32_t* pos;  // cube origin (z h + y) w + x
     std::int32_t* count;
+    float* worst;  // dist[group - 1] once full, else +inf: what a new distance must beat
     int group;
     void insert(int r, float d, std::int32_t p) {
         float* dr = dist + static_cast<std::size_t>(r) * group;
@@ -98,6 +108,7 @@ struct Matches {
         dr[i] = d;
         pr[i] = p;
         count[r] = c + 1;
+        if (c + 1 == group) worst[r] = dr[group - 1];
     }
 };
 
@@ -123,20 +134,28 @@ struct Refs {
 };
 
 // A[y][x] = sum over k < L (in order) of (V[z0 + k][y][x] - V[z0 + k + dz][y + dy][x + dx])^2
-// for the rows and columns where both exist.
-static HWY_NOINLINE void Slab(const float* V, const Volume& vol, int L, int z0, int dz, int dy, int dx, int y_lo,
-                              int y_hi, int x_lo, int x_hi, float* A) {
+// for the rows and columns where both exist (the slab of an offset).
+// One offset's slab, a vector at a time from x_lo and the rest one at a time
+// (on targets whose MulAdd is not fused the two round differently, so the
+// split stays the model's); rows from a_row0.
+template <int L>
+static HWY_NOINLINE void Slab(const float* V, const Volume& vol, int z0, int dz, int dy, int dx, int y_lo, int y_hi,
+                              int x_lo, int x_hi, float* A, int a_row0) {
     const hn::ScalableTag<float> d;
     const int N = static_cast<int>(hn::Lanes(d));
     for (int y = y_lo; y < y_hi; ++y) {
-        float* a = A + static_cast<std::size_t>(y) * vol.w;
+        const float* p[L];
+        const float* q[L];
+        for (int k = 0; k < L; ++k) {
+            p[k] = V + vol.at(z0 + k, y, 0);
+            q[k] = V + vol.at(z0 + k + dz, y + dy, 0) + dx;
+        }
+        float* a = A + static_cast<std::size_t>(y - a_row0) * vol.w;
         int x = x_lo;
         for (; x + N <= x_hi; x += N) {
             auto acc = hn::Zero(d);
             for (int k = 0; k < L; ++k) {
-                const auto p = hn::LoadU(d, V + vol.at(z0 + k, y, x));
-                const auto q = hn::LoadU(d, V + vol.at(z0 + k + dz, y + dy, x + dx));
-                const auto e = hn::Sub(p, q);
+                const auto e = hn::Sub(hn::LoadU(d, p[k] + x), hn::LoadU(d, q[k] + x));
                 acc = hn::MulAdd(e, e, acc);
             }
             hn::StoreU(acc, d, a + x);
@@ -144,7 +163,7 @@ static HWY_NOINLINE void Slab(const float* V, const Volume& vol, int L, int z0, 
         for (; x < x_hi; ++x) {
             float acc = 0.f;
             for (int k = 0; k < L; ++k) {
-                const float e = V[vol.at(z0 + k, y, x)] - V[vol.at(z0 + k + dz, y + dy, x + dx)];
+                const float e = p[k][x] - q[k][x];
                 acc = std::fma(e, e, acc);
             }
             a[x] = acc;
@@ -152,52 +171,169 @@ static HWY_NOINLINE void Slab(const float* V, const Volume& vol, int L, int z0, 
     }
 }
 
-// B[x] = sum over j < L (in order) of A[y0 + j][x], then
-// C[x] = sum over i < L (in order) of B[x + i]: the distance of the cube at x.
-static HWY_NOINLINE void Window(const float* A, int w, int L, int y0, int x_lo, int x_hi, float* B, float* C) {
+// The slabs of the D offsets dx0, dx0 + 1, ... at once (the reference frames'
+// loads shared): offset j's rows from a_row0 at A + j ps. A run of columns
+// ends with a vector over its last N columns (columns done twice get the same
+// values). Targets with a fused MulAdd only: there every column's sum is the
+// fused chain whichever path takes it (elsewhere Slab keeps master's split).
+template <int L, int D>
+static HWY_NOINLINE void Slabs(const float* V, const Volume& vol, int z0, int dz, int dy, int dx0, int y_lo, int y_hi,
+                               float* A, int a_row0, std::size_t ps) {
     const hn::ScalableTag<float> d;
     const int N = static_cast<int>(hn::Lanes(d));
-    int x = x_lo;
-    for (; x + N <= x_hi; x += N) {
-        auto acc = hn::LoadU(d, A + static_cast<std::size_t>(y0) * w + x);
-        for (int j = 1; j < L; ++j) acc = hn::Add(acc, hn::LoadU(d, A + static_cast<std::size_t>(y0 + j) * w + x));
-        hn::StoreU(acc, d, B + x);
-    }
-    for (; x < x_hi; ++x) {
-        float acc = A[static_cast<std::size_t>(y0) * w + x];
-        for (int j = 1; j < L; ++j) acc = acc + A[static_cast<std::size_t>(y0 + j) * w + x];
-        B[x] = acc;
-    }
-    const int c_hi = x_hi - L + 1;
-    x = x_lo;
-    for (; x + N <= c_hi; x += N) {
-        auto acc = hn::LoadU(d, B + x);
-        for (int i = 1; i < L; ++i) acc = hn::Add(acc, hn::LoadU(d, B + x + i));
-        hn::StoreU(acc, d, C + x);
-    }
-    for (; x < c_hi; ++x) {
-        float acc = B[x];
-        for (int i = 1; i < L; ++i) acc = acc + B[x + i];
-        C[x] = acc;
+    // the columns every offset has, a vector at a time for all of them; each
+    // offset's other columns on its own
+    const int c_lo = std::max(0, -dx0), c_hi = std::min(vol.w, vol.w - (dx0 + D - 1));
+    const bool common = c_hi - c_lo >= N;
+    for (int y = y_lo; y < y_hi; ++y) {
+        const float* p[L];
+        const float* q[L];
+        for (int k = 0; k < L; ++k) {
+            p[k] = V + vol.at(z0 + k, y, 0);
+            q[k] = V + vol.at(z0 + k + dz, y + dy, 0) + dx0;
+        }
+        float* a = A + static_cast<std::size_t>(y - a_row0) * vol.w;
+        auto all = [&](int x) {
+            hn::Vec<decltype(d)> acc[D];
+            for (int j = 0; j < D; ++j) acc[j] = hn::Zero(d);
+            for (int k = 0; k < L; ++k) {
+                const auto pv = hn::LoadU(d, p[k] + x);
+                for (int j = 0; j < D; ++j) {
+                    const auto e = hn::Sub(pv, hn::LoadU(d, q[k] + x + j));
+                    acc[j] = hn::MulAdd(e, e, acc[j]);
+                }
+            }
+            for (int j = 0; j < D; ++j) hn::StoreU(acc[j], d, a + j * ps + x);
+        };
+        int v_hi = c_lo;  // the common run done
+        if (common) {
+            for (; v_hi + N <= c_hi; v_hi += N) all(v_hi);
+            if (v_hi < c_hi) {
+                all(c_hi - N);
+                v_hi = c_hi;
+            }
+        }
+        for (int j = 0; j < D; ++j) {
+            const int lo = std::max(0, -(dx0 + j)), hi = std::min(vol.w, vol.w - (dx0 + j));
+            auto one = [&](int x) {
+                auto acc = hn::Zero(d);
+                for (int k = 0; k < L; ++k) {
+                    const auto e = hn::Sub(hn::LoadU(d, p[k] + x), hn::LoadU(d, q[k] + x + j));
+                    acc = hn::MulAdd(e, e, acc);
+                }
+                hn::StoreU(acc, d, a + j * ps + x);
+            };
+            auto single = [&](int xx) {
+                float acc = 0.f;
+                for (int k = 0; k < L; ++k) {
+                    const float e = p[k][xx] - q[k][xx + j];
+                    acc = std::fma(e, e, acc);
+                }
+                a[j * ps + xx] = acc;
+            };
+            // [lo, hi) less the common run
+            auto run = [&](int s0, int s1) {
+                if (s1 <= s0) return;
+                if (hi - lo >= N) {
+                    int x = s0;
+                    for (; x + N <= s1; x += N) one(x);
+                    if (x < s1) one(std::max(lo, s1 - N));
+                } else {
+                    for (int xx = s0; xx < s1; ++xx) single(xx);
+                }
+            };
+            if (common) {
+                run(lo, std::min(c_lo, hi));
+                run(std::max(v_hi, lo), hi);
+            } else {
+                run(lo, hi);
+            }
+        }
     }
 }
 
+// B[x] = sum over j < L (in order) of A[y0 + j][x].
+template <int L>
+static HWY_NOINLINE void Window(const float* A, int w, int y0, int x_lo, int x_hi, float* B) {
+    const hn::ScalableTag<float> d;
+    const int N = static_cast<int>(hn::Lanes(d));
+    const float* rows[L];
+    for (int j = 0; j < L; ++j) rows[j] = A + static_cast<std::size_t>(y0 + j) * w;
+    auto vec = [&](int x) {
+        auto acc = hn::LoadU(d, rows[0] + x);
+        for (int j = 1; j < L; ++j) acc = hn::Add(acc, hn::LoadU(d, rows[j] + x));
+        hn::StoreU(acc, d, B + x);
+    };
+    int x = x_lo;
+    for (; x + N <= x_hi; x += N) vec(x);
+    if (x < x_hi && x_hi - x_lo >= N) {
+        vec(x_hi - N);  // the last N columns (columns done twice get the same values)
+        x = x_hi;
+    }
+    for (; x < x_hi; ++x) {
+        float acc = rows[0][x];
+        for (int j = 1; j < L; ++j) acc = acc + rows[j][x];
+        B[x] = acc;
+    }
+}
+
+// Cr[ix] = sum over i < L (in order) of B[x0 + i], x0 the reference ix's
+// column: the distance of its candidate, for ix in [lo, hi). The references
+// at 3 ix (step 3, all but perhaps the last) a vector at a time, by
+// deinterleaved loads (B has kWindowPad floats after the row).
+template <int L>
+static HWY_NOINLINE void RefSums(const float* B, int w, int step, int lo, int hi, float* Cr) {
+    const hn::ScalableTag<float> d;
+    const int N = static_cast<int>(hn::Lanes(d));
+    static_assert(L <= 6, "two deinterleaved loads");
+    int ix = lo;
+    if (step == 3) {
+        const int regular = std::min(hi, (w - L) / 3 + 1);  // the references at 3 ix
+        auto vec = [&](int k) {
+            hn::Vec<decltype(d)> b0, b1, b2, c0, c1, c2;
+            hn::LoadInterleaved3(d, B + 3 * k, b0, b1, b2);
+            hn::LoadInterleaved3(d, B + 3 * k + 3, c0, c1, c2);
+            auto acc = hn::Add(hn::Add(b0, b1), b2);
+            if (L > 3) acc = hn::Add(acc, c0);
+            if (L > 4) acc = hn::Add(acc, c1);
+            if (L > 5) acc = hn::Add(acc, c2);
+            hn::StoreU(acc, d, Cr + k);
+        };
+        for (; ix + N <= regular; ix += N) vec(ix);
+        if (ix < regular && regular - lo >= N) {
+            vec(regular - N);  // the last N (done twice: the same values)
+            ix = regular;
+        }
+    }
+    for (; ix < hi; ++ix) {
+        const int x0 = position(w, L, step, ix);
+        float acc = B[x0];
+        for (int i = 1; i < L; ++i) acc = acc + B[x0 + i];
+        Cr[ix] = acc;
+    }
+}
+
+template <int L>
 static HWY_NOINLINE void Match(const float* V, const Volume& vol, const Refs& refs, float limit, Matches& m, float* A,
-                               float* B, float* C) {
-    const int L = refs.L;
+                               float* B, float* Cr) {
+    const hn::ScalableTag<float> d;
+    const int N = static_cast<int>(hn::Lanes(d));
+    const auto vlimit = hn::Set(d, limit);
     const int R = refs.count();
     for (int r = 0; r < R; ++r) {
         const int iz = r / (refs.ny * refs.nx), iy = (r / refs.nx) % refs.ny, ix = r % refs.nx;
         m.count[r] = 0;
+        m.worst[r] = HUGE_VALF;
         m.insert(r, -1.f,
                  static_cast<std::int32_t>(vol.at(position(vol.t, L, refs.step, iz), position(vol.h, L, refs.step, iy),
                                                   position(vol.w, L, refs.step, ix))));
     }
-    // All offsets per plane of references, so that the frames it reads stay
-    // in cache (smaller bands of rows measured slower). Each reference still
-    // sees its offsets in (dz, dy, dx) order.
-    const int kBandRows = refs.ny;
+    // Per plane of references, per band of kBandRows of their rows (the
+    // frames' rows they read stay in cache), every offset; kSlabBatch
+    // neighbouring dx at a time. Each reference still sees its offsets in
+    // (dz, dy, dx) order.
     const int S = kBm4dSearch;
+    const std::size_t ps = static_cast<std::size_t>(kBandSlabRows) * vol.w;  // a band's slab plane
     for (int iz = 0; iz < refs.nz; ++iz) {
         const int z0 = position(vol.t, L, refs.step, iz);
         for (int band = 0; band < refs.ny; band += kBandRows) {
@@ -209,23 +345,72 @@ static HWY_NOINLINE void Match(const float* V, const Volume& vol, const Refs& re
                 for (int dy = -S; dy <= S; ++dy) {
                     const int y_lo = std::max(row_lo, -dy), y_hi = std::min(row_hi, vol.h - dy);
                     if (y_hi - y_lo < L) continue;
-                    for (int dx = -S; dx <= S; ++dx) {
-                        if (dz == 0 && dy == 0 && dx == 0) continue;
-                        const int x_lo = std::max(0, -dx), x_hi = std::min(vol.w, vol.w - dx);
-                        if (x_hi - x_lo < L) continue;
-                        Slab(V, vol, L, z0, dz, dy, dx, y_lo, y_hi, x_lo, x_hi, A);
-                        for (int iy = band; iy < band_end; ++iy) {
-                            const int y0 = position(vol.h, L, refs.step, iy);
-                            if (y0 + dy < 0 || y0 + dy > vol.h - L) continue;
-                            Window(A, vol.w, L, y0, x_lo, x_hi, B, C);
-                            const int base = (iz * refs.ny + iy) * refs.nx;
-                            for (int ix = 0; ix < refs.nx; ++ix) {
-                                const int x0 = position(vol.w, L, refs.step, ix);
-                                if (x0 + dx < 0 || x0 + dx > vol.w - L) continue;
-                                const float s = C[x0];
-                                if (s <= limit)
-                                    m.insert(base + ix, s,
-                                             static_cast<std::int32_t>(vol.at(z0 + dz, y0 + dy, x0 + dx)));
+                    for (int dx0 = -S; dx0 <= S; dx0 += kSlabBatch) {
+                        const int D = std::min(kSlabBatch, S - dx0 + 1);
+                        static_assert(2 * kSlabBatch - 1 == 2 * kBm4dSearch + 1, "batches of 8 and 7 offsets");
+#if HWY_NATIVE_FMA
+                        if (D == kSlabBatch)
+                            Slabs<L, kSlabBatch>(V, vol, z0, dz, dy, dx0, y_lo, y_hi, A, row_lo, ps);
+                        else
+                            Slabs<L, kSlabBatch - 1>(V, vol, z0, dz, dy, dx0, y_lo, y_hi, A, row_lo, ps);
+#else
+                        for (int j = 0; j < D; ++j) {
+                            const int dx = dx0 + j;
+                            Slab<L>(V, vol, z0, dz, dy, dx, y_lo, y_hi, std::max(0, -dx), std::min(vol.w, vol.w - dx),
+                                    A + j * ps, row_lo);
+                        }
+#endif
+                        for (int j = 0; j < D; ++j) {
+                            const int dx = dx0 + j;
+                            if (dz == 0 && dy == 0 && dx == 0) continue;
+                            const int x_lo = std::max(0, -dx), x_hi = std::min(vol.w, vol.w - dx);
+                            if (x_hi - x_lo < L) continue;
+                            const float* Aj = A + j * ps;
+                            for (int iy = band; iy < band_end; ++iy) {
+                                const int y0 = position(vol.h, L, refs.step, iy);
+                                if (y0 + dy < 0 || y0 + dy > vol.h - L) continue;
+                                Window<L>(Aj, vol.w, y0 - row_lo, x_lo, x_hi, B);
+                                const int base = (iz * refs.ny + iy) * refs.nx;
+                                // the references whose candidate exists: ix in [ix_lo, ix_hi)
+                                const float* worst = m.worst + base;
+                                int ix_lo = 0, ix_hi = refs.nx;
+                                while (ix_lo < ix_hi && position(vol.w, L, refs.step, ix_lo) + dx < 0) ++ix_lo;
+                                while (ix_hi > ix_lo && position(vol.w, L, refs.step, ix_hi - 1) + dx > vol.w - L) --ix_hi;
+                                RefSums<L>(B, vol.w, refs.step, ix_lo, ix_hi, Cr);
+                                // as insert's test of a full list, without reading it, a vector at a time
+                                int ix = ix_lo;
+                                for (; ix + N <= ix_hi; ix += N) {
+                                    const auto sv = hn::LoadU(d, Cr + ix);
+                                    const auto hit = hn::And(hn::Le(sv, vlimit), hn::Lt(sv, hn::LoadU(d, worst + ix)));
+                                    if (hn::AllFalse(d, hit)) continue;
+                                    for (int k = ix; k < ix + N; ++k) {
+                                        const float sk = Cr[k];
+                                        if (sk <= limit && sk < worst[k])
+                                            m.insert(base + k, sk,
+                                                     static_cast<std::int32_t>(vol.at(z0 + dz, y0 + dy, position(vol.w, L, refs.step, k) + dx)));
+                                    }
+                                }
+                                if (ix < ix_hi && ix_hi - ix_lo >= N) {
+                                    // the last N, less the lanes already tested
+                                    const int k0 = ix_hi - N;
+                                    const auto sv = hn::LoadU(d, Cr + k0);
+                                    const auto hit = hn::AndNot(hn::FirstN(d, static_cast<std::size_t>(ix - k0)),
+                                                                hn::And(hn::Le(sv, vlimit), hn::Lt(sv, hn::LoadU(d, worst + k0))));
+                                    if (!hn::AllFalse(d, hit))
+                                        for (int k = ix; k < ix_hi; ++k) {
+                                            const float sk = Cr[k];
+                                            if (sk <= limit && sk < worst[k])
+                                                m.insert(base + k, sk,
+                                                         static_cast<std::int32_t>(vol.at(z0 + dz, y0 + dy, position(vol.w, L, refs.step, k) + dx)));
+                                        }
+                                    ix = ix_hi;
+                                }
+                                for (; ix < ix_hi; ++ix) {
+                                    const float sk = Cr[ix];
+                                    if (sk <= limit && sk < worst[ix])
+                                        m.insert(base + ix, sk,
+                                                 static_cast<std::int32_t>(vol.at(z0 + dz, y0 + dy, position(vol.w, L, refs.step, ix) + dx)));
+                                }
                             }
                         }
                     }
@@ -238,24 +423,31 @@ static HWY_NOINLINE void Match(const float* V, const Volume& vol, const Refs& re
 // One axis of the orthonormal 3D DCT on a group stored element-major
 // (element (z, y, x) is a row of `stride` lanes, one per cube):
 // dst[.., k, ..] = sum over i (in order) of M[k][i] src[.., i, ..], with M the
-// DCT matrix or (inverse) its transpose. axis 0 is x, 1 y, 2 z.
-static void DctAxis(const float* src, float* dst, int L, int axis, int stride, bool inverse) {
+// DCT matrix or (inverse) its transpose. axis 0 is x, 1 y, 2 z. A line's L
+// inputs are loaded once for its L outputs.
+template <int L, int axis>
+static void DctAxis(const float* src, float* dst, int stride, bool inverse) {
     const hn::ScalableTag<float> d;
     const int N = static_cast<int>(hn::Lanes(d));
     const auto& D = transforms().dct[L == 5];
-    const int unit = axis == 0 ? 1 : axis == 1 ? L : L * L;  // element step along the axis
+    float M[L][L];
+    for (int k = 0; k < L; ++k)
+        for (int i = 0; i < L; ++i) M[k][i] = inverse ? D[i][k] : D[k][i];
+    constexpr int unit = axis == 0 ? 1 : axis == 1 ? L : L * L;  // element step along the axis
     for (int a = 0; a < L; ++a) {
         for (int b = 0; b < L; ++b) {
             // the line through the other two coordinates (a, b)
             const int base = axis == 0 ? (a * L + b) * L : axis == 1 ? a * L * L + b : a * L + b;
-            for (int k = 0; k < L; ++k) {
-                float* out = dst + static_cast<std::size_t>(base + k * unit) * stride;
-                for (int q = 0; q < stride; q += N) {
-                    auto acc = hn::Mul(hn::Set(d, inverse ? D[0][k] : D[k][0]), hn::Load(d, src + static_cast<std::size_t>(base) * stride + q));
-                    for (int i = 1; i < L; ++i)
-                        acc = hn::MulAdd(hn::Set(d, inverse ? D[i][k] : D[k][i]),
-                                         hn::Load(d, src + static_cast<std::size_t>(base + i * unit) * stride + q), acc);
-                    hn::Store(acc, d, out + q);
+            const float* in = src + static_cast<std::size_t>(base) * stride;
+            float* out = dst + static_cast<std::size_t>(base) * stride;
+            const std::size_t step = static_cast<std::size_t>(unit) * stride;
+            for (int q = 0; q < stride; q += N) {
+                hn::Vec<decltype(d)> v[L];
+                for (int i = 0; i < L; ++i) v[i] = hn::Load(d, in + i * step + q);
+                for (int k = 0; k < L; ++k) {
+                    auto acc = hn::Mul(hn::Set(d, M[k][0]), v[0]);
+                    for (int i = 1; i < L; ++i) acc = hn::MulAdd(hn::Set(d, M[k][i]), v[i], acc);
+                    hn::Store(acc, d, out + k * step + q);
                 }
             }
         }
@@ -263,12 +455,18 @@ static void DctAxis(const float* src, float* dst, int L, int axis, int stride, b
 }
 
 // The 3D DCT (x, then y, then z) of an element-major group in s, using t as
-// scratch; the result is in s.
-static void Dct3(float* s, float* t, int L, int stride, bool inverse) {
-    DctAxis(s, t, L, 0, stride, inverse);
-    DctAxis(t, s, L, 1, stride, inverse);
-    DctAxis(s, t, L, 2, stride, inverse);
-    std::memcpy(s, t, static_cast<std::size_t>(L) * L * L * stride * sizeof(float));
+// scratch; the result is in s (the two pointers swap).
+static void Dct3(float*& s, float*& t, int L, int stride, bool inverse) {
+    if (L == 4) {
+        DctAxis<4, 0>(s, t, stride, inverse);
+        DctAxis<4, 1>(t, s, stride, inverse);
+        DctAxis<4, 2>(s, t, stride, inverse);
+    } else {
+        DctAxis<5, 0>(s, t, stride, inverse);
+        DctAxis<5, 1>(t, s, stride, inverse);
+        DctAxis<5, 2>(s, t, stride, inverse);
+    }
+    std::swap(s, t);
 }
 
 // The orthonormal Haar transform along the group (m a power of two) of n-element
@@ -285,32 +483,72 @@ static void Haar(float* g, int m, int n, bool inverse, float* tmp) {
             hn::StoreU(hn::Mul(hn::Add(va, vb), vc), dd, plus + e);
             hn::StoreU(hn::Mul(hn::Sub(va, vb), vc), dd, minus + e);
         }
-        for (; e < n; ++e) {
-            plus[e] = (a[e] + b[e]) * c;
-            minus[e] = (a[e] - b[e]) * c;
+        for (; e < n; ++e) {  // both read first: plus or minus may be a or b
+            const float va = a[e], vb = b[e];
+            plus[e] = (va + vb) * c;
+            minus[e] = (va - vb) * c;
         }
     };
     if (!inverse) {
+        // level len reads its rows from src (g, then tmp and g in turn); the
+        // differences go to their final rows len / 2 + i of g, the sums to the
+        // other buffer, the pairs from the last, so a row of g is read before
+        // it is written
+        float* src = g;
         for (int len = m; len > 1; len >>= 1) {
-            for (int i = 0; i < len / 2; ++i)
-                pair(g + static_cast<std::size_t>(2 * i) * n, g + static_cast<std::size_t>(2 * i + 1) * n,
-                     tmp + static_cast<std::size_t>(i) * n, tmp + static_cast<std::size_t>(len / 2 + i) * n);
-            std::memcpy(g, tmp, static_cast<std::size_t>(len) * n * sizeof(float));
+            float* sums = src == g ? tmp : g;
+            for (int i = len / 2 - 1; i >= 0; --i)
+                pair(src + static_cast<std::size_t>(2 * i) * n, src + static_cast<std::size_t>(2 * i + 1) * n,
+                     sums + static_cast<std::size_t>(i) * n, g + static_cast<std::size_t>(len / 2 + i) * n);
+            src = sums;
         }
+        if (src != g) std::memcpy(g, src, static_cast<std::size_t>(n) * sizeof(float));
     } else {
-        for (int len = 2; len <= m; len <<= 1) {
+        // level len: the sums from src, the differences from g; out to the
+        // other buffer, the last level to g (the first, len 2, may be in place)
+        int levels = 0;
+        while ((1 << levels) < m) ++levels;
+        float* src = g;
+        for (int len = 2, t = 1; len <= m; len <<= 1, ++t) {
+            float* dst = (levels - t) % 2 == 0 ? g : tmp;
             for (int i = 0; i < len / 2; ++i)
-                pair(g + static_cast<std::size_t>(i) * n, g + static_cast<std::size_t>(len / 2 + i) * n,
-                     tmp + static_cast<std::size_t>(2 * i) * n, tmp + static_cast<std::size_t>(2 * i + 1) * n);
-            std::memcpy(g, tmp, static_cast<std::size_t>(len) * n * sizeof(float));
+                pair(src + static_cast<std::size_t>(i) * n, g + static_cast<std::size_t>(len / 2 + i) * n,
+                     dst + static_cast<std::size_t>(2 * i) * n, dst + static_cast<std::size_t>(2 * i + 1) * n);
+            src = dst;
         }
     }
 }
 
+// out[i] = bm4d_fixed(a[i] * b[i]): x 2^32 (exact), widened to double (exact)
+// and rounded to an integer, ties to even, by adding 1.5 2^52 (|value| < 2^51),
+// whose bits less the constant's are the integer; a vector with a lane outside
+// that range (or NaN) takes llrint.
+static HWY_INLINE void FixedProducts(const float* a, const float* b, int n, std::int64_t* out) {
+    const hn::ScalableTag<double> dd;
+    const hn::Rebind<float, decltype(dd)> df;
+    const hn::RebindToSigned<decltype(dd)> di;
+    const int N = static_cast<int>(hn::Lanes(dd));
+    const auto scale = hn::Set(df, kBm4dFixedScale);
+    const auto bound = hn::Set(df, 2251799813685248.f);  // 2^51
+    const auto magic = hn::Set(dd, 6755399441055744.0);  // 1.5 2^52
+    const auto magic_bits = hn::BitCast(di, magic);
+    int i = 0;
+    for (; i + N <= n; i += N) {
+        const auto f = hn::Mul(hn::Mul(hn::LoadU(df, a + i), hn::LoadU(df, b + i)), scale);
+        if (hn::AllTrue(df, hn::Lt(hn::Abs(f), bound))) {
+            const auto r = hn::Add(hn::PromoteTo(dd, f), magic);
+            hn::StoreU(hn::Sub(hn::BitCast(di, r), magic_bits), di, out + i);
+        } else {
+            for (int j = i; j < i + N; ++j) out[j] = bm4d_fixed(a[j] * b[j]);
+        }
+    }
+    for (; i < n; ++i) out[i] = bm4d_fixed(a[i] * b[i]);
+}
+
 struct StageBuffers {
     float* A;
-    float* B;
-    float* C;
+    float* B;   // kWindowPad floats past the row
+    float* Cr;  // the distances of a row's references
     Matches matches;
     float* group;   // kMaxGroup cubes, cube-major
     float* bgroup;  // the basic estimate's
@@ -320,30 +558,104 @@ struct StageBuffers {
     float* tsoa;
 };
 
-// cube-major g (m cubes of n) <-> element-major s (n rows of stride lanes, zero padded)
-static void ToElements(const float* g, int m, int n, int stride, float* s) {
-    for (int e = 0; e < n; ++e) {
-        float* row = s + static_cast<std::size_t>(e) * stride;
-        for (int q = 0; q < m; ++q) row[q] = g[static_cast<std::size_t>(q) * n + e];
-        for (int q = m; q < stride; ++q) row[q] = 0.f;
+// dst[c ds + r] = src[r ss + c] for r < rows, c < cols: 8 x 8 blocks (4 x 4
+// with 128-bit vectors), the rest one at a time.
+static void Transpose(const float* src, std::size_t ss, float* dst, std::size_t ds, int rows, int cols) {
+    int r0 = 0, c_end = 0;
+#if HWY_TARGET != HWY_SCALAR
+#if HWY_MAX_BYTES >= 32
+    constexpr int kB = 8;
+    const hn::FixedTag<float, 8> d8;
+    const hn::Repartition<uint64_t, decltype(d8)> d64;
+    const auto il = [&](hn::Vec<decltype(d8)> a, hn::Vec<decltype(d8)> b) {
+        return hn::BitCast(d8, hn::InterleaveLower(d64, hn::BitCast(d64, a), hn::BitCast(d64, b)));
+    };
+    const auto iu = [&](hn::Vec<decltype(d8)> a, hn::Vec<decltype(d8)> b) {
+        return hn::BitCast(d8, hn::InterleaveUpper(d64, hn::BitCast(d64, a), hn::BitCast(d64, b)));
+    };
+    for (; r0 + kB <= rows; r0 += kB) {
+        const float* sr = src + r0 * ss;
+        int c0 = 0;
+        for (; c0 + kB <= cols; c0 += kB) {
+            const auto a0 = hn::LoadU(d8, sr + 0 * ss + c0), a1 = hn::LoadU(d8, sr + 1 * ss + c0);
+            const auto a2 = hn::LoadU(d8, sr + 2 * ss + c0), a3 = hn::LoadU(d8, sr + 3 * ss + c0);
+            const auto a4 = hn::LoadU(d8, sr + 4 * ss + c0), a5 = hn::LoadU(d8, sr + 5 * ss + c0);
+            const auto a6 = hn::LoadU(d8, sr + 6 * ss + c0), a7 = hn::LoadU(d8, sr + 7 * ss + c0);
+            const auto t0 = hn::InterleaveLower(d8, a0, a1), t1 = hn::InterleaveUpper(d8, a0, a1);
+            const auto t2 = hn::InterleaveLower(d8, a2, a3), t3 = hn::InterleaveUpper(d8, a2, a3);
+            const auto t4 = hn::InterleaveLower(d8, a4, a5), t5 = hn::InterleaveUpper(d8, a4, a5);
+            const auto t6 = hn::InterleaveLower(d8, a6, a7), t7 = hn::InterleaveUpper(d8, a6, a7);
+            const auto u0 = il(t0, t2), u1 = iu(t0, t2), u2 = il(t1, t3), u3 = iu(t1, t3);
+            const auto u4 = il(t4, t6), u5 = iu(t4, t6), u6 = il(t5, t7), u7 = iu(t5, t7);
+            float* o = dst + c0 * ds + r0;
+            hn::StoreU(hn::ConcatLowerLower(d8, u4, u0), d8, o + 0 * ds);
+            hn::StoreU(hn::ConcatLowerLower(d8, u5, u1), d8, o + 1 * ds);
+            hn::StoreU(hn::ConcatLowerLower(d8, u6, u2), d8, o + 2 * ds);
+            hn::StoreU(hn::ConcatLowerLower(d8, u7, u3), d8, o + 3 * ds);
+            hn::StoreU(hn::ConcatUpperUpper(d8, u4, u0), d8, o + 4 * ds);
+            hn::StoreU(hn::ConcatUpperUpper(d8, u5, u1), d8, o + 5 * ds);
+            hn::StoreU(hn::ConcatUpperUpper(d8, u6, u2), d8, o + 6 * ds);
+            hn::StoreU(hn::ConcatUpperUpper(d8, u7, u3), d8, o + 7 * ds);
+        }
+        c_end = c0;
     }
-}
-static void ToCubes(const float* s, int m, int n, int stride, float* g) {
-    for (int q = 0; q < m; ++q)
-        for (int e = 0; e < n; ++e) g[static_cast<std::size_t>(q) * n + e] = s[static_cast<std::size_t>(e) * stride + q];
+#else
+    constexpr int kB = 4;
+    const hn::FixedTag<float, 4> d4;
+    for (; r0 + kB <= rows; r0 += kB) {
+        const float* sr = src + r0 * ss;
+        int c0 = 0;
+        for (; c0 + kB <= cols; c0 += kB) {
+            const auto a0 = hn::LoadU(d4, sr + 0 * ss + c0), a1 = hn::LoadU(d4, sr + 1 * ss + c0);
+            const auto a2 = hn::LoadU(d4, sr + 2 * ss + c0), a3 = hn::LoadU(d4, sr + 3 * ss + c0);
+            const auto t0 = hn::InterleaveLower(d4, a0, a1), t1 = hn::InterleaveLower(d4, a2, a3);
+            const auto t2 = hn::InterleaveUpper(d4, a0, a1), t3 = hn::InterleaveUpper(d4, a2, a3);
+            float* o = dst + c0 * ds + r0;
+            hn::StoreU(hn::ConcatLowerLower(d4, t1, t0), d4, o + 0 * ds);
+            hn::StoreU(hn::ConcatUpperUpper(d4, t1, t0), d4, o + 1 * ds);
+            hn::StoreU(hn::ConcatLowerLower(d4, t3, t2), d4, o + 2 * ds);
+            hn::StoreU(hn::ConcatUpperUpper(d4, t3, t2), d4, o + 3 * ds);
+        }
+        c_end = c0;
+    }
+#endif
+#endif
+    // the blocks' rows past c_end, then the rows past the blocks
+    for (int r = 0; r < r0; ++r)
+        for (int c = c_end; c < cols; ++c) dst[c * ds + r] = src[r * ss + c];
+    for (int r = r0; r < rows; ++r)
+        for (int c = 0; c < cols; ++c) dst[c * ds + r] = src[r * ss + c];
 }
 
+// cube-major g (m cubes of n at a stride of cs) <-> element-major s (n rows of
+// stride lanes, zero padded)
+static void ToElements(const float* g, int m, int n, int cs, int stride, float* s) {
+    Transpose(g, static_cast<std::size_t>(cs), s, static_cast<std::size_t>(stride), m, n);
+    if (m < stride)
+        for (int e = 0; e < n; ++e)
+            for (int q = m; q < stride; ++q) s[static_cast<std::size_t>(e) * stride + q] = 0.f;
+}
+static void ToCubes(const float* s, int m, int n, int stride, int cs, float* g) {
+    Transpose(s, static_cast<std::size_t>(stride), g, static_cast<std::size_t>(cs), n, m);
+}
+
+template <int L>
 static HWY_NOINLINE void Stage(const float* noisy, const float* basic, const Volume& vol, float sigma,
                                const Bm4dStage& st, std::int64_t* num, std::int64_t* den, StageBuffers& buf) {
     const hn::ScalableTag<float> d;
     const int N = static_cast<int>(hn::Lanes(d));
-    const int L = st.cube, L2 = L * L, L3 = L2 * L;
+    constexpr int L2 = L * L, L3 = L2 * L;
+    constexpr int cs = (L3 + 15) & ~15;  // a cube's floats in the group buffers
+    static_assert(cs <= kCubeStride, "group buffers");
+    // the cubes' padding zero for this stage (the gathers do not write it,
+    // Haar keeps zeros; the other stage's cubes have another stride)
+    for (float* b : {buf.group, buf.bgroup, buf.tmp}) std::fill(b, b + static_cast<std::size_t>(kMaxGroup) * cs, 0.f);
     Refs refs{position_count(vol.t, L, st.step), position_count(vol.h, L, st.step), position_count(vol.w, L, st.step),
               L, st.step};
     const float sigma2 = sigma * sigma;
     const float limit = st.tau * static_cast<float>(L3) * sigma2;
     buf.matches.group = st.group;
-    Match(basic ? basic : noisy, vol, refs, limit, buf.matches, buf.A, buf.B, buf.C);
+    Match<L>(basic ? basic : noisy, vol, refs, limit, buf.matches, buf.A, buf.B, buf.Cr);
 
     const float* kaiser = transforms().kaiser[L == 5];
     float window[kMaxCube3];
@@ -367,9 +679,9 @@ static HWY_NOINLINE void Stage(const float* noisy, const float* basic, const Vol
         const int stride = (m + N - 1) / N * N;
         const std::int32_t* pos = buf.matches.pos + static_cast<std::size_t>(r) * st.group;
         // 4D transform: Haar along the group, then the 3D DCT of every cube.
-        for (int q = 0; q < m; ++q) gather(noisy, pos[q], buf.group + static_cast<std::size_t>(q) * L3);
-        Haar(buf.group, m, L3, false, buf.tmp);
-        ToElements(buf.group, m, L3, stride, buf.soa);
+        for (int q = 0; q < m; ++q) gather(noisy, pos[q], buf.group + static_cast<std::size_t>(q) * cs);
+        Haar(buf.group, m, cs, false, buf.tmp);
+        ToElements(buf.group, m, L3, cs, stride, buf.soa);
         Dct3(buf.soa, buf.tsoa, L, stride, false);
         const std::size_t total = static_cast<std::size_t>(L3) * stride;
         float weight;
@@ -383,9 +695,9 @@ static HWY_NOINLINE void Stage(const float* noisy, const float* basic, const Vol
             }
             weight = 1.f / static_cast<float>(std::max<std::size_t>(kept, 1));
         } else {
-            for (int q = 0; q < m; ++q) gather(basic, pos[q], buf.bgroup + static_cast<std::size_t>(q) * L3);
-            Haar(buf.bgroup, m, L3, false, buf.tmp);
-            ToElements(buf.bgroup, m, L3, stride, buf.bsoa);
+            for (int q = 0; q < m; ++q) gather(basic, pos[q], buf.bgroup + static_cast<std::size_t>(q) * cs);
+            Haar(buf.bgroup, m, cs, false, buf.tmp);
+            ToElements(buf.bgroup, m, L3, cs, stride, buf.bsoa);
             Dct3(buf.bsoa, buf.tsoa, L, stride, false);
             for (std::size_t i = 0; i < total; i += N) {
                 const auto b = hn::Load(d, buf.bsoa + i);
@@ -394,12 +706,28 @@ static HWY_NOINLINE void Stage(const float* noisy, const float* basic, const Vol
                 hn::Store(hn::Mul(hn::Load(d, buf.soa + i), wv), d, buf.soa + i);
                 hn::Store(wv, d, buf.bsoa + i);
             }
-            // sum of W^2: the 32-lane sum over t = e m + q (elements, then cubes)
+            // sum of W^2: the 32-lane sum over t = e m + q (elements, then cubes);
+            // m divides 32, so the terms of element e go to the lanes
+            // (e m) % 32 + q in order
             float lane[32] = {};
-            const int terms = L3 * m;
-            for (int t = 0; t < terms; ++t) {
-                const float wv = buf.bsoa[static_cast<std::size_t>(t / m) * stride + t % m];
-                lane[t & 31] = std::fma(wv, wv, lane[t & 31]);
+            if (HWY_NATIVE_FMA && m >= N) {  // MulAdd is std::fma there
+                hn::Vec<decltype(d)> acc[32];
+                for (int k = 0; k < 32 / N; ++k) acc[k] = hn::Zero(d);
+                for (int e = 0; e < L3; ++e) {
+                    const float* row = buf.bsoa + static_cast<std::size_t>(e) * stride;
+                    const int base = (e * m) & 31;
+                    for (int q = 0; q < m; q += N) {
+                        const auto wv = hn::Load(d, row + q);
+                        acc[(base + q) / N] = hn::MulAdd(wv, wv, acc[(base + q) / N]);
+                    }
+                }
+                for (int k = 0; k < 32 / N; ++k) hn::StoreU(acc[k], d, lane + k * N);
+            } else {
+                for (int e = 0; e < L3; ++e) {
+                    const float* row = buf.bsoa + static_cast<std::size_t>(e) * stride;
+                    const int base = (e * m) & 31;
+                    for (int q = 0; q < m; ++q) lane[base + q] = std::fma(row[q], row[q], lane[base + q]);
+                }
             }
             for (int half = 16; half > 0; half >>= 1)
                 for (int l = 0; l < half; ++l) lane[l] = lane[l] + lane[l + half];
@@ -407,17 +735,25 @@ static HWY_NOINLINE void Stage(const float* noisy, const float* basic, const Vol
             weight = 1.f / std::max(energy, kBm4dEnergyFloor);
         }
         Dct3(buf.soa, buf.tsoa, L, stride, true);
-        ToCubes(buf.soa, m, L3, stride, buf.group);
-        Haar(buf.group, m, L3, true, buf.tmp);
+        ToCubes(buf.soa, m, L3, stride, cs, buf.group);
+        Haar(buf.group, m, cs, true, buf.tmp);
+        // the weights wv of the elements and their fixed-point terms are the
+        // group's; the numerators' terms a cube at a time
+        float wv[kMaxCube3];
+        std::int64_t fden[kMaxCube3], fnum[kMaxCube3];
+        for (int e = 0; e < L3; ++e) {
+            wv[e] = weight * window[e];
+            fden[e] = bm4d_fixed(wv[e]);
+        }
         for (int q = 0; q < m; ++q) {
-            const float* cube = buf.group + static_cast<std::size_t>(q) * L3;
+            FixedProducts(wv, buf.group + static_cast<std::size_t>(q) * cs, L3, fnum);
             for (int z = 0; z < L; ++z)
                 for (int y = 0; y < L; ++y) {
                     const std::size_t o = pos[q] + z * plane + static_cast<std::size_t>(y) * vol.w;
+                    const int e0 = (z * L + y) * L;
                     for (int x = 0; x < L; ++x) {
-                        const float wv = weight * window[(z * L + y) * L + x];
-                        num[o + x] += bm4d_fixed(wv * cube[(z * L + y) * L + x]);
-                        den[o + x] += bm4d_fixed(wv);
+                        num[o + x] += fnum[e0 + x];
+                        den[o + x] += fden[e0 + x];
                     }
                 }
         }
@@ -442,18 +778,19 @@ void Bm4dDenoiseVolume(const float* noisy, int t, int h, int w, float sigma, flo
     auto* num = reinterpret_cast<std::int64_t*>(take(2 * n));
     auto* den = reinterpret_cast<std::int64_t*>(take(2 * n));
     StageBuffers buf{};
-    buf.A = take(static_cast<std::size_t>(h) * w);
-    buf.B = take(static_cast<std::size_t>(w));
-    buf.C = take(static_cast<std::size_t>(w));
+    buf.A = take(static_cast<std::size_t>(kSlabBatch) * kBandSlabRows * w);
+    buf.B = take(static_cast<std::size_t>(w) + kWindowPad);
+    buf.Cr = take(static_cast<std::size_t>(w));
     const int R = std::max(1, position_count(t, kBm4dHard.cube, kBm4dHard.step)) *
                   std::max(1, position_count(h, kBm4dHard.cube, kBm4dHard.step)) *
                   std::max(1, position_count(w, kBm4dHard.cube, kBm4dHard.step));
     buf.matches.dist = take(static_cast<std::size_t>(R) * kMaxGroup);
     buf.matches.pos = reinterpret_cast<std::int32_t*>(take(static_cast<std::size_t>(R) * kMaxGroup));
     buf.matches.count = reinterpret_cast<std::int32_t*>(take(static_cast<std::size_t>(R)));
-    buf.group = take(static_cast<std::size_t>(kMaxGroup) * kMaxCube3);
-    buf.bgroup = take(static_cast<std::size_t>(kMaxGroup) * kMaxCube3);
-    buf.tmp = take(static_cast<std::size_t>(kMaxGroup) * kMaxCube3);
+    buf.matches.worst = take(static_cast<std::size_t>(R));
+    buf.group = take(static_cast<std::size_t>(kMaxGroup) * kCubeStride);
+    buf.bgroup = take(static_cast<std::size_t>(kMaxGroup) * kCubeStride);
+    buf.tmp = take(static_cast<std::size_t>(kMaxGroup) * kCubeStride);
     buf.soa = take(static_cast<std::size_t>(kMaxGroup + 16) * kMaxCube3);
     buf.bsoa = take(static_cast<std::size_t>(kMaxGroup + 16) * kMaxCube3);
     buf.tsoa = take(static_cast<std::size_t>(kMaxGroup + 16) * kMaxCube3);
@@ -464,7 +801,7 @@ void Bm4dDenoiseVolume(const float* noisy, int t, int h, int w, float sigma, flo
     if (fits(kBm4dHard)) {
         std::fill(num, num + n, std::int64_t{0});
         std::fill(den, den + n, std::int64_t{0});
-        Stage(noisy, nullptr, vol, sigma, kBm4dHard, num, den, buf);
+        Stage<kBm4dHard.cube>(noisy, nullptr, vol, sigma, kBm4dHard, num, den, buf);
         for (std::size_t i = 0; i < n; ++i) basic[i] = bm4d_ratio(num[i], den[i]);
     } else {
         std::memcpy(basic, noisy, n * sizeof(float));
@@ -472,7 +809,7 @@ void Bm4dDenoiseVolume(const float* noisy, int t, int h, int w, float sigma, flo
     if (fits(kBm4dWiener)) {
         std::fill(num, num + n, std::int64_t{0});
         std::fill(den, den + n, std::int64_t{0});
-        Stage(noisy, basic, vol, sigma, kBm4dWiener, num, den, buf);
+        Stage<kBm4dWiener.cube>(noisy, basic, vol, sigma, kBm4dWiener, num, den, buf);
         for (std::size_t i = 0; i < n; ++i) out[i] = bm4d_ratio(num[i], den[i]);
     } else {
         std::memcpy(out, basic, n * sizeof(float));
@@ -493,8 +830,8 @@ std::size_t bm4d_work_floats(int t, int h, int w) {
     const std::size_t R = static_cast<std::size_t>(std::max(1, position_count(t, kBm4dHard.cube, kBm4dHard.step))) *
                           std::max(1, position_count(h, kBm4dHard.cube, kBm4dHard.step)) *
                           std::max(1, position_count(w, kBm4dHard.cube, kBm4dHard.step));
-    return align16(n) + 2 * align16(2 * n) + align16(static_cast<std::size_t>(h) * w) + 2 * align16(static_cast<std::size_t>(w)) +
-           2 * align16(R * kMaxGroup) + align16(R) + 3 * align16(static_cast<std::size_t>(kMaxGroup) * kMaxCube3) +
+    return align16(n) + 2 * align16(2 * n) + align16(static_cast<std::size_t>(kSlabBatch) * kBandSlabRows * w) + align16(static_cast<std::size_t>(w) + kWindowPad) + align16(static_cast<std::size_t>(w)) +
+           2 * align16(R * kMaxGroup) + 2 * align16(R) + 3 * align16(static_cast<std::size_t>(kMaxGroup) * kCubeStride) +
            3 * align16(static_cast<std::size_t>(kMaxGroup + 16) * kMaxCube3) + 16;
 }
 

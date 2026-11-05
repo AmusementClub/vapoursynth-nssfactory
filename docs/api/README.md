@@ -29,7 +29,7 @@ are far faster: [CUDA](cuda/README.md#speed), [Vulkan](vk/README.md#speed).
 | [TWSC](twsc.md) | 6.6 | 0.012 | yes | Real-world noise |
 | [DA3D](da3d.md) | 5.0 | — | no | Refining another filter's output |
 | [NLH](nlh.md) | 2.3 | — | yes | Real-world noise of unknown level |
-| [BM4D](bm4d.md) | 0.46 | — | yes | Still and slowly moving content |
+| [BM4D](bm4d.md) | 1.5 | — | yes | Still and slowly moving content |
 
 - NLM filters luma only at its defaults; PNLM filters every plane.
 - NLH's defaults are its paper's preset already; BM4D and DA3D have no
