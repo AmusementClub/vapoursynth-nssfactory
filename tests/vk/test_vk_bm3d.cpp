@@ -202,8 +202,10 @@ void run_case(const std::shared_ptr<Device>& device, Bm3dKernels& kernels, const
     double worst = 0.0;
     for (std::size_t i = 0; i < want.size(); ++i) worst = std::max(worst, std::fabs(static_cast<double>(want[i]) - got[0][i]));
     CHECK(db >= 75.0, "%s: PSNR against the CPU %.1f dB (max abs %.3g)", label, db, worst);
-    std::printf("%-34s %-5s PSNR %6.1f dB, max abs %.3g\n", label,
-                Bm3dKernels::warp_kernel(c.block, c.group, c.wiener, kernels.device().caps().shared_memory) ? "warp" : "block", db, worst);
+    const auto shared = kernels.device().caps().shared_memory;
+    const bool warp = Bm3dKernels::warp_kernel(c.block, c.group, c.wiener, shared);
+    const char* path = warp ? "warp" : wiener_ref_global(c.block, c.group, c.wiener, shared) ? "block-ref" : "block";
+    std::printf("%-34s %-9s PSNR %6.1f dB, max abs %.3g\n", label, path, db, worst);
 }
 
 }  // namespace
@@ -230,6 +232,14 @@ int main(int argc, char** argv) {
     std::shared_ptr<Device> device = Device::open(index, argc > 1);
     Bm3dKernels kernels(device);
     const Aggregator aggregator(device);
+    CHECK(wiener_ref_global(16, 16, true, 32u * 1024u),
+          "16x16/group16 Wiener must use the reference-cube fallback at 32 KiB");
+    CHECK(!wiener_ref_global(16, 16, true, 48u * 1024u),
+          "16x16/group16 Wiener must use the warp path at 48 KiB");
+    CHECK(bm3d_scratch_floats(16, 16, true, 32u * 1024u) == 16u * 16u * 16u,
+          "32 KiB fallback scratch must hold one reference cube");
+    CHECK(bm3d_scratch_floats(16, 16, true, 48u * 1024u) == 0,
+          "48 KiB warp path must not allocate cube scratch");
     for (const bool wiener : {false, true}) {
         for (const int block : {1, 2, 4, 8, 12, 16, 32}) {
             for (const int group : {1, 2, 4, 8, 16, 32, 64}) {

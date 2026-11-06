@@ -2,7 +2,9 @@
 // BM3D, block kernel: one workgroup per group for every shape the warp kernel
 // (group_warp.comp) does not serve, as nss_cuda's group_shape_kernel<B, G>.
 // The cube lives in shared memory when it (and the Wiener reference cube) fit
-// in kCubeSharedBytes, otherwise in the scratch buffer; the workgroup has as
+// in kCubeSharedBytes, otherwise in the scratch buffer.  A 32 KiB-tier Wiener
+// variant can keep the noisy cube in shared memory and put only the reference
+// cube in the scratch buffer; the workgroup has as
 // many invocations as a transform pass has lines (at most 256). Sums over the
 // workgroup are a shared-memory tree with a fixed pairing (deterministic).
 //
@@ -20,22 +22,44 @@
 #include "bm3d/common.glsl"
 
 // Macros, not const ints: IN_SHARED below is a preprocessor test (where a
-// const int reads as 0).
+// const int reads as 0). REF_GLOBAL is used only by the 16x16/group16 Wiener
+// fallback on a 32 KiB device.
 #define AREA (B * B)
 #define CUBE (G * AREA)
+#if WIENER && defined(REF_GLOBAL)
+#define CUBE_FLOATS CUBE
+#else
+#define CUBE_FLOATS (CUBE * (WIENER + 1))
+#endif
 const int LINES = G * B > AREA ? G * B : AREA;
 const int THREADS = LINES >= 256 ? 256 : (LINES + 31) / 32 * 32;
 layout(local_size_x = THREADS) in;
 
 // nss_cuda's kCubeSharedBytes: larger cubes stay in device memory.
-#define CUBE_FLOATS (CUBE * (WIENER + 1))
 #define IN_SHARED (CUBE_FLOATS * 4 <= 24 * 1024)
+
+#if WIENER && defined(REF_GLOBAL)
+layout(buffer_reference, std430, buffer_reference_align = 4) coherent buffer RefCells { float v[]; };
+uint64_t ref_base() {
+    return pc.scratch + uint64_t(gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x) * uint64_t(CUBE) * 4ul;
+}
+#define REF_AT(i) RefCells(ref_base()).v[(i)]
+#endif
+
 #if IN_SHARED
 shared float s_cube[CUBE_FLOATS];
 #define CUBE_AT(i) s_cube[(i)]
+#if !defined(REF_GLOBAL)
 #define REF_AT(i) s_cube[CUBE + (i)]
+#endif
 // Between the passes over the cube: its writes before the reads of other invocations.
+#if WIENER && defined(REF_GLOBAL)
+#define CUBE_BARRIER() \
+    memoryBarrierBuffer(); \
+    barrier()
+#else
 #define CUBE_BARRIER() barrier()
+#endif
 #else
 // The group's cube, then its reference cube, at r * CUBE_FLOATS of scratch.
 // barrier() orders shared memory only: device memory needs its own barrier.
@@ -44,7 +68,9 @@ uint64_t cube_base() {
     return pc.scratch + uint64_t(gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x) * uint64_t(CUBE_FLOATS) * 4ul;
 }
 #define CUBE_AT(i) CubeCells(cube_base()).v[(i)]
+#if !defined(REF_GLOBAL)
 #define REF_AT(i) CubeCells(cube_base()).v[CUBE + (i)]
+#endif
 #define CUBE_BARRIER() \
     memoryBarrierBuffer(); \
     barrier()
@@ -54,6 +80,15 @@ uint64_t cube_base() {
 const int TREE = THREADS <= 32 ? 32 : THREADS <= 64 ? 64 : THREADS <= 128 ? 128 : 256;
 shared float s_fsum[TREE];
 shared int s_isum[TREE];
+
+float cube_load(bool ref, int i) { return ref ? REF_AT(i) : CUBE_AT(i); }
+void cube_store(bool ref, int i, float value) {
+    if (ref) {
+        REF_AT(i) = value;
+    } else {
+        CUBE_AT(i) = value;
+    }
+}
 
 float total_f(float value) {
     const int tid = int(gl_LocalInvocationID.x);
@@ -87,39 +122,38 @@ int total_i(int value) {
 // the group axis forward; the reverse order inverse.
 void transform(bool ref, bool inverse) {
     const int tid = int(gl_LocalInvocationID.x);
-    const int base = ref ? CUBE : 0;
     if (inverse && G > 1) {
         for (int f = tid; f < AREA; f += THREADS) {
             float v[G];
-            [[unroll]] for (int k = 0; k < G; ++k) v[k] = ref ? REF_AT(f + k * AREA) : CUBE_AT(f + k * AREA);
+            [[unroll]] for (int k = 0; k < G; ++k) v[k] = cube_load(ref, f + k * AREA);
             HAAR_LINE(G)(v, true);
-            [[unroll]] for (int k = 0; k < G; ++k) CUBE_AT(base + f + k * AREA) = v[k];
+            [[unroll]] for (int k = 0; k < G; ++k) cube_store(ref, f + k * AREA, v[k]);
         }
         CUBE_BARRIER();
     }
     if (B > 1) {
         for (int i = tid; i < G * B; i += THREADS) {
             float v[B];
-            [[unroll]] for (int k = 0; k < B; ++k) v[k] = CUBE_AT(base + i * B + k);
+            [[unroll]] for (int k = 0; k < B; ++k) v[k] = cube_load(ref, i * B + k);
             DCT_LINE(B)(v, inverse);
-            [[unroll]] for (int k = 0; k < B; ++k) CUBE_AT(base + i * B + k) = v[k];
+            [[unroll]] for (int k = 0; k < B; ++k) cube_store(ref, i * B + k, v[k]);
         }
         CUBE_BARRIER();
         for (int i = tid; i < G * B; i += THREADS) {
-            const int at = base + (i / B) * AREA + i % B;
+            const int at = (i / B) * AREA + i % B;
             float v[B];
-            [[unroll]] for (int k = 0; k < B; ++k) v[k] = CUBE_AT(at + k * B);
+            [[unroll]] for (int k = 0; k < B; ++k) v[k] = cube_load(ref, at + k * B);
             DCT_LINE(B)(v, inverse);
-            [[unroll]] for (int k = 0; k < B; ++k) CUBE_AT(at + k * B) = v[k];
+            [[unroll]] for (int k = 0; k < B; ++k) cube_store(ref, at + k * B, v[k]);
         }
         CUBE_BARRIER();
     }
     if (!inverse && G > 1) {
         for (int f = tid; f < AREA; f += THREADS) {
             float v[G];
-            [[unroll]] for (int k = 0; k < G; ++k) v[k] = CUBE_AT(base + f + k * AREA);
+            [[unroll]] for (int k = 0; k < G; ++k) v[k] = cube_load(ref, f + k * AREA);
             HAAR_LINE(G)(v, false);
-            [[unroll]] for (int k = 0; k < G; ++k) CUBE_AT(base + f + k * AREA) = v[k];
+            [[unroll]] for (int k = 0; k < G; ++k) cube_store(ref, f + k * AREA, v[k]);
         }
         CUBE_BARRIER();
     }
