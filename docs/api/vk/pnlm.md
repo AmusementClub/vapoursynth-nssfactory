@@ -47,6 +47,7 @@ transfers, so GPU frames and direct transfers help most there.
 - **Matching** is the square matcher of Davy and Ehret (a workgroup of 16 x 16
   invocations, one per quarter of a patch, sharing each quarter's distance
   among four references), weighting in the same workgroup for windows up to
-  `a=4` and groups up to 16, in a second kernel otherwise.
+  `a=4` and groups up to 16 (up to 8 on a device with less than 48 KiB of
+  shared memory), in a second kernel otherwise.
 - **Frames are uploaded once** however many windows they are part of (a cache
   of the window's frames shared by the streams, as NLM's).

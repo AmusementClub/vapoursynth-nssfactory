@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-only
 # Vulkan backend (libnss_vk) build lanes. CI only builds nss_vk (owner,
-# 2026-10-24): runners have no GPU and lavapipe is below D22, so these lanes
+# 2026-10-24): runners have no GPU and install no Vulkan driver, so these lanes
 # prove the pinned toolchain (glslang -> spirv-opt -> spirv-val -> embedded
 # SPIR-V), the isolation guards, the device-free unit tests and the plugin's
 # no-device load path. Device gates run on the dev host (docs/vulkan-plan.md).

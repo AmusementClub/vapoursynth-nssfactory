@@ -12,8 +12,12 @@
 
 namespace nss_vk {
 
-// D22: shared memory every V1/V2 kernel may assume.
-inline constexpr std::uint32_t kRequiredSharedMemory = 48u * 1024u;
+// D22 (amended 2026-11-05, the 32 KiB tier): shared memory every kernel may
+// assume. Kernel paths that take more (BM3D's warp kernel at block 16, group
+// 16; PNLM's fused weighting of groups 9 to 16; NLM's larger tiles; the
+// window matcher's largest tiles) check caps().shared_memory and otherwise
+// take their smaller path (same matches; output within the tolerances).
+inline constexpr std::uint32_t kRequiredSharedMemory = 32u * 1024u;
 // D22: subgroup operations the warp layer uses in compute shaders.
 inline constexpr VkSubgroupFeatureFlags kRequiredSubgroupOps =
     VK_SUBGROUP_FEATURE_BASIC_BIT | VK_SUBGROUP_FEATURE_VOTE_BIT | VK_SUBGROUP_FEATURE_BALLOT_BIT |

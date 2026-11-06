@@ -118,7 +118,7 @@ std::vector<float> gpu_result(const std::shared_ptr<Device>& device, Bm3dKernels
     d_matches.write(matches.data(), 0, matches.size() * sizeof(DeviceMatch));
     UploadPlane d_counts(device, counts.size() * sizeof(int), 1);
     d_counts.write(counts.data(), 0, counts.size() * sizeof(int));
-    const std::size_t scratch_floats = bm3d_scratch_floats(c.block, c.group, c.wiener);
+    const std::size_t scratch_floats = bm3d_scratch_floats(c.block, c.group, c.wiener, kernels.device().caps().shared_memory);
     Buffer scratch(device, std::max<std::size_t>(4, scratch_floats * batch * sizeof(float)), Memory::Device);
     Buffer num(device, floats * 8, Memory::Device), den(device, floats * 8, Memory::Device);
     Buffer rows(device, floats * 8, Memory::Device);
@@ -203,7 +203,7 @@ void run_case(const std::shared_ptr<Device>& device, Bm3dKernels& kernels, const
     for (std::size_t i = 0; i < want.size(); ++i) worst = std::max(worst, std::fabs(static_cast<double>(want[i]) - got[0][i]));
     CHECK(db >= 75.0, "%s: PSNR against the CPU %.1f dB (max abs %.3g)", label, db, worst);
     std::printf("%-34s %-5s PSNR %6.1f dB, max abs %.3g\n", label,
-                Bm3dKernels::warp_kernel(c.block, c.group, c.wiener) ? "warp" : "block", db, worst);
+                Bm3dKernels::warp_kernel(c.block, c.group, c.wiener, kernels.device().caps().shared_memory) ? "warp" : "block", db, worst);
 }
 
 }  // namespace

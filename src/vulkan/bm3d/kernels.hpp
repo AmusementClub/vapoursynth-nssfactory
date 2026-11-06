@@ -38,8 +38,9 @@ struct Bm3dGroupArgs {
     FixedTarget fused{};
 };
 
-// Floats of scratch per group (0 for the shapes that keep their cubes on chip).
-std::size_t bm3d_scratch_floats(int block, int group, bool wiener);
+// Floats of scratch per group (0 for the shapes that keep their cubes on chip)
+// on a device with `shared` bytes of shared memory a workgroup.
+std::size_t bm3d_scratch_floats(int block, int group, bool wiener, std::uint32_t shared);
 
 class Bm3dKernels {
 public:
@@ -57,8 +58,9 @@ public:
     // Tests: rows of at most `x` workgroups (default 65535), so that small
     // batches take the multi-row dispatch.
     void limit_groups_x(std::uint32_t x) noexcept { max_groups_x_ = x; }
-    // Whether the warp kernel (else the block kernel) serves a shape and stage.
-    static bool warp_kernel(int block, int group, bool wiener);
+    // Whether the warp kernel (else the block kernel) serves a shape and stage
+    // on a device with `shared` bytes of shared memory a workgroup.
+    static bool warp_kernel(int block, int group, bool wiener, std::uint32_t shared);
     const Device& device() const noexcept { return *device_; }
 
 private:

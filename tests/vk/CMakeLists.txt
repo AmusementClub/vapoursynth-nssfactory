@@ -50,6 +50,10 @@ if(TARGET nss_cpu)
   target_include_directories(test_vk_match PRIVATE "${PROJECT_SOURCE_DIR}/include" "${PROJECT_SOURCE_DIR}/src")
   add_test(NAME test_vk_match COMMAND test_vk_match)
   set_tests_properties(test_vk_match PROPERTIES LABELS vk SKIP_RETURN_CODE 77)
+  # The 32 KiB tier on a larger device: smaller window tiles.
+  add_test(NAME test_vk_match_shared32 COMMAND test_vk_match)
+  set_tests_properties(test_vk_match_shared32 PROPERTIES LABELS vk SKIP_RETURN_CODE 77
+                       ENVIRONMENT "NSS_VK_SHARED_LIMIT_KIB=32")
 endif()
 
 # DCT lines and fixed-point aggregation against the CPU and host models (V3;
@@ -69,6 +73,10 @@ if(TARGET nss_cpu)
   target_include_directories(test_vk_bm3d PRIVATE "${PROJECT_SOURCE_DIR}/include" "${PROJECT_SOURCE_DIR}/src")
   add_test(NAME test_vk_bm3d COMMAND test_vk_bm3d)
   set_tests_properties(test_vk_bm3d PROPERTIES LABELS vk SKIP_RETURN_CODE 77)
+  # The 32 KiB tier: block 16, group 16 Wiener on the block kernel.
+  add_test(NAME test_vk_bm3d_shared32 COMMAND test_vk_bm3d)
+  set_tests_properties(test_vk_bm3d_shared32 PROPERTIES LABELS vk SKIP_RETURN_CODE 77
+                       ENVIRONMENT "NSS_VK_SHARED_LIMIT_KIB=32")
 endif()
 
 # Queue-layout throughput (D28), run by hand on a device; not a test.
@@ -103,6 +111,10 @@ add_test(NAME test_vk_plugin_interface
                  --cpu-only VAggregate
                  --default-temporal rolling --rolling-cache adaptive)
 set_tests_properties(test_vk_backend test_vk_plugin_interface PROPERTIES LABELS vk SKIP_RETURN_CODE 77)
+add_test(NAME test_vk_backend_shared32
+         COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_vk_backend.py" --plugin "${NSS_VK_PLUGIN}")
+set_tests_properties(test_vk_backend_shared32 PROPERTIES LABELS vk SKIP_RETURN_CODE 77
+                     ENVIRONMENT "NSS_VK_SHARED_LIMIT_KIB=32")
 # VapourSynth R80+ GPU frames (D29). With the configured Python's core older
 # than R80 (the dev host's R78 venv) it checks that the same binary registers
 # plain `vnode` arguments; NSS_VK_GPU_FRAMES_PYTHON names a Python whose
@@ -151,6 +163,16 @@ if(TARGET nss)
                      --cpu "$<TARGET_FILE:nss>" --vk "${NSS_VK_PLUGIN}" --quick)
     set_tests_properties(test_vk_${filter}_live_staged PROPERTIES LABELS vk SKIP_RETURN_CODE 77
                          ENVIRONMENT "NSS_VK_REBAR=0;NSS_VK_COPY_QUEUES=1")
+  endforeach()
+  # The 32 KiB tier (D22 as amended 2026-11-05) on a larger device: every
+  # case with the shared-memory fallbacks (NLM's tiles, BM3D's warp kernel at
+  # 16 / 16, PNLM's fused weighting of groups 9 to 16, smaller window tiles).
+  foreach(filter nlm bm3d pnlm)
+    add_test(NAME test_vk_${filter}_live_shared32
+             COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_vk_${filter}_live.py"
+                     --cpu "$<TARGET_FILE:nss>" --vk "${NSS_VK_PLUGIN}")
+    set_tests_properties(test_vk_${filter}_live_shared32 PROPERTIES LABELS vk SKIP_RETURN_CODE 77
+                         ENVIRONMENT "NSS_VK_SHARED_LIMIT_KIB=32")
   endforeach()
   # PNLM's emulated warp-layer kernels on a native device.
   add_test(NAME test_vk_pnlm_live_emulated

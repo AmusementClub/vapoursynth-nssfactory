@@ -9,6 +9,7 @@ checking that the missing features are named).
 usage: test_vk_backend.py --plugin PATH [--device N]
 """
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -55,7 +56,10 @@ def main():
         return 77
     assert not info["missing"], info
     assert info["native_lanes"] == info["max_subgroup_size"] >= 1, info
-    assert info["shared_memory_kb"] >= 48, info
+    assert info["shared_memory_kb"] >= 32, info  # D22 (amended 2026-11-05)
+    cap = os.environ.get("NSS_VK_SHARED_LIMIT_KIB")
+    if cap:
+        assert info["shared_memory_kb"] <= int(cap), f"NSS_VK_SHARED_LIMIT_KIB={cap} not applied: {info}"
     assert info["probe_ok"] == 1, f"probe failed: {info['probe_error']}"
     assert info["min_subgroup_size"] <= info["probe_subgroup_size"] <= info["max_subgroup_size"], info
     print(f"vk backend OK: {info['name']} ({info['driver_name']} {info['driver_info']}, Vulkan {info['api_version']}) "

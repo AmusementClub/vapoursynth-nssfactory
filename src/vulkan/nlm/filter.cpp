@@ -56,7 +56,9 @@ using nss::host_detail::temporal_slot_frame;
 enum class Distance : std::uint32_t { Luma, Chroma, Yuv, Rgb };
 
 // Tile path limits, as nss_cuda: the window frames a dispatch takes, the
-// tile, the shared memory every D22 device has, the radii with unrolled sums.
+// tile, the shared memory of nss_cuda's tiles (at most the device's: on a
+// 32 KiB device fewer shapes take the tile path, or keep their windows out of
+// shared memory), the radii with unrolled sums.
 constexpr int kTileFrames = 17;
 constexpr int kTileWidth = 32, kTileHeight = 32, kTileThreads = kTileWidth * kTileHeight / 2;
 constexpr std::size_t kTileSharedBytes = 48 * 1024;
@@ -695,10 +697,12 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
                (slots + extra_outputs) * output_bytes +
                d->plane_bytes * weight_sets * span * span;
     };
+    const long long tile_shared =
+        static_cast<long long>(std::min<std::size_t>(kTileSharedBytes, d->device->caps().shared_memory));
     const long long shared_maps = tile_floats(d->a, d->s);
     const long long shared_all = shared_maps + window_floats(d->a, d->s, d->nc);
     d->tiles = 2 * d->d + 1 <= kTileFrames &&
-               shared_maps * static_cast<long long>(sizeof(float)) <= static_cast<long long>(kTileSharedBytes) &&
+               shared_maps * static_cast<long long>(sizeof(float)) <= tile_shared &&
                d->device->caps().max_workgroup_invocations >= static_cast<std::uint32_t>(kTileThreads) &&
                // Float offsets into the cache are 32-bit (the plane path's into
                // its three frames are too: fine up to planes of 2^30 / 3 floats).
@@ -733,7 +737,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
 
     if (d->tiles) {
         d->window.filter = "nss_vk.NLM";
-        const bool windows = shared_all * static_cast<long long>(sizeof(float)) <= static_cast<long long>(kTileSharedBytes);
+        const bool windows = shared_all * static_cast<long long>(sizeof(float)) <= tile_shared;
         const int fixed = d->s <= kTileFixedS ? d->s : -1;
         const std::string id = "nlm_tile_s" + (fixed < 0 ? std::string("x") : std::to_string(fixed)) + "_i" +
                                (windows ? "1" : "0");
