@@ -29,7 +29,7 @@ class HarnessTest(unittest.TestCase):
             nss_vk = types.SimpleNamespace(
                 Backend=lambda: dict(device_count=devices, support=support,
                                      probe_ok=probe, gpu_frames=status),
-                **{name: (lambda clip, **kw: clip) for name in ('NLM', 'BM3D', 'PNLM')})
+                **{name: (lambda clip, **kw: clip) for name in ('NLM', 'BM3D', 'PNLM', 'WNNM')})
 
         core = Core()
         if stress.text(status).startswith('yes'):
@@ -52,12 +52,12 @@ class HarnessTest(unittest.TestCase):
 
     def test_pre43_still_renders_cpu(self):
         self.assertEqual(self.run_stress(), 0)
-        self.assertEqual(self.renders, [False] * 30)
+        self.assertEqual(self.renders, [False] * 42)
 
     def test_bytes_status_exercises_gpu(self):
         self.assertEqual(self.run_stress(status=b'yes (R81)', require=True), 0)
-        self.assertEqual(self.renders.count(True), 30)
-        self.assertEqual(self.renders.count(False), 30)
+        self.assertEqual(self.renders.count(True), 42)
+        self.assertEqual(self.renders.count(False), 42)
 
     def test_required_gpu_cannot_pass_on_cpu_only(self):
         self.assertEqual(self.run_stress(require=True), 1)

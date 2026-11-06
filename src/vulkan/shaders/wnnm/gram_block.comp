@@ -1,0 +1,149 @@
+// SPDX-License-Identifier: GPL-2.0-only
+// WNNM, groups of 9 to 32 patches: nss_cuda's gram_block<N, WnnmModel>
+// (gram_group.cuh). N invocations a group and 32 / N groups a workgroup of
+// 32 (a workgroup's groups share the barriers and nothing else; its last
+// groups may lie beyond the batch: they run as empty groups and store
+// nothing). Invocation `lane` owns Gram row lane and output column lane. The
+// eigen step: N = 16 the round-robin parallel Jacobi (wnnm/block_jacobi.glsl),
+// N = 32 Householder and divide and conquer (wnnm/block_eigen.glsl, its
+// scratch in device memory); then WnnmModel::finish_lane (each lane its
+// value's place in the descending order, the count of kept values by a
+// ballot over the group's lanes) and X = A V C into the fixed-point sums.
+//
+// Defines: N (16 or 32), WARP_EMULATED (common/warp.glsl).
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_shader_atomic_int64 : require
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_GOOGLE_include_directive : require
+
+#if !defined(N) || (N != 16 && N != 32)
+#error N must be 16 or 32
+#endif
+#define WARP_L N
+#define WARP_WARPS 1
+#include "common/warp.glsl"
+#include "wnnm/common.glsl"
+
+layout(local_size_x = 32) in;
+
+const int kGroups = 32 / N;
+shared float s_g[kGroups * N * N], s_v[kGroups * N * N];
+#if N == 16
+shared float s_cs[kGroups * (N + 2)];
+shared int s_flag;
+#include "wnnm/block_jacobi.glsl"
+#else
+shared float s_fast[N + 20], s_slow[6 * N];
+#include "wnnm/block_eigen.glsl"
+#endif
+
+void main() {
+    const int tid = int(gl_LocalInvocationID.x);
+    const int slot = tid / N, lane = tid % N;
+    const int gb = slot * N * N;
+    const int workgroup = w_workgroup();
+    // Whole workgroups past the batch (the last row of a split dispatch):
+    // nothing to do, and no scratch of theirs (uniform over the workgroup).
+    if (workgroup * kGroups >= pc.batch) return;
+    const bool live = workgroup * kGroups + slot < pc.batch;
+    const int r = live ? workgroup * kGroups + slot : pc.batch - 1;
+    const int area = pc.block * pc.block;
+    const int n = live ? min(Counts(pc.counts).c[r], pc.group) : 0;
+    const int first = r * pc.group;
+    uint64_t col[N];
+    [[unroll]] for (int j = 0; j < N; ++j) col[j] = match_base(Matches(pc.matches).m[first + (j < n ? j : 0)]);
+    // Column `lane` of the group, as col[lane] (a run-time index into col
+    // would put it in Function storage).
+    const uint64_t own = match_base(Matches(pc.matches).m[first + (lane < n ? lane : 0)]);
+    const bool center = wnnm_center();
+    // Gram row `lane`. The pixel's offset advances by a column counter.
+    float acc[N];
+    [[unroll]] for (int k = 0; k < N; ++k) acc[k] = 0.0f;
+    for (int p = 0, c = 0, offset = 0; p < area; ++p) {
+        float row[N];
+        float sum = 0.0f;
+        [[unroll]] for (int j = 0; j < N; ++j) {
+            row[j] = j < n ? Plane(col[j]).v[offset] : 0.0f;
+            sum += row[j];
+        }
+        float mine = lane < n ? Plane(own).v[offset] : 0.0f;
+        if (center) {
+            const float mu = sum / float(n);
+            [[unroll]] for (int j = 0; j < N; ++j) row[j] = j < n ? row[j] - mu : 0.0f;
+            mine = lane < n ? mine - mu : 0.0f;
+        }
+        [[unroll]] for (int k = 0; k < N; ++k) acc[k] = fma(mine, row[k], acc[k]);
+        if (++c == pc.block) {
+            c = 0;
+            offset += pc.pitch - pc.block;
+        }
+        ++offset;
+    }
+    [[unroll]] for (int k = 0; k < N; ++k) s_g[gb + lane * N + k] = acc[k];
+    barrier();
+#if N == 16
+    block_jacobi(gb, slot * (N + 2), lane);
+#else
+    // Householder and divide and conquer: the vectors come back as rows of
+    // s_g, the values in s_slow; v takes the vectors as columns and g the
+    // values on its diagonal (block_jacobi's contract).
+    block_eigen(pc.scratch + uint64_t(workgroup) * uint64_t(dc_floats()) * 4ul);
+    for (int e = lane; e < N * N; e += N) s_v[e] = s_g[(e % N) * N + e / N];
+    barrier();
+    for (int e = lane; e < N * N; e += N) s_g[e] = e / N == e % N ? s_slow[e / N] : 0.0f;
+    barrier();
+#endif
+    // finish_lane: lane i forms row i of C, gain_i v[:, i]^T.
+    const float constant = wnnm_constant(n);
+    const int rank = min(area, n), start = min(center ? 0 : 1, rank);
+    float sv;
+    {
+        const float lambda = s_g[gb + lane * N + lane];
+        sv = lambda > 0.0f ? sqrt(lambda) : 0.0f;
+    }
+    int place = 0;
+    for (int i = 0; i < N; ++i) {
+        const float lambda = s_g[gb + i * N + i];
+        const float s = lambda > 0.0f ? sqrt(lambda) : 0.0f;
+        place += (s > sv || (s == sv && i < lane)) ? 1 : 0;
+    }
+    bool kept;
+    const float gain = wnnm_gain(sv, place, start, rank, constant, kept);
+    const int count = w_count(kept);  // over the group's N lanes (the segment)
+    barrier();  // every eigenvalue is read before C overwrites g
+    [[unroll]] for (int j = 0; j < N; ++j) s_g[gb + lane * N + j] = gain * s_v[gb + j * N + lane];
+    const float weight = wnnm_weight(count);
+    barrier();
+    if (!live || lane >= n) return;  // no barriers below
+    const Match own_match = Matches(pc.matches).m[first + lane];
+    const int64_t cell = fixed_patch_cell(pc.fused, own_match.t, own_match.y, own_match.x);
+    if (cell < 0) return;
+    // X = A M: output column `lane`, with that column of M = V C.
+    [[unroll]] for (int k = 0; k < N; ++k) {
+        float sum = 0.0f;
+        [[unroll]] for (int i = 0; i < N; ++i) sum = fma(s_v[gb + k * N + i], s_g[gb + i * N + lane], sum);
+        acc[k] = sum;
+    }
+    for (int p = 0, c = 0, offset = 0, target = 0; p < area; ++p) {
+        float row[N];
+        float sum = 0.0f;
+        [[unroll]] for (int j = 0; j < N; ++j) {
+            row[j] = j < n ? Plane(col[j]).v[offset] : 0.0f;
+            sum += row[j];
+        }
+        const float mu = center ? sum / float(n) : 0.0f;
+        float out_ = 0.0f;
+        [[unroll]] for (int k = 0; k < N; ++k) out_ = fma(k < n ? row[k] - mu : 0.0f, acc[k], out_);
+        fixed_add(pc.fused.num, cell + target, weight * (out_ + mu));
+        if (++c == pc.block) {
+            c = 0;
+            offset += pc.pitch - pc.block;
+            target += pc.fused.pitch - pc.block;
+        }
+        ++offset;
+        ++target;
+    }
+    fixed_add(pc.fused.den, cell, weight);
+}

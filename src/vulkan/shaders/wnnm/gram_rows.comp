@@ -1,0 +1,46 @@
+// SPDX-License-Identifier: GPL-2.0-only
+// WNNM, groups of up to 8 patches, kernel 1 of 3 (wnnm/gram8.glsl): the Gram
+// matrix of each group into the scratch, as nss_cuda's gram_rows_kernel.
+// Four 32-lane warps a workgroup, 8 lanes a group (WARP_L 8).
+//
+// Defines: WARP_EMULATED (common/warp.glsl).
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_shader_atomic_int64 : require
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_GOOGLE_include_directive : require
+
+#define WARP_L 8
+#define WARP_WARPS 4
+#include "common/warp.glsl"
+#include "wnnm/gram8.glsl"
+
+layout(local_size_x = 32 * WARP_WARPS) in;
+
+void main() {
+    const int lane = w_sub();
+    const int slot = w_segment();
+    const bool live = slot < pc.batch;
+    const int r = live ? slot : pc.batch - 1;  // idle groups mirror the last one and store nothing
+    const int n = min(Counts(pc.counts).c[r], pc.group);
+    uint64_t col[kN];
+    group_columns(r, n, col);
+    float g[kSplitGram];
+    [[unroll]] for (int e = 0; e < kSplitGram; ++e) g[e] = 0.0f;
+    for (int row = 0; row < pc.block; ++row) {
+        for (int c = lane; c < pc.block; c += kN) {
+            float value[kN];
+            group_pixel(col, row * pc.pitch + c, n, value);
+            [[unroll]] for (int j = 0; j < kN; ++j) {
+                [[unroll]] for (int k = 0; k <= j; ++k) g[j * (j + 1) / 2 + k] = fma(value[j], value[k], g[j * (j + 1) / 2 + k]);
+            }
+        }
+    }
+    const uint64_t dst = split_at(r);
+    const int width = split_width(r);
+    [[unroll]] for (int e = 0; e < kSplitGram; ++e) {
+        const float sum = w_sum_up_f(g[e]);  // every lane of the segment, live or not
+        if (live && e % kN == lane) Scratch(dst).v[e * width] = sum;
+    }
+}

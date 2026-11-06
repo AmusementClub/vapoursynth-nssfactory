@@ -345,6 +345,25 @@ foreach(_nss_q 2 3 4)
   endforeach()
   nss_vk_add_shader(NSS_VK_SPIRV_SOURCES pnlm_gather_q${_nss_q} pnlm/gather.comp DEFINES Q=${_nss_q})
 endforeach()
+# WNNM Gram group kernels (V7, shaders/wnnm): up to 8 patches the rows
+# (warp layer, 8 lanes a group: native n, emulated e), solve and apply
+# kernels; 9 to 16 and 17 to 32 the block kernel (N = 16: parallel Jacobi,
+# N = 32: Householder and divide and conquer; n, e).
+foreach(_nss_emu 0 1)
+  if(_nss_emu)
+    set(_nss_layer e)
+  else()
+    set(_nss_layer n)
+  endif()
+  nss_vk_add_shader(NSS_VK_SPIRV_SOURCES wnnm_gram_rows_${_nss_layer} wnnm/gram_rows.comp
+                    DEFINES WARP_EMULATED=${_nss_emu})
+  foreach(_nss_n 16 32)
+    nss_vk_add_shader(NSS_VK_SPIRV_SOURCES wnnm_gram_block_n${_nss_n}_${_nss_layer} wnnm/gram_block.comp LIGHT
+                      DEFINES N=${_nss_n} WARP_EMULATED=${_nss_emu})
+  endforeach()
+endforeach()
+nss_vk_add_shader(NSS_VK_SPIRV_SOURCES wnnm_gram_solve wnnm/gram_solve.comp LIGHT)
+nss_vk_add_shader(NSS_VK_SPIRV_SOURCES wnnm_gram_apply wnnm/gram_apply.comp)
 # Fixed-point aggregation finish (common/aggregate.comp): rows, then finish.
 nss_vk_add_shader(NSS_VK_SPIRV_SOURCES aggregate_fixed_rows common/aggregate.comp DEFINES KERNEL=0)
 nss_vk_add_shader(NSS_VK_SPIRV_SOURCES aggregate_fixed_finish common/aggregate.comp DEFINES KERNEL=1)
@@ -455,6 +474,7 @@ add_library(nss_vk_core STATIC
   runtime/slot.cpp
   runtime/vma.cpp
   runtime/vs_api43.cpp
+  wnnm/kernels.cpp
 )
 target_include_directories(nss_vk_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_link_libraries(nss_vk_core PUBLIC nss_frontend nss_gpuhost nss_vk_headers nss_volk nss_vk_shaders)
@@ -493,6 +513,7 @@ add_library(nss_vk SHARED
   common/group_driver.cpp
   nlm/filter.cpp
   pnlm/filter.cpp
+  wnnm/filter.cpp
 )
 set_target_properties(nss_vk PROPERTIES
   PREFIX "lib"

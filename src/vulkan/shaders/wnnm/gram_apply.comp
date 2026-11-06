@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: GPL-2.0-only
+// WNNM, groups of up to 8 patches, kernel 3 of 3 (wnnm/gram8.glsl): X = A M
+// pixel by pixel into the fixed-point sums, as nss_cuda's gram_apply_kernel
+// (fused): 8 invocations a group, the den once a patch at its first cell.
+// No warp operations: a plain workgroup of 128.
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_shader_atomic_int64 : require
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_GOOGLE_include_directive : require
+
+#include "wnnm/gram8.glsl"
+
+layout(local_size_x = 128) in;
+
+void main() {
+    const int index = int((gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x) * 128u + gl_LocalInvocationID.x);
+    const int lane = index % kN;
+    const int r = index / kN;
+    if (r >= pc.batch) return;  // no barriers below
+    const int n = min(Counts(pc.counts).c[r], pc.group);
+    uint64_t col[kN];
+    group_columns(r, n, col);
+    const uint64_t at = split_at(r);
+    const int width = split_width(r);
+    float g[kN * kN];
+    [[unroll]] for (int e = 0; e < kN * kN; ++e) g[e] = Scratch(at).v[(kSplitGram + e) * width];
+    const float weight = Scratch(at).v[(kSplitGram + kN * kN) * width];
+    int64_t cell[kN];
+    [[unroll]] for (int j = 0; j < kN; ++j) {
+        const Match m = Matches(pc.matches).m[r * pc.group + (j < n ? j : 0)];
+        cell[j] = j < n ? fixed_patch_cell(pc.fused, m.t, m.y, m.x) : -1l;
+    }
+    for (int row = 0; row < pc.block; ++row) {
+        for (int c = lane; c < pc.block; c += kN) {
+            float value[kN];
+            const float mu = group_pixel(col, row * pc.pitch + c, n, value);
+            const int64_t target = int64_t(row) * pc.fused.pitch + c;
+            [[unroll]] for (int j = 0; j < kN; ++j) {
+                float acc = 0.0f;
+                [[unroll]] for (int k = 0; k < kN; ++k) acc = fma(value[k], g[k * kN + j], acc);
+                if (cell[j] >= 0) fixed_add(pc.fused.num, cell[j] + target, weight * (acc + mu));
+            }
+        }
+    }
+    if (lane != 0) return;
+    // The den once a patch, at its first cell: the finish box-sums it.
+    [[unroll]] for (int j = 0; j < kN; ++j) {
+        if (cell[j] >= 0) fixed_add(pc.fused.den, cell[j], weight);
+    }
+}
