@@ -316,6 +316,10 @@ foreach(_nss_b 1 2 4 8 12 16 32)
       if(NOT _nss_warp OR (_nss_shape EQUAL 1616 AND _nss_w))
         nss_vk_add_shader(NSS_VK_SPIRV_SOURCES bm3d_shape_b${_nss_b}_g${_nss_g}_${_nss_stage} bm3d/group_shape.comp
                           LIGHT DEFINES B=${_nss_b} G=${_nss_g} WIENER=${_nss_w})
+        if(_nss_shape EQUAL 1616 AND _nss_w)
+          nss_vk_add_shader(NSS_VK_SPIRV_SOURCES bm3d_shape_b16_g16_w_rg bm3d/group_shape.comp
+                            LIGHT DEFINES B=16 G=16 WIENER=1 REF_GLOBAL=1)
+        endif()
       endif()
     endforeach()
   endforeach()

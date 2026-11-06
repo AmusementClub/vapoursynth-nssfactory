@@ -41,6 +41,9 @@ struct Bm3dGroupArgs {
 // Floats of scratch per group (0 for the shapes that keep their cubes on chip)
 // on a device with `shared` bytes of shared memory a workgroup.
 std::size_t bm3d_scratch_floats(int block, int group, bool wiener, std::uint32_t shared);
+// The 32 KiB-tier Wiener fallback keeps the noisy cube in shared memory and
+// stores only the reference cube in device scratch.
+bool wiener_ref_global(int block, int group, bool wiener, std::uint32_t shared);
 
 class Bm3dKernels {
 public:
