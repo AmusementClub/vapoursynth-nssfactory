@@ -77,6 +77,9 @@ struct GroupSlot {
     Buffer estimate;  // two stages: the first stage's estimate (the second's guide)
     // Per unit 2 * ntemp device addresses: its source window, then its guide's.
     Buffer tables;
+    // Outer rounds: the estimates of the window slots (frame layout, slot t at
+    // t * frame bytes) and per unit their ntemp addresses.
+    Buffer rounds, round_tables;
     // Fixed-point sums of the unit being filtered: channel c's ntemp slices
     // from c * ntemp * plane floats.
     Buffer num, den;
@@ -135,6 +138,11 @@ struct RollSlot {
     Buffer rows;
     Buffer out;  // without roll_batch_out: one unit, copied into the store after each finish
     Buffer matches, counts, scratch;
+    // Outer rounds: a center's round sums (its 2R+1 window slots, laid out as
+    // a state's), the window slots' estimates and their addresses.
+    Buffer round_num, round_den;
+    std::vector<Buffer> estimates;
+    Buffer estimate_table;
 };
 
 // The host side of one rolling chunk in flight: the uploads that are not
@@ -347,8 +355,9 @@ std::size_t slot_fixed_bytes(const Driver& d) {
     const std::size_t cells = d.plane_floats * static_cast<std::size_t>(d.unit_channels) * nt;
     const std::size_t out = frame_bytes(d) * fat_slices(d);
     const std::size_t tables = d.units.size() * 2 * nt * sizeof(VkDeviceAddress);
+    const std::size_t rounds = d.iters > 1 ? frame_bytes(d) * nt + d.units.size() * nt * sizeof(VkDeviceAddress) : 0;
     return inputs + (d.two_stage ? frame_bytes(d) : 0) + cells * 8 * 2 + d.plane_floats * 8 + out * (d.gpu ? 1 : 2) +
-           tables + 4096;
+           tables + rounds + 4096;
 }
 
 // The memory plan of spatial and legacy output: num_streams (unless given),
@@ -407,7 +416,9 @@ std::size_t roll_table_words(const Driver& d) {
 // chunk's planes (or one unit the lanes share).
 std::size_t roll_slot_bytes(const Driver& d, bool per_unit, bool batch_out) {
     const std::size_t out = batch_out ? 2 * chunk_bytes(d) : d.plane_floats * d.unit_channels * sizeof(float);
-    return roll_bytes(d, per_unit) + d.plane_floats * 8 + out + 2 * roll_table_words(d) * 8 + 4096;
+    const std::size_t unit = d.plane_floats * d.unit_channels, nt = static_cast<std::size_t>(d.ntemp);
+    const std::size_t rounds = d.iters > 1 ? unit * nt * (8 * 2 + sizeof(float)) + nt * sizeof(VkDeviceAddress) : 0;
+    return roll_bytes(d, per_unit) + d.plane_floats * 8 + out + 2 * roll_table_words(d) * 8 + rounds + 4096;
 }
 // Host bytes of a staging set's uploads: every active unit's at its own size,
 // or one unit's at the largest size for units that take turns.
@@ -542,6 +553,16 @@ std::unique_ptr<GroupSlot> make_slot(Driver& d) {
     }
     s->tables = Buffer(d.device, std::max<std::size_t>(tables.size(), 1) * sizeof(VkDeviceAddress), Memory::Device, d.budget);
     upload_now(d.device, s->tables, tables.data(), tables.size() * sizeof(VkDeviceAddress));
+    if (d.iters > 1) {
+        s->rounds = Buffer(d.device, frame_bytes(d) * nt, Memory::Device, d.budget);
+        std::vector<VkDeviceAddress> rounds;
+        for (const Unit& u : d.units) {
+            const VkDeviceAddress offset = d.plane_offset[static_cast<std::size_t>(u.first)] * sizeof(float);
+            for (std::size_t t = 0; t < nt; ++t) rounds.push_back(s->rounds.address() + t * frame_bytes(d) + offset);
+        }
+        s->round_tables = Buffer(d.device, rounds.size() * sizeof(VkDeviceAddress), Memory::Device, d.budget);
+        upload_now(d.device, s->round_tables, rounds.data(), rounds.size() * sizeof(VkDeviceAddress));
+    }
     return s;
 }
 
@@ -580,6 +601,18 @@ std::unique_ptr<RollSlot> make_roll_slot(Driver& d) {
     s->matches = std::move(b.matches);
     s->counts = std::move(b.counts);
     s->scratch = std::move(b.scratch);
+    if (d.iters > 1) {
+        const std::size_t unit = d.plane_floats * d.unit_channels;
+        s->round_num = Buffer(d.device, unit * nt * 8, Memory::Device, d.budget);
+        s->round_den = Buffer(d.device, unit * nt * 8, Memory::Device, d.budget);
+        std::vector<VkDeviceAddress> table;
+        for (std::size_t t = 0; t < nt; ++t) {
+            s->estimates.emplace_back(d.device, unit * sizeof(float), Memory::Device, d.budget);
+            table.push_back(s->estimates.back().address());
+        }
+        s->estimate_table = Buffer(d.device, table.size() * sizeof(VkDeviceAddress), Memory::Device, d.budget);
+        upload_now(d.device, s->estimate_table, table.data(), table.size() * sizeof(VkDeviceAddress));
+    }
     return s;
 }
 
@@ -762,6 +795,56 @@ void run_stage(Driver& d, GroupSlot& s, const Unit& u, const GroupPlane& p, int 
     timer.next_stage();
 }
 
+// A unit's outer rounds over its window frames (nss_cuda's run_rounds):
+// every round but the last filters into the slot's sums and finishes each
+// window slot's estimate from them (from the noisy frame where nothing
+// covers a pixel in the first round, else from the estimate), every round
+// but the first relaxes the estimates toward the noisy frames and matches
+// and filters them; the last round is run_stage's, on the estimates.
+void run_rounds(Driver& d, GroupSlot& s, std::size_t index, const Unit& u, const GroupPlane& p, int center,
+                const StageIO& io, VkDeviceAddress target, FrameTimer& timer) {
+    VkCommandBuffer commands = s.slot.commands(Slot::Compute);
+    const std::size_t nt = static_cast<std::size_t>(d.ntemp);
+    const VkDeviceAddress offset = d.plane_offset[static_cast<std::size_t>(u.first)] * sizeof(float);
+    const auto noisy = [&](std::size_t t) {
+        return s.inputs.address() + t * clips(d) * frame_bytes(d) + offset;
+    };
+    const auto estimate = [&](std::size_t t) { return s.rounds.address() + t * frame_bytes(d) + offset; };
+    StageIO round;
+    round.src = s.round_tables.address() + index * nt * sizeof(VkDeviceAddress);
+    round.match = d.radius > 0 ? round.src : estimate(0);
+    const std::size_t unit_floats = p.floats * static_cast<std::size_t>(u.channels);
+    const bool every[3]{true, true, true};  // the next round matches on every channel
+    for (int iter = 0; iter < d.iters; ++iter) {
+        if (iter > 0) {
+            for (std::size_t t = 0; t < nt; ++t) d.aggregator->regularize(commands, estimate(t), noisy(t), unit_floats, d.delta);
+            compute_barrier(*d.device, commands);
+        }
+        if (iter + 1 == d.iters) {
+            run_stage(d, s, u, p, center, round, estimate(static_cast<std::size_t>(d.radius)), target, d.channel_out, timer);
+            return;
+        }
+        const std::size_t cells = p.floats * static_cast<std::size_t>(u.channels) * nt;
+        fixed_clear(*d.device, commands, s.num.get(), 0, cells * 8);
+        fixed_clear(*d.device, commands, s.den.get(), 0, cells * 8);
+        const FixedTarget fixed = window_target(d, s.num, s.den, p);
+        filter_center(d, commands, BatchBuffers{s.matches, s.counts, s.scratch}, u, p, center, iter == 0 ? io : round,
+                      fixed, every, timer);
+        for (std::size_t t = 0; t < nt; ++t) {
+            for (int c = 0; c < u.channels; ++c) {
+                const VkDeviceAddress channel = static_cast<VkDeviceAddress>(c) * p.floats;
+                const VkDeviceAddress slice = (channel * nt + t * p.floats) * 8;
+                d.aggregator->fixed_finish(commands, fixed.num + slice, fixed.den + slice, p.width, p.block,
+                                           (iter == 0 ? noisy(t) : estimate(t)) + channel * sizeof(float), p.width,
+                                           p.height, s.rows.address(), estimate(t) + channel * sizeof(float));
+                compute_barrier(*d.device, commands);  // the rows are reused
+            }
+        }
+        timer.aggregate_end();
+        timer.next_stage();
+    }
+}
+
 // Every unit of a spatial or legacy frame, on the slot's compute queue.
 void run_units(Driver& d, GroupSlot& s, int n, FrameTimer& timer) {
     timer.compute_begin();
@@ -801,6 +884,10 @@ void run_units(Driver& d, GroupSlot& s, int n, FrameTimer& timer) {
                 run_stage(d, s, u, b, n, first, source, estimate, d.basic_out, timer);
             }
             io.match = estimate;
+        }
+        if (d.iters > 1) {
+            run_rounds(d, s, i, u, p, n, io, target, timer);
+            continue;
         }
         run_stage(d, s, u, p, n, io, source, target, d.channel_out, timer);
     }
@@ -1370,10 +1457,53 @@ struct RollRun {
         timer.aggregate_end();
         timer.next_stage();
     }
+    // Every outer round of `center` but the last, as the legacy output's
+    // for its center alone (nss_cuda's RollRun::rounds): the round's sums
+    // cover the window's frames (slot t in slice t), each window frame's
+    // estimate is finished from them (from its noisy frame in the first
+    // round, else from the estimate where nothing covers a pixel), then
+    // relaxed toward its noisy frame for the next round, which matches and
+    // filters the estimates. Every channel is finished: the next round
+    // matches on all of them. Returns the estimates' window for the last.
+    StageIO rounds(int center, const StageIO& first) {
+        FixedTarget sums = target(s.round_num, s.round_den);
+        sums.slices = d.ntemp;
+        const std::size_t unit_floats = p.floats * static_cast<std::size_t>(u.channels);
+        const auto noisy = [&](int t) {
+            return r.src[static_cast<std::size_t>(temporal_slot_frame(center, t, d.radius, d.vi.numFrames) % ring())]
+                .address();
+        };
+        const auto estimate = [&](int t) { return s.estimates[static_cast<std::size_t>(t)].address(); };
+        StageIO round;
+        round.src = round.match = s.estimate_table.address();
+        const bool every[3]{true, true, true};
+        for (int iter = 0; iter + 1 < d.iters; ++iter) {
+            fixed_clear(*d.device, commands, s.round_num.get(), 0, unit_floats * nt() * 8);
+            fixed_clear(*d.device, commands, s.round_den.get(), 0, unit_floats * nt() * 8);
+            if (iter > 0) {
+                for (int t = 0; t < nt(); ++t) d.aggregator->regularize(commands, estimate(t), noisy(t), unit_floats, d.delta);
+                compute_barrier(*d.device, commands);
+            }
+            filter_center(d, commands, batches(), u, p, center, iter == 0 ? first : round, sums, every, timer);
+            for (int t = 0; t < nt(); ++t) {
+                for (int c = 0; c < u.channels; ++c) {
+                    const VkDeviceSize channel = static_cast<VkDeviceSize>(c) * plane_bytes();
+                    d.aggregator->fixed_finish(commands, sums.num + cell(c, t), sums.den + cell(c, t), p.width, p.block,
+                                               (iter == 0 ? noisy(t) : estimate(t)) + channel, p.width, p.height,
+                                               s.rows.address(), estimate(t) + channel);
+                    compute_barrier(*d.device, commands);  // the rows are reused
+                }
+            }
+        }
+        for (int t = 0; t < nt(); ++t) d.aggregator->regularize(commands, estimate(t), noisy(t), unit_floats, d.delta);
+        compute_barrier(*d.device, commands);
+        return round;
+    }
     void center(int center, int next) {
         if (!d.two_stage) check(center);
         StageIO io = point(center, p.wiener);
         io.match = p.wiener ? io.guide : io.src;
+        if (d.iters > 1) io = rounds(center, io);
         filter_center(d, commands, batches(), u, p, center, io, slices(target(r.num, r.den), center, next),
                       d.channel_out, timer);
     }
@@ -1738,7 +1868,8 @@ void group_filter_install(GroupFilterConfig&& config, VSMap* out, VSCore* core, 
     if (d->mode == GroupMode::Legacy) d->vi_out.height = nss::checked_fat_height(d->vi.height, d->radius);
     d->budget = nss::current_budget();
     if (d->channels > 1) {
-        if (!d->shared_match) throw std::logic_error(prefix(*d) + "joint units are not ported yet (V7)");
+        // A joint unit (MCWNNM) is matched on all of its channels, a shared one
+        // (CBM3D) on channel 0; both filter every channel in one unit.
         bool any = false;
         for (int c = 0; c < d->channels; ++c) {
             d->channel_out[c] = d->planes[c].active;
@@ -1751,6 +1882,7 @@ void group_filter_install(GroupFilterConfig&& config, VSMap* out, VSCore* core, 
     } else {
         for (int plane = 0; plane < d->vi.format.numPlanes; ++plane) d->units.push_back(Unit{plane, 1});
     }
+    if (d->iters > 1 && d->two_stage) throw std::logic_error(prefix(*d) + "outer rounds take one stage");
     if (d->two_stage) {
         if (d->mode == GroupMode::Legacy) throw std::logic_error(prefix(*d) + "two stages need spatial or rolling output");
         if (d->guide) throw std::logic_error(prefix(*d) + "two stages take no guide clip");

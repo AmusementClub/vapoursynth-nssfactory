@@ -379,10 +379,32 @@ nss_vk_add_shader(NSS_VK_SPIRV_SOURCES wnnm_gram_solve wnnm/gram_solve.comp LIGH
 nss_vk_add_shader(NSS_VK_SPIRV_SOURCES wnnm_gram_apply wnnm/gram_apply.comp)
 # Groups of 17 to 32: X = A M after the block kernel (no warp operations).
 nss_vk_add_shader(NSS_VK_SPIRV_SOURCES wnnm_gram_apply_n32 wnnm/gram_apply_block.comp DEFINES N=32)
+# MCWNNM group kernels (V8, shaders/mcwnnm): up to 8 patches the channel
+# classes' Gram matrices (warp layer, 8 lanes a group: n, e), the ADMM and the
+# output; 9 to 16 and 17 to 32 the block kernel (N = 16, 32; u its own matrix
+# with several channel classes, u1, or g with one, u0; n, e).
+foreach(_nss_emu 0 1)
+  if(_nss_emu)
+    set(_nss_layer e)
+  else()
+    set(_nss_layer n)
+  endif()
+  nss_vk_add_shader(NSS_VK_SPIRV_SOURCES mcwnnm_rows8_${_nss_layer} mcwnnm/rows8.comp DEFINES WARP_EMULATED=${_nss_emu})
+  foreach(_nss_n 16 32)
+    foreach(_nss_u 0 1)
+      nss_vk_add_shader(NSS_VK_SPIRV_SOURCES mcwnnm_block_n${_nss_n}_u${_nss_u}_${_nss_layer} mcwnnm/block.comp LIGHT
+                        DEFINES N=${_nss_n} U_SHARED=${_nss_u} WARP_EMULATED=${_nss_emu})
+    endforeach()
+  endforeach()
+endforeach()
+nss_vk_add_shader(NSS_VK_SPIRV_SOURCES mcwnnm_admm8 mcwnnm/admm8.comp LIGHT)
+nss_vk_add_shader(NSS_VK_SPIRV_SOURCES mcwnnm_apply8 mcwnnm/apply8.comp)
 # Fixed-point aggregation finish (common/aggregate.comp): rows, then finish.
 nss_vk_add_shader(NSS_VK_SPIRV_SOURCES aggregate_fixed_rows common/aggregate.comp DEFINES KERNEL=0)
 nss_vk_add_shader(NSS_VK_SPIRV_SOURCES aggregate_fixed_finish common/aggregate.comp DEFINES KERNEL=1)
 nss_vk_add_shader(NSS_VK_SPIRV_SOURCES aggregate_fixed_slices common/aggregate.comp DEFINES KERNEL=2)
+# Outer rounds (MCWNNM's iters): an estimate relaxed toward the noisy frame.
+nss_vk_add_shader(NSS_VK_SPIRV_SOURCES aggregate_regularize common/regularize.comp)
 # Primitive tests (tests/vk/test_vk_aggregate.cpp): DCT lines of every length,
 # and fixed-point adds into a ring of slices.
 foreach(_nss_n 1 2 4 8 12 16 32 64)
@@ -490,6 +512,7 @@ add_library(nss_vk_core STATIC
   runtime/vma.cpp
   runtime/vs_api43.cpp
   wnnm/kernels.cpp
+  mcwnnm/kernels.cpp
 )
 target_include_directories(nss_vk_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_link_libraries(nss_vk_core PUBLIC nss_frontend nss_gpuhost nss_vk_headers nss_volk nss_vk_shaders)
@@ -529,6 +552,7 @@ add_library(nss_vk SHARED
   nlm/filter.cpp
   pnlm/filter.cpp
   wnnm/filter.cpp
+  mcwnnm/filter.cpp
 )
 set_target_properties(nss_vk PROPERTIES
   PREFIX "lib"

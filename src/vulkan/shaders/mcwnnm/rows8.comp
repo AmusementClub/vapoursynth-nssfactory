@@ -1,0 +1,65 @@
+// SPDX-License-Identifier: GPL-2.0-only
+// MCWNNM, groups of up to 8 patches, kernel 1 of 3 (mcwnnm/group8.glsl): the
+// Gram matrix of each channel class (the sum over its channels) of the
+// centred input into the state, as nss_cuda's mcwnnm_rows_kernel. Four
+// 32-lane warps a workgroup, 8 lanes a group (WARP_L 8); lane l takes the
+// pixels of column l (l + 8, ...) of every patch row, and a butterfly over the
+// 8 lanes (ascending masks, as nss_cuda's shuffle tree) adds the partial sums.
+//
+// Defines: WARP_EMULATED (common/warp.glsl).
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_shader_atomic_int64 : require
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_GOOGLE_include_directive : require
+
+#define WARP_L 8
+#define WARP_WARPS 4
+#include "common/warp.glsl"
+#include "mcwnnm/group8.glsl"
+
+layout(local_size_x = 32 * WARP_WARPS) in;
+
+const int kTriangle = kN * (kN + 1) / 2;
+
+void main() {
+    const int lane = w_sub();
+    const int slot = w_segment();
+    const bool live = slot < pc.batch;
+    const int r = live ? slot : pc.batch - 1;  // idle groups mirror the last one and store nothing
+    const int n = min(Counts(pc.counts).c[r], pc.group);
+    uint64_t col[kN];
+    group_columns(r, n, col);
+    const uint64_t state = state_at(r);
+    const int width = state_width(r);
+    Params model = params();
+    for (int cls = 0; cls < model.classes; ++cls) {
+        float g[kTriangle];
+        [[unroll]] for (int e = 0; e < kTriangle; ++e) g[e] = 0.0f;
+        for (int c = 0; c < 3; ++c) {
+            if (model.class_of[c] != cls) continue;
+            for (int row = 0; row < pc.block; ++row) {
+                for (int x = lane; x < pc.block; x += kN) {
+                    float y[kN];
+                    group_pixel(col, c * pc.channel_step + row * pc.pitch + x, n, y);
+                    [[unroll]] for (int j = 0; j < kN; ++j) {
+                        [[unroll]] for (int k = 0; k <= j; ++k) {
+                            g[j * (j + 1) / 2 + k] = fma(y[j], y[k], g[j * (j + 1) / 2 + k]);
+                        }
+                    }
+                }
+            }
+        }
+        [[unroll]] for (int j = 0; j < kN; ++j) {
+            [[unroll]] for (int k = 0; k <= j; ++k) {
+                const int e = j * (j + 1) / 2 + k;
+                const float sum = w_sum_up_f(g[e]);  // every lane of the segment, live or not
+                if (live && j < n && e % kN == lane) {
+                    Scratch(state).v[state_index(kGram, cls, j, k, width)] = sum;
+                    Scratch(state).v[state_index(kGram, cls, k, j, width)] = sum;
+                }
+            }
+        }
+    }
+}

@@ -59,6 +59,11 @@ public:
     void fixed_slices(VkCommandBuffer commands, VkDeviceAddress num, VkDeviceAddress den, int pitch, int block,
                       int width, int height, VkDeviceAddress rows, VkDeviceAddress out) const;
 
+    // x += delta * (y - x) over `count` floats (nss::iter_regularize): a
+    // round's estimate relaxed toward the noisy frame. Recorded into
+    // `commands` (compute); the caller orders what writes x and y before it.
+    void regularize(VkCommandBuffer commands, VkDeviceAddress x, VkDeviceAddress y, std::size_t count, float delta) const;
+
 private:
     void run(VkCommandBuffer commands, const Pipeline& last, VkDeviceAddress num, VkDeviceAddress den, int pitch,
              int block, VkDeviceAddress src, int width, int height, VkDeviceAddress rows, VkDeviceAddress out) const;
@@ -67,6 +72,7 @@ private:
     Pipeline rows_;
     Pipeline finish_;
     Pipeline slices_;
+    Pipeline regularize_;
 };
 
 }  // namespace nss_vk

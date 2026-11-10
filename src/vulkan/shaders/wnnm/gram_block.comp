@@ -91,7 +91,7 @@ void main() {
     [[unroll]] for (int k = 0; k < N; ++k) s_g[gb + lane * N + k] = acc[k];
     barrier();
 #if N == 16
-    block_jacobi(gb, slot * (N + 2), lane);
+    block_jacobi(gb, slot * (N + 2), lane, true);
 #else
     // Householder and divide and conquer: the vectors come back as rows of
     // s_g, the values in s_slow; v takes the vectors as columns and g the

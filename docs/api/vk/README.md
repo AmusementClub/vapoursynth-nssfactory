@@ -1,8 +1,8 @@
 # nss_vk.* Reference (preview)
 
 `libnss_vk` (namespace `nss_vk`) runs filters of the CPU plugin on Vulkan
-GPUs. It is a **preview**: four filters are ported so far, [BM3D](bm3d.md),
-[NLM](nlm.md), [PNLM](pnlm.md) and [WNNM](wnnm.md), and it has been validated
+GPUs. It is a **preview**: five filters are ported so far, [BM3D](bm3d.md),
+[NLM](nlm.md), [PNLM](pnlm.md), [WNNM](wnnm.md) and [MCWNNM](mcwnnm.md), and it has been validated
 on NVIDIA GPUs only (AMD and Intel GPUs are untested). The arguments, defaults and models are the CPU plugin's;
 the output agrees with it to the CUDA plugin's 60 dB PSNR gate or better (not
 bit for bit) and is identical from run to run on a given GPU, driver and
@@ -12,10 +12,10 @@ filters keeps its frames in video memory.
 
 ## Speed
 
-What each filter costs: frames per second at 1920x1080 YUV420 with noise of
-sigma 3, on an RTX 5080, with the frames already on the GPU (VapourSynth R81
-[GPU frames](#gpu-frames-vapoursynth-r80)), so copies to and from host memory
-are not counted. **Default** is the filter's default arguments, **heavy** the
+What each filter costs: frames per second at 1920x1080 YUV420 (MCWNNM: RGB)
+with noise of sigma 3, on an RTX 5080, with the frames already on the GPU
+(VapourSynth R81 [GPU frames](#gpu-frames-vapoursynth-r80)), so copies to and
+from host memory are not counted. **Default** is the filter's default arguments, **heavy** the
 slower arguments nearer its paper (as in
 [`nss_cuda`'s table](../cuda/README.md#speed)). Take them as cost tiers: they
 scale with the pixel count and differ between GPUs.
@@ -26,10 +26,13 @@ scale with the pixel count and differ between GPUs.
 | [NLM](nlm.md) | 820 | 135 |
 | [PNLM](pnlm.md) | 1170 | 216 |
 | [WNNM](wnnm.md) | 1340 | 13 |
+| [MCWNNM](mcwnnm.md) (RGB) | 310 | 0.85 |
 
 - NLM filters luma only at its defaults; PNLM and WNNM filter every plane.
 - WNNM runs at about 0.95 times `nss_cuda`'s speed at its defaults and 0.65
-  times at its heavy arguments (groups of 32), measured in the same runs.
+  times at its heavy arguments (groups of 32), measured in the same runs;
+  MCWNNM about 1.2 and 1.05 times.
+- MCWNNM takes RGB only.
 
 ## Performance notes
 
@@ -57,6 +60,7 @@ scale with the pixel count and differ between GPUs.
 | `core.nss_vk.NLM` | [nlm.md](nlm.md) | [nlm.md](../nlm.md) |
 | `core.nss_vk.PNLM` | [pnlm.md](pnlm.md) | [pnlm.md](../pnlm.md) |
 | `core.nss_vk.WNNM` | [wnnm.md](wnnm.md) | [wnnm.md](../wnnm.md) |
+| `core.nss_vk.MCWNNM` | [mcwnnm.md](mcwnnm.md) | [mcwnnm.md](../mcwnnm.md) |
 
 ```python
 core.nss_vk.Version()                 # version:data
@@ -65,7 +69,7 @@ core.nss_vk.Backend([int device_id])  # loader, device, support level, GPU frame
 
 The other filters of the CPU plugin are not ported yet.
 `VAggregate` is the CPU plugin's alone: `core.nss.VAggregate` reduces the
-legacy temporal output of `nss_vk.BM3D` and `nss_vk.WNNM` (also when it is a GPU clip: the core
+legacy temporal output of `nss_vk.BM3D`, `nss_vk.WNNM` and `nss_vk.MCWNNM` (also when it is a GPU clip: the core
 downloads it).
 
 ## Shared by every filter

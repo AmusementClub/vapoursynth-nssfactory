@@ -1,0 +1,280 @@
+// SPDX-License-Identifier: GPL-2.0-only
+// MCWNNM, groups of 9 to 32 patches: nss_cuda's mcwnnm_block_kernel<N>. N
+// invocations a group and 32 / N groups a workgroup of 32 (a workgroup's
+// groups share the barriers and nothing else; its last groups may lie beyond
+// the batch: they run as empty groups and store nothing). Invocation `lane`
+// owns row lane of every matrix: its rows of the channel classes' Gram
+// matrices, P and Q in the state (stored by columns, so that the
+// invocations' accesses to one column are consecutive words), and the
+// round-robin parallel Jacobi (wnnm/block_jacobi.glsl) takes the Gram matrix
+// in shared memory, from the vectors of the ADMM's step before. The
+// iteration is mcwnnm/admm8.comp's, with lane i forming row i of
+// C = diag(gain) V^T (M = V C) and the kept values counted by a ballot over
+// the group's lanes; the last iteration adds column `lane` of Y Z for every
+// channel to the fixed-point sums.
+//
+// Defines: N (16 or 32), U_SHARED (1: u is a matrix of its own, several
+// channel classes; 0: u is g, one class), WARP_EMULATED (common/warp.glsl).
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_shader_atomic_int64 : require
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_GOOGLE_include_directive : require
+
+#if !defined(N) || (N != 16 && N != 32)
+#error N must be 16 or 32
+#endif
+#ifndef U_SHARED
+#define U_SHARED 1
+#endif
+#define WARP_L N
+#define WARP_WARPS 1
+#include "common/warp.glsl"
+#include "mcwnnm/common.glsl"
+
+layout(local_size_x = 32) in;
+
+const int kGroups = 32 / N;
+// u (products every invocation reads) is a fourth matrix only with several
+// classes: with one, g is free whenever u is in use, and a matrix less is
+// more groups an SM.
+shared float s_g[kGroups * N * N], s_v[kGroups * N * N], s_t[kGroups * N * N];
+#if U_SHARED
+shared float s_u[kGroups * N * N];
+#define U(i) s_u[(i)]
+#else
+#define U(i) s_g[(i)]
+#endif
+shared float s_cs[kGroups * (N + 2)];
+shared int s_flag;
+shared int s_kept[kGroups];
+#include "wnnm/block_jacobi.glsl"
+
+const int kGram = 0, kP = 1, kQ = 2;
+
+void main() {
+    const int tid = int(gl_LocalInvocationID.x);
+    const int slot = tid / N, lane = tid % N;
+    const int gb = slot * N * N, cb = slot * (N + 2);
+    const int workgroup = w_workgroup();
+    // Whole workgroups past the batch (the last row of a split dispatch):
+    // nothing to do (uniform over the workgroup).
+    if (workgroup * kGroups >= pc.batch) return;
+    const bool live = workgroup * kGroups + slot < pc.batch;
+    const int r = live ? workgroup * kGroups + slot : pc.batch - 1;
+    Params model = params();
+    const int area = pc.block * pc.block;
+    const int n = live ? min(Counts(pc.counts).c[r], pc.group) : 0;
+    const int first = r * pc.group;
+    uint64_t col[N];
+    [[unroll]] for (int j = 0; j < N; ++j) col[j] = match_base(Matches(pc.matches).m[first + (j < n ? j : 0)]);
+    const int square = pc.group * pc.group;
+    const uint64_t state = pc.scratch + uint64_t(r) * uint64_t(10 * square) * 4ul;
+    // Element k of this invocation's row of a class's matrix (lane < n, k < n).
+#define AT(MATRIX, C, K) Scratch(state).v[((MATRIX) * 3 + (C)) * square + (K) * pc.group + lane]
+    const bool mine = lane < n;
+    int64_t cell = -1l;
+    if (mine) {
+        const Match own = Matches(pc.matches).m[first + lane];
+        cell = fixed_patch_cell(pc.fused, own.t, own.y, own.x);
+    }
+
+    float weight[3];
+    [[unroll]] for (int c = 0; c < 3; ++c) weight[c] = channel_weight(c);
+    const float constant = mcwnnm_constant(n);
+    const int rank = min(3 * area, n);
+    const int start_k = mcwnnm_center() ? 0 : 1;
+    const float inv_n = 1.0f / float(n);
+
+    // Row `lane` of the channel classes' Gram matrices and of the first
+    // shrinkage input's Gram matrix; P_c = scale_c I, Q_c = 0.
+    float rho = model.rho;
+    float next[N], acc[N];
+    [[unroll]] for (int k = 0; k < N; ++k) next[k] = 0.0f;
+    for (int c = 0; c < model.classes; ++c) {  // c: a class of channels from here on
+        [[unroll]] for (int k = 0; k < N; ++k) acc[k] = 0.0f;
+        for (int channel = 0; channel < 3; ++channel) {
+            if (model.class_of[channel] != c) continue;
+            for (int p = 0; p < area; ++p) {
+                const int offset = channel * pc.channel_step + (p / pc.block) * pc.pitch + p % pc.block;
+                float y[N];
+                float sum = 0.0f;
+                [[unroll]] for (int j = 0; j < N; ++j) {
+                    y[j] = j < n ? Plane(col[j]).v[offset] : 0.0f;
+                    sum += y[j];
+                }
+                const float mean = mcwnnm_center() ? sum * inv_n : 0.0f;
+                [[unroll]] for (int j = 0; j < N; ++j) y[j] = j < n ? y[j] - mean : 0.0f;
+                float own = 0.0f;
+                [[unroll]] for (int j = 0; j < N; ++j) own = j == lane ? y[j] : own;  // y[lane], a constant index
+                [[unroll]] for (int k = 0; k < N; ++k) acc[k] = fma(own, y[k], acc[k]);
+            }
+        }
+        const float w = weight[model.channel_of[c]];
+        const float scale = w / (w + 0.5f * rho);
+        [[unroll]] for (int k = 0; k < N; ++k) {
+            next[k] = fma(scale * scale, acc[k], next[k]);
+            if (mine && k < n) {
+                AT(kGram, c, k) = acc[k];
+                AT(kP, c, k) = k == lane ? scale : 0.0f;
+                AT(kQ, c, k) = 0.0f;
+            }
+        }
+    }
+
+    for (int it = 0; it < model.admm_iter; ++it) {
+        // The lower triangle from its rows' owners, mirrored: exactly symmetric.
+        [[unroll]] for (int k = 0; k < N; ++k) {
+            if (k <= lane) s_g[gb + lane * N + k] = next[k];
+        }
+        barrier();
+        [[unroll]] for (int k = 0; k < N; ++k) {
+            if (k > lane) s_g[gb + lane * N + k] = s_g[gb + k * N + lane];
+            next[k] = 0.0f;
+        }
+        barrier();
+        if (it > 0) {
+            // g = V^T g V with the vectors of the step before, which the
+            // sweeps then go on from (g symmetric: row lane read as column
+            // lane, consecutive words; u may be g, so all reads come first).
+            {
+                float own[N];  // column `lane` of g
+                [[unroll]] for (int j = 0; j < N; ++j) own[j] = s_g[gb + j * N + lane];
+                [[unroll]] for (int k = 0; k < N; ++k) {
+                    float sum = 0.0f;
+                    [[unroll]] for (int j = 0; j < N; ++j) sum = fma(own[j], s_v[gb + j * N + k], sum);
+                    acc[k] = sum;
+                }
+            }
+            barrier();
+            [[unroll]] for (int k = 0; k < N; ++k) U(gb + lane * N + k) = acc[k];
+            barrier();
+            {
+                float own[N];  // column `lane` of v
+                [[unroll]] for (int i = 0; i < N; ++i) own[i] = s_v[gb + i * N + lane];
+                [[unroll]] for (int k = 0; k < N; ++k) {
+                    float sum = 0.0f;
+                    [[unroll]] for (int i = 0; i < N; ++i) sum = fma(own[i], U(gb + i * N + k), sum);
+                    acc[k] = sum;
+                }
+            }
+            barrier();  // u may be g: every invocation has read it before one writes
+            [[unroll]] for (int k = 0; k < N; ++k) {
+                if (k <= lane) s_g[gb + lane * N + k] = acc[k];
+            }
+            barrier();
+            [[unroll]] for (int k = 0; k < N; ++k) {
+                if (k > lane) s_g[gb + lane * N + k] = s_g[gb + k * N + lane];
+            }
+            barrier();
+        }
+        block_jacobi(gb, cb, lane, it == 0);
+        // g = C with M = V C: lane i forms row i of C, gain_i v[:, i]^T; a
+        // value is kept when its place in the descending order is below
+        // start_k, or below the rank with s^2 - threshold > 0.
+        {
+            const float threshold = constant * (2.0f / rho);
+            const int start = min(start_k, rank);
+            float sv;
+            {
+                const float lambda = s_g[gb + lane * N + lane];
+                sv = lambda > 0.0f ? sqrt(lambda) : 0.0f;
+            }
+            int place = 0;
+            for (int i = 0; i < N; ++i) {
+                const float lambda = s_g[gb + i * N + i];
+                const float s = lambda > 0.0f ? sqrt(lambda) : 0.0f;
+                place += (s > sv || (s == sv && i < lane)) ? 1 : 0;
+            }
+            bool keep;
+            const float gain = mcwnnm_gain(sv, place, start, rank, threshold, keep);
+            const int count = w_count(keep);  // over the group's N lanes (the segment)
+            barrier();  // every eigenvalue is read before C overwrites g
+            [[unroll]] for (int j = 0; j < N; ++j) s_g[gb + lane * N + j] = gain * s_v[gb + j * N + lane];
+            if (lane == 0) s_kept[slot] = count;
+        }
+        barrier();
+        const bool last = it + 1 == model.admm_iter;
+        const float next_rho = min(1e4f, model.mu * rho);
+        const float inv_rho = 1.0f / rho, inv_next = 1.0f / next_rho, half_next = 0.5f * next_rho;
+        for (int c = 0; c < model.classes; ++c) {
+            const float w = weight[model.channel_of[c]];
+            const float reciprocal = 1.0f / (w + half_next);
+            // Row `lane` of Z_c = (P_c + Q_c / rho) V C, then of Q_c', P_c'
+            // and T_c' (into t); on the last iteration t keeps Z_c.
+            float z[N];
+            [[unroll]] for (int k = 0; k < N; ++k) acc[k] = mine && k < n ? fma(AT(kQ, c, k), inv_rho, AT(kP, c, k)) : 0.0f;
+            [[unroll]] for (int i = 0; i < N; ++i) {
+                float sum = 0.0f;
+                [[unroll]] for (int k = 0; k < N; ++k) sum = fma(acc[k], s_v[gb + k * N + i], sum);
+                z[i] = sum;
+            }
+            [[unroll]] for (int j = 0; j < N; ++j) {
+                float sum = 0.0f;
+                [[unroll]] for (int i = 0; i < N; ++i) sum = fma(z[i], s_g[gb + i * N + j], sum);
+                acc[j] = sum;
+            }
+            [[unroll]] for (int j = 0; j < N; ++j) {
+                if (last) {
+                    s_t[gb + lane * N + j] = acc[j];
+                    continue;
+                }
+                const bool inside = mine && j < n;
+                const float p_old = inside ? AT(kP, c, j) : 0.0f, q_old = inside ? AT(kQ, c, j) : 0.0f;
+                const float q_new = fma(rho, p_old - acc[j], q_old);
+                const float p_new = ((lane == j ? w : 0.0f) + half_next * (acc[j] - q_new * inv_next)) * reciprocal;
+                if (inside) {
+                    AT(kP, c, j) = p_new;
+                    AT(kQ, c, j) = q_new;
+                }
+                s_t[gb + lane * N + j] = inside ? fma(q_new, inv_next, p_new) : 0.0f;
+            }
+            barrier();
+            if (last) {
+                // Output column `lane` of Y Z for every channel of the class.
+                if (mine && cell >= 0) {
+                    const float patch_weight = mcwnnm_weight(s_kept[slot]);
+                    [[unroll]] for (int k = 0; k < N; ++k) acc[k] = s_t[gb + k * N + lane];
+                    for (int channel = 0; channel < 3; ++channel) {
+                        if (model.class_of[channel] != c) continue;
+                        const int64_t channel_cell = cell + int64_t(channel) * pc.fused.channel_step;
+                        for (int p = 0; p < area; ++p) {
+                            const int offset = channel * pc.channel_step + (p / pc.block) * pc.pitch + p % pc.block;
+                            float y[N];
+                            float sum = 0.0f;
+                            [[unroll]] for (int j = 0; j < N; ++j) {
+                                y[j] = j < n ? Plane(col[j]).v[offset] : 0.0f;
+                                sum += y[j];
+                            }
+                            const float mean = mcwnnm_center() ? sum * inv_n : 0.0f;
+                            [[unroll]] for (int j = 0; j < N; ++j) y[j] = j < n ? y[j] - mean : 0.0f;
+                            float out_ = 0.0f;
+                            [[unroll]] for (int k = 0; k < N; ++k) out_ = fma(y[k], acc[k], out_);
+                            fixed_add(pc.fused.num, channel_cell + int64_t(p / pc.block) * pc.fused.pitch + p % pc.block,
+                                      patch_weight * (out_ + mean));
+                        }
+                        fixed_add(pc.fused.den, channel_cell, patch_weight);
+                    }
+                }
+                barrier();
+                continue;
+            }
+            // Row `lane` of G_c T (into u), then of T^T (G_c T) (into next).
+            [[unroll]] for (int j = 0; j < N; ++j) acc[j] = 0.0f;
+            [[unroll]] for (int k = 0; k < N; ++k) {
+                const float gram = mine && k < n ? AT(kGram, c, k) : 0.0f;
+                [[unroll]] for (int j = 0; j < N; ++j) acc[j] = fma(gram, s_t[gb + k * N + j], acc[j]);
+            }
+            [[unroll]] for (int j = 0; j < N; ++j) U(gb + lane * N + j) = acc[j];
+            barrier();
+            [[unroll]] for (int i = 0; i < N; ++i) {
+                const float own = s_t[gb + i * N + lane];
+                [[unroll]] for (int k = 0; k < N; ++k) next[k] = fma(own, U(gb + i * N + k), next[k]);
+            }
+            barrier();
+        }
+        rho = next_rho;
+    }
+#undef AT
+}

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include "vulkan/common/aggregate.hpp"
 
+#include <algorithm>
 #include <stdexcept>
 
 namespace nss_vk {
@@ -11,6 +12,13 @@ struct FinishPush {
     std::int32_t block, width, height, pitch;
 };
 static_assert(sizeof(FinishPush) == 56, "matches the push block of shaders/common/aggregate.comp");
+
+struct RegularizePush {
+    VkDeviceAddress x, y;
+    std::int32_t count;
+    float delta;
+};
+static_assert(sizeof(RegularizePush) == 24, "matches the push block of shaders/common/regularize.comp");
 
 }  // namespace
 
@@ -43,7 +51,8 @@ Aggregator::Aggregator(std::shared_ptr<Device> device)
     : device_(std::move(device)),
       rows_(device_, {"aggregate_fixed_rows", sizeof(FinishPush), 0, {}}),
       finish_(device_, {"aggregate_fixed_finish", sizeof(FinishPush), 0, {}}),
-      slices_(device_, {"aggregate_fixed_slices", sizeof(FinishPush), 0, {}}) {}
+      slices_(device_, {"aggregate_fixed_slices", sizeof(FinishPush), 0, {}}),
+      regularize_(device_, {"aggregate_regularize", sizeof(RegularizePush), 0, {}}) {}
 
 void Aggregator::run(VkCommandBuffer commands, const Pipeline& last, VkDeviceAddress num, VkDeviceAddress den,
                      int pitch, int block, VkDeviceAddress src, int width, int height, VkDeviceAddress rows,
@@ -71,6 +80,16 @@ void Aggregator::fixed_finish(VkCommandBuffer commands, VkDeviceAddress num, VkD
 void Aggregator::fixed_slices(VkCommandBuffer commands, VkDeviceAddress num, VkDeviceAddress den, int pitch, int block,
                               int width, int height, VkDeviceAddress rows, VkDeviceAddress out) const {
     run(commands, slices_, num, den, pitch, block, 0, width, height, rows, out);
+}
+
+void Aggregator::regularize(VkCommandBuffer commands, VkDeviceAddress x, VkDeviceAddress y, std::size_t count,
+                            float delta) const {
+    if (count == 0) return;
+    if (count >= (std::size_t{1} << 31)) throw std::logic_error("nss_vk: regularize beyond 32-bit indices");
+    const RegularizePush push{x, y, static_cast<std::int32_t>(count), delta};
+    const std::uint32_t groups = static_cast<std::uint32_t>((count + 255) / 256);
+    const std::uint32_t gx = std::min<std::uint32_t>(groups, 65535);
+    regularize_.dispatch(commands, &push, gx, (groups + gx - 1) / gx);
 }
 
 }  // namespace nss_vk
