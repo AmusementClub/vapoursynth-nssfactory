@@ -111,6 +111,25 @@ def main():
                                   sigma=sigma).get_frame(0))
     expect(np.array_equal(yuv444[0], serial[0][0]), "YUV444 planes are filtered on their own")
 
+    # Planes below 2 x 2 are rejected (a one-row plane never finished): a
+    # one-row luma, the one-row chroma of a two-row 4:2:0 clip, a one-column
+    # plane; with that chroma left alone (sigma 0) the clip is filtered.
+    tiny = [
+        ("64x1 gray", vs.GRAYS, 64, 1, sigma),
+        ("1x64 gray", vs.GRAYS, 1, 64, sigma),
+        ("64x2 yuv420 chroma", vs.YUV420PS, 64, 2, sigma),
+    ]
+    for label, fmt, w, h, s in tiny:
+        blank = core.std.BlankClip(width=w, height=h, format=fmt, length=1, color=[0.5] * (3 if fmt != vs.GRAYS else 1))
+        try:
+            core.nss.DA3D(blank, blank, sigma=s).get_frame(0)
+            expect(False, f"{label}: rejected")
+        except vs.Error as error:
+            expect("at least 2 x 2" in str(error), f"{label}: rejected with the plane size ({error})")
+    blank = core.std.BlankClip(width=64, height=2, format=vs.YUV420PS, length=1, color=[0.5, 0.5, 0.5])
+    kept = core.nss.DA3D(blank, blank, sigma=[sigma, 0, 0]).get_frame(0)
+    expect(kept.width == 64, "64x2 yuv420 with the chroma left alone: filtered")
+
     # The memory limit is a hard error, never a silent change.
     try:
         core.nss.DA3D(g_noisy, g_guide, sigma=sigma, memory_limit_mb=1).get_frame(0)
