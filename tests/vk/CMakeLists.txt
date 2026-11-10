@@ -103,7 +103,7 @@ add_test(NAME test_vk_backend
 # D21 parity against the CPU golden. Filters still pending in
 # docs/vulkan-plan.md are expected to be missing; each phase removes the
 # filters it delivers. VAggregate is the CPU's alone (D21).
-set(NSS_VK_PENDING_FILTERS "MCWNNM,NCSR,NLH,TWSC,LSSC,DA3D,BM4D")
+set(NSS_VK_PENDING_FILTERS "NCSR,NLH,TWSC,LSSC,DA3D,BM4D")
 add_test(NAME test_vk_plugin_interface
          COMMAND ${Python3_EXECUTABLE} "${PROJECT_SOURCE_DIR}/tests/test_plugin_interface.py"
                  --plugin "${NSS_VK_PLUGIN}" --namespace nss_vk
@@ -151,7 +151,7 @@ if(NSS_VK_GPU_FRAMES_PYTHON)
 endif()
 # Filters against the CPU plugin (needs the CPU tree).
 if(TARGET nss)
-  foreach(filter nlm bm3d pnlm wnnm)
+  foreach(filter nlm bm3d pnlm wnnm mcwnnm)
     add_test(NAME test_vk_${filter}_live
              COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_vk_${filter}_live.py"
                      --cpu "$<TARGET_FILE:nss>" --vk "${NSS_VK_PLUGIN}")
@@ -187,4 +187,16 @@ if(TARGET nss)
                    --cpu "$<TARGET_FILE:nss>" --vk "${NSS_VK_PLUGIN}" --quick)
   set_tests_properties(test_vk_wnnm_live_emulated PROPERTIES LABELS vk SKIP_RETURN_CODE 77
                        ENVIRONMENT "NSS_VK_FORCE_EMULATED_WARP=1")
+  # MCWNNM's emulated warp-layer kernels (their bits against the native
+  # layer's), and its kernels within a 32 KiB device's shared memory.
+  add_test(NAME test_vk_mcwnnm_live_emulated
+           COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_vk_mcwnnm_live.py"
+                   --cpu "$<TARGET_FILE:nss>" --vk "${NSS_VK_PLUGIN}" --quick)
+  set_tests_properties(test_vk_mcwnnm_live_emulated PROPERTIES LABELS vk SKIP_RETURN_CODE 77
+                       ENVIRONMENT "NSS_VK_FORCE_EMULATED_WARP=1")
+  add_test(NAME test_vk_mcwnnm_live_shared32
+           COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_vk_mcwnnm_live.py"
+                   --cpu "$<TARGET_FILE:nss>" --vk "${NSS_VK_PLUGIN}" --quick)
+  set_tests_properties(test_vk_mcwnnm_live_shared32 PROPERTIES LABELS vk SKIP_RETURN_CODE 77
+                       ENVIRONMENT "NSS_VK_SHARED_LIMIT_KIB=32")
 endif()

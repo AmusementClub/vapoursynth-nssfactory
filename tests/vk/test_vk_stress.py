@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-only
-"""D30 create/render/free soak for the Vulkan filters (the three of r3 and WNNM).
+"""D30 create/render/free soak for the Vulkan filters (the three of r3, WNNM and MCWNNM).
 
 CPU frames run even on pre-4.3 cores. GPU frames are checked separately on
 supported cores, including residency, downloaded pixels and repeat hashes.
@@ -105,11 +105,15 @@ def main(argv=None):
         ("PNLM", lambda clip: core.nss_vk.PNLM(clip, sigma=6)),
         ("WNNM", lambda clip: core.nss_vk.WNNM(clip, sigma=8, group_size=32)),
         ("WNNM rolling", lambda clip: core.nss_vk.WNNM(clip, sigma=8, radius=1, temporal_mode="rolling")),
+        ("MCWNNM", lambda clip: core.nss_vk.MCWNNM(clip, sigma=8, group_size=16), {2}),
+        ("MCWNNM rolling", lambda clip: core.nss_vk.MCWNNM(clip, sigma=8, radius=1, temporal_mode="rolling"), {2}),
     )
     baselines, lifetimes = {}, 0
     for iteration in range(args.iterations):
         for index, source in enumerate(sources):
-            for name, make in specs:
+            for name, make, *formats in specs:
+                if formats and index not in formats[0]:
+                    continue  # MCWNNM takes RGB only
                 cpu_hashes = render(make(source), False, np)
                 key = (index, name)
                 if cpu_hashes != baselines.setdefault(key, cpu_hashes):

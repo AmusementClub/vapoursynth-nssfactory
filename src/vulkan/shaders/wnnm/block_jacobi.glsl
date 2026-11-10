@@ -27,11 +27,12 @@ void jacobi_schedule(int round, int pair, int K, out int p, out int q) {
 float copysign_one(float x) { return uintBitsToFloat(0x3f800000u | (floatBitsToUint(x) & 0x80000000u)); }
 
 // g (row-major N x N at s_g[gb]) to its eigenvalues on the diagonal, v
-// (s_v[gb]) to the eigenvectors (column i for eigenvalue i), from v = I;
-// lane: this invocation's index among the matrix's N.
-void block_jacobi(int gb, int cb, int lane) {
+// (s_v[gb]) to the eigenvectors (column i for eigenvalue i), from v = I with
+// `identity`, else from the v given (MCWNNM's ADMM goes on from the last
+// step's vectors); lane: this invocation's index among the matrix's N.
+void block_jacobi(int gb, int cb, int lane, bool identity) {
     const int k = N, hk = N / 2;
-    for (int e = lane; e < k * k; e += k) s_v[gb + e] = (e / k == e % k) ? 1.0f : 0.0f;
+    for (int e = lane; identity && e < k * k; e += k) s_v[gb + e] = (e / k == e % k) ? 1.0f : 0.0f;
     const float tolerance = 1e-7f;
     barrier();
     float trace = 0.0f;

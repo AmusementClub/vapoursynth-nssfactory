@@ -1,0 +1,238 @@
+// SPDX-License-Identifier: GPL-2.0-only
+// MCWNNM, groups of up to 8 patches, kernel 2 of 3 (mcwnnm/group8.glsl): the
+// ADMM, one invocation a group with fixed loop bounds and order, on the
+// channel classes' Gram matrices of the rows kernel, as nss_cuda's
+// mcwnnm_group_kernel<8>. N is the column capacity; columns beyond the
+// group's count are zero and contribute zero singular values.
+//
+// Row i of channel class c stays x_i = y_i P_c, a_i = y_i Q_c for the centred
+// input row y_i, so per iteration
+//   Z_c = (P_c + Q_c / rho) M,
+//   Q_c' = Q_c + rho (P_c - Z_c),
+//   P_c' = (w_c I + rho' / 2 (Z_c - Q_c' / rho')) / (w_c + rho' / 2),
+// and the next shrinkage input T_c' = P_c' + Q_c' / rho' has the Gram matrix
+// sum_c T_c'^T (Y_c^T Y_c) T_c'. An iteration's eigen step starts from the
+// eigenvectors V of the one before (the Gram matrix taken to V^T G V, nearly
+// diagonal once the iterates settle); M = V diag(gain) V^T. The last
+// iteration leaves Z_c in P_c's place and the weight for the apply kernel.
+// g, v and next stay in registers (every index a constant).
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_shader_atomic_int64 : require
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_GOOGLE_include_directive : require
+
+#include "mcwnnm/group8.glsl"
+
+layout(local_size_x = kChunk) in;
+
+// One Jacobi rotation of the symmetric g in the (p, q) plane, also applied to
+// the columns of v; without an off-diagonal element the identity (nss_cuda's
+// jacobi_rotate<8>, as wnnm/gram_solve.comp's).
+#define JACOBI_ROTATE(P, Q)                                                                         \
+    {                                                                                               \
+        const float apq = g[(P) * kN + (Q)];                                                        \
+        const bool rotate = apq != 0.0f;                                                            \
+        const float theta = (g[(Q) * kN + (Q)] - g[(P) * kN + (P)]) / (2.0f * (rotate ? apq : 1.0f)); \
+        const float t = (theta < 0.0f ? -1.0f : 1.0f) / (abs(theta) + sqrt(fma(theta, theta, 1.0f)));    \
+        const float c = rotate ? inversesqrt(fma(t, t, 1.0f)) : 1.0f;                                \
+        const float sn = rotate ? t * c : 0.0f;                                                     \
+        [[unroll]] for (int k = 0; k < kN; ++k) {                                                   \
+            const float gkp = g[k * kN + (P)], gkq = g[k * kN + (Q)];                               \
+            g[k * kN + (P)] = c * gkp - sn * gkq;                                                   \
+            g[k * kN + (Q)] = sn * gkp + c * gkq;                                                   \
+        }                                                                                           \
+        [[unroll]] for (int k = 0; k < kN; ++k) {                                                   \
+            const float gpk = g[(P) * kN + k], gqk = g[(Q) * kN + k];                               \
+            g[(P) * kN + k] = c * gpk - sn * gqk;                                                   \
+            g[(Q) * kN + k] = sn * gpk + c * gqk;                                                   \
+        }                                                                                           \
+        [[unroll]] for (int k = 0; k < kN; ++k) {                                                   \
+            const float vkp = v[k * kN + (P)], vkq = v[k * kN + (Q)];                               \
+            v[k * kN + (P)] = c * vkp - sn * vkq;                                                   \
+            v[k * kN + (Q)] = sn * vkp + c * vkq;                                                   \
+        }                                                                                           \
+    }
+
+void main() {
+    const int r = int((gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x) * uint(kChunk) + gl_LocalInvocationID.x);
+    if (r >= pc.batch) return;  // no barriers below
+    Params model = params();
+    const int area = pc.block * pc.block;
+    const int m = 3 * area;
+    const int n = min(Counts(pc.counts).c[r], pc.group);
+    const uint64_t state = state_at(r);
+    const int width = state_width(r);
+#define AT(MATRIX, C, J, K) Scratch(state).v[state_index((MATRIX), (C), (J), (K), width)]
+
+    float g[kN * kN], v[kN * kN], next[kN * kN];
+
+    float weight[3];
+    [[unroll]] for (int c = 0; c < 3; ++c) weight[c] = channel_weight(c);
+    const float constant = mcwnnm_constant(n);
+    const int rank = min(m, n);
+    const int start_k = mcwnnm_center() ? 0 : 1;
+
+    // P_c = scale_c I and Q_c = 0 (X0 = argmin with Z = A = 0), whose
+    // shrinkage input is X0 itself.
+    float rho = model.rho;
+    [[unroll]] for (int i = 0; i < kN * kN; ++i) next[i] = 0.0f;
+    for (int c = 0; c < model.classes; ++c) {
+        const float w = weight[model.channel_of[c]];
+        const float scale = w / (w + 0.5f * rho);
+        [[unroll]] for (int j = 0; j < kN; ++j) {
+            [[unroll]] for (int k = 0; k <= j; ++k) {
+                const float value = j < n ? AT(kGram, c, j, k) : 0.0f;
+                next[j * kN + k] = fma(scale * scale, value, next[j * kN + k]);
+                if (j < n) {
+                    AT(kP, c, j, k) = j == k ? scale : 0.0f;
+                    AT(kP, c, k, j) = j == k ? scale : 0.0f;
+                    AT(kQ, c, j, k) = 0.0f;
+                    AT(kQ, c, k, j) = 0.0f;
+                }
+            }
+        }
+    }
+
+    int kept = 0;
+    for (int it = 0; it < model.admm_iter; ++it) {
+        if (it > 0) {
+            // g = V^T S V for the symmetric S in next's lower triangle.
+            [[unroll]] for (int j = 0; j < kN; ++j) {
+                [[unroll]] for (int k = 0; k < kN; ++k) {
+                    v[j * kN + k] = j < n && k < n ? AT(kVectors, 0, j, k) : j == k ? 1.0f : 0.0f;
+                }
+            }
+            // S V into g, then the lower triangle of V^T (S V) back into next.
+            [[unroll]] for (int i = 0; i < kN; ++i) {
+                [[unroll]] for (int k = 0; k < kN; ++k) {
+                    float sum = 0.0f;
+                    [[unroll]] for (int j = 0; j < kN; ++j) sum = fma(next[i >= j ? i * kN + j : j * kN + i], v[j * kN + k], sum);
+                    g[i * kN + k] = sum;
+                }
+            }
+            [[unroll]] for (int j = 0; j < kN; ++j) {
+                [[unroll]] for (int k = 0; k <= j; ++k) {
+                    float sum = 0.0f;
+                    [[unroll]] for (int i = 0; i < kN; ++i) sum = fma(v[i * kN + j], g[i * kN + k], sum);
+                    next[j * kN + k] = sum;
+                }
+            }
+        } else {
+            [[unroll]] for (int i = 0; i < kN * kN; ++i) v[i] = (i / kN == i % kN) ? 1.0f : 0.0f;
+        }
+        [[unroll]] for (int j = 0; j < kN; ++j) {
+            [[unroll]] for (int k = 0; k <= j; ++k) {
+                g[j * kN + k] = next[j * kN + k];
+                g[k * kN + j] = next[j * kN + k];
+            }
+        }
+        // Cyclic Jacobi sweeps from v until the off-diagonal part is negligible.
+        for (int sweep = 0; sweep < 16; ++sweep) {
+            float off = 0.0f, diag = 0.0f;
+            [[unroll]] for (int i = 0; i < kN; ++i) {
+                diag = fma(g[i * kN + i], g[i * kN + i], diag);
+                [[unroll]] for (int j = i + 1; j < kN; ++j) off = fma(g[i * kN + j], g[i * kN + j], off);
+            }
+            if (off <= 1e-13f * diag || off <= 1e-30f) break;
+            [[unroll]] for (int p = 0; p < kN - 1; ++p) {
+                [[unroll]] for (int q = p + 1; q < kN; ++q) JACOBI_ROTATE(p, q)
+            }
+        }
+        [[unroll]] for (int i = 0; i < kN * kN; ++i) next[i] = 0.0f;
+        // M = V diag(gain) V^T into g (gram_shrink_spectrum): value j's place
+        // in the descending order (equal values by index), its gain.
+        {
+            const float threshold = constant * (2.0f / rho);
+            const int start = min(start_k, rank);
+            float s[kN], gain[kN];
+            [[unroll]] for (int j = 0; j < kN; ++j) {
+                const float lambda = g[j * kN + j];
+                s[j] = lambda > 0.0f ? sqrt(lambda) : 0.0f;
+            }
+            kept = 0;
+            [[unroll]] for (int j = 0; j < kN; ++j) {
+                int place = 0;
+                [[unroll]] for (int i = 0; i < kN; ++i) place += (s[i] > s[j] || (s[i] == s[j] && i < j)) ? 1 : 0;
+                bool keep;
+                gain[j] = mcwnnm_gain(s[j], place, start, rank, threshold, keep);
+                kept += keep ? 1 : 0;
+            }
+            [[unroll]] for (int i = 0; i < kN; ++i) {
+                [[unroll]] for (int j = 0; j < kN; ++j) {
+                    float sum = 0.0f;
+                    [[unroll]] for (int k = 0; k < kN; ++k) sum = fma(v[i * kN + k] * gain[k], v[j * kN + k], sum);
+                    g[i * kN + j] = sum;
+                }
+            }
+        }
+        const bool last = it + 1 == model.admm_iter;
+        if (!last) {
+            [[unroll]] for (int j = 0; j < kN; ++j) {
+                [[unroll]] for (int k = 0; k < kN; ++k) {
+                    if (j < n && k < n) AT(kVectors, 0, j, k) = v[j * kN + k];
+                }
+            }
+        }
+        const float next_rho = min(1e4f, model.mu * rho);
+        const float inv_rho = 1.0f / rho, inv_next = 1.0f / next_rho, half_next = 0.5f * next_rho;
+        for (int c = 0; c < model.classes; ++c) {
+            const float w = weight[model.channel_of[c]];
+            const float reciprocal = 1.0f / (w + half_next);
+            // Row by row: Z_c, then Q_c', P_c' and T_c' (in v); on the last
+            // iteration v keeps Z_c.
+            [[unroll]] for (int row = 0; row < kN; ++row) {
+                float pr[kN], qr[kN], z[kN];
+                [[unroll]] for (int j = 0; j < kN; ++j) {
+                    const bool inside = row < n && j < n;
+                    pr[j] = inside ? AT(kP, c, row, j) : 0.0f;
+                    qr[j] = inside ? AT(kQ, c, row, j) : 0.0f;
+                    z[j] = 0.0f;
+                }
+                [[unroll]] for (int k = 0; k < kN; ++k) {
+                    const float t = fma(qr[k], inv_rho, pr[k]);
+                    [[unroll]] for (int j = 0; j < kN; ++j) z[j] = fma(t, g[k * kN + j], z[j]);
+                }
+                [[unroll]] for (int j = 0; j < kN; ++j) {
+                    if (last) {
+                        v[row * kN + j] = z[j];
+                        continue;
+                    }
+                    const float q_new = fma(rho, pr[j] - z[j], qr[j]);
+                    const float p_new = ((row == j ? w : 0.0f) + half_next * (z[j] - q_new * inv_next)) * reciprocal;
+                    const bool inside = row < n && j < n;
+                    if (inside) {
+                        AT(kP, c, row, j) = p_new;
+                        AT(kQ, c, row, j) = q_new;
+                    }
+                    v[row * kN + j] = inside ? fma(q_new, inv_next, p_new) : 0.0f;
+                }
+            }
+            if (last) {
+                // Z_c for the apply kernel, in P_c's place.
+                [[unroll]] for (int row = 0; row < kN; ++row) {
+                    [[unroll]] for (int j = 0; j < kN; ++j) {
+                        if (row < n && j < n) AT(kP, c, row, j) = v[row * kN + j];
+                    }
+                }
+                continue;
+            }
+            // next += T^T (G_c T), lower triangle.
+            [[unroll]] for (int row = 0; row < kN; ++row) {
+                float u[kN];
+                [[unroll]] for (int j = 0; j < kN; ++j) u[j] = 0.0f;
+                [[unroll]] for (int k = 0; k < kN; ++k) {
+                    const float gram = row < n && k < n ? AT(kGram, c, row, k) : 0.0f;
+                    [[unroll]] for (int j = 0; j < kN; ++j) u[j] = fma(gram, v[k * kN + j], u[j]);
+                }
+                [[unroll]] for (int j = 0; j < kN; ++j) {
+                    [[unroll]] for (int k = 0; k <= j; ++k) next[j * kN + k] = fma(v[row * kN + j], u[k], next[j * kN + k]);
+                }
+            }
+        }
+        rho = next_rho;
+    }
+    Scratch(state).v[kWeight * state_square() * width] = mcwnnm_weight(kept);
+#undef AT
+}

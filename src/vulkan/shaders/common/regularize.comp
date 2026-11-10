@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: GPL-2.0-only
+// x += delta * (y - x) over `count` floats (nss::iter_regularize, as
+// nss_cuda's regularize_kernel): relaxes a round's estimate toward the noisy
+// frame before the next round (vulkan/common/aggregate.hpp). The
+// fused-multiply-add form of the CPU's vector loop.
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+
+layout(local_size_x = 256) in;
+
+layout(buffer_reference, std430, buffer_reference_align = 4) buffer Estimate { float v[]; };
+layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer Noisy { float v[]; };
+
+layout(push_constant) uniform Push {
+    uint64_t x;  // the estimate, relaxed in place
+    uint64_t y;  // the noisy frame
+    int count;
+    float delta;
+} pc;
+
+void main() {
+    // Rows of at most 65535 workgroups (vulkan/common/aggregate.cpp).
+    const int i = int((gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x) * 256u + gl_LocalInvocationID.x);
+    if (i >= pc.count) return;
+    const float x = Estimate(pc.x).v[i];
+    Estimate(pc.x).v[i] = fma(pc.delta, Noisy(pc.y).v[i] - x, x);
+}

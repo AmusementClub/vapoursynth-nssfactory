@@ -102,6 +102,13 @@ struct GroupFilterConfig {
     // guide of the second stage. The node takes no guide clip then; spatial
     // and rolling output only.
     bool two_stage = false;
+    // Outer rounds (MCWNNM's iters and delta, as nss_cuda's run_rounds):
+    // every round but the first relaxes each window frame's estimate toward
+    // its noisy frame by delta, then matches and filters the estimates again;
+    // between rounds a frame's estimate is finished from the round's sums.
+    // The first round matches on the guide clip where there is one.
+    int iters = 1;
+    float delta = 0.f;
     GroupPlane basic[3];
     // Extra device floats per reference group (second argument: guide present).
     std::function<std::size_t(const GroupPlane&, bool)> scratch_floats;

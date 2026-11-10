@@ -1,0 +1,64 @@
+// SPDX-License-Identifier: GPL-2.0-only
+// MCWNNM, groups of up to 8 patches, kernel 3 of 3 (mcwnnm/group8.glsl): the
+// output Y_c Z_c in the layout of the rows kernel, with Z_c (in P_c's place)
+// and the aggregation weight from the ADMM kernel, into the fixed-point sums
+// of every channel (channel c at + c fused.channel_step cells), as nss_cuda's
+// mcwnnm_apply_kernel (fused): 8 invocations a group, the den once a patch
+// at its first cell. No warp operations: a plain workgroup of 128.
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_shader_atomic_int64 : require
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_GOOGLE_include_directive : require
+
+#include "mcwnnm/group8.glsl"
+
+layout(local_size_x = 128) in;
+
+void main() {
+    const int index = int((gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x) * 128u + gl_LocalInvocationID.x);
+    const int lane = index % kN;
+    const int r = index / kN;
+    if (r >= pc.batch) return;  // no barriers below
+    Params model = params();
+    const int n = min(Counts(pc.counts).c[r], pc.group);
+    uint64_t col[kN];
+    group_columns(r, n, col);
+    const uint64_t state = state_at(r);
+    const int width = state_width(r);
+    const float patch_weight = Scratch(state).v[kWeight * state_square() * width];
+    int64_t cell[kN];
+    [[unroll]] for (int j = 0; j < kN; ++j) {
+        const Match mj = Matches(pc.matches).m[r * pc.group + (j < n ? j : 0)];
+        cell[j] = j < n ? fixed_patch_cell(pc.fused, mj.t, mj.y, mj.x) : -1l;
+    }
+    for (int c = 0; c < 3; ++c) {
+        float z[kN * kN];
+        const int cls = model.class_of[c];
+        [[unroll]] for (int k = 0; k < kN; ++k) {
+            [[unroll]] for (int j = 0; j < kN; ++j) {
+                z[k * kN + j] = k < n && j < n ? Scratch(state).v[state_index(kP, cls, k, j, width)] : 0.0f;
+            }
+        }
+        const int64_t channel = int64_t(c) * pc.fused.channel_step;
+        for (int row = 0; row < pc.block; ++row) {
+            for (int x = lane; x < pc.block; x += kN) {
+                float y[kN];
+                const float mean = group_pixel(col, c * pc.channel_step + row * pc.pitch + x, n, y);
+                const int64_t target = channel + int64_t(row) * pc.fused.pitch + x;
+                [[unroll]] for (int j = 0; j < kN; ++j) {
+                    float sum = 0.0f;
+                    [[unroll]] for (int k = 0; k < kN; ++k) sum = fma(y[k], z[k * kN + j], sum);
+                    if (cell[j] >= 0) fixed_add(pc.fused.num, cell[j] + target, patch_weight * (sum + mean));
+                }
+            }
+        }
+        if (lane == 0) {
+            // The den once a patch, at its first cell: the finish box-sums it.
+            [[unroll]] for (int j = 0; j < kN; ++j) {
+                if (cell[j] >= 0) fixed_add(pc.fused.den, cell[j] + channel, patch_weight);
+            }
+        }
+    }
+}
