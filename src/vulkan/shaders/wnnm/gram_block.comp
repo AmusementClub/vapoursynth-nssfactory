@@ -8,10 +8,17 @@
 // N = 32 Householder and divide and conquer (wnnm/block_eigen.glsl, its
 // scratch in device memory); then WnnmModel::finish_lane (each lane its
 // value's place in the descending order, the count of kept values by a
-// ballot over the group's lanes) and X = A V C into the fixed-point sums.
+// ballot over the group's lanes) and X = A V C into the fixed-point sums
+// (N = 32: M = V C and the weight into the scratch, for
+// wnnm/gram_apply_block.comp).
 //
 // Defines: N (16 or 32), WARP_EMULATED (common/warp.glsl).
 #version 460
+#if N == 32
+// The divide and conquer's workgroupcoherent scratch (wnnm/block_eigen.glsl).
+#pragma use_vulkan_memory_model
+#extension GL_KHR_memory_scope_semantics : require
+#endif
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
 #extension GL_EXT_shader_atomic_int64 : require
@@ -89,7 +96,7 @@ void main() {
     // Householder and divide and conquer: the vectors come back as rows of
     // s_g, the values in s_slow; v takes the vectors as columns and g the
     // values on its diagonal (block_jacobi's contract).
-    block_eigen(pc.scratch + uint64_t(workgroup) * uint64_t(dc_floats()) * 4ul);
+    block_eigen(pc.scratch + uint64_t(workgroup) * uint64_t(group_floats()) * 4ul);
     for (int e = lane; e < N * N; e += N) s_v[e] = s_g[(e % N) * N + e / N];
     barrier();
     for (int e = lane; e < N * N; e += N) s_g[e] = e / N == e % N ? s_slow[e / N] : 0.0f;
@@ -116,6 +123,22 @@ void main() {
     [[unroll]] for (int j = 0; j < N; ++j) s_g[gb + lane * N + j] = gain * s_v[gb + j * N + lane];
     const float weight = wnnm_weight(count);
     barrier();
+#if N == 32
+    // X = A M in its own kernel (wnnm/gram_apply_block.comp): this one keeps
+    // column `lane` of M = V C and the weight in the group's scratch after
+    // the divide and conquer's (k N + lane: a warp stores 32 consecutive
+    // floats). Left here, the pixel loop's registers (the 32 column
+    // addresses, the 32 terms of M and a row) set the whole kernel's, 255.
+    if (!live) return;  // no barriers below
+    const uint64_t m_at = pc.scratch + (uint64_t(r) * uint64_t(group_floats()) + uint64_t(dc_floats())) * 4ul;
+    [[unroll]] for (int k = 0; k < N; ++k) {
+        float sum = 0.0f;
+        [[unroll]] for (int i = 0; i < N; ++i) sum = fma(s_v[gb + k * N + i], s_g[gb + i * N + lane], sum);
+        Scratch(m_at).v[k * N + lane] = sum;
+    }
+    if (lane == 0) Scratch(m_at).v[N * N] = weight;
+}
+#else
     if (!live || lane >= n) return;  // no barriers below
     const Match own_match = Matches(pc.matches).m[first + lane];
     const int64_t cell = fixed_patch_cell(pc.fused, own_match.t, own_match.y, own_match.x);
@@ -147,3 +170,4 @@ void main() {
     }
     fixed_add(pc.fused.den, cell, weight);
 }
+#endif

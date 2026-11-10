@@ -38,6 +38,7 @@ struct DeviceCaps {
     bool timeline_semaphore = false;
     bool shader_int64 = false;
     bool buffer_int64_atomics = false;
+    bool vulkan_memory_model = false;  // and its device scope (required with Vulkan 1.3)
     bool subgroup_size_control = false;
     bool compute_full_subgroups = false;
     bool required_size_in_compute = false;  // requiredSubgroupSizeStages has compute

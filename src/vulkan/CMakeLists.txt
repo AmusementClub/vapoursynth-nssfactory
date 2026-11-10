@@ -377,6 +377,8 @@ foreach(_nss_emu 0 1)
 endforeach()
 nss_vk_add_shader(NSS_VK_SPIRV_SOURCES wnnm_gram_solve wnnm/gram_solve.comp LIGHT)
 nss_vk_add_shader(NSS_VK_SPIRV_SOURCES wnnm_gram_apply wnnm/gram_apply.comp)
+# Groups of 17 to 32: X = A M after the block kernel (no warp operations).
+nss_vk_add_shader(NSS_VK_SPIRV_SOURCES wnnm_gram_apply_n32 wnnm/gram_apply_block.comp DEFINES N=32)
 # Fixed-point aggregation finish (common/aggregate.comp): rows, then finish.
 nss_vk_add_shader(NSS_VK_SPIRV_SOURCES aggregate_fixed_rows common/aggregate.comp DEFINES KERNEL=0)
 nss_vk_add_shader(NSS_VK_SPIRV_SOURCES aggregate_fixed_finish common/aggregate.comp DEFINES KERNEL=1)

@@ -251,6 +251,10 @@ void Device::create(int index) {
     f12.timelineSemaphore = VK_TRUE;
     f12.shaderBufferInt64Atomics = caps_.buffer_int64_atomics;
     f12.hostQueryReset = caps_.host_query_reset;
+    // Required with Vulkan 1.3: shaders declaring the Vulkan memory model
+    // (WNNM's divide and conquer scratch).
+    f12.vulkanMemoryModel = caps_.vulkan_memory_model;
+    f12.vulkanMemoryModelDeviceScope = caps_.vulkan_memory_model;
     VkPhysicalDeviceVulkan13Features f13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, &f12};
     f13.subgroupSizeControl = caps_.subgroup_size_control;
     f13.computeFullSubgroups = caps_.compute_full_subgroups;
