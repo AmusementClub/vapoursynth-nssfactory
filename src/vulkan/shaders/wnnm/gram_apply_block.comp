@@ -22,7 +22,7 @@
 layout(local_size_x = 128) in;
 
 // wnnm/block_eigen.glsl's dc_floats and group_floats.
-const int kDcFloats = 2 * N * N, kGroupFloats = kDcFloats + N * N + 1;
+const int kDcFloats = 2 * N * N + 20 * N + 8 + 10 * 8, kGroupFloats = kDcFloats + N * N + 1;
 
 void main() {
     const int index = int((gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x) * 128u + gl_LocalInvocationID.x);

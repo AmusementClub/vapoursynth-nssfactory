@@ -91,6 +91,7 @@ A device runs `nss_vk` when it has Vulkan 1.3 with:
 
 - buffer device address, timeline semaphores, 64-bit integers in shaders and
   64-bit integer atomics on buffers (the sums are fixed point);
+- the Vulkan memory model with device scope (required by Vulkan 1.3);
 - subgroup basic, vote, ballot, shuffle and arithmetic operations in compute
   shaders, subgroup size control with full subgroups;
 - 32 KiB of shared memory per workgroup.

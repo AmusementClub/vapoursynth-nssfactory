@@ -17,11 +17,10 @@ struct Push {
 static_assert(sizeof(Push) == 120, "matches the push block of shaders/wnnm/common.glsl");
 
 // shaders/wnnm/gram8.glsl's kSplitFloats; from 17 patches the divide and
-// conquer's two 32 x 32 matrices (shaders/wnnm/block_eigen.glsl dc_floats;
-// its vectors are in shared memory), then M and the weight for the apply
-// kernel (group_floats).
+// conquer's two 32 x 32 matrices and its vectors (shaders/wnnm/block_eigen.glsl
+// dc_floats), then M and the weight for the apply kernel (group_floats).
 constexpr std::size_t kSplitFloats = 36 + 64 + 1;
-constexpr std::size_t kDcFloats = 2 * 32 * 32;
+constexpr std::size_t kDcFloats = 2 * 32 * 32 + 20 * 32 + 8 + 10 * 8;
 constexpr std::size_t kBlockFloats = kDcFloats + 32 * 32 + 1;
 
 // Workgroups: up to 8 patches, the rows and apply kernels 16 groups (128
