@@ -160,8 +160,11 @@ struct MatchBatchItem {
 // Each item requires match_stride >= min(item.group, kBmMaxGroup). An item
 // failing this admission check receives counts[i] = 0 and no output write;
 // the return value is the smallest failed original input index plus one.
+// square_runs lets runs of block-8 items of group >= 16 at step 4 on one row
+// share their distance work; their distances may differ from spatial_match's in
+// the last bits, so near ties may resolve differently (BM3D and WNNM opt in).
 int spatial_match_batch(const float* ref, int stride, int width, int height, const MatchBatchItem* items, int count,
-                        Match* matches, int match_stride, int* counts);
+                        Match* matches, int match_stride, int* counts, bool square_runs = false);
 int spatial_match_nch_batch(const float* const* refs, const int* strides, int nch, int width, int height,
                             const MatchBatchItem* items, int count, Match* matches, int match_stride, int* counts);
 

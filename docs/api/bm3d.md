@@ -128,6 +128,12 @@ here. The dominant cost driver is
 `block_step` (positions scale as `1/step^2`), then `bm_range` and
 `group_size`.
 
+On the CPU, spatial search with `block_size=8`, `block_step=4` and
+`group_size` 16 or more takes the square matcher (Davy and Ehret): references
+along a row share the work of their overlapping blocks. Its distances sum the
+same squares in another order, so near ties may pick other patches than the
+reference build's matcher (output differs in the last bits).
+
 Settings closer to the paper, with their measured quality, are on the [CUDA page](cuda/bm3d.md#closer-to-the-papers); the CPU takes the same arguments.
 
 ## Pitfalls

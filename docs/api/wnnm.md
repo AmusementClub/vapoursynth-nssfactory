@@ -58,7 +58,10 @@ pinned so a given toolchain reproduces output bit-for-bit.
 `block=8, step=8, group=8, bm_range=7, sigma=3` mirrors the shared search
 geometry used across this plugin's denoisers so algorithms can be compared at
 matched settings. Cost scales with `1/step^2` for matching plus per-group SVD work growing with
-`group_size` and `block_size^2`.
+`group_size` and `block_size^2`. On the CPU, spatial search with
+`block_size=8`, `block_step=4` and `group_size` 16 or more takes BM3D's square
+matcher (the same matches up to near ties; see the
+[BM3D page](bm3d.md#defaults-rationale-and-performance)).
 
 Settings closer to the paper, with their measured quality, are on the [CUDA page](cuda/wnnm.md#closer-to-the-papers); the CPU takes the same arguments.
 

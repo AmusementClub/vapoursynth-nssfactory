@@ -775,12 +775,93 @@ bool check_batch_failure_continues() {
 
 }  // namespace
 
+// Runs of block-8 items at step 4 (square_runs = true) against spatial_match per
+// item: exact on dyadic data, within a distance band (near ties only) on random
+// data, and per-reference on nonfinite data or shapes outside the admission.
+bool check_square_runs() {
+    constexpr int width = 157;
+    constexpr int height = 29;
+    constexpr int stride = 160;
+    std::mt19937 rng(20261110u);
+    std::uniform_int_distribution<int> level(-32, 32);
+    std::uniform_real_distribution<float> uniform(-1.f, 1.f);
+    std::vector<float> dyadic(static_cast<std::size_t>(stride * height), 0.f);
+    std::vector<float> random(dyadic.size(), 0.f);
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            dyadic[static_cast<std::size_t>(y * stride + x)] = static_cast<float>(level(rng)) / 32.f;
+            random[static_cast<std::size_t>(y * stride + x)] = uniform(rng);
+        }
+    }
+    // Rows of items: a 37-item run (split at 32), runs that reach the left and
+    // right edges, a clamped last item, a lone item, and group 8 (never served).
+    std::vector<nss::MatchBatchItem> items;
+    auto row = [&](int x0, int y, int n, int range, int group, int step = 4) {
+        for (int i = 0; i < n; ++i) items.push_back(nss::MatchBatchItem{x0 + step * i, y, 8, range, group, 0});
+    };
+    row(0, 0, 37, 7, 16);
+    row(2, 9, 6, 11, 32);
+    row(121, 21, 10, 7, 16);  // the last item's x is clamped
+    row(60, 4, 1, 7, 16);
+    row(16, 12, 5, 7, 8);
+    row(40, 12, 5, 7, 64);
+    row(100, 3, 4, 40, 16);  // the window covers the whole image
+    row(8, 17, 4, 7, 16, 8);
+    const int count = static_cast<int>(items.size());
+    auto check = [&](const std::vector<float>& plane, bool exact, const char* name) {
+        std::vector<nss::Match> batch(static_cast<std::size_t>(count) * nss::kBmMaxGroup);
+        std::vector<int> counts(static_cast<std::size_t>(count), 0);
+        if (nss::spatial_match_batch(plane.data(), stride, width, height, items.data(), count, batch.data(),
+                                     nss::kBmMaxGroup, counts.data(), true) != 0) {
+            std::fprintf(stderr, "%s: square batch returned an error\n", name);
+            return false;
+        }
+        for (int i = 0; i < count; ++i) {
+            const auto& item = items[static_cast<std::size_t>(i)];
+            nss::Match scalar[nss::kBmMaxGroup]{};
+            const int n = nss::spatial_match(plane.data(), stride, width, height, item.bx, item.by, item.block,
+                                             item.bm_range, item.group, scalar);
+            const nss::Match* got = batch.data() + static_cast<std::size_t>(i) * nss::kBmMaxGroup;
+            if (counts[static_cast<std::size_t>(i)] != n) {
+                std::fprintf(stderr, "%s: item %d count %d != %d\n", name, i, counts[static_cast<std::size_t>(i)], n);
+                return false;
+            }
+            for (int j = 0; j < n; ++j) {
+                const bool same = got[j].x == scalar[j].x && got[j].y == scalar[j].y && got[j].t == scalar[j].t &&
+                                  got[j].ordinal == scalar[j].ordinal;
+                const float band = 4e-6f * std::max(1.f, scalar[j].dist);
+                const bool dist_ok = exact ? std::memcmp(&got[j].dist, &scalar[j].dist, sizeof(float)) == 0
+                                           : std::fabs(got[j].dist - scalar[j].dist) <= band;
+                // Off dyadic data only a near tie (within the band) may swap two candidates.
+                if (!dist_ok || (!same && exact)) {
+                    std::fprintf(stderr, "%s: item %d rank %d (%d,%d %.9g) != (%d,%d %.9g)\n", name, i, j, got[j].x,
+                                 got[j].y, got[j].dist, scalar[j].x, scalar[j].y, scalar[j].dist);
+                    return false;
+                }
+            }
+        }
+        return true;
+    };
+    if (!check(dyadic, true, "dyadic") || !check(random, false, "random")) {
+        return false;
+    }
+    // A nonfinite value sends each run it reaches to the per-reference matcher.
+    auto nonfinite = dyadic;
+    nonfinite[static_cast<std::size_t>(5 * stride + 30)] = std::numeric_limits<float>::infinity();
+    nonfinite[static_cast<std::size_t>(14 * stride + 7)] = std::numeric_limits<float>::quiet_NaN();
+    if (!check(nonfinite, true, "nonfinite")) {
+        return false;
+    }
+    std::printf("square run matcher checks complete\n");
+    return true;
+}
+
 int main(int argc, char** argv) {
     if (!hq_test_target(argc, argv)) return 77;
     if (!check_ordered_queue()) {
         return 1;
     }
-    if (!check_match_batches()) {
+    if (!check_match_batches() || !check_square_runs()) {
         return 1;
     }
     if (!check_batch_contracts()) {
