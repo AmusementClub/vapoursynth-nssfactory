@@ -91,6 +91,8 @@ over its guide, mean (worst to best):
   white Gaussian noise of that sigma; on real grain or compression noise the
   gain is not measured.
 - At sigma 2 or less the gain is small and the cost is high.
+- A filtered plane must be at least 2 x 2 pixels: the chroma of a 4:2:0 clip
+  two rows high is not, so leave it alone there (`sigma=[s, 0, 0]`).
 - Frame properties: `_NSSDA3DPatches` and `_NSSDA3DGuideOnly` count the
   patches of the frame (all planes) and those that took the guide.
 - On the GPU, [`nss_cuda.DA3D`](cuda/da3d.md) gives the same result (within a level), far faster.
