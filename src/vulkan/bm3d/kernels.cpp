@@ -42,8 +42,19 @@ std::size_t warp_shared_bytes(int block, int group, bool wiener) {
     return floats * sizeof(float) + 32 * 8;
 }
 
+// The warp kernel with its Wiener gains in device scratch (GAINS_GLOBAL) at
+// block 16 / group 16: its 32 KiB of shared gains left about a quarter of the
+// workgroups an SM, and with only the transpose buffer shared the Wiener
+// stage is 1.22x (YUV420) / 1.28x (gray) faster on the RTX 5080 (no other
+// shape gained: 0.89-1.00x). It also fits a 32 KiB device. Scratch: one
+// cube a group.
+bool warp_gains_global(int block, int group, bool wiener, std::uint32_t shared) {
+    return wiener && block == 16 && group == 16 && warp_shared_bytes(block, group, false) <= shared;
+}
+
 bool warp_serves(int block, int group, bool wiener, std::uint32_t shared) {
-    return warp_shape(block, group, wiener) && warp_shared_bytes(block, group, wiener) <= shared;
+    return warp_shape(block, group, wiener) &&
+           (warp_shared_bytes(block, group, wiener) <= shared || warp_gains_global(block, group, wiener, shared));
 }
 
 // nss_cuda's kCubeSharedBytes: the block kernel keeps larger cubes in scratch.
@@ -53,28 +64,15 @@ std::size_t cube_bytes(int block, int group, bool wiener) {
     return static_cast<std::size_t>(group) * block * block * sizeof(float) * (wiener ? 2 : 1);
 }
 
-bool wiener_ref_global_impl(int block, int group, bool wiener, std::uint32_t shared) {
-    // Keep the noisy cube on chip when only the two-cube Wiener shape exceeds
-    // the 24 KiB block-kernel budget.  This is currently 16x16/group16 on the
-    // 32 KiB tier: one cube is 16 KiB, while two are 32 KiB.
-    return wiener && block == 16 && group == 16 && !warp_serves(block, group, wiener, shared) &&
-           cube_bytes(block, group, false) <= kCubeSharedBytes &&
-           cube_bytes(block, group, true) > kCubeSharedBytes;
-}
-
 }  // namespace
 
 bool Bm3dKernels::warp_kernel(int block, int group, bool wiener, std::uint32_t shared) {
     return warp_serves(block, group, wiener, shared);
 }
 
-bool wiener_ref_global(int block, int group, bool wiener, std::uint32_t shared) {
-    return wiener_ref_global_impl(block, group, wiener, shared);
-}
-
 std::size_t bm3d_scratch_floats(int block, int group, bool wiener, std::uint32_t shared) {
+    if (warp_gains_global(block, group, wiener, shared)) return static_cast<std::size_t>(group) * block * block;
     if (warp_serves(block, group, wiener, shared) || cube_bytes(block, group, wiener) <= kCubeSharedBytes) return 0;
-    if (wiener_ref_global_impl(block, group, wiener, shared)) return static_cast<std::size_t>(group) * block * block;
     return static_cast<std::size_t>(group) * block * block * (wiener ? 2 : 1);
 }
 
@@ -96,8 +94,8 @@ const Pipeline& Bm3dKernels::pipeline(int block, int group, bool wiener, bool& w
                         device_->support().native_lanes >= static_cast<std::uint32_t>(block);
     std::string id = std::string(warp ? "bm3d_warp" : "bm3d_shape") + "_b" + std::to_string(block) + "_g" +
                      std::to_string(group) + (wiener ? "_w" : "_h");
-    if (!warp && wiener_ref_global_impl(block, group, wiener, caps.shared_memory)) id += "_rg";
     if (warp) id += native ? "_n" : "_e";
+    if (warp && warp_gains_global(block, group, wiener, caps.shared_memory)) id += "_gg";
     std::lock_guard lock(mutex_);
     auto it = pipelines_.find(id);
     if (it == pipelines_.end()) {

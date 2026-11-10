@@ -97,10 +97,10 @@ A device runs `nss_vk` when it has Vulkan 1.3 with:
 
 On a device with less than 48 KiB (AMD's Windows driver and AMDVLK report 32
 KiB, as does Intel's Windows driver before Arc B-series), a few shapes take a
-smaller path: BM3D's block 16 / group 16 final stage, PNLM's weighting of
-groups 9 to 16, NLM's larger tiles and BM3D's matching windows at blocks 12
-and 16 use less shared memory there. The matches are the same; the output
-stays within the same tolerances, at some cost in speed for those shapes.
+smaller path: PNLM's weighting of groups 9 to 16, NLM's larger tiles and
+BM3D's matching windows at blocks 12 and 16 use less shared memory there. The
+matches are the same; the output stays within the same tolerances, at some
+cost in speed for those shapes.
 
 `core.nss_vk.Backend(device_id)` reports it:
 
