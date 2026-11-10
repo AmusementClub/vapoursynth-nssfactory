@@ -63,6 +63,7 @@ constexpr int kTileFrames = 17;
 constexpr int kTileWidth = 32, kTileHeight = 32, kTileThreads = kTileWidth * kTileHeight / 2;
 constexpr std::size_t kTileSharedBytes = 48 * 1024;
 constexpr int kTileFixedS = 8;
+constexpr int kTileWindowMinS = 4;  // below it the windows stay in memory (see the tile path)
 // Frames in flight beyond num_streams on the tile path (nss_cuda's stages).
 // nss_cuda's two extra stages are host staging around its streams; here every
 // frame in flight is a Slot of its own (command buffers, timeline, readback):
@@ -737,7 +738,12 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
 
     if (d->tiles) {
         d->window.filter = "nss_vk.NLM";
-        const bool windows = shared_all * static_cast<long long>(sizeof(float)) <= tile_shared;
+        // The windows in shared memory where they fit, from patch radius 4:
+        // below it this tile is slower on Vulkan than reading the windows from
+        // memory (RTX 5080, 1080p, d 0 to 2, a 1 to 4: 1.17-1.67x at s 0 to 3;
+        // from s 4, 0.83-0.99x, the defaults among them). nss_cuda keeps them
+        // in shared memory at every s (1.10-1.36x there).
+        const bool windows = shared_all * static_cast<long long>(sizeof(float)) <= tile_shared && d->s >= kTileWindowMinS;
         const int fixed = d->s <= kTileFixedS ? d->s : -1;
         const std::string id = "nlm_tile_s" + (fixed < 0 ? std::string("x") : std::to_string(fixed)) + "_i" +
                                (windows ? "1" : "0");

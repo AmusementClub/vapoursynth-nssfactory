@@ -15,6 +15,9 @@
 #extension GL_EXT_control_flow_attributes : require
 #extension GL_GOOGLE_include_directive : require
 
+#ifndef GAINS_GLOBAL
+#define GAINS_GLOBAL 0
+#endif
 #define WARP_L B
 #define WARP_WARPS 1
 #include "common/warp.glsl"
@@ -26,9 +29,20 @@ const int KLANE = G * B;
 const int PER_WARP = 32 / B;
 const int STRIDE = 33;  // one more than the warp: conflict-free both ways
 shared float s_buffer[B * STRIDE];
-#if WIENER
+#if WIENER && !GAINS_GLOBAL
 // The gains from the reference cube, parked while the registers transform the noisy cube.
 shared float s_gains[32 * KLANE];
+#endif
+#if WIENER && GAINS_GLOBAL
+// Block 16 / group 16 (bm3d/kernels.cpp warp_gains_global): the gains are
+// parked in device scratch instead, so that more workgroups fit an SM: KLANE
+// floats a lane, each lane reads only its own (no barrier), entry i of group
+// r's sub-lane at (r KLANE + i) B + sub so that a warp stores two contiguous
+// runs (64-bit: a 1080p plane has more than 2^31 bytes of them at step 3).
+// Idle lanes store and load nothing.
+uint64_t gains_at(int r, int i, int sub) {
+    return pc.scratch + ((uint64_t(r) * uint64_t(KLANE) + uint64_t(i)) * uint64_t(B) + uint64_t(sub)) * 4ul;
+}
 #endif
 
 float v[KLANE];
@@ -103,12 +117,22 @@ void main() {
     [[unroll]] for (int i = 0; i < KLANE; ++i) {
         precise float q = v[i] * v[i];
         const float w = (i == 0 && sub == 0) ? 1.0f : q + sig2 > 0.0f ? q / (q + sig2) : 0.0f;
+#if GAINS_GLOBAL
+        if (live) Scratch(gains_at(r, i, sub)).v[0] = w;
+#else
         s_gains[lane * KLANE + i] = w;
+#endif
         w2 = fma(w, w, w2);
     }
     weight = 1.0f / max(group_total_f(w2), 1e-12f);
     forward_lanes(pc.src, first, kk, lane);
+#if GAINS_GLOBAL
+    if (live) {
+        [[unroll]] for (int i = 0; i < KLANE; ++i) v[i] *= Scratch(gains_at(r, i, sub)).v[0];
+    }
+#else
     [[unroll]] for (int i = 0; i < KLANE; ++i) v[i] *= s_gains[lane * KLANE + i];
+#endif
 #else
     forward_lanes(pc.src, first, kk, lane);
     const float thr = kScale * kHardLambda * pc.sigma;

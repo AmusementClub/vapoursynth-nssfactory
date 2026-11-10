@@ -54,6 +54,18 @@ constexpr int kSide = 16, kRefs = kSide - 1;
 // and reference, and on the emulated layer the warp exchange (8 warps). Groups
 // of 9 to 16 take 32,776 bytes natively: above a 32 KiB device's, which runs
 // them through the key path (nss_cuda's unfused one) instead.
+// Where this plugin weights in the matcher's workgroup (nss_cuda's
+// pnlm_fused: a <= 4, groups up to 16), only patches of 4 with small searches:
+// at patches of 6 and 8, and of 4 with more candidates, the key path is faster
+// on Vulkan (RTX 5080, 1080p YUV420, groups 4 / 8 / 16, a 1 / 2 / 4, d 0 to 2:
+// 1.03-1.27x at 6, 0.98-1.14x at 8, up to 1.38x at 4; the defaults 1.14x, for
+// a key buffer of 29 MiB a stream). Patches of 4 with at most 648 candidates
+// times the group stay fused (0.85-0.99x there; the worst sampled miss 3.6%).
+bool vk_fused(int block, int a, int d, int group) {
+    const long long side = 2LL * a + 1;
+    return block == 4 && side * side * (2LL * d + 1) * group <= 648;
+}
+
 std::size_t fused_shared_bytes(int k, bool emulated) {
     constexpr std::size_t slots = static_cast<std::size_t>(kRefs) * kRefs;
     return 2 * kSide * (kSide + 1) * sizeof(float) + 2 * slots * static_cast<std::size_t>(k + 1) * 4 +
@@ -431,8 +443,10 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
     const auto lanes = static_cast<std::uint32_t>(nss::pnlm_lanes(d->block * d->block));
     d->emulate = d->device->support().native_lanes < lanes || (force && force[0] == '1');
     d->k = d->group <= 8 ? 7 : d->group <= 16 ? 15 : 31;
-    // nss_cuda's pnlm_fused, where the device has the shared memory for it.
-    d->fused = d->a <= 4 && d->group <= 16 && fused_shared_bytes(d->k, d->emulate) <= d->device->caps().shared_memory;
+    // nss_cuda's pnlm_fused narrowed to vk_fused, where the device has the
+    // shared memory for it.
+    d->fused = d->a <= 4 && d->group <= 16 && vk_fused(d->block, d->a, d->d, d->group) &&
+               fused_shared_bytes(d->k, d->emulate) <= d->device->caps().shared_memory;
     for (int plane = 0; plane < d->vi.format.numPlanes; ++plane) {
         if (d->sigma[plane] == 0.f) continue;
         const int w = nss::plane_width(d->vi, plane), h = nss::plane_height(d->vi, plane);

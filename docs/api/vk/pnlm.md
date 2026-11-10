@@ -46,8 +46,11 @@ transfers, so GPU frames and direct transfers help most there.
   Drivers that split `fma` (Mesa) differ in the last bits.
 - **Matching** is the square matcher of Davy and Ehret (a workgroup of 16 x 16
   invocations, one per quarter of a patch, sharing each quarter's distance
-  among four references), weighting in the same workgroup for windows up to
-  `a=4` and groups up to 16 (up to 8 on a device with less than 48 KiB of
-  shared memory), in a second kernel otherwise.
+  among four references), and the weighting in a second kernel. Patches of
+  4 with small searches (the window's candidates times the group up to 648,
+  groups up to 16, or 8 on a device with less than 48 KiB of shared memory)
+  are weighted in the same workgroup instead, as `nss_cuda` does for more
+  shapes: on Vulkan the second kernel was faster in 66 of 81 shapes measured
+  (the defaults 1.14x), for a key buffer of about 29 MiB a stream at 1080p.
 - **Frames are uploaded once** however many windows they are part of (a cache
   of the window's frames shared by the streams, as NLM's).
