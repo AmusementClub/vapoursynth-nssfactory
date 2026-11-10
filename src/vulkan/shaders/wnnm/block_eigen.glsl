@@ -30,6 +30,9 @@ const float kEps = 1.2e-7f;
 
 // The device scratch's floats a group, vulkan/wnnm/kernels.cpp's kDcFloats.
 int dc_floats() { return 2 * N * N; }
+// A group's scratch: the divide and conquer's, then M (N x N) and the
+// weight for the apply kernel (vulkan/wnnm/kernels.cpp kBlockFloats).
+int group_floats() { return dc_floats() + N * N + 1; }
 
 void sync() {
     memoryBarrierBuffer();
