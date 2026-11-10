@@ -34,6 +34,7 @@ nss_vk::DeviceCaps device(std::uint32_t min_size, std::uint32_t max_size, std::u
     caps.timeline_semaphore = true;
     caps.shader_int64 = true;
     caps.buffer_int64_atomics = true;
+    caps.vulkan_memory_model = true;
     caps.subgroup_size_control = true;
     caps.compute_full_subgroups = true;
     caps.required_size_in_compute = true;
@@ -81,6 +82,9 @@ int main() {
     auto old = device(32, 32, 48);
     old.api_version = VK_API_VERSION_1_2;
     expect(lists(nss_vk::classify(old), "Vulkan 1.3"), "1.2 device");
+    auto no_model = device(32, 32, 48);
+    no_model.vulkan_memory_model = false;
+    expect(lists(nss_vk::classify(no_model), "vulkanMemoryModel"), "memory model");
     auto no_atomics = device(32, 32, 48);
     no_atomics.buffer_int64_atomics = false;
     expect(lists(nss_vk::classify(no_atomics), "shaderBufferInt64Atomics"), "int64 atomics");

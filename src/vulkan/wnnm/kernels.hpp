@@ -3,7 +3,7 @@
 // kernels of shaders/wnnm, as nss_cuda's wnnm_filter_groups (gram_group.cuh
 // with the WNNM model): up to 8 patches three kernels (rows, solve, apply),
 // 9 to 16 the block kernel with the parallel Jacobi, 17 to 32 the block
-// kernel with Householder and divide and conquer. Every group adds its
+// kernel with Householder and divide and conquer, then an apply kernel. Every group adds its
 // weighted patches to fixed-point sums itself (common/aggregate.hpp).
 #pragma once
 
@@ -36,7 +36,7 @@ struct WnnmGroupArgs {
 };
 
 // Floats of scratch per group: the Gram matrix, M and the weight up to 8
-// patches, the divide and conquer's two matrices from 17.
+// patches, the divide and conquer's two matrices, M and the weight from 17.
 std::size_t wnnm_scratch_floats(int group);
 
 class WnnmKernels {

@@ -1,0 +1,65 @@
+// SPDX-License-Identifier: GPL-2.0-only
+// WNNM, groups of 17 to 32 patches, the second kernel: X = A M into the
+// fixed-point sums, from column `lane` of M = V C and the weight that
+// wnnm/gram_block.comp (N = 32) left in the group's scratch. One invocation
+// a patch of the group (its output column), four groups a workgroup; the
+// same arithmetic in the same order as the block kernel's own loop did.
+// No warp operations and no shared memory: the occupancy is the registers'.
+//
+// Defines: N (32).
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_shader_atomic_int64 : require
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_GOOGLE_include_directive : require
+
+#if !defined(N) || N != 32
+#error N must be 32
+#endif
+#include "wnnm/common.glsl"
+
+layout(local_size_x = 128) in;
+
+// wnnm/block_eigen.glsl's dc_floats and group_floats.
+const int kDcFloats = 2 * N * N + 20 * N + 8 + 10 * 8, kGroupFloats = kDcFloats + N * N + 1;
+
+void main() {
+    const int index = int((gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x) * 128u + gl_LocalInvocationID.x);
+    const int lane = index % N, r = index / N;
+    if (r >= pc.batch) return;  // no barriers below
+    const int n = min(Counts(pc.counts).c[r], pc.group);
+    if (lane >= n) return;
+    const int first = r * pc.group;
+    const Match own_match = Matches(pc.matches).m[first + lane];
+    const int64_t cell = fixed_patch_cell(pc.fused, own_match.t, own_match.y, own_match.x);
+    if (cell < 0) return;
+    const uint64_t m_at = pc.scratch + (uint64_t(r) * uint64_t(kGroupFloats) + uint64_t(kDcFloats)) * 4ul;
+    float acc[N];
+    [[unroll]] for (int k = 0; k < N; ++k) acc[k] = Scratch(m_at).v[k * N + lane];
+    const float weight = Scratch(m_at).v[N * N];
+    uint64_t col[N];
+    [[unroll]] for (int j = 0; j < N; ++j) col[j] = match_base(Matches(pc.matches).m[first + (j < n ? j : 0)]);
+    const bool center = wnnm_center();
+    const int area = pc.block * pc.block;
+    for (int p = 0, c = 0, offset = 0, target = 0; p < area; ++p) {
+        float row[N];
+        float sum = 0.0f;
+        [[unroll]] for (int j = 0; j < N; ++j) {
+            row[j] = j < n ? Plane(col[j]).v[offset] : 0.0f;
+            sum += row[j];
+        }
+        const float mu = center ? sum / float(n) : 0.0f;
+        float out_ = 0.0f;
+        [[unroll]] for (int k = 0; k < N; ++k) out_ = fma(k < n ? row[k] - mu : 0.0f, acc[k], out_);
+        fixed_add(pc.fused.num, cell + target, weight * (out_ + mu));
+        if (++c == pc.block) {
+            c = 0;
+            offset += pc.pitch - pc.block;
+            target += pc.fused.pitch - pc.block;
+        }
+        ++offset;
+        ++target;
+    }
+    fixed_add(pc.fused.den, cell, weight);
+}
