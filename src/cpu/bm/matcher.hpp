@@ -372,4 +372,9 @@ int collect_temporal(int width, int height, int t0, int ntemp, const SearchConfi
     return 1 + global.finish();
 }
 
+// Block 8 square matcher for a run of references at step 4 on one row (ssd.cpp).
+inline constexpr int kSquareMaxRun = 32;
+int spatial_square_run8(const float* ref, int stride, int width, int height, int x0, int y, int n, int bm_range,
+                        int group, Match* out, int os, int* counts);
+
 }  // namespace nss::detail

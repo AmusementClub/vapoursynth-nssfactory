@@ -11,7 +11,9 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
+#include <new>
 
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE "cpu/bm/ssd.cpp"
@@ -441,6 +443,121 @@ int SpatialMatch(const float* ref, int stride, int width, int height, int bx, in
                                    });
 }
 
+// Block 8 for a run of n references at step 4 on one row ((x0 + 4 i, y), none
+// clamped), sharing the work of overlapping blocks as the GPU square matcher
+// does. Per displacement: column sums of the 8 rows along the run, tile sums
+// of 4 columns, and reference i totals tiles i and i + 1. The distance sums the
+// same squares in another order, so near ties may resolve differently from
+// SpatialMatch (dyadic distances are exact either way). A vector test against
+// each reference's current worst keeps most candidates out of the top-k.
+// Returns 0, or -2 when a distance is nonfinite (the caller then takes the
+// per-reference matcher for the whole run).
+int SpatialSquareRun8(const float* ref, int stride, int width, int height, int x0, int y, int n, int bm_range,
+                      int group, Match* out, int os, int* counts) {
+    constexpr int kQ = 4, kB = 8;
+    constexpr int kMaxRun = detail::kSquareMaxRun;
+    if (!ref || !out || !counts || n < 1 || n > kMaxRun || x0 < 0 || y < 0 ||
+        x0 + kQ * (n - 1) + kB > width || y + kB > height || stride < width) {
+        return -2;
+    }
+    const hn::ScalableTag<float> d;
+    const hn::RebindToUnsigned<decltype(d)> du;
+    const int N = static_cast<int>(hn::Lanes(d));
+    const int wanted = std::min(group, kBmMaxGroup);
+    const int r = std::max(bm_range, 0);
+    // Padded past the run by more than a vector's lanes, so whole-vector loads
+    // and stores stay inside; those lanes are masked out below.
+    constexpr int kPad = HWY_MAX_BYTES / sizeof(float) + 4;
+    static_assert(HWY_MAX_BYTES / sizeof(float) <= 64, "mask bits must fit in 64 bits");
+    HWY_ALIGN float col[kQ * (kMaxRun + 1) + kQ * kPad] = {};
+    HWY_ALIGN float tile[kMaxRun + 1 + kPad] = {};
+    HWY_ALIGN float dist[kMaxRun + kPad] = {};
+    HWY_ALIGN float worst[kMaxRun + kPad];
+    alignas(detail::SpatialSortedTopK) unsigned char top_bytes[kMaxRun * sizeof(detail::SpatialSortedTopK)];
+    auto* tops = reinterpret_cast<detail::SpatialSortedTopK*>(top_bytes);
+    int left[kMaxRun], span[kMaxRun], filled[kMaxRun];
+    const int top = std::max(y - r, 0), bottom = std::min(y + r, height - kB);
+    for (float& w : worst) w = std::numeric_limits<float>::max();
+    for (int i = 0; i < n; ++i) {
+        const int cx = x0 + kQ * i;
+        left[i] = std::max(cx - r, 0);
+        span[i] = std::min(cx + r, width - kB) - left[i] + 1;
+        filled[i] = 0;
+        out[static_cast<std::ptrdiff_t>(i) * os] = Match{cx, y, 0, 0.f, 0};
+        new (&tops[i]) detail::SpatialSortedTopK(out + static_cast<std::ptrdiff_t>(i) * os + 1, wanted - 1);
+    }
+    if (wanted <= 1) {
+        for (int i = 0; i < n; ++i) counts[i] = 1;
+        return 0;
+    }
+    const int keep = wanted - 1;
+    auto bad_bits = hn::Zero(du);
+    for (int yy = top; yy <= bottom; ++yy) {
+        const int dy = yy - y;
+        for (int dx = -r; dx <= r; ++dx) {
+            if (dx == 0 && dy == 0) continue;
+            // references whose candidate (x0 + 4 i + dx, yy) lies in the image
+            const int lim = width - kB - x0 - dx;
+            if (lim < 0) continue;
+            const int ilo = x0 + dx < 0 ? (kQ - 1 - (x0 + dx)) / kQ : 0;
+            const int ihi = std::min(n - 1, lim / kQ);
+            if (ilo > ihi) continue;
+            const int c0 = kQ * ilo, c1 = kQ * (ihi + 2);
+            for (int c = c0; c < c1; c += N) {
+                const size_t cnt = static_cast<size_t>(std::min(N, c1 - c));
+                auto acc0 = hn::Zero(d), acc1 = hn::Zero(d);
+                for (int rr = 0; rr < kB; rr += 2) {
+                    const float* pa = ref + static_cast<std::ptrdiff_t>(y + rr) * stride + x0 + c;
+                    const float* pb = ref + static_cast<std::ptrdiff_t>(y + rr + dy) * stride + x0 + c + dx;
+                    if (cnt == static_cast<size_t>(N)) {
+                        const auto d0 = hn::Sub(hn::LoadU(d, pa), hn::LoadU(d, pb));
+                        const auto d1 = hn::Sub(hn::LoadU(d, pa + stride), hn::LoadU(d, pb + stride));
+                        acc0 = hn::MulAdd(d0, d0, acc0);
+                        acc1 = hn::MulAdd(d1, d1, acc1);
+                    } else {
+                        const auto d0 = hn::Sub(hn::LoadN(d, pa, cnt), hn::LoadN(d, pb, cnt));
+                        const auto d1 = hn::Sub(hn::LoadN(d, pa + stride, cnt), hn::LoadN(d, pb + stride, cnt));
+                        acc0 = hn::MulAdd(d0, d0, acc0);
+                        acc1 = hn::MulAdd(d1, d1, acc1);
+                    }
+                }
+                hn::StoreU(hn::Add(acc0, acc1), d, col + c);
+            }
+            for (int j = ilo; j <= ihi + 1; j += N) {
+                hn::Vec<decltype(d)> v0, v1, v2, v3;
+                hn::LoadInterleaved4(d, col + kQ * j, v0, v1, v2, v3);
+                hn::StoreU(hn::Add(hn::Add(v0, v1), hn::Add(v2, v3)), d, tile + j);
+            }
+            for (int i = ilo; i <= ihi; i += N) {
+                const auto dv = hn::Add(hn::LoadU(d, tile + i), hn::LoadU(d, tile + i + 1));
+                hn::StoreU(dv, d, dist + i);
+                const auto valid = hn::FirstN(d, static_cast<size_t>(ihi - i + 1));
+                // An integer test: this TU is fast-math, so a float isfinite could fold away.
+                bad_bits = hn::Max(bad_bits,
+                                   hn::IfThenElseZero(hn::RebindMask(du, valid), hn::BitCast(du, hn::Abs(dv))));
+                const auto pass = hn::And(valid, hn::Le(dv, hn::LoadU(d, worst + i)));
+                if (hn::AllFalse(d, pass)) continue;
+                uint8_t mask_bytes[8] = {};
+                hn::StoreMaskBits(d, pass, mask_bytes);
+                uint64_t bits = 0;
+                std::memcpy(&bits, mask_bytes, sizeof(bits));
+                while (bits) {
+                    const int q = i + static_cast<int>(hwy::Num0BitsBelowLS1Bit_Nonzero64(bits));
+                    bits &= bits - 1;
+                    const int cx = x0 + kQ * q + dx;
+                    const auto ordinal = static_cast<std::uint32_t>((yy - top) * span[q] + (cx - left[q]) + 1);
+                    tops[q].add(Match{cx, yy, 0, dist[q], ordinal});
+                    if (filled[q] < keep) ++filled[q];
+                    if (filled[q] == keep) worst[q] = out[static_cast<std::ptrdiff_t>(q) * os + keep].dist;
+                }
+            }
+        }
+    }
+    if (hn::ReduceMax(du, bad_bits) >= 0x7f800000u) return -2;
+    for (int i = 0; i < n; ++i) counts[i] = 1 + tops[i].finish();
+    return 0;
+}
+
 #ifdef NSS_BM_KERNEL_LAB
 nss::detail::Match8Kernel ResolveMatch8Lab(int v) {
 #if HWY_MAX_BYTES >= 32
@@ -483,6 +600,7 @@ Match8Replay match8_replay_kernel(int v) { return HWY_DYNAMIC_DISPATCH(ResolveMa
 HWY_EXPORT(SsdBlock);
 HWY_EXPORT(SsdNch);
 HWY_EXPORT(SpatialMatch);
+HWY_EXPORT(SpatialSquareRun8);
 
 float ssd_block(const float* a, int sa, const float* b, int sb, int block) {
     return HWY_DYNAMIC_DISPATCH(SsdBlock)(a, sa, b, sb, block);
@@ -496,6 +614,14 @@ int spatial_match(const float* ref, int stride, int width, int height, int bx, i
                   int group, Match* out, unsigned avx2_features) {
     return HWY_DYNAMIC_DISPATCH(SpatialMatch)(ref, stride, width, height, bx, by, block, bm_range, group, out, avx2_features | NSS_AVX2_REQUESTED);
 }
+
+namespace detail {
+int spatial_square_run8(const float* ref, int stride, int width, int height, int x0, int y, int n, int bm_range,
+                        int group, Match* out, int os, int* counts) {
+    return HWY_DYNAMIC_DISPATCH(SpatialSquareRun8)(ref, stride, width, height, x0, y, n, bm_range, group, out, os,
+                                                   counts);
+}
+}  // namespace detail
 
 }  // namespace nss
 #endif

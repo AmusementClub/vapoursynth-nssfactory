@@ -101,7 +101,7 @@ void process_plane_batched(const float* const* srcs, const float* const* refs, i
                                                                match_items.data(), count, match_storage.data(),
                                                                nss::kWnnmMaxGroup, counts.data())
                                  : nss::spatial_match_batch(refs[t0], sstride, width, height, match_items.data(), count,
-                                                            match_storage.data(), nss::kWnnmMaxGroup, counts.data());
+                                                            match_storage.data(), nss::kWnnmMaxGroup, counts.data(), true);
         if (match_rc != 0) {
             throw std::runtime_error("nss: matching failed for an active group");
         }

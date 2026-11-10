@@ -154,7 +154,7 @@ void process_planes_batched(const float* const* match, const int* match_strides,
                                                                nss::kBmMaxGroup, counts.data())
                                  : nss::spatial_match_batch(match[t0], match_strides[t0], width, height,
                                                             match_items.data(), count, match_storage.data(),
-                                                            nss::kBmMaxGroup, counts.data());
+                                                            nss::kBmMaxGroup, counts.data(), true);
         // Matching failures are fatal for the frame: a nonzero code identifies
         // the first failed job in the window.
         if (match_rc != 0) {

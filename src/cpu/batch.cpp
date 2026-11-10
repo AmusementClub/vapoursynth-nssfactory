@@ -81,8 +81,52 @@ void finish_ncsr_batch_item(NcsrFilterBatchItem& item) {
 
 }  // namespace
 
+namespace {
+
+// Marks the items that the block-8 square matcher served: consecutive items of
+// group >= 16 on one row with x stepping by 4, none clamped. Other items, and
+// runs with a nonfinite distance, are left to the per-reference matcher.
+nss::ResourceVector<char> square_runs8(const float* ref, int stride, int width, int height, const MatchBatchItem* items,
+                               int count, Match* matches, int match_stride, int* counts) {
+    nss::ResourceVector<char> served;
+#if NSS_BM_EXPERIMENT != 0
+    constexpr int kQ = 4, kB = 8;
+    for (int k = 0; k < count;) {
+        const auto& a = items[k];
+        int n = 1;
+        if (a.block != kB || a.group < 16 || a.bx < 0 || a.by < 0 || a.by > height - kB ||
+            !detail::match_capacity_valid(a.group, match_stride)) {
+            ++k;
+            continue;
+        }
+        while (k + n < count && n < detail::kSquareMaxRun) {
+            const auto& b = items[k + n];
+            if (b.block != kB || b.by != a.by || b.bm_range != a.bm_range || b.group != a.group ||
+                b.bx != a.bx + kQ * n || b.bx > width - kB) {
+                break;
+            }
+            ++n;
+        }
+        if (n >= 2 && a.bx + kQ * (n - 1) <= width - kB &&
+            detail::spatial_square_run8(ref, stride, width, height, a.bx, a.by, n, a.bm_range, a.group,
+                                        matches + static_cast<std::size_t>(k) * match_stride, match_stride,
+                                        counts + k) == 0) {
+            if (served.empty()) served.assign(static_cast<std::size_t>(count), 0);
+            std::fill_n(served.begin() + k, n, 1);
+        }
+        k += n;
+    }
+#else
+    (void)ref, (void)stride, (void)width, (void)height, (void)items, (void)count, (void)matches, (void)match_stride,
+        (void)counts;
+#endif
+    return served;
+}
+
+}  // namespace
+
 int spatial_match_batch(const float* ref, int stride, int width, int height, const MatchBatchItem* items, int count,
-                        Match* matches, int match_stride, int* counts) {
+                        Match* matches, int match_stride, int* counts, bool square_runs) {
     if (count == 0) {
         return 0;
     }
@@ -102,8 +146,13 @@ int spatial_match_batch(const float* ref, int stride, int width, int height, con
         return false;
     });
     int first_error = 0;
+    const auto served = square_runs ? square_runs8(ref, stride, width, height, items, count, matches, match_stride, counts)
+                                    : nss::ResourceVector<char>{};
     for (int index : order) {
         const auto& item = items[index];
+        if (!served.empty() && served[static_cast<std::size_t>(index)]) {
+            continue;
+        }
         if (!detail::match_capacity_valid(item.group, match_stride)) {
             counts[index] = 0;
             detail::record_batch_failure(index, first_error);
