@@ -50,7 +50,7 @@ transfers, so GPU frames and direct transfers help most there.
   4 with small searches (the window's candidates times the group up to 648,
   groups up to 16, or 8 on a device with less than 48 KiB of shared memory)
   are weighted in the same workgroup instead, as `nss_cuda` does for more
-  shapes: on Vulkan the second kernel is faster everywhere else measured
+  shapes: on Vulkan the second kernel was faster in 66 of 81 shapes measured
   (the defaults 1.14x), for a key buffer of about 29 MiB a stream at 1080p.
 - **Frames are uploaded once** however many windows they are part of (a cache
   of the window's frames shared by the streams, as NLM's).

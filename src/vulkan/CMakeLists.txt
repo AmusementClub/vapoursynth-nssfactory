@@ -305,10 +305,13 @@ foreach(_nss_b 1 2 4 8 12 16 32)
           else()
             set(_nss_layer n)
           endif()
-          nss_vk_add_shader(NSS_VK_SPIRV_SOURCES bm3d_warp_b${_nss_b}_g${_nss_g}_${_nss_stage}_${_nss_layer}
-                            bm3d/group_warp.comp LIGHT
-                            DEFINES B=${_nss_b} G=${_nss_g} WIENER=${_nss_w} WARP_EMULATED=${_nss_emu})
-          # Block 16 / group 16 Wiener: the gains in device scratch (bm3d/kernels.cpp warp_gains_global).
+          # Block 16 / group 16 Wiener: only the gains in device scratch
+          # (bm3d/kernels.cpp warp_gains_global, on every device).
+          if(NOT (_nss_shape EQUAL 1616 AND _nss_w))
+            nss_vk_add_shader(NSS_VK_SPIRV_SOURCES bm3d_warp_b${_nss_b}_g${_nss_g}_${_nss_stage}_${_nss_layer}
+                              bm3d/group_warp.comp LIGHT
+                              DEFINES B=${_nss_b} G=${_nss_g} WIENER=${_nss_w} WARP_EMULATED=${_nss_emu})
+          endif()
           if(_nss_shape EQUAL 1616 AND _nss_w)
             nss_vk_add_shader(NSS_VK_SPIRV_SOURCES bm3d_warp_b16_g16_w_${_nss_layer}_gg bm3d/group_warp.comp LIGHT
                               DEFINES B=16 G=16 WIENER=1 WARP_EMULATED=${_nss_emu} GAINS_GLOBAL=1)
