@@ -40,6 +40,7 @@ Classification classify(const DeviceCaps& caps) {
     if (!caps.timeline_semaphore) missing.push_back("timelineSemaphore");
     if (!caps.shader_int64) missing.push_back("shaderInt64");
     if (!caps.buffer_int64_atomics) missing.push_back("shaderBufferInt64Atomics");
+    if (!caps.vulkan_memory_model) missing.push_back("vulkanMemoryModel");
     if (!caps.subgroup_in_compute) missing.push_back("subgroup operations in compute");
     const struct {
         VkSubgroupFeatureFlags bit;
@@ -164,6 +165,7 @@ DeviceCaps query_caps(VkPhysicalDevice device) {
         caps.timeline_semaphore = f12.timelineSemaphore;
         caps.host_query_reset = f12.hostQueryReset;
         caps.buffer_int64_atomics = f12.shaderBufferInt64Atomics;
+        caps.vulkan_memory_model = f12.vulkanMemoryModel && f12.vulkanMemoryModelDeviceScope;
         caps.subgroup_size_control = f13.subgroupSizeControl;
         caps.compute_full_subgroups = f13.computeFullSubgroups;
     }

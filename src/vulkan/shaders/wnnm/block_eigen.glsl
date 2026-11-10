@@ -29,29 +29,38 @@ const float kWarpEigenSettled = 1e-8f;
 const float kEps = 1.2e-7f;
 
 // The device scratch's floats a group, vulkan/wnnm/kernels.cpp's kDcFloats.
-int dc_floats() { return 2 * N * N; }
+int dc_floats() { return 2 * N * N + 20 * N + 8 + 10 * 8; }
+// A group's scratch: the divide and conquer's, then M (N x N) and the
+// weight for the apply kernel (vulkan/wnnm/kernels.cpp kBlockFloats).
+int group_floats() { return dc_floats() + N * N + 1; }
 
 void sync() {
-    memoryBarrierBuffer();
-    barrier();
+    // The divide and conquer's device scratch is workgroupcoherent (Vulkan
+    // memory model): a workgroup barrier with acquire-release semantics on
+    // buffer and shared memory makes its writes available and visible.
+    controlBarrier(gl_ScopeWorkgroup, gl_ScopeWorkgroup, gl_StorageSemanticsBuffer | gl_StorageSemanticsShared,
+                   gl_SemanticsAcquireRelease | gl_SemanticsMakeAvailable | gl_SemanticsMakeVisible);
 }
 
 float copysign_f(float x, float y) {
     return uintBitsToFloat((floatBitsToUint(x) & 0x7fffffffu) | (floatBitsToUint(y) & 0x80000000u));
 }
 
-// The divide and conquer's scratch: its two k x k matrices (the leaves' and
-// secular vectors u, a merge's new rows tmp) in device memory (DM, this
-// workgroup's at g_dc), its vectors in shared memory (DV; nss_cuda keeps all
-// of it in device memory, read through L1 in a block, where a coherent Vulkan
-// buffer is read past L1 on NVIDIA: the secular equation's loops waited on
-// L2), integers as float bits.
+// The divide and conquer's scratch, all of it in this workgroup's device
+// memory at g_dc, as nss_cuda's: its two k x k matrices (the leaves' and
+// secular vectors u, a merge's new rows tmp; DM), then its vectors (DV), its
+// integers as float bits. The buffer is workgroupcoherent under the Vulkan
+// memory model (gram_block.comp's pragma), so NVIDIA reads it through L1 (a
+// plain coherent buffer was read past L1: the secular equation's loops
+// waited on L2) and the shared memory stays the block kernel's (9.2 KB: more
+// workgroups an SM than with the vectors there, 12.1 KB).
 uint64_t g_dc;
-#define DM(i) Scratch(g_dc).v[(i)]
-shared float s_dcv[20 * N + 8 + 10 * 8];
-#define DV(i) s_dcv[(i)]
-#define DVI(i) floatBitsToInt(s_dcv[(i)])
-#define SET_DVI(i, value) s_dcv[(i)] = intBitsToFloat(value)
+layout(buffer_reference, std430, buffer_reference_align = 4) workgroupcoherent buffer DcCells { float v[]; };
+const int kDvBase = 2 * N * N;
+#define DM(i) DcCells(g_dc).v[(i)]
+#define DV(i) DcCells(g_dc).v[kDvBase + (i)]
+#define DVI(i) floatBitsToInt(DcCells(g_dc).v[kDvBase + (i)])
+#define SET_DVI(i, value) DcCells(g_dc).v[kDvBase + (i)] = intBitsToFloat(value)
 
 // ---------------------------------------------------------------- warp_eigen
 // Cyclic Jacobi for a k x k matrix (k <= 16) in the scratch at `ab` on the

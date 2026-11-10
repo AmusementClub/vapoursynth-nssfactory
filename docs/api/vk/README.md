@@ -24,12 +24,12 @@ scale with the pixel count and differ between GPUs.
 |---|---:|---:|
 | [BM3D](bm3d.md) | 1440 | 24 |
 | [NLM](nlm.md) | 820 | 135 |
-| [PNLM](pnlm.md) | 990 | 216 |
-| [WNNM](wnnm.md) | 1340 | 12 |
+| [PNLM](pnlm.md) | 1170 | 216 |
+| [WNNM](wnnm.md) | 1340 | 13 |
 | [MCWNNM](mcwnnm.md) (RGB) | 310 | 0.85 |
 
 - NLM filters luma only at its defaults; PNLM and WNNM filter every plane.
-- WNNM runs at about 0.95 times `nss_cuda`'s speed at its defaults and 0.6
+- WNNM runs at about 0.95 times `nss_cuda`'s speed at its defaults and 0.65
   times at its heavy arguments (groups of 32), measured in the same runs;
   MCWNNM about 1.2 and 1.05 times.
 - MCWNNM takes RGB only.
@@ -95,16 +95,17 @@ A device runs `nss_vk` when it has Vulkan 1.3 with:
 
 - buffer device address, timeline semaphores, 64-bit integers in shaders and
   64-bit integer atomics on buffers (the sums are fixed point);
+- the Vulkan memory model with device scope (required by Vulkan 1.3);
 - subgroup basic, vote, ballot, shuffle and arithmetic operations in compute
   shaders, subgroup size control with full subgroups;
 - 32 KiB of shared memory per workgroup.
 
 On a device with less than 48 KiB (AMD's Windows driver and AMDVLK report 32
 KiB, as does Intel's Windows driver before Arc B-series), a few shapes take a
-smaller path: BM3D's block 16 / group 16 final stage, PNLM's weighting of
-groups 9 to 16, NLM's larger tiles and BM3D's matching windows at blocks 12
-and 16 use less shared memory there. The matches are the same; the output
-stays within the same tolerances, at some cost in speed for those shapes.
+smaller path: PNLM's weighting of groups 9 to 16, NLM's larger tiles and
+BM3D's matching windows at blocks 12 and 16 use less shared memory there. The
+matches are the same; the output stays within the same tolerances, at some
+cost in speed for those shapes.
 
 `core.nss_vk.Backend(device_id)` reports it:
 

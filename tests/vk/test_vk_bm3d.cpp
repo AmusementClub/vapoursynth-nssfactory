@@ -204,7 +204,7 @@ void run_case(const std::shared_ptr<Device>& device, Bm3dKernels& kernels, const
     CHECK(db >= 75.0, "%s: PSNR against the CPU %.1f dB (max abs %.3g)", label, db, worst);
     const auto shared = kernels.device().caps().shared_memory;
     const bool warp = Bm3dKernels::warp_kernel(c.block, c.group, c.wiener, shared);
-    const char* path = warp ? "warp" : wiener_ref_global(c.block, c.group, c.wiener, shared) ? "block-ref" : "block";
+    const char* path = warp ? (c.wiener && c.block == 16 && c.group == 16 ? "warp-gg" : "warp") : "block";
     std::printf("%-34s %-9s PSNR %6.1f dB, max abs %.3g\n", label, path, db, worst);
 }
 
@@ -232,14 +232,13 @@ int main(int argc, char** argv) {
     std::shared_ptr<Device> device = Device::open(index, argc > 1);
     Bm3dKernels kernels(device);
     const Aggregator aggregator(device);
-    CHECK(wiener_ref_global(16, 16, true, 32u * 1024u),
-          "16x16/group16 Wiener must use the reference-cube fallback at 32 KiB");
-    CHECK(!wiener_ref_global(16, 16, true, 48u * 1024u),
-          "16x16/group16 Wiener must use the warp path at 48 KiB");
-    CHECK(bm3d_scratch_floats(16, 16, true, 32u * 1024u) == 16u * 16u * 16u,
-          "32 KiB fallback scratch must hold one reference cube");
-    CHECK(bm3d_scratch_floats(16, 16, true, 48u * 1024u) == 0,
-          "48 KiB warp path must not allocate cube scratch");
+    // Block 16 / group 16 Wiener: the warp kernel with its gains in scratch
+    // (one cube a group) on 48 and 32 KiB devices; the hard stage none.
+    for (const std::uint32_t kib : {32u, 48u}) {
+        CHECK(Bm3dKernels::warp_kernel(16, 16, true, kib * 1024u), "16 / 16 Wiener on the warp kernel at %u KiB", kib);
+        CHECK(bm3d_scratch_floats(16, 16, true, kib * 1024u) == 16u * 16u * 16u, "16 / 16 Wiener gains scratch at %u KiB", kib);
+        CHECK(bm3d_scratch_floats(16, 16, false, kib * 1024u) == 0, "16 / 16 hard stage without scratch at %u KiB", kib);
+    }
     for (const bool wiener : {false, true}) {
         for (const int block : {1, 2, 4, 8, 12, 16, 32}) {
             for (const int group : {1, 2, 4, 8, 16, 32, 64}) {

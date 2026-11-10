@@ -16,22 +16,25 @@ struct Push {
 };
 static_assert(sizeof(Push) == 120, "matches the push block of shaders/wnnm/common.glsl");
 
-// shaders/wnnm/gram8.glsl's kSplitFloats; the divide and conquer's two 32 x
-// 32 matrices (shaders/wnnm/block_eigen.glsl dc_floats; its vectors are in
-// shared memory).
+// shaders/wnnm/gram8.glsl's kSplitFloats; from 17 patches the divide and
+// conquer's two 32 x 32 matrices and its vectors (shaders/wnnm/block_eigen.glsl
+// dc_floats), then M and the weight for the apply kernel (group_floats).
 constexpr std::size_t kSplitFloats = 36 + 64 + 1;
-constexpr std::size_t kDcFloats = 2 * 32 * 32;
+constexpr std::size_t kDcFloats = 2 * 32 * 32 + 20 * 32 + 8 + 10 * 8;
+constexpr std::size_t kBlockFloats = kDcFloats + 32 * 32 + 1;
 
 // Workgroups: up to 8 patches, the rows and apply kernels 16 groups (128
 // invocations, 8 a group) and the solve kernel 64; then one workgroup of 32
 // takes two groups of 16 or one of 32.
 constexpr std::uint32_t kGroupsPerSplitWorkgroup = 16, kSolveWorkgroup = 64;
+// From 17 patches the apply kernel: 128 invocations, one a patch of 4 groups.
+constexpr std::uint32_t kGroupsPerApplyWorkgroup = 4;
 
 }  // namespace
 
 std::size_t wnnm_scratch_floats(int group) {
     if (group <= 8) return kSplitFloats;
-    return group > 16 ? kDcFloats : 0;
+    return group > 16 ? kBlockFloats : 0;
 }
 
 const Pipeline& WnnmKernels::pipeline(const std::string& name, int lanes) {
@@ -59,6 +62,7 @@ void WnnmKernels::prepare(int group) {
         pipeline("wnnm_gram_apply", 0);
     } else {
         pipeline(group <= 16 ? "wnnm_gram_block_n16" : "wnnm_gram_block_n32", group <= 16 ? 16 : 32);
+        if (group > 16) pipeline("wnnm_gram_apply_n32", 0);
     }
 }
 
@@ -96,6 +100,8 @@ void WnnmKernels::filter(VkCommandBuffer commands, const WnnmGroupArgs& a) {
     } else {
         if (!a.scratch) throw std::logic_error("nss_vk: WNNM groups above 16 need the eigen scratch");
         dispatch(commands, pipeline("wnnm_gram_block_n32", 32), &push, batch);
+        compute_barrier(*device_, commands);
+        dispatch(commands, pipeline("wnnm_gram_apply_n32", 0), &push, (batch + kGroupsPerApplyWorkgroup - 1) / kGroupsPerApplyWorkgroup);
     }
 }
 

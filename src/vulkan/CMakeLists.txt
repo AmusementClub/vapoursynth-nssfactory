@@ -305,28 +305,31 @@ foreach(_nss_b 1 2 4 8 12 16 32)
           else()
             set(_nss_layer n)
           endif()
-          nss_vk_add_shader(NSS_VK_SPIRV_SOURCES bm3d_warp_b${_nss_b}_g${_nss_g}_${_nss_stage}_${_nss_layer}
-                            bm3d/group_warp.comp LIGHT
-                            DEFINES B=${_nss_b} G=${_nss_g} WIENER=${_nss_w} WARP_EMULATED=${_nss_emu})
+          # Block 16 / group 16 Wiener: only the gains in device scratch
+          # (bm3d/kernels.cpp warp_gains_global, on every device).
+          if(NOT (_nss_shape EQUAL 1616 AND _nss_w))
+            nss_vk_add_shader(NSS_VK_SPIRV_SOURCES bm3d_warp_b${_nss_b}_g${_nss_g}_${_nss_stage}_${_nss_layer}
+                              bm3d/group_warp.comp LIGHT
+                              DEFINES B=${_nss_b} G=${_nss_g} WIENER=${_nss_w} WARP_EMULATED=${_nss_emu})
+          endif()
+          if(_nss_shape EQUAL 1616 AND _nss_w)
+            nss_vk_add_shader(NSS_VK_SPIRV_SOURCES bm3d_warp_b16_g16_w_${_nss_layer}_gg bm3d/group_warp.comp LIGHT
+                              DEFINES B=16 G=16 WIENER=1 WARP_EMULATED=${_nss_emu} GAINS_GLOBAL=1)
+          endif()
         endforeach()
       endif()
-      # The block kernel for every shape the warp kernel does not serve, and
-      # for block 16 / group 16 Wiener, whose warp kernel needs more than a
-      # 32 KiB device's shared memory (bm3d/kernels.cpp warp_shared_bytes).
-      if(NOT _nss_warp OR (_nss_shape EQUAL 1616 AND _nss_w))
+      # The block kernel for every shape the warp kernel does not serve.
+      if(NOT _nss_warp)
         nss_vk_add_shader(NSS_VK_SPIRV_SOURCES bm3d_shape_b${_nss_b}_g${_nss_g}_${_nss_stage} bm3d/group_shape.comp
                           LIGHT DEFINES B=${_nss_b} G=${_nss_g} WIENER=${_nss_w})
-        if(_nss_shape EQUAL 1616 AND _nss_w)
-          nss_vk_add_shader(NSS_VK_SPIRV_SOURCES bm3d_shape_b16_g16_w_rg bm3d/group_shape.comp
-                            LIGHT DEFINES B=16 G=16 WIENER=1 REF_GLOBAL=1)
-        endif()
       endif()
     endforeach()
   endforeach()
 endforeach()
 # PNLM (V15, shaders/pnlm): the square matcher for patches of 2q (q = 2, 3, 4)
 # keeping K = 7, 15 or 31 keys (m1: keys out) or weighting its references
-# itself (m2: K = 7, 15; native n and emulated e warp layers), the key path's
+# itself (m2: K = 7, 15, q = 2 only: pnlm/filter.cpp vk_fused; native n and
+# emulated e warp layers), the key path's
 # weighting (n, e) and the gather. WARP_L: nss::pnlm_lanes of the patch area.
 foreach(_nss_q 2 3 4)
   if(_nss_q EQUAL 2)
@@ -344,10 +347,12 @@ foreach(_nss_q 2 3 4)
     else()
       set(_nss_layer n)
     endif()
-    foreach(_nss_k 7 15)
-      nss_vk_add_shader(NSS_VK_SPIRV_SOURCES pnlm_match_q${_nss_q}_k${_nss_k}_m2_${_nss_layer} pnlm/match.comp LIGHT
-                        DEFINES Q=${_nss_q} K=${_nss_k} MODE=2 WARP_L=${_nss_l} WARP_EMULATED=${_nss_emu})
-    endforeach()
+    if(_nss_q EQUAL 2)
+      foreach(_nss_k 7 15)
+        nss_vk_add_shader(NSS_VK_SPIRV_SOURCES pnlm_match_q${_nss_q}_k${_nss_k}_m2_${_nss_layer} pnlm/match.comp LIGHT
+                          DEFINES Q=${_nss_q} K=${_nss_k} MODE=2 WARP_L=${_nss_l} WARP_EMULATED=${_nss_emu})
+      endforeach()
+    endif()
     nss_vk_add_shader(NSS_VK_SPIRV_SOURCES pnlm_weight_q${_nss_q}_${_nss_layer} pnlm/weight.comp
                       DEFINES Q=${_nss_q} WARP_L=${_nss_l} WARP_EMULATED=${_nss_emu})
   endforeach()
@@ -372,6 +377,8 @@ foreach(_nss_emu 0 1)
 endforeach()
 nss_vk_add_shader(NSS_VK_SPIRV_SOURCES wnnm_gram_solve wnnm/gram_solve.comp LIGHT)
 nss_vk_add_shader(NSS_VK_SPIRV_SOURCES wnnm_gram_apply wnnm/gram_apply.comp)
+# Groups of 17 to 32: X = A M after the block kernel (no warp operations).
+nss_vk_add_shader(NSS_VK_SPIRV_SOURCES wnnm_gram_apply_n32 wnnm/gram_apply_block.comp DEFINES N=32)
 # MCWNNM group kernels (V8, shaders/mcwnnm): up to 8 patches the channel
 # classes' Gram matrices (warp layer, 8 lanes a group: n, e), the ADMM and the
 # output; 9 to 16 and 17 to 32 the block kernel (N = 16, 32; u its own matrix

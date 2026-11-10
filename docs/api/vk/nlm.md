@@ -39,7 +39,9 @@ windows or several frames, consider [PNLM](pnlm.md).
 - **Two paths.** The defaults and anything with `2d + 1 <= 17` frames and a
   tile that fits the device's shared memory (48 KiB at most) run one dispatch
   per frame, with the window frames kept on the device once for every request
-  that reads them.
+  that reads them. The tile reads the windows from shared memory from patch
+  radius `s=4` (the defaults) where they fit, and from memory below it,
+  which is 1.2-1.7x faster there on Vulkan.
   Larger windows, patches or `d` take a slower path with three frames
   resident.
 - **`d=1`.** The weights of a frame pair are computed once for both frames
