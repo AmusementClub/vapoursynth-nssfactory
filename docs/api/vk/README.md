@@ -24,7 +24,7 @@ scale with the pixel count and differ between GPUs.
 |---|---:|---:|
 | [BM3D](bm3d.md) | 1440 | 24 |
 | [NLM](nlm.md) | 820 | 135 |
-| [PNLM](pnlm.md) | 990 | 216 |
+| [PNLM](pnlm.md) | 1170 | 216 |
 | [WNNM](wnnm.md) | 1340 | 12 |
 
 - NLM filters luma only at its defaults; PNLM and WNNM filter every plane.
