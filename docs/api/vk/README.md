@@ -25,10 +25,10 @@ scale with the pixel count and differ between GPUs.
 | [BM3D](bm3d.md) | 1440 | 24 |
 | [NLM](nlm.md) | 820 | 135 |
 | [PNLM](pnlm.md) | 990 | 216 |
-| [WNNM](wnnm.md) | 1340 | 12 |
+| [WNNM](wnnm.md) | 1340 | 13 |
 
 - NLM filters luma only at its defaults; PNLM and WNNM filter every plane.
-- WNNM runs at about 0.95 times `nss_cuda`'s speed at its defaults and 0.6
+- WNNM runs at about 0.95 times `nss_cuda`'s speed at its defaults and 0.65
   times at its heavy arguments (groups of 32), measured in the same runs.
 
 ## Performance notes

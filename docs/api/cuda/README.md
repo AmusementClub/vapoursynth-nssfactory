@@ -22,7 +22,7 @@ pixel count and differ between GPUs.
 | [BM3D](bm3d.md) | 1570 | 29 |
 | [NLM](nlm.md) | 880 | 140 |
 | [PNLM](pnlm.md) | 780 | 290 |
-| [WNNM](wnnm.md) | 1080 | 20 |
+| [WNNM](wnnm.md) | 1420 | 20 |
 | [MCWNNM](mcwnnm.md) (RGB) | 270 | 0.81 |
 | [NCSR](ncsr.md) | 660 | 46 |
 | [LSSC](lssc.md) | 440 | 270 |
