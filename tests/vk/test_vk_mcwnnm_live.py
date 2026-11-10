@@ -194,6 +194,11 @@ def main():
             check(f"legacy r{radius} g{group} iters {iters}", want, legacy, legacy_again)
             rolling = frames(vk(seq, **kw))  # rolling is the device default
             check(f"rolling r{radius} g{group} iters {iters}", want, rolling, frames(vk(seq, **kw)))
+            if iters == 2 and group == 8:
+                # The first round matches on rclip, the second on the estimates.
+                guided = dict(kw, rclip=make_clip(core, vs.RGBS, 48, 40, 6, length=6))
+                want = frames(core.nss.VAggregate(core.nss.MCWNNM(seq, **guided), seq, radius=radius))
+                check(f"rolling r{radius} rclip iters 2", want, frames(vk(seq, **guided)), frames(vk(seq, **guided)))
             if iters == 1:
                 # rolling sums every center's patches in one set of fixed-point
                 # cells; the reduced legacy slices sum the same terms in float

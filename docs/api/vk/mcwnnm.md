@@ -30,9 +30,9 @@ As on the CUDA plugin, `iters` (the outer rounds, two by default) and
 (`1/step^2`); `iters=1` is about twice as fast spatially. Groups up to 8
 patches take three kernels (the ADMM one invocation a group), groups of 9 to
 32 one workgroup of 32 invocations a group (two of up to 16) with parallel
-Jacobi sweeps. Channels of equal sigma share their ADMM state, so unequal
-sigmas cost more. Matching is joint over the three channels and takes the
-general search.
+Jacobi sweeps. Channels of equal sigma share their ADMM state (one channel
+class instead of up to three). Matching is joint over the three channels and
+takes the general search.
 
 ## Notes
 
