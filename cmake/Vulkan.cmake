@@ -138,6 +138,13 @@ else()
       list(REMOVE_ITEM _nss_glslang_link "-Wl,--no-undefined")
       set_target_properties(glslang-standalone PROPERTIES LINK_OPTIONS "${_nss_glslang_link}")
     endif()
+    # The largest unrolled shaders (MCWNNM's groups of 32) take spirv-opt's
+    # recursive passes past Windows' default 1 MiB thread stack (a stack
+    # overflow, 0xC00000FD); Linux gives the main thread 8 MiB. 64 MiB for
+    # the three tools.
+    foreach(_nss_tool glslang-standalone spirv-opt spirv-val)
+      target_link_options(${_nss_tool} PRIVATE "LINKER:/STACK:67108864")
+    endforeach()
   endif()
   set(NSS_VK_GLSLANG_COMMAND "$<TARGET_FILE:glslang-standalone>")
   set(NSS_VK_SPIRV_OPT_COMMAND "$<TARGET_FILE:spirv-opt>")
