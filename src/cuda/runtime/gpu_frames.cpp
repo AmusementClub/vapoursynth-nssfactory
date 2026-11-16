@@ -26,13 +26,6 @@ namespace {
 
 std::string prefix(const char* filter) { return std::string("nss_cuda.") + filter + ": "; }
 
-// GPU frames are on unless NSS_CUDA_GPU_FRAMES is 0 or off (on by default
-// since r3; GPU clips are then downloaded as on other cores).
-bool requested() {
-    const char* value = std::getenv("NSS_CUDA_GPU_FRAMES");
-    return !value || (std::strcmp(value, "0") != 0 && std::strcmp(value, "off") != 0);
-}
-
 int core_release(VSCore* core, const VSAPI* vsapi) {
     VSCoreInfo info{};
     vsapi->getCoreInfo(core, &info);
@@ -40,7 +33,9 @@ int core_release(VSCore* core, const VSAPI* vsapi) {
 }
 
 #if NSS_CUDA_GPU_FRAMES
-constexpr int kTestedCore = 81;
+// getExportableFrameFilter, which the CUDA imports need, came with R81; R80's
+// VSVULKANAPI table is the prefix without it, so R80 downloads its GPU clips.
+constexpr int kMinCore = 81;
 constexpr std::size_t kDefaultMemoryImports = 8;
 // copy_rows holds the source's mapping while it maps the target: a cache of
 // one would evict (and unmap) the source before the copy is queued.
@@ -106,7 +101,7 @@ bool semaphore_handle_supported(int actual) {
 
 bool gpu_frames_registration(const VSPLUGINAPI* vspapi) {
 #if NSS_CUDA_GPU_FRAMES
-    return requested() && vs_api::gpu_frames(vspapi);
+    return vs_api::gpu_frames(vspapi);
 #else
     (void)vspapi;
     return false;
@@ -119,10 +114,9 @@ std::string gpu_frames_status(VSCore* core, const VSAPI* vsapi) {
     return "no (built without CUDA GPU frames)";
 #else
     if (!vs_api::gpu_frames(vsapi)) return "no (VapourSynth API before 4.3)";
-    if (!requested()) return "off (NSS_CUDA_GPU_FRAMES=0)";
     const int release = core_release(core, vsapi);
-    if (release == kTestedCore) return "yes (R81, all filters)";
-    return "downloaded (R" + std::to_string(release) + " untested; GPU frames support R81)";
+    if (release >= kMinCore) return "yes (R" + std::to_string(release) + ", all filters)";
+    return "downloaded (R" + std::to_string(release) + "; GPU frames need R81 or later)";
 #endif
 }
 
@@ -171,16 +165,15 @@ const VSVULKANAPI* take_clips(const char* filter, std::initializer_list<ClipArg>
     }
     if (!gpu) return nullptr;
     const int release = core_release(core, vsapi);
-    if (requested() && release == kTestedCore) return vs_api::vulkan(vsapi);
+    if (release >= kMinCore) return vs_api::vulkan(vsapi);
     {
         static std::mutex mutex;
         static std::set<VSCore*> warned;
         std::lock_guard lock(mutex);
         if (warned.insert(core).second) {
-            const std::string message = !requested()
-                ? "nss_cuda: NSS_CUDA_GPU_FRAMES=0: GPU clips are taken as CPU frames (std.GPUDownload)"
-                : "nss_cuda: VapourSynth R" + std::to_string(release) +
-                  " is not the tested R81 core: its GPU clips are taken as CPU frames (std.GPUDownload)";
+            const std::string message = "nss_cuda: VapourSynth R" + std::to_string(release) +
+                                        " has no exportable GPU frames (R81 or later): its GPU clips are taken as "
+                                        "CPU frames (std.GPUDownload)";
             vsapi->logMessage(mtWarning, message.c_str(), core);
         }
     }

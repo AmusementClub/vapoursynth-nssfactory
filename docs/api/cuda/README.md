@@ -202,13 +202,12 @@ On VapourSynth R81 every `nss_cuda` filter takes and returns GPU frames: a
 GPU-resident clip (`std.GPUUpload`, another GPU filter's output) stays in video
 memory through the filter, so a chain of GPU filters skips the copies to and
 from host memory. CPU clips work as before, and a filter's clips must all be
-CPU frames or all GPU frames. On R80 and untested newer cores, GPU clips are
-downloaded by the core first and the output is a CPU frame.
+CPU frames or all GPU frames. Newer cores take GPU frames too. On R80, which
+cannot export GPU frames to CUDA, GPU clips are downloaded by the core first
+and the output is a CPU frame.
 
-- The release packages include it; a source build needs
-  `-DNSS_CUDA_GPU_FRAMES=ON` and R81 headers ([Building](../building.md)).
-- `NSS_CUDA_GPU_FRAMES=0` (set before the plugin loads) turns it off: GPU
-  clips are then downloaded as on other cores.
+- The release packages include it; a source build has it when it is built
+  against R81 or newer headers ([Building](../building.md)).
 - `NSS_CUDA_GPU_IMPORT_CACHE=2..16` sets how many VapourSynth frame
   allocations each stream keeps imported (default 8).
 - `Backend()["gpu_frames"]` reports the mode.

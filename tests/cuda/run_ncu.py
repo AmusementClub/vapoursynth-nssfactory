@@ -22,8 +22,6 @@ def main():
     output.parent.mkdir(parents=True, exist_ok=True)
     compare = Path(__file__).resolve().parents[1] / "compare_gpu_filters.py"
     env = dict(os.environ)
-    if args.mode == "resident":
-        env["NSS_CUDA_GPU_FRAMES"] = "1"
     command = [args.ncu, "--target-processes", "all", "--launch-count", str(args.launch_count),
                "--section", "SpeedOfLight", "--section", "Occupancy", "--section", "SchedulerStats",
                "--section", "WarpStateStats", "--metrics", "launch__registers_per_thread", "--force-overwrite",

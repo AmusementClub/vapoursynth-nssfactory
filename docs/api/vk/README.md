@@ -162,21 +162,15 @@ out = den.std.GPUDownload()                                 # or leave it: outpu
 - **Legacy temporal output** stays on the GPU too; `core.nss.VAggregate`
   (a CPU filter) gets it downloaded by the core.
 
-### Tested cores
+### Status
 
-The GPU interface of VapourSynth (`VSVulkan4.h`) has no version of its own
-and changes with the core, so nss_vk processes GPU frames only on the cores
-it was built and tested against: **R80 and R81**. On a newer core the same
-binary still loads; GPU clips are then downloaded (`std.GPUDownload`) and run
-on CPU frames, with one warning per core, until a release tested against that
-core. `Backend()["gpu_frames"]` says which applies:
+`Backend()["gpu_frames"]` says whether GPU frames are processed:
 
 | `gpu_frames` | Meaning |
 |---|---|
-| `yes (R81)` | GPU frames are processed on the GPU. |
-| `downloaded (R82 untested; ...)` | An untested core: GPU clips run on CPU frames. `NSS_VK_GPU_FRAMES=force` processes them on the GPU anyway, at your own risk. |
-| `off (NSS_VK_GPU_FRAMES=0)` | Turned off by the environment. |
+| `yes (R81)` | GPU frames are processed on the GPU (any core with API 4.3: R80 and later). |
 | `no (VapourSynth API R4.2: R80 or later)` | R78, vapoursynth-classic and older: CPU frames only, plain `vnode` arguments. |
+| `no (built without VSVulkan4.h)` | Built against headers older than R80. |
 
 ### When GPU frames pay
 
@@ -211,7 +205,6 @@ most half the core's frame cache is imported.
 
 | Variable | Meaning |
 |---|---|
-| `NSS_VK_GPU_FRAMES` | `force`: GPU frames on any core with API 4.3; `0`: never (GPU clips are downloaded). |
 | `NSS_VK_PIPELINE_CACHE` | Pipeline cache directory, or `off`. |
 | `NSS_VK_DIRECT_IO`, `NSS_VK_DIRECT_IO_MAX_MB`, `NSS_VK_DIRECT_IO_STATS` | Direct transfers with vapoursynth-classic (above). |
 | `NSS_VK_WAIT_TIMEOUT_MS` | How long a frame may take on the device before it is an error (default 60000). |

@@ -130,10 +130,6 @@ def setup(impl, case_id, mode, threads):
     core.num_threads = threads
     if mode == "resident" or impl in {"vsfeel", "bm3dvk2"}:
         core.set_vulkan_device(0)
-    if impl == "nss_cuda" and mode == "resident":
-        os.environ["NSS_CUDA_GPU_FRAMES"] = "1"
-    else:
-        os.environ.pop("NSS_CUDA_GPU_FRAMES", None)
     load_plugin(core, impl)
     case = CASES[case_id]
     _, noisy = make_input("gseq-s10")

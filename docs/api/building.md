@@ -63,6 +63,11 @@ builds only the CUDA plugin, without Highway or the CPU kernels.
   target sm_120, so RTX 50 GPUs then use the JIT too.
 - **One GPU only:** `-DNSS_CUDA_ARCHITECTURES=120-real` (for example) builds
   much faster.
+- **VapourSynth GPU frames** ([GPU frames](cuda/README.md#gpu-frames)) are
+  built in when the VapourSynth headers have R81's `VSVulkan4.h` (with
+  `getExportableFrameFilter`); older headers build the plugin without them.
+  Vulkan headers come from `VULKAN_SDK` or the system, else the pinned
+  Vulkan-Headers are fetched. The release packages are built against R81.
 
 ## Vulkan plugin (preview)
 
@@ -88,16 +93,14 @@ plugin.
 - **VapourSynth GPU frames** (R80+) are built in when the VapourSynth headers
   have `VSVulkan4.h` (R80 or newer; the release is built against R81's). The
   plugin declares API 4.0 either way, so the same binary loads on R78 and
-  vapoursynth-classic, and takes GPU frames only on the cores it was tested
-  with ([tested cores](vk/README.md#tested-cores)). Older headers build it
-  without GPU frames.
+  vapoursynth-classic, and takes GPU frames on every core with API 4.3.
+  Older headers build it without GPU frames.
 
 ## Options
 
 | Option | Default | Meaning |
 |---|---|---|
 | `NSS_ENABLE_CUDA` | OFF | Build the CUDA plugin. |
-| `NSS_CUDA_GPU_FRAMES` | OFF | Build the R81 [GPU-frame](cuda/README.md#gpu-frames) frontend for all `nss_cuda` filters (the release packages do); requires R81 VapourSynth headers. Vulkan headers come from `VULKAN_SDK` or the system, else the pinned Vulkan-Headers are fetched. On at run time unless `NSS_CUDA_GPU_FRAMES=0`. |
 | `NSS_CUDA_GPU_FRAMES_PYTHON` | empty | A Python whose VapourSynth is R81, for `test_cuda_gpu_frames_r81`. |
 | `NSS_ENABLE_VULKAN` | OFF | Build the Vulkan plugin (a preview). |
 | `NSS_VK_GPU_FRAMES_PYTHON` | empty | A Python whose VapourSynth is R80 or newer, for the GPU-frame test (`test_vk_gpu_frames_r8x`). |

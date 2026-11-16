@@ -9,8 +9,7 @@ channel modes with shared planes, spatial / final / chroma / ref, legacy with
 identity slices, rolling with chunks of one), rows padded or not, chains of
 nss_vk filters that stay resident, and a legacy fat clip into the CPU
 plugin's VAggregate (--cpu). Clips of mixed residency and a device_id that is
-not VapourSynth's device are errors; NSS_VK_GPU_FRAMES=0 takes GPU clips as
-CPU frames with the same output.
+not VapourSynth's device are errors.
 
 On an older core (R78, vapoursynth-classic) the same binary must load and
 register plain `vnode` arguments (one binary for every core).
@@ -73,8 +72,6 @@ def main():
     args = parser.parse_args()
 
     core = vs.core
-    log = []
-    core.add_log_handler(lambda kind, message: log.append(message))
     core.std.LoadPlugin(path=os.path.abspath(args.vk))
     functions = {f.name: f.signature for f in core.nss_vk.functions()}
     filters = [name for name in ("NLM", "BM3D", "PNLM") if name in functions]
@@ -88,7 +85,7 @@ def main():
         print(f"vk gpu frames: API R{core.api_version.api_major}.{core.api_version.api_minor}, "
               f"plain signatures {'OK' if not bad else 'FAIL ' + str(bad)}")
         return 1 if bad else 0
-    if core.core_version.release_major in (80, 81) and status != f"yes (R{core.core_version.release_major})":
+    if status != f"yes (R{core.core_version.release_major})":
         print(f"FAIL: Backend gpu_frames {status!r}")
         return 1
     missing = [name for name in filters if not functions[name].startswith("clip:vnode:all;")]
@@ -217,18 +214,6 @@ def main():
             if "is not device_id" not in str(error):
                 failures.append(f"device_id {device}: unexpected error {error}")
             print(f"device_id {device}: error OK")
-
-    # NSS_VK_GPU_FRAMES=0: CPU frames, same output, one warning.
-    os.environ["NSS_VK_GPU_FRAMES"] = "0"
-    try:
-        out = core.nss_vk.NLM(src.std.GPUUpload(), d=1)
-        same = digest(out, [0, 3]) == digest(core.nss_vk.NLM(src, d=1), [0, 3])
-        ok = not out.gpu_resident and same and any("NSS_VK_GPU_FRAMES=0" in m for m in log)
-        print(f"NSS_VK_GPU_FRAMES=0: {'OK' if ok else 'FAIL'}")
-        if not ok:
-            failures.append("NSS_VK_GPU_FRAMES=0: not CPU frames, output differs or no warning")
-    finally:
-        del os.environ["NSS_VK_GPU_FRAMES"]
 
     print(f"vk gpu frames: R{core.core_version.release_major}, {len(failures)} failures")
     for failure in failures:

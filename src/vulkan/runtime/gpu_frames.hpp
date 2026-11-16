@@ -15,11 +15,8 @@
 // the input frames until the work is done, and the output planes are
 // published with the slot's timeline (setGPUPlaneProducer).
 //
-// One binary for every core (D29): GPU frames are taken only on the cores
-// this build was tested with (kTestedCores). On any other core with API 4.3,
-// a GPU clip is downloaded (std.GPUDownload) and the filter runs on CPU frames,
-// with one warning per core; NSS_VK_GPU_FRAMES=force takes GPU frames on any
-// core with API 4.3, NSS_VK_GPU_FRAMES=0 never does.
+// One binary for every core (D29): GPU frames on every core with API 4.3
+// (R80 and later), CPU frames only before it.
 #pragma once
 
 #include "frontend/ownership.hpp"
@@ -37,21 +34,14 @@
 
 namespace nss_vk {
 
-// VapourSynth releases whose VSVULKANAPI layout this build was tested with
-// (the table is not versioned and changes in lockstep with the core; R81
-// pins the headers, R80's table is its prefix).
-inline constexpr int kTestedCores[] = {80, 81};
-
 // The registered arguments and return type: every `vnode` becomes
 // `vnode:all` when the core offers GPU frames (API 4.3), else they are
 // unchanged.
 std::string residency_args(const std::string& signature, bool gpu_frames);
 const char* clip_return(bool gpu_frames);
 
-// Backend()'s gpu_frames: "yes (R81)", "yes (R82, NSS_VK_GPU_FRAMES=force)",
-// "downloaded (R82 untested; NSS_VK_GPU_FRAMES=force uses them)", "off
-// (NSS_VK_GPU_FRAMES=0)", "no (VapourSynth API R4.2: R80 or later)" or "no
-// (built without VSVulkan4.h)".
+// Backend()'s gpu_frames: "yes (R81)", "no (VapourSynth API R4.2: R80 or
+// later)" or "no (built without VSVulkan4.h)".
 std::string gpu_frames_status(VSCore* core, const VSAPI* vsapi);
 
 // A filter's clip arguments (null nodes are skipped).
@@ -59,10 +49,9 @@ struct ClipArg {
     const char* name;
     nss::NodeRef* node;
 };
-// Decides how the filter takes its clips: CPU frames (null), or GPU frames on
-// a tested core (the core's GPU API). The clips must share a residency
-// (std::invalid_argument otherwise). GPU clips on other cores, or with
-// NSS_VK_GPU_FRAMES=0, are replaced by their std.GPUDownload.
+// Decides how the filter takes its clips: CPU frames (null) or GPU frames
+// (the core's GPU API). The clips must share a residency
+// (std::invalid_argument otherwise).
 const VSVULKANAPI* take_clips(const char* filter, std::initializer_list<ClipArg> clips, VSCore* core,
                               const VSAPI* vsapi);
 
