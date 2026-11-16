@@ -273,10 +273,13 @@ jobs:
         run: |
           export PATH=/opt/venv/bin:$PATH
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-            -DNSS_ENABLE_CUDA=ON -DNSS_CUDA_GPU_FRAMES=ON -DNSS_BUILD_CPU=OFF \
+            -DNSS_ENABLE_CUDA=ON -DNSS_BUILD_CPU=OFF \
             -DNSS_GIT_DESCRIBE="$PKG_LABEL" \
             -DVapourSynth_INCLUDE_DIR=/opt/vapoursynth/include \
-            -DPython3_EXECUTABLE=/opt/venv/bin/python
+            -DPython3_EXECUTABLE=/opt/venv/bin/python > configure.log 2>&1 || { cat configure.log; exit 1; }
+          cat configure.log
+          # The packages ship GPU frames: R81 headers must have been found.
+          grep -q "R81 GPU-frame frontend" configure.log || { echo "built without GPU frames"; exit 1; }
       - name: build
         run: /opt/venv/bin/cmake --build build -j
       - name: fat binary contents
@@ -325,7 +328,10 @@ jobs:
         run: |
           $vsInclude = python -c "import vapoursynth, pathlib; print(pathlib.Path(vapoursynth.__file__).parent / 'include')"
           $pythonExe = (Get-Command python).Source
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=cl -DNSS_ENABLE_CUDA=ON -DNSS_CUDA_GPU_FRAMES=ON -DNSS_BUILD_CPU=OFF -DNSS_GIT_DESCRIBE="$env:PKG_LABEL" -DVapourSynth_INCLUDE_DIR="$vsInclude" -DPython3_EXECUTABLE="$pythonExe"
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=cl -DNSS_ENABLE_CUDA=ON -DNSS_BUILD_CPU=OFF -DNSS_GIT_DESCRIBE="$env:PKG_LABEL" -DVapourSynth_INCLUDE_DIR="$vsInclude" -DPython3_EXECUTABLE="$pythonExe" | Tee-Object -FilePath configure.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # The packages ship GPU frames: R81 headers must have been found.
+          if (-not (Select-String -Path configure.log -Pattern "R81 GPU-frame frontend" -Quiet)) { Write-Error "built without GPU frames"; exit 1 }
       - name: build
         run: cmake --build build -j
       - name: "cuda tests (no GPU: load, signatures, creation errors)"

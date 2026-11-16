@@ -3,11 +3,6 @@
 
 #include "vulkan/runtime/vs_api.hpp"
 
-#include <algorithm>
-#include <cstdlib>
-#include <cstring>
-#include <mutex>
-#include <set>
 #include <stdexcept>
 #include <utility>
 #if NSS_VK_GPU_FRAMES
@@ -26,41 +21,10 @@ struct RepackPush {
     std::uint32_t width, height, src_pitch, dst_pitch;  // words
 };
 
-enum class Mode { tested, force, off };
-
-Mode gpu_mode() {
-    const char* value = std::getenv("NSS_VK_GPU_FRAMES");
-    if (!value || !*value) return Mode::tested;
-    if (std::strcmp(value, "force") == 0) return Mode::force;
-    if (std::strcmp(value, "0") == 0 || std::strcmp(value, "off") == 0) return Mode::off;
-    return Mode::tested;
-}
-
 int core_release(VSCore* core, const VSAPI* vsapi) {
     VSCoreInfo info{};
     vsapi->getCoreInfo(core, &info);
     return info.core;
-}
-
-bool tested_core(int release) {
-    return std::find(std::begin(kTestedCores), std::end(kTestedCores), release) != std::end(kTestedCores);
-}
-
-nss::NodeRef download(const nss::NodeRef& node, const char* filter, VSCore* core, const VSAPI* vsapi) {
-    VSPlugin* std_plugin = vsapi->getPluginByID("com.vapoursynth.std", core);
-    VSMap* args = vsapi->createMap();
-    vsapi->mapSetNode(args, "clip", node, maReplace);
-    VSMap* result = std_plugin ? vsapi->invoke(std_plugin, "GPUDownload", args) : nullptr;
-    vsapi->freeMap(args);
-    if (!result) throw std::runtime_error(prefix(filter) + "std.GPUDownload is not available");
-    if (const char* error = vsapi->mapGetError(result)) {
-        const std::string message = prefix(filter) + "std.GPUDownload failed: " + error;
-        vsapi->freeMap(result);
-        throw std::runtime_error(message);
-    }
-    nss::NodeRef downloaded(vsapi->mapGetNode(result, "clip", 0, nullptr), vsapi);
-    vsapi->freeMap(result);
-    return downloaded;
 }
 
 }  // namespace
@@ -98,19 +62,11 @@ std::string gpu_frames_status(VSCore* core, const VSAPI* vsapi) {
         return "no (VapourSynth API R" + std::to_string(api >> 16) + "." + std::to_string(api & 0xffff) +
                ": R80 or later)";
     }
-    const int release = core_release(core, vsapi);
-    const std::string core_name = "R" + std::to_string(release);
-    switch (gpu_mode()) {
-        case Mode::off: return "off (NSS_VK_GPU_FRAMES=0)";
-        case Mode::force: return "yes (" + core_name + ", NSS_VK_GPU_FRAMES=force)";
-        case Mode::tested: break;
-    }
-    if (tested_core(release)) return "yes (" + core_name + ")";
-    return "downloaded (" + core_name + " untested; NSS_VK_GPU_FRAMES=force uses them)";
+    return "yes (R" + std::to_string(core_release(core, vsapi)) + ")";
 #endif
 }
 
-const VSVULKANAPI* take_clips(const char* filter, std::initializer_list<ClipArg> clips, VSCore* core,
+const VSVULKANAPI* take_clips(const char* filter, std::initializer_list<ClipArg> clips, VSCore*,
                               const VSAPI* vsapi) {
     // The first clip given and the first whose residency differs from it.
     const ClipArg* first = nullptr;
@@ -131,30 +87,7 @@ const VSVULKANAPI* take_clips(const char* filter, std::initializer_list<ClipArg>
                                     " must both be CPU frames or both GPU frames "
                                     "(pass one through std.GPUUpload or std.GPUDownload)");
     }
-    if (!gpu) return nullptr;
-    const int release = core_release(core, vsapi);
-    const Mode mode = gpu_mode();
-    if (mode == Mode::force || (mode == Mode::tested && tested_core(release))) return vs_api::vulkan(vsapi);
-    {
-        static std::mutex mutex;
-        static std::set<VSCore*> warned;
-        std::lock_guard lock(mutex);
-        if (warned.insert(core).second) {
-            std::string message = "nss_vk: ";
-            if (mode == Mode::off) {
-                message += "NSS_VK_GPU_FRAMES=0: GPU clips are taken as CPU frames (std.GPUDownload)";
-            } else {
-                message += "VapourSynth R" + std::to_string(release) +
-                           " is not a core this build was tested with (R80, R81): its GPU clips are taken as CPU "
-                           "frames (std.GPUDownload); NSS_VK_GPU_FRAMES=force processes them on the device anyway";
-            }
-            vsapi->logMessage(mtWarning, message.c_str(), core);
-        }
-    }
-    for (const ClipArg& clip : clips) {
-        if (clip.node && *clip.node) *clip.node = download(*clip.node, filter, core, vsapi);
-    }
-    return nullptr;
+    return gpu ? vs_api::vulkan(vsapi) : nullptr;
 }
 
 GpuFrames::GpuFrames(std::shared_ptr<Device> device, const VSAPI* vsapi)

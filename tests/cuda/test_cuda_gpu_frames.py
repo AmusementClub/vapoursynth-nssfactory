@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-only
-"""Experimental R81 GPU-frame frontend for all nss_cuda filters.
+"""R81 GPU-frame frontend for all nss_cuda filters.
 
-The same plugin must keep plain vnode signatures before API 4.3. On R81, with
-NSS_CUDA_GPU_FRAMES=1, every filter takes and returns GPU frames and matches its
-CPU-frame path. Temporal, bypassed-plane, chained and concurrent-request paths
-are included. Other cores explicitly download GPU inputs.
+The same plugin must keep plain vnode signatures before API 4.3. On R81 and
+later every filter takes and returns GPU frames and matches its CPU-frame
+path. Temporal, bypassed-plane, chained and concurrent-request paths are
+included. R80 (no exportable GPU frames) downloads GPU inputs.
 
 usage: test_cuda_gpu_frames.py --cuda PATH [--quick]
 """
@@ -81,7 +81,6 @@ def main():
     parser.add_argument("--quick", action="store_true")
     args = parser.parse_args()
 
-    os.environ.setdefault("NSS_CUDA_GPU_FRAMES", "1")
     core = vs.core
     core.std.LoadPlugin(path=os.path.abspath(args.cuda))
     functions = {f.name: f.signature for f in core.nss_cuda.functions()}
@@ -113,7 +112,7 @@ def main():
     failures = []
     order = [0, 1, 2, 7, 4, 3]
     release = core.core_version.release_major
-    if release != 81:
+    if release < 81:
         src = make_clip(core, vs.GRAYS, 133, 111, 1)
         try:
             out = core.nss_cuda.NLM(src.std.GPUUpload(), d=1)

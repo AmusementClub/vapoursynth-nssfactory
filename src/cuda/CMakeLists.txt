@@ -148,16 +148,23 @@ set(NSS_CUDA_RUNTIME_SOURCES
   runtime/vs_api43.cpp
 )
 
-option(NSS_CUDA_GPU_FRAMES "Build the R81 GPU-frame frontend for all nss_cuda filters (the release packages do)" OFF)
-if(NSS_CUDA_GPU_FRAMES)
-  find_file(NSS_CUDA_VSVULKAN_HEADER VSVulkan4.h PATHS "${VapourSynth_INCLUDE_DIR}" NO_DEFAULT_PATH NO_CACHE)
-  if(NOT NSS_CUDA_VSVULKAN_HEADER)
-    message(FATAL_ERROR "NSS_CUDA_GPU_FRAMES requires R81 VapourSynth headers (VSVulkan4.h)")
-  endif()
+# VapourSynth R81 GPU frames for all filters: built whenever the VapourSynth
+# headers have VSVulkan4.h with getExportableFrameFilter (R81 and later; CI
+# and the release packages pin R81). One binary for every core: the plugin
+# declares API 4.0 and only runtime/vs_api43.cpp sees the 4.3 VSAPI members.
+# Older headers build the plugin without GPU frames. (Trees configured before
+# r4 cached the old NSS_CUDA_GPU_FRAMES option: dropped here.)
+unset(NSS_CUDA_GPU_FRAMES CACHE)
+set(NSS_CUDA_GPU_FRAMES OFF)
+find_file(NSS_CUDA_VSVULKAN_HEADER VSVulkan4.h PATHS "${VapourSynth_INCLUDE_DIR}" NO_DEFAULT_PATH NO_CACHE)
+if(NSS_CUDA_VSVULKAN_HEADER)
   file(STRINGS "${NSS_CUDA_VSVULKAN_HEADER}" _nss_cuda_exportable_frame REGEX "getExportableFrameFilter")
-  if(NOT _nss_cuda_exportable_frame)
-    message(FATAL_ERROR "NSS_CUDA_GPU_FRAMES requires R81 VSVulkan4.h with getExportableFrameFilter")
+  if(_nss_cuda_exportable_frame)
+    set(NSS_CUDA_GPU_FRAMES ON)
   endif()
+endif()
+set(NSS_CUDA_GPU_FRAMES ${NSS_CUDA_GPU_FRAMES} PARENT_SCOPE)
+if(NSS_CUDA_GPU_FRAMES)
   find_path(NSS_CUDA_VULKAN_INCLUDE_DIR vulkan/vulkan_core.h
             HINTS "$ENV{VULKAN_SDK}/Include" "$ENV{VULKAN_SDK}/include")
   if(NSS_CUDA_VULKAN_INCLUDE_DIR)
@@ -171,6 +178,8 @@ if(NSS_CUDA_GPU_FRAMES)
   endif()
   set_source_files_properties(runtime/vs_api43.cpp PROPERTIES COMPILE_DEFINITIONS VS_USE_API_43)
   message(STATUS "NSSFactory CUDA: R81 GPU-frame frontend for all filters")
+else()
+  message(STATUS "NSSFactory CUDA: no R81 VSVulkan4.h, built without VapourSynth GPU frames")
 endif()
 
 # Optional cuSolverDx (MathDx package root, the directory holding include/
